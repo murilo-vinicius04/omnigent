@@ -146,6 +146,9 @@ class Conversation:
         and this pins the heads; unset leaves the team as the bundle
         declared it. Read when a sub-agent is spawned, so it applies to
         every spawn after it is set.
+    :param sub_model_override: Per-session model for the bundle's
+        SUB-agents, as a compact ``{"name":"model"}`` JSON string.
+        Read at spawn, beside :attr:`sub_harness_override`.
     :param harness_override: Per-session harness override for the
         bound agent's brain, e.g. ``"pi"`` or ``"openai-agents"``.
         ``None`` means use the harness declared in the agent spec
@@ -245,6 +248,7 @@ class Conversation:
     subagent_routing_override: str | None = None
     harness_override: str | None = None
     sub_harness_override: str | None = None
+    sub_model_override: str | None = None
     sub_agent_name: str | None = None
     task_summary: str | None = None
     external_session_id: str | None = None

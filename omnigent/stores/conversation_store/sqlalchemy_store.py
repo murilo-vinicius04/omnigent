@@ -154,6 +154,10 @@ _SESSION_OVERRIDE_KEYS = (
     # session of an agent loads the same ``agent.bundle_location``, so
     # rewriting it would retarget every session at once.
     "sub_harness_override",
+    # And the model each head runs, same shape and same reasoning: the spec
+    # already allows a per-child model (examples/polly pins grok-4.5 on its
+    # cursor head), and pinning one on the BRAIN would drag the heads with it.
+    "sub_model_override",
 )
 
 
@@ -247,6 +251,7 @@ def _to_conversation(
         subagent_routing_override=overrides["subagent_routing_override"],
         harness_override=overrides["harness_override"],
         sub_harness_override=overrides["sub_harness_override"],
+        sub_model_override=overrides["sub_model_override"],
         sub_agent_name=meta.sub_agent_name if meta else None,
         task_summary=meta.task_summary if meta else None,
         external_session_id=meta.external_session_id if meta else None,
@@ -2827,6 +2832,8 @@ class SqlAlchemyConversationStore(ConversationStore):
         _unset_harness_override: bool = False,
         sub_harness_override: str | None = None,
         _unset_sub_harness_override: bool = False,
+        sub_model_override: str | None = None,
+        _unset_sub_model_override: bool = False,
         terminal_launch_args: list[str] | None = None,
         archived: bool | None = None,
         reported_model: str | None = None,
@@ -2928,6 +2935,12 @@ class SqlAlchemyConversationStore(ConversationStore):
                 overrides_changed = True
             elif sub_harness_override is not None:
                 overrides["sub_harness_override"] = sub_harness_override
+                overrides_changed = True
+            if _unset_sub_model_override:
+                overrides["sub_model_override"] = None
+                overrides_changed = True
+            elif sub_model_override is not None:
+                overrides["sub_model_override"] = sub_model_override
                 overrides_changed = True
             if overrides_changed:
                 row.session_overrides = _encode_session_overrides(overrides)

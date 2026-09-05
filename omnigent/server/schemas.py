@@ -241,11 +241,16 @@ class SubAgentSummary(BaseModel):
     :param harness: The harness it currently runs on, e.g.
         ``"antigravity-native"``. ``None`` when the child spec declares
         no executor kind.
+    :param model: The model the child spec pins, e.g.
+        ``"grok-4.5"``. ``None`` when it declares none and the harness's
+        own default runs -- which is the common case, so a client must
+        render the absence rather than inventing a name for it.
     """
 
     name: str
     description: str | None = None
     harness: str | None = None
+    model: str | None = None
 
 
 class AgentObject(BaseModel):
@@ -1533,6 +1538,10 @@ class _SessionCreateRequestBase(BaseModel):
     # sub-agent's declared name. Create-time only, like its sibling: the
     # spawn reads it, so it must be settled before the first turn.
     sub_harness_override: dict[str, str] | None = None
+    # And the model each head runs. Separate from the harness pick because the
+    # two are chosen independently: a head can keep its harness and change
+    # model, or the reverse.
+    sub_model_override: dict[str, str] | None = None
     smart_routing_message: str | None = None
 
     @model_validator(mode="after")
@@ -2155,6 +2164,12 @@ class SessionResponse(BaseModel):
     llm_model: str | None = None
     harness: str | None = None
     model_override: str | None = None
+    # The session's per-sub-agent picks, as the compact ``{"name": "value"}``
+    # JSON strings the server stores. Echoed back so a client can show what a
+    # running session actually chose -- ``harness`` above is the BRAIN's, and
+    # nothing else in this response names a head.
+    sub_harness_override: str | None = None
+    sub_model_override: str | None = None
     cost_control_mode_override: str | None = None
     subagent_routing_override: str | None = None
     context_window: int | None = None

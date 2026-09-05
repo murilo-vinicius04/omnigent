@@ -818,6 +818,8 @@ class ConversationStore(ABC):
         _unset_harness_override: bool = False,
         sub_harness_override: str | None = None,
         _unset_sub_harness_override: bool = False,
+        sub_model_override: str | None = None,
+        _unset_sub_model_override: bool = False,
         terminal_launch_args: list[str] | None = None,
         archived: bool | None = None,
         reported_model: str | None = None,
@@ -865,6 +867,10 @@ class ConversationStore(ABC):
             unchanged.
         :param _unset_sub_harness_override: When ``True``, clear it so the
             session falls back to the bundle's declared team.
+        :param sub_model_override: Per-session model for the bundle's
+            SUB-agents, as a compact ``{"name":"model"}`` JSON string.
+            ``None`` leaves unchanged.
+        :param _unset_sub_model_override: When ``True``, clear it.
         :param harness_override: Per-session brain-harness override,
             e.g. ``"pi"``. ``None`` leaves unchanged. No ``_unset``
             variant — the override is set once at session create and

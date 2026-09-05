@@ -6619,6 +6619,28 @@
             "description": "For sub-agent sessions, the sub-agent type name within the parent's spec tree, e.g. `\"summarizer\"`. `None` for top-level sessions.",
             "title": "Sub Agent Name"
           },
+          "sub_harness_override": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sub Harness Override"
+          },
+          "sub_model_override": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sub Model Override"
+          },
           "subagent_routing_override": {
             "anyOf": [
               {
@@ -7643,6 +7665,18 @@
             ],
             "description": "The harness it currently runs on, e.g. `\"antigravity-native\"`. `None` when the child spec declares no executor kind.",
             "title": "Harness"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The model the child spec pins, e.g. `\"grok-4.5\"`. `None` when it declares none and the harness's own default runs -- which is the common case, so a client must render the absence rather than inventing a name for it.",
+            "title": "Model"
           },
           "name": {
             "description": "The sub-agent's declared name, e.g. `\"gemini\"`.",

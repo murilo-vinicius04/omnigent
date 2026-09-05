@@ -1875,9 +1875,7 @@ def _validated_harness_override(value: str | None, agent: Agent) -> str | None:
     return canonical
 
 
-def _validated_sub_harness_override(
-    value: dict[str, str] | None, agent: Agent
-) -> str | None:
+def _validated_sub_harness_override(value: dict[str, str] | None, agent: Agent) -> str | None:
     """
     Validate a session-create ``sub_harness_override`` and pack it for storage.
 
@@ -1948,6 +1946,60 @@ def _validated_sub_harness_override(
     # ``session_overrides`` (see the store's _SESSION_OVERRIDE_KEYS), so the
     # existing encode/decode and the column width need no change.
     return _json.dumps(resolved, separators=(",", ":"), sort_keys=True)
+
+
+def _validated_sub_model_override(value: dict[str, str] | None, agent: Agent) -> str | None:
+    """
+    Validate a session-create ``sub_model_override`` and pack it for storage.
+
+    Every KEY must name a sub-agent the bound bundle declares, checked the same
+    way :func:`_validated_sub_harness_override` checks its own. The VALUE is
+    not validated against a catalog: a model id is only meaningful next to the
+    harness that will run it, that harness may itself be overridden in the same
+    request, and each harness resolves its own catalog at spawn. A wrong id
+    surfaces there, named, rather than being guessed at here.
+
+    :param value: Sub-agent name -> model id, e.g. ``{"gpt": "gemini-3.8-flash-low"}``.
+    :param agent: The bound agent row.
+    :returns: A compact JSON string for ``session_overrides``, or ``None``.
+    :raises OmnigentError: ``invalid_input`` for an unknown sub-agent name, a
+        non-omnigent executor type, or an unloadable bundle.
+    """
+    if not value:
+        return None
+    import json as _json
+
+    from omnigent.runtime import get_agent_cache
+    from omnigent.spec._omnigent_compat import OMNIGENT_EXECUTOR_TYPE
+
+    try:
+        loaded = get_agent_cache().load(
+            agent.id, agent.bundle_location, expand_env=agent.session_id is None
+        )
+    except (KeyError, AttributeError, ValueError, ImportError, OSError) as exc:
+        raise OmnigentError(
+            f"sub_model_override requires a loadable agent spec; "
+            f"agent {agent.name!r} failed to load: {exc}",
+            code=ErrorCode.INVALID_INPUT,
+        ) from exc
+    if loaded.spec.executor.type != OMNIGENT_EXECUTOR_TYPE:
+        raise OmnigentError(
+            f"sub_model_override only applies to executor.type "
+            f"{OMNIGENT_EXECUTOR_TYPE!r} agents; agent {agent.name!r} "
+            f"declares executor.type {loaded.spec.executor.type!r}",
+            code=ErrorCode.INVALID_INPUT,
+        )
+    known = {child.name for child in loaded.spec.sub_agents if child.name}
+    for name in value:
+        if name not in known:
+            raise OmnigentError(
+                f"unknown sub-agent {name!r} for agent {agent.name!r}; "
+                f"declared sub-agents: {sorted(known) or 'none'}",
+                code=ErrorCode.INVALID_INPUT,
+            )
+    return _json.dumps(
+        {k: v for k, v in value.items() if v}, separators=(",", ":"), sort_keys=True
+    )
 
 
 def _validated_harness_override_executor_type(agent: Agent) -> None:
@@ -6700,6 +6752,8 @@ async def _dispatch_skill_slash_command_to_runner(
     # bundle whose team was never overridden sends nothing.
     if conv.sub_harness_override:
         runner_body["sub_harness_override"] = conv.sub_harness_override
+    if conv.sub_model_override:
+        runner_body["sub_model_override"] = conv.sub_model_override
 
     try:
         await runner_client.post(
@@ -10685,9 +10739,10 @@ __all__ = [
     "_validate_terminal_launch_args",
     "_validated_cost_control_mode_override",
     "_validated_harness_override",
-    "_validated_sub_harness_override",
     "_validated_harness_override_executor_type",
     "_validated_spec_smart_routing_harness",
+    "_validated_sub_harness_override",
+    "_validated_sub_model_override",
     "_validated_subagent_routing_override",
     "_wait_for_managed_runner_tunnel",
     "_wait_for_runner_client",

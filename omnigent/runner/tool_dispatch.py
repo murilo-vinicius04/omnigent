@@ -2366,7 +2366,19 @@ async def _execute_subagent_tool(
             )
             session_name = f"{sub_agent_name}-{ordinal}"
             _auto_ordinal = True
-        child_harness = _subagent_harness(str(sub_agent_name), agent_spec)
+        # The session's pick for this head, chosen by a human in the config
+        # dialog and validated at session create, replaces what the bundle
+        # declares -- the bundle's team was fixed at authoring time, and the
+        # pick is the whole point of choosing one. An explicit per-dispatch
+        # ``harness`` still wins below: that path is gated by the spec's own
+        # ``allowed_harnesses`` allowlist, so it is a human's opt-in too.
+        session_harness_pick = _runner_app.session_sub_agent_harness(
+            conversation_id, str(sub_agent_name)
+        )
+        session_model_pick = _runner_app.session_sub_agent_model(
+            conversation_id, str(sub_agent_name)
+        )
+        child_harness = session_harness_pick or _subagent_harness(str(sub_agent_name), agent_spec)
         # Apply an allowlisted per-dispatch harness override. The sub-agent
         # spec must explicitly opt in via executor.config.allowed_harnesses,
         # and the requested harness must canonicalize into OMNIGENT_HARNESSES.
@@ -2443,6 +2455,13 @@ async def _execute_subagent_tool(
         }
         if harness_override_canonical is not None:
             create_body["harness_override"] = harness_override_canonical
+        elif session_harness_pick is not None:
+            # Pin the pick on the CHILD session, rather than resolving it only
+            # for this turn: the child's own later turns, its terminal launch
+            # and its reconnects all read the persisted column, and a child
+            # that resolved one harness at spawn and another on resume would
+            # respawn mid-session.
+            create_body["harness_override"] = session_harness_pick
         if model is not None:
             # Reject up front when the child harness would silently
             # ignore the persisted override — no silent drops.
@@ -2469,6 +2488,35 @@ async def _execute_subagent_tool(
                 agent_spec=agent_spec,
                 harness=child_harness,
             )
+        elif session_model_pick is not None:
+            # A model picked for THIS head in the config dialog. Above the
+            # inherited parent model below for the same reason the harness
+            # pick is above the spec's: it names one head, while the parent's
+            # model reaches the child as a side effect. Not validated against
+            # a catalog here — the harness that runs it resolves its own, and
+            # says so by name when the id is wrong.
+            #
+            # Dropped, with a log line, when the head's harness has no
+            # model-override plumbing: persisting it would leave the child row
+            # claiming a model the harness never reads. The explicit dispatch
+            # path above returns an error instead, because there the caller is
+            # the orchestrator and can act on one; here the chooser is a human
+            # who left the loop at session create.
+            if harness_supports_model_override(child_harness):
+                create_body["model_override"] = _normalize_subagent_model(
+                    session_model_pick,
+                    sub_agent_name=str(sub_agent_name),
+                    agent_spec=agent_spec,
+                    harness=child_harness,
+                )
+            else:
+                _logger.warning(
+                    "sub-agent %r runs on %r, which has no model-override "
+                    "plumbing; the session's pick %r is not applied",
+                    sub_agent_name,
+                    child_harness,
+                    session_model_pick,
+                )
         else:
             # No explicit per-dispatch model: inherit the parent session's
             # selection so the user's chosen model governs the whole session

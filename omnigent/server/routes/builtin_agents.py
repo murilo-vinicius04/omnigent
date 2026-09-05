@@ -108,6 +108,7 @@ def _to_agent_object(agent: Agent, agent_cache: AgentCache) -> AgentObject:
                 name=child.name,
                 description=child.description,
                 harness=child.executor.harness_kind,
+                model=child.executor.model,
             )
             # A child with no declared name is not addressable -- the override
             # is keyed by name -- so it is skipped rather than surfaced as an
