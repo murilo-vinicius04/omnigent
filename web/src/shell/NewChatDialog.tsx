@@ -1570,6 +1570,160 @@ function SearchableModelPicker({
   );
 }
 
+/** One row of the Configure dialog's "Delegates to" group: a head's harness
+ *  and, beside it, the model that head runs.
+ *
+ *  A component per head rather than a loop inside the modal, because the model
+ *  catalog is fetched PER HARNESS (`useHostModelOptions`) and each head may sit
+ *  on a different one. A hook cannot be called in a loop whose length changes
+ *  between renders — switching agents changes the team — so the loop mounts
+ *  components instead, and each owns its own query.
+ */
+function SubAgentConfigRow({
+  child,
+  hostId,
+  host,
+  brainHarnessLabels,
+  brainEntries,
+  collapsedBadge,
+  harness,
+  model,
+  onHarnessChange,
+  onModelChange,
+}: {
+  child: { name: string; description: string | null; harness: string | null; model: string | null };
+  hostId: string | null;
+  host: Host | undefined | null;
+  brainHarnessLabels: Record<string, string>;
+  brainEntries: [string, string][];
+  collapsedBadge: boolean;
+  harness: string;
+  model: string;
+  onHarnessChange: (harness: string) => void;
+  onModelChange: (model: string) => void;
+}) {
+  // Follows the harness SELECTED in this dialog, not the declared one: pick
+  // Antigravity for a head and the model list must be Antigravity's before
+  // Save, or the two rows would disagree on screen.
+  const { data: modelOptions, isLoading: modelsLoading } = useHostModelOptions(
+    hostId,
+    harness,
+    hostId !== null && harness !== "",
+  );
+  const options = modelOptions ?? [];
+  // A model remembered for a different harness is not in this catalog. Show
+  // Default rather than a blank trigger; Save then sends nothing for the row.
+  const modelValue = options.some((option) => option.id === model) ? model : "";
+  return (
+    <div className="flex flex-col gap-2">
+      <ConfigRow
+        label={child.name}
+        description={
+          child.harness
+            ? `declared: ${brainHarnessLabels[child.harness] ?? child.harness}`
+            : "no declared harness"
+        }
+      >
+        <Select
+          value={harness}
+          onValueChange={onHarnessChange}
+          componentId={`new_chat.config.sub_harness.${child.name}`}
+          valueHasNoPii
+        >
+          <SelectTrigger
+            className="w-full cursor-pointer"
+            data-testid={`new-chat-landing-config-sub-harness-${child.name}`}
+            aria-label={`${child.name} harness`}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent
+            position="popper"
+            align="start"
+            className="[&_[data-slot=select-item]]:pl-2.5"
+          >
+            {brainEntries
+              // Auto routes the BRAIN; it means nothing for one
+              // named head, so it is not offered here.
+              .filter(([id]) => id !== AUTO_HARNESS_ID)
+              .map(([id, label]) => (
+                <SelectItem
+                  key={id}
+                  value={id}
+                  data-testid={`new-chat-landing-sub-harness-${child.name}-${id}`}
+                >
+                  <span className="flex items-center gap-2">
+                    {label}
+                    {harnessUnconfiguredOnHost(id, host) && (
+                      <Badge
+                        variant="outline"
+                        className="border-amber-300 bg-amber-50 text-sm text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400"
+                      >
+                        {harnessWarningBadgeText(
+                          harnessUnavailableReasonOnHost(id, host),
+                          collapsedBadge,
+                        )}
+                      </Badge>
+                    )}
+                  </span>
+                </SelectItem>
+              ))}
+          </SelectContent>
+        </Select>
+      </ConfigRow>
+      {/* Only offered when the host can name models for the picked harness.
+          An empty catalog means this harness has no model-override plumbing
+          (or the host has not probed it yet), and an empty dropdown would
+          read as "no models exist" rather than "not selectable here". */}
+      {(options.length > 0 || modelsLoading) && (
+        <ConfigRow
+          label="Model"
+          description={
+            modelsLoading
+              ? "loading…"
+              : child.model
+                ? `declared: ${child.model}`
+                : "harness default"
+          }
+        >
+          <Select
+            value={modelValue || MODEL_SELECT_DEFAULT}
+            onValueChange={(value) => onModelChange(value === MODEL_SELECT_DEFAULT ? "" : value)}
+            componentId={`new_chat.config.sub_model.${child.name}`}
+            valueHasNoPii
+          >
+            <SelectTrigger
+              className="w-full cursor-pointer"
+              data-testid={`new-chat-landing-config-sub-model-${child.name}`}
+              aria-label={`${child.name} model`}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent
+              position="popper"
+              align="start"
+              className="[&_[data-slot=select-item]]:pl-2.5"
+            >
+              <SelectItem value={MODEL_SELECT_DEFAULT}>
+                {child.model ? `Default (${child.model})` : "Default"}
+              </SelectItem>
+              {options.map((option) => (
+                <SelectItem
+                  key={option.id}
+                  value={option.id}
+                  data-testid={`new-chat-landing-sub-model-${child.name}-${option.id}`}
+                >
+                  {option.displayName ?? option.id}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </ConfigRow>
+      )}
+    </div>
+  );
+}
+
 /**
  * Harness-configuration modal opened from the composer's gear icon. Shows the
  * selected agent's run-config knobs — Claude: model / effort / permissions;
@@ -1610,6 +1764,7 @@ function HarnessConfigModal({
   pickedEffort,
   pickedHarness,
   pickedSubHarness,
+  pickedSubModel,
   costControlMode,
   setPermissionMode,
   setApprovalMode,
@@ -1620,6 +1775,7 @@ function HarnessConfigModal({
   setPickedEffort,
   setPickedHarness,
   setPickedSubHarness,
+  setPickedSubModel,
   setCostControlMode,
 }: {
   open: boolean;
@@ -1649,6 +1805,10 @@ function HarnessConfigModal({
   // when the bundle has no team or none was picked; the session then runs
   // whatever the bundle declared.
   pickedSubHarness: Record<string, string>;
+  // Model per sub-agent, same keying and same emptiness rule as the harness
+  // above. Independent of it: a head can keep its declared harness and still
+  // be pinned to a different model on it.
+  pickedSubModel: Record<string, string>;
   costControlMode: CostControlMode;
   setPermissionMode: (mode: string) => void;
   setApprovalMode: (mode: string) => void;
@@ -1659,6 +1819,7 @@ function HarnessConfigModal({
   setPickedEffort: (effort: string) => void;
   setPickedHarness: (harness: string | null, agentId?: string) => void;
   setPickedSubHarness: (subHarness: Record<string, string>, agentId?: string) => void;
+  setPickedSubModel: (subModel: Record<string, string>, agentId?: string) => void;
   setCostControlMode: (mode: CostControlMode) => void;
 }) {
   const info = useServerInfo();
@@ -1684,8 +1845,8 @@ function HarnessConfigModal({
   const [draftAgySkip, setDraftAgySkip] = useState(agySkipMode);
   const [draftBypass, setDraftBypass] = useState(bypassSandbox);
   const [draftHarness, setDraftHarness] = useState<string | null>(pickedHarness);
-  const [draftSubHarness, setDraftSubHarness] =
-    useState<Record<string, string>>(pickedSubHarness);
+  const [draftSubHarness, setDraftSubHarness] = useState<Record<string, string>>(pickedSubHarness);
+  const [draftSubModel, setDraftSubModel] = useState<Record<string, string>>(pickedSubModel);
   const [draftRouting, setDraftRouting] = useState<CostControlMode>(costControlMode);
 
   useEffect(() => {
@@ -1699,6 +1860,7 @@ function HarnessConfigModal({
     setDraftBypass(bypassSandbox);
     setDraftHarness(pickedHarness);
     setDraftSubHarness(pickedSubHarness);
+    setDraftSubModel(pickedSubModel);
     setDraftRouting(costControlMode);
     // Seed once per open from the current live values.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1814,9 +1976,7 @@ function HarnessConfigModal({
     // what the bundle declares are kept, so leaving every row alone sends
     // nothing and the session tracks the spec.
     if ((agent.sub_agents ?? []).length > 0) {
-      const declared = new Map(
-        (agent.sub_agents ?? []).map((c) => [c.name, c.harness ?? null]),
-      );
+      const declared = new Map((agent.sub_agents ?? []).map((c) => [c.name, c.harness ?? null]));
       const changed: Record<string, string> = {};
       for (const [name, harness] of Object.entries(draftSubHarness)) {
         if (harness && declared.has(name) && harness !== declared.get(name)) {
@@ -1824,6 +1984,17 @@ function HarnessConfigModal({
         }
       }
       setPickedSubHarness(changed, agent.id);
+      // Same rule for the model: only what differs from what the child spec
+      // pins. A head with no declared model keeps any explicit pick, since
+      // there the difference is against the harness's own default.
+      const declaredModel = new Map((agent.sub_agents ?? []).map((c) => [c.name, c.model ?? null]));
+      const changedModels: Record<string, string> = {};
+      for (const [name, model] of Object.entries(draftSubModel)) {
+        if (model && declaredModel.has(name) && model !== declaredModel.get(name)) {
+          changedModels[name] = model;
+        }
+      }
+      setPickedSubModel(changedModels, agent.id);
     }
     // Smart Routing rides the Model dropdown on both routable harnesses
     // (Claude Code and Codex), so commit it outside the per-capability branches.
@@ -2160,72 +2331,27 @@ function HarnessConfigModal({
           {(agent.sub_agents ?? []).length > 0 && brainEntries.length > 0 && (
             <div className="flex flex-col gap-3 border-l border-border/60 pl-3">
               <div className="text-sm text-muted-foreground">
-                Delegates to — one harness per sub-agent
+                Delegates to — harness and model per sub-agent
               </div>
-              {(agent.sub_agents ?? []).map((child) => {
-                const declared = child.harness ?? null;
-                const current = draftSubHarness[child.name] ?? declared ?? "";
-                return (
-                  <ConfigRow
-                    key={child.name}
-                    label={child.name}
-                    description={
-                      declared
-                        ? `declared: ${brainHarnessLabels[declared] ?? declared}`
-                        : "no declared harness"
-                    }
-                  >
-                    <Select
-                      value={current}
-                      onValueChange={(value) =>
-                        setDraftSubHarness((prev) => ({ ...prev, [child.name]: value }))
-                      }
-                      componentId={`new_chat.config.sub_harness.${child.name}`}
-                      valueHasNoPii
-                    >
-                      <SelectTrigger
-                        className="w-full cursor-pointer"
-                        data-testid={`new-chat-landing-config-sub-harness-${child.name}`}
-                        aria-label={`${child.name} harness`}
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent
-                        position="popper"
-                        align="start"
-                        className="[&_[data-slot=select-item]]:pl-2.5"
-                      >
-                        {brainEntries
-                          // Auto routes the BRAIN; it means nothing for one
-                          // named head, so it is not offered here.
-                          .filter(([id]) => id !== AUTO_HARNESS_ID)
-                          .map(([id, label]) => (
-                            <SelectItem
-                              key={id}
-                              value={id}
-                              data-testid={`new-chat-landing-sub-harness-${child.name}-${id}`}
-                            >
-                              <span className="flex items-center gap-2">
-                                {label}
-                                {harnessUnconfiguredOnHost(id, host) && (
-                                  <Badge
-                                    variant="outline"
-                                    className="border-amber-300 bg-amber-50 text-sm text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400"
-                                  >
-                                    {harnessWarningBadgeText(
-                                      harnessUnavailableReasonOnHost(id, host),
-                                      collapsedBadge,
-                                    )}
-                                  </Badge>
-                                )}
-                              </span>
-                            </SelectItem>
-                          ))}
-                      </SelectContent>
-                    </Select>
-                  </ConfigRow>
-                );
-              })}
+              {(agent.sub_agents ?? []).map((child) => (
+                <SubAgentConfigRow
+                  key={child.name}
+                  child={child}
+                  hostId={host?.host_id ?? null}
+                  host={host}
+                  brainHarnessLabels={brainHarnessLabels}
+                  brainEntries={brainEntries}
+                  collapsedBadge={collapsedBadge}
+                  harness={draftSubHarness[child.name] ?? child.harness ?? ""}
+                  model={draftSubModel[child.name] ?? ""}
+                  onHarnessChange={(value) =>
+                    setDraftSubHarness((prev) => ({ ...prev, [child.name]: value }))
+                  }
+                  onModelChange={(value) =>
+                    setDraftSubModel((prev) => ({ ...prev, [child.name]: value }))
+                  }
+                />
+              ))}
             </div>
           )}
 
@@ -2763,6 +2889,9 @@ export function NewChatLandingScreen() {
   // would leak onto a different bundle that happens to name a head "gpt".
   // Empty means the session runs whatever the bundle declared.
   const [pickedSubHarness, setPickedSubHarness] = useState<Record<string, string>>({});
+  // Per-sub-agent model, alongside the harness above and forgotten between
+  // visits for the same reason.
+  const [pickedSubModel, setPickedSubModel] = useState<Record<string, string>>({});
   // Per-session model + reasoning effort for the claude-native model picker.
   // "" = unselected: nothing is checked and `model_override` / `reasoning_effort`
   // are omitted from the create, so Claude Code uses its own configured model.
@@ -4653,6 +4782,9 @@ export function NewChatLandingScreen() {
             sub_harness_override: Object.keys(pickedSubHarness ?? {}).length
               ? pickedSubHarness
               : undefined,
+            sub_model_override: Object.keys(pickedSubModel ?? {}).length
+              ? pickedSubModel
+              : undefined,
             smart_routing_message:
               smartRoutingHarnessSelected || pinnedNativeRoutes ? initialPrompt : undefined,
           }),
@@ -5271,7 +5403,9 @@ export function NewChatLandingScreen() {
                     onOpenChange={setConfigOpen}
                     agent={selectedAgent}
                     pickedSubHarness={pickedSubHarness}
+                    pickedSubModel={pickedSubModel}
                     setPickedSubHarness={setPickedSubHarness}
+                    setPickedSubModel={setPickedSubModel}
                     brainHarnessLabels={brainHarnessLabels}
                     host={harnessWarningHost}
                     hideUnconfigured={hideUnconfiguredHarnesses}

@@ -31,7 +31,14 @@ export interface AvailableAgent {
   // Optional, not just possibly-empty: an older server does not send the
   // field at all, and every existing caller that builds an AvailableAgent by
   // hand predates it. Readers use `?? []` and treat absent and empty the same.
-  sub_agents?: { name: string; description: string | null; harness: string | null }[];
+  sub_agents?: {
+    name: string;
+    description: string | null;
+    harness: string | null;
+    // The model the child spec pins, or null when it declares none and the
+    // harness's own default runs.
+    model: string | null;
+  }[];
   // Skills bundled in the agent spec (name + one-line description).
   // Feeds the landing composer's "/" menu before a session exists;
   // host-discovered skills only resolve once a runner is bound, so
@@ -111,7 +118,12 @@ interface BuiltinAgentWire {
   name: string;
   description?: string | null;
   harness?: string | null;
-  sub_agents?: { name: string; description?: string | null; harness?: string | null }[];
+  sub_agents?: {
+    name: string;
+    description?: string | null;
+    harness?: string | null;
+    model?: string | null;
+  }[];
   skills?: { name: string; description: string }[];
   // True only for server-seeded built-ins (deterministic id). Absent on
   // older servers, where every catalog row degrades to a protected entry.
@@ -160,11 +172,19 @@ async function fetchBuiltinAgents(): Promise<AvailableAgent[]> {
     display_name: displayNameForAgent(a.name, a.harness),
     description: a.description ?? null,
     harness: a.harness ?? null,
-    sub_agents: (a.sub_agents ?? []).map((c) => ({
-      name: c.name,
-      description: c.description ?? null,
-      harness: c.harness ?? null,
-    })),
+    // Spread rather than defaulting to []: the rows below follow the same
+    // omit-vs-undefined rule, and a server that predates sub_agents must map
+    // to an agent WITHOUT the key, not one with an empty team.
+    ...(a.sub_agents
+      ? {
+          sub_agents: a.sub_agents.map((c) => ({
+            name: c.name,
+            description: c.description ?? null,
+            harness: c.harness ?? null,
+            model: c.model ?? null,
+          })),
+        }
+      : {}),
     skills: a.skills ?? [],
     // Omit rather than set to undefined so toEqual comparisons aren't
     // sensitive to absent-vs-undefined. Logic that reads builtin treats
