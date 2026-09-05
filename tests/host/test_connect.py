@@ -177,6 +177,68 @@ async def test_handle_model_options_serves_the_claude_catalog(
     _cleanup_host(host)
 
 
+async def test_handle_model_options_serves_the_antigravity_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An Antigravity picker gets the `agy models` listing.
+
+    agy's own catalog is only reachable over a RUNNING agy's RPC port, so
+    before this the host answered "model options are unsupported" and every
+    pre-launch surface -- including the per-sub-agent model row for a head
+    retargeted onto agy -- had nothing to offer.
+    """
+    from omnigent import antigravity_native_catalog
+
+    rows = [
+        {
+            "id": "gemini-3.8-flash-low",
+            "model": "gemini-3.8-flash-low",
+            "displayName": "Gemini 3.8 Flash (Low)",
+        }
+    ]
+
+    async def _catalog(*, agy_path: str | None = None) -> list[dict[str, object]]:
+        return rows
+
+    monkeypatch.setattr(antigravity_native_catalog, "antigravity_launch_catalog", _catalog)
+    host = _make_host_process()
+
+    result = await host._handle_model_options(
+        HostModelOptionsFrame(request_id="req_agy", harness="antigravity-native"),
+    )
+
+    assert result.status == "ok"
+    # ``source`` is stamped on by the host from ITS OWN provider config, which
+    # varies per machine, so the assertion is on what the catalog supplied.
+    assert [
+        {key: value for key, value in row.items() if key != "source"} for row in result.models
+    ] == rows
+    assert result.routable_models == ["gemini-3.8-flash-low"]
+    _cleanup_host(host)
+
+
+async def test_handle_model_options_antigravity_failure_is_an_honest_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No listing means an empty answer that says why, never invented rows."""
+    from omnigent import antigravity_native_catalog
+
+    async def _no_catalog(*, agy_path: str | None = None) -> None:
+        return None
+
+    monkeypatch.setattr(antigravity_native_catalog, "antigravity_launch_catalog", _no_catalog)
+    host = _make_host_process()
+
+    result = await host._handle_model_options(
+        HostModelOptionsFrame(request_id="req_agy_fail", harness="antigravity-native"),
+    )
+
+    assert result.status == "ok"
+    assert result.models == []
+    assert result.error is not None
+    _cleanup_host(host)
+
+
 async def test_handle_model_options_claude_probe_failure_is_an_honest_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
