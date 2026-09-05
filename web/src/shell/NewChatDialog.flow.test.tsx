@@ -136,6 +136,8 @@ vi.mock("@/lib/agentLabels", async (importOriginal) => ({
   // Stub so the setup dialog's hook doesn't fire its own /v1/harnesses fetch
   // (which would skew the create-flow call-count assertions here).
   useHarnessSetupSteps: () => ({}),
+  // Same, for the per-sub-agent effort row's vocabulary.
+  useHarnessEfforts: () => ({}),
 }));
 
 function host(overrides: Partial<Host> = {}): Host {

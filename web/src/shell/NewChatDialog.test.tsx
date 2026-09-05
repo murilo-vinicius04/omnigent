@@ -141,6 +141,14 @@ vi.mock("@/lib/agentLabels", async (importOriginal) => ({
     antigravity: "Antigravity",
     copilot: "Copilot",
   }),
+  // Per-harness effort vocabularies, as /v1/harnesses reports them. Stubbed
+  // for the same reason as the labels above: the real hook fetches, and these
+  // tests count the create POST as the only request.
+  useHarnessEfforts: () => ({
+    "claude-sdk": ["low", "medium", "high", "xhigh", "max"],
+    codex: ["none", "minimal", "low", "medium", "high", "xhigh"],
+    "antigravity-native": ["low", "medium", "high"],
+  }),
   // The setup dialog reads server-authored steps from here; stub codex-native's
   // two-step flow (install → login) so the dialog renders without a real fetch.
   useHarnessSetupSteps: () => ({

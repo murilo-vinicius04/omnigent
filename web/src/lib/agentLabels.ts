@@ -40,9 +40,11 @@ export interface SetupStepWire {
 interface HarnessCatalogRow {
   id?: string;
   label?: string;
-  // Declared capability profile. Only ``integration_mode`` is read here, to
-  // recognize the generic-ACP family without hardcoding vendor ids.
-  capabilities?: { integration_mode?: string | null } | null;
+  // Declared capability profile. ``integration_mode`` recognizes the
+  // generic-ACP family without hardcoding vendor ids; ``efforts`` is the
+  // reasoning-effort vocabulary that harness accepts, so a picker offers what
+  // the server says rather than a list copied into this file.
+  capabilities?: { integration_mode?: string | null; efforts?: string[] | null } | null;
 }
 
 /** ``capabilities.integration_mode`` of every generic-ACP harness. */
@@ -58,6 +60,10 @@ interface HarnessCatalogWire {
 interface HarnessCatalog {
   /** harness id → picker label, merged over the built-in defaults. */
   labels: Record<string, string>;
+  /** harness id → the reasoning efforts it accepts, in the server's order.
+   *  Absent for a harness with no effort plumbing, and on a server too old to
+   *  report the vocabulary — callers render no control in both cases. */
+  efforts: Record<string, string[]>;
   /** harness spelling → ordered setup steps (install/auth) the server describes. */
   setupSteps: Record<string, SetupStepWire[]>;
   /** ids the server declares generic-ACP — see {@link useAcpHarnessIds}. */
@@ -69,17 +75,23 @@ async function fetchHarnessCatalog(): Promise<HarnessCatalog> {
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   const body = (await res.json()) as HarnessCatalogWire;
   const labels: Record<string, string> = { ...BRAIN_HARNESS_LABELS };
+  const efforts: Record<string, string[]> = {};
   const acpHarnesses = new Set<string>();
   for (const row of body.data ?? []) {
     if (typeof row.id !== "string") continue;
     if (typeof row.label === "string") labels[row.id] = row.label;
     if (row.capabilities?.integration_mode === ACP_INTEGRATION_MODE) acpHarnesses.add(row.id);
+    // Only a non-empty list is kept: an empty one means the harness has no
+    // effort plumbing, which reads the same as a server that never said.
+    if (Array.isArray(row.capabilities?.efforts) && row.capabilities.efforts.length > 0) {
+      efforts[row.id] = row.capabilities.efforts;
+    }
   }
   // The server keys setup_steps by every spelling (codex-native, opencode, …)
   // so the dialog resolves whatever harness the session declares.
   const setupSteps =
     body.setup_steps && typeof body.setup_steps === "object" ? body.setup_steps : {};
-  return { labels, setupSteps, acpHarnesses };
+  return { labels, efforts, setupSteps, acpHarnesses };
 }
 
 // Every hook below shares one request + cache entry, each selecting its own
@@ -149,6 +161,14 @@ const NO_SETUP_STEPS: Record<string, SetupStepWire[]> = {};
 /** harness id → the server's ordered setup steps (for the setup dialog). */
 export function useHarnessSetupSteps(): Record<string, SetupStepWire[]> {
   return useHarnessCatalog((c) => c.setupSteps, NO_SETUP_STEPS);
+}
+
+const NO_EFFORTS: Record<string, string[]> = {};
+
+/** harness id → the reasoning efforts the server says it accepts. Empty until
+ *  the catalog loads, and on a server that does not report the vocabulary. */
+export function useHarnessEfforts(enabled = true): Record<string, string[]> {
+  return useHarnessCatalog((c) => c.efforts, NO_EFFORTS, enabled);
 }
 
 /** harness id → picker label, exactly as the server names it. */

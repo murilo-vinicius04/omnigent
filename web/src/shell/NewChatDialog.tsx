@@ -137,6 +137,7 @@ import {
   isAutoHarness,
   SMART_ROUTING_LABEL,
   useBrainHarnessLabels,
+  useHarnessEfforts,
 } from "@/lib/agentLabels";
 import {
   SMART_ROUTING_ARMS,
@@ -1586,10 +1587,13 @@ function SubAgentConfigRow({
   brainHarnessLabels,
   brainEntries,
   collapsedBadge,
+  harnessEfforts,
   harness,
   model,
+  effort,
   onHarnessChange,
   onModelChange,
+  onEffortChange,
 }: {
   child: { name: string; description: string | null; harness: string | null; model: string | null };
   hostId: string | null;
@@ -1597,10 +1601,13 @@ function SubAgentConfigRow({
   brainHarnessLabels: Record<string, string>;
   brainEntries: [string, string][];
   collapsedBadge: boolean;
+  harnessEfforts: Record<string, string[]>;
   harness: string;
   model: string;
+  effort: string;
   onHarnessChange: (harness: string) => void;
   onModelChange: (model: string) => void;
+  onEffortChange: (effort: string) => void;
 }) {
   // Follows the harness SELECTED in this dialog, not the declared one: pick
   // Antigravity for a head and the model list must be Antigravity's before
@@ -1614,6 +1621,10 @@ function SubAgentConfigRow({
   // A model remembered for a different harness is not in this catalog. Show
   // Default rather than a blank trigger; Save then sends nothing for the row.
   const modelValue = options.some((option) => option.id === model) ? model : "";
+  // Same rule for the effort, against the picked harness's own vocabulary:
+  // "max" is a Claude value and means nothing on a head moved to Antigravity.
+  const effortValues = harnessEfforts[harness] ?? [];
+  const effortValue = effortValues.includes(effort) ? effort : "";
   return (
     <div className="flex flex-col gap-2">
       <ConfigRow
@@ -1720,6 +1731,46 @@ function SubAgentConfigRow({
           </Select>
         </ConfigRow>
       )}
+      {/* The effort vocabulary comes from the server's harness catalog, not a
+          list kept here: it differs per harness family, and a harness whose
+          family this file did not know would otherwise get no control at all.
+          An absent entry means the harness declares no effort plumbing (agy,
+          for one, carries effort inside the model id), so there is nothing to
+          choose and no row. */}
+      {effortValues.length > 0 && (
+        <ConfigRow label="Effort" description="reasoning effort">
+          <Select
+            value={effortValue || EFFORT_SELECT_NONE}
+            onValueChange={(value) => onEffortChange(value === EFFORT_SELECT_NONE ? "" : value)}
+            componentId={`new_chat.config.sub_effort.${child.name}`}
+            valueHasNoPii
+          >
+            <SelectTrigger
+              className="w-full cursor-pointer"
+              data-testid={`new-chat-landing-config-sub-effort-${child.name}`}
+              aria-label={`${child.name} reasoning effort`}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent
+              position="popper"
+              align="start"
+              className="[&_[data-slot=select-item]]:pl-2.5"
+            >
+              <SelectItem value={EFFORT_SELECT_NONE}>Default</SelectItem>
+              {effortValues.map((value) => (
+                <SelectItem
+                  key={value}
+                  value={value}
+                  data-testid={`new-chat-landing-sub-effort-${child.name}-${value}`}
+                >
+                  {value}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </ConfigRow>
+      )}
     </div>
   );
 }
@@ -1765,6 +1816,7 @@ function HarnessConfigModal({
   pickedHarness,
   pickedSubHarness,
   pickedSubModel,
+  pickedSubEffort,
   costControlMode,
   setPermissionMode,
   setApprovalMode,
@@ -1776,6 +1828,7 @@ function HarnessConfigModal({
   setPickedHarness,
   setPickedSubHarness,
   setPickedSubModel,
+  setPickedSubEffort,
   setCostControlMode,
 }: {
   open: boolean;
@@ -1809,6 +1862,10 @@ function HarnessConfigModal({
   // above. Independent of it: a head can keep its declared harness and still
   // be pinned to a different model on it.
   pickedSubModel: Record<string, string>;
+  // Reasoning effort per sub-agent, third of the same shape. Which values are
+  // legal depends on the harness the head is on, so the row offers the
+  // server's vocabulary for the harness SELECTED here.
+  pickedSubEffort: Record<string, string>;
   costControlMode: CostControlMode;
   setPermissionMode: (mode: string) => void;
   setApprovalMode: (mode: string) => void;
@@ -1820,11 +1877,15 @@ function HarnessConfigModal({
   setPickedHarness: (harness: string | null, agentId?: string) => void;
   setPickedSubHarness: (subHarness: Record<string, string>, agentId?: string) => void;
   setPickedSubModel: (subModel: Record<string, string>, agentId?: string) => void;
+  setPickedSubEffort: (subEffort: Record<string, string>, agentId?: string) => void;
   setCostControlMode: (mode: CostControlMode) => void;
 }) {
   const info = useServerInfo();
   // Feature ON → single "needs setup" badge; OFF → per-reason original text.
   const collapsedBadge = isFeatureEnabled(info, "harness_install");
+  // Server-declared effort vocabularies, so a per-head picker offers what the
+  // harness takes rather than a list copied into this file.
+  const harnessEfforts = useHarnessEfforts();
   const entryHarness = nativeCodingAgentForAvailableAgent(agent)?.harness ?? null;
   const hasPermission = nativeAgentHasCapability(agent, "permissionMode");
   const hasApproval = nativeAgentHasCapability(agent, "approvalMode");
@@ -1847,6 +1908,7 @@ function HarnessConfigModal({
   const [draftHarness, setDraftHarness] = useState<string | null>(pickedHarness);
   const [draftSubHarness, setDraftSubHarness] = useState<Record<string, string>>(pickedSubHarness);
   const [draftSubModel, setDraftSubModel] = useState<Record<string, string>>(pickedSubModel);
+  const [draftSubEffort, setDraftSubEffort] = useState<Record<string, string>>(pickedSubEffort);
   const [draftRouting, setDraftRouting] = useState<CostControlMode>(costControlMode);
 
   useEffect(() => {
@@ -1861,6 +1923,7 @@ function HarnessConfigModal({
     setDraftHarness(pickedHarness);
     setDraftSubHarness(pickedSubHarness);
     setDraftSubModel(pickedSubModel);
+    setDraftSubEffort(pickedSubEffort);
     setDraftRouting(costControlMode);
     // Seed once per open from the current live values.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1995,6 +2058,14 @@ function HarnessConfigModal({
         }
       }
       setPickedSubModel(changedModels, agent.id);
+      // The effort has no declared counterpart on the row to diff against —
+      // the sub-spec's own value is not reported by the agents catalog — so an
+      // explicit pick is sent as-is and an untouched row sends nothing.
+      const changedEfforts: Record<string, string> = {};
+      for (const [name, effort] of Object.entries(draftSubEffort)) {
+        if (effort && declared.has(name)) changedEfforts[name] = effort;
+      }
+      setPickedSubEffort(changedEfforts, agent.id);
     }
     // Smart Routing rides the Model dropdown on both routable harnesses
     // (Claude Code and Codex), so commit it outside the per-capability branches.
@@ -2344,11 +2415,16 @@ function HarnessConfigModal({
                   collapsedBadge={collapsedBadge}
                   harness={draftSubHarness[child.name] ?? child.harness ?? ""}
                   model={draftSubModel[child.name] ?? ""}
+                  effort={draftSubEffort[child.name] ?? ""}
+                  harnessEfforts={harnessEfforts}
                   onHarnessChange={(value) =>
                     setDraftSubHarness((prev) => ({ ...prev, [child.name]: value }))
                   }
                   onModelChange={(value) =>
                     setDraftSubModel((prev) => ({ ...prev, [child.name]: value }))
+                  }
+                  onEffortChange={(value) =>
+                    setDraftSubEffort((prev) => ({ ...prev, [child.name]: value }))
                   }
                 />
               ))}
@@ -2892,6 +2968,9 @@ export function NewChatLandingScreen() {
   // Per-sub-agent model, alongside the harness above and forgotten between
   // visits for the same reason.
   const [pickedSubModel, setPickedSubModel] = useState<Record<string, string>>({});
+  // Reasoning effort per sub-agent, forgotten between visits like the two
+  // above.
+  const [pickedSubEffort, setPickedSubEffort] = useState<Record<string, string>>({});
   // Per-session model + reasoning effort for the claude-native model picker.
   // "" = unselected: nothing is checked and `model_override` / `reasoning_effort`
   // are omitted from the create, so Claude Code uses its own configured model.
@@ -4785,6 +4864,9 @@ export function NewChatLandingScreen() {
             sub_model_override: Object.keys(pickedSubModel ?? {}).length
               ? pickedSubModel
               : undefined,
+            sub_effort_override: Object.keys(pickedSubEffort ?? {}).length
+              ? pickedSubEffort
+              : undefined,
             smart_routing_message:
               smartRoutingHarnessSelected || pinnedNativeRoutes ? initialPrompt : undefined,
           }),
@@ -5404,8 +5486,10 @@ export function NewChatLandingScreen() {
                     agent={selectedAgent}
                     pickedSubHarness={pickedSubHarness}
                     pickedSubModel={pickedSubModel}
+                    pickedSubEffort={pickedSubEffort}
                     setPickedSubHarness={setPickedSubHarness}
                     setPickedSubModel={setPickedSubModel}
+                    setPickedSubEffort={setPickedSubEffort}
                     brainHarnessLabels={brainHarnessLabels}
                     host={harnessWarningHost}
                     hideUnconfigured={hideUnconfiguredHarnesses}
