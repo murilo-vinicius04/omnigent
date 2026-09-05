@@ -18,12 +18,15 @@ not use half of Debby, and nothing on screen explained why. The existing
 `harness_override` pins the **brain** — for a bundle, the piece that matters
 least to the person configuring it.
 
-This adds two per-session overrides, keyed by the head's declared name:
+This adds three per-session overrides, keyed by the head's declared name:
 
 | Override | Replaces | Example |
 |---|---|---|
 | `sub_harness_override` | the child spec's `executor.config.harness` | `{"gpt": "antigravity-native"}` |
 | `sub_model_override` | the child spec's `executor.model` | `{"gpt": "gemini-3.8-flash-low"}` |
+| `sub_effort_override` | the child spec's `executor.reasoning_effort` | `{"claude": "high"}` |
+
+They are independent: a head can change any one and keep the others.
 
 ## 2. Where the value lives
 
@@ -39,6 +42,13 @@ their siblings. Both new keys are **strings** there, holding the
 A string rather than a nested object so the existing encode/decode and the
 `String(512)` column need no change, and so an older runner round-trips the
 value untouched. The wire shape matches the stored column exactly at every hop.
+
+The column is 512 characters, and each pick is a nested JSON string inside it,
+so a bundle with five heads and all three knobs set passes the limit. The
+encoder raises rather than letting the write through: SQLite ignores the
+declared width, MySQL truncates, and a truncated blob decodes to nothing —
+taking every override on the session with it. The create route turns that into
+a 400 naming the limit.
 
 Three storage locations were rejected:
 
@@ -110,6 +120,14 @@ model the harness never reads. The explicit-dispatch path returns an error
 there instead, because its caller is the orchestrator and can act on one; the
 chooser here is a human who left the loop at session create.
 
+The effort pick follows the same rule for the same reason, and is the one
+value **validated at dispatch rather than at create**: which efforts a head
+accepts depends on the harness it ends up on, and the same create request may
+be changing that harness. So the create checks only the KEY, and the dispatch
+checks the value against the harness that is finally settled — dropping a pick
+that does not apply, while the dispatch argument and the spec's own value
+still fail loud there, because their callers are present to act on it.
+
 ## 4. Interfaces
 
 ### CLI
@@ -122,17 +140,23 @@ omni chat --agent debby --sub-harness gpt=antigravity-native --sub-harness claud
 Repeatable, `NAME=HARNESS`. Applied to the bundle copy the chat session runs
 from (`_apply_sub_harness_overrides`), so `omni chat` needs no server.
 
-There is deliberately no `--sub-model` yet: the CLI path rewrites the bundle
-copy's YAML, and the model belongs beside the harness there rather than in a
-second rewriting pass. The API and the web carry it.
+There are deliberately no `--sub-model` / `--sub-effort` yet: the CLI path
+rewrites the bundle copy's YAML, and those belong beside the harness in that
+same rewrite rather than in two more passes. The API and the web carry them.
 
 ### API
 
-`POST /v1/sessions` takes `sub_harness_override` and `sub_model_override` as
-objects. `GET /v1/sessions/{id}` echoes both back as the stored JSON strings —
-the response's `harness` field is the BRAIN's, and nothing else in it names a
-head, so without these a client cannot tell a session that chose from one that
-did not.
+`POST /v1/sessions` takes `sub_harness_override`, `sub_model_override` and
+`sub_effort_override` as objects. `GET /v1/sessions/{id}` echoes all three back
+as the stored JSON strings — the response's `harness` field is the BRAIN's, and
+nothing else in it names a head, so without these a client cannot tell a
+session that chose from one that did not.
+
+`GET /v1/harnesses` now reports each harness's effort vocabulary as
+`capabilities.efforts` beside the existing `capabilities.effort` family name.
+The family name alone left every client mapping it back to values by hand — the
+web carried two such lists, and a harness whose family it did not know got no
+control at all.
 
 ### Web
 
@@ -152,7 +176,10 @@ to", indented, one row per head:
   because an empty select would read as "no models exist" rather than "not
   selectable here";
 - its `Default` row names the child spec's declared model when it pins one, so
-  the choice is against something visible rather than a blank.
+  the choice is against something visible rather than a blank;
+- the effort row offers the vocabulary the SERVER declares for the picked
+  harness, so a value from another ladder (`max` is Claude's) is never offered
+  to a head on Antigravity, and a harness with no effort plumbing gets no row.
 
 **The Antigravity catalog.** The host answered `model_options` for
 `codex-native`, `pi-native`, `claude-native` and the claude-sdk family, and
@@ -182,6 +209,7 @@ second name for the same knob.
 | the session-init envelope carries them to a reconnecting runner; the per-session registry; an absent field means "unchanged", not "cleared"; a malformed blob is ignored rather than raised | `tests/runner/test_session_sub_agent_overrides.py` |
 | the dispatch pins the pick on the child's create body; no pick sends nothing; the pre-dispatch CLI probe judges the PICKED harness | `tests/runner/test_subagent_dispatch_session_picks.py` |
 | the `agy models` parse, store-then-probe, and the two failures that must not be cached as an empty catalog | `tests/test_antigravity_native_catalog.py` |
+| the Antigravity branch of the host's model-options handler, both outcomes | `tests/host/test_connect.py` |
 
 Two of those pin bugs that shipped in the first version of this feature: the
 message forward dropped both keys (the value persisted and read back, and no
