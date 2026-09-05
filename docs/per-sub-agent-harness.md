@@ -154,19 +154,25 @@ to", indented, one row per head:
 - its `Default` row names the child spec's declared model when it pins one, so
   the choice is against something visible rather than a blank.
 
-**Known gap.** The host answers `model_options` for `codex-native`,
-`pi-native`, `claude-native` and the claude-sdk family, and fails every other
-harness with "model options are unsupported". So a head retargeted onto
-`antigravity-native` gets a harness dropdown and no model dropdown. The
-vocabulary exists (`agy models` lists it); nothing in the host probes for it
-yet. That probe is the next piece, and it is independent of everything above —
-the server, the store and the dispatch already carry a model for any head.
+**The Antigravity catalog.** The host answered `model_options` for
+`codex-native`, `pi-native`, `claude-native` and the claude-sdk family, and
+failed every other harness with "model options are unsupported" — so the head
+this feature exists for, a `gpt` head retargeted onto `antigravity-native`, got
+a harness dropdown and no model dropdown. agy's own catalog lives behind the
+connect-RPC port of a RUNNING session, which a pre-launch picker has none of.
 
-Only entries that DIFFER from what the bundle declares are sent, so leaving
-every row alone produces the create body the dialog always sent. The picks are
-deliberately not remembered across visits the way `pickedHarness` is: a team
-belongs to one bundle, and carrying `gpt → antigravity` forward would leak
-onto a different bundle that happens to name a head `gpt`.
+`agy models` answers the same question from the CLI — one tab-separated
+`id<TAB>display name` per line — so `omnigent/antigravity_native_catalog.py`
+probes that, caches it in the shared `model_catalog_store` keyed by the agy
+binary's identity, and the host serves it like any other harness's. A failed
+listing answers `None`, never `[]`: persisting an empty catalog would teach
+every later reader that agy offers no models, and only a binary change would
+clear it.
+
+Worth noting what the resulting list says about effort: agy's ids carry it
+(`gemini-3.8-flash-high`, `-medium`, `-low`), so for that harness picking the
+model IS picking the effort, and a separate per-head effort control would be a
+second name for the same knob.
 
 ## 5. What is covered by tests
 
@@ -175,6 +181,7 @@ onto a different bundle that happens to name a head `gpt`.
 | create → store → `GET` read-back, alias canonicalization, unknown name / harness rejected, **every message forward carries the picks**, and an un-picked session's body is unchanged | `tests/server/integration/test_sessions_sub_harness_override.py` |
 | the session-init envelope carries them to a reconnecting runner; the per-session registry; an absent field means "unchanged", not "cleared"; a malformed blob is ignored rather than raised | `tests/runner/test_session_sub_agent_overrides.py` |
 | the dispatch pins the pick on the child's create body; no pick sends nothing; the pre-dispatch CLI probe judges the PICKED harness | `tests/runner/test_subagent_dispatch_session_picks.py` |
+| the `agy models` parse, store-then-probe, and the two failures that must not be cached as an empty catalog | `tests/test_antigravity_native_catalog.py` |
 
 Two of those pin bugs that shipped in the first version of this feature: the
 message forward dropped both keys (the value persisted and read back, and no
