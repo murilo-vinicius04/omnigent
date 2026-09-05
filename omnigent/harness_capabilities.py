@@ -158,13 +158,23 @@ class HarnessCapabilities:
     shell_tool_prompt: str | None = None
     instruction_delivery: InstructionDelivery = InstructionDelivery.UNKNOWN
 
-    def as_dict(self) -> dict[str, str | bool | None]:
-        """Return a JSON-serializable view for the ``/v1/harnesses`` catalog."""
+    def as_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable view for the ``/v1/harnesses`` catalog.
+
+        ``effort`` names the family; ``efforts`` is the vocabulary that family
+        actually accepts, sorted for a stable wire shape. The family name alone
+        left every client mapping it back to values by hand -- the web carried
+        two such lists, and a harness whose family it did not know got no
+        control at all.
+        """
+        from omnigent.reasoning_effort import efforts_by_family
+
         return {
             "integration_mode": self.integration_mode.value,
             "elicitation": self.elicitation.value,
             "resume": self.resume.value,
             "effort": self.effort.value,
+            "efforts": sorted(efforts_by_family().get(self.effort, frozenset())),
             "model_family": self.model_family.value,
             "auth": self.auth.value,
             "subagents": self.subagents,

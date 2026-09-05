@@ -2544,6 +2544,38 @@ async def _execute_subagent_tool(
         effective_effort = reasoning_effort
         effort_source = "sys_session_send"
         if effective_effort is None:
+            # A per-head effort chosen in the config dialog, above the spec's
+            # default for the same reason its harness and model are: it names
+            # one head, and the spec's value is what it replaces. Checked
+            # HERE rather than at session create because which values are
+            # legal depends on the harness this head ends up on, and the same
+            # request may have been changing that harness.
+            #
+            # A pick that does not apply is dropped with a log line and the
+            # spec's default takes over, matching the model pick beside it:
+            # the two sources below fail the dispatch instead, because their
+            # caller (the orchestrator, or the bundle author) is present to
+            # act on the error, while whoever set this left at session create
+            # and would only see the orchestrator's turn die.
+            session_effort_pick = _runner_app.session_sub_agent_effort(
+                conversation_id, str(sub_agent_name)
+            )
+            if session_effort_pick is not None:
+                try:
+                    effective_effort = _validate_subagent_reasoning_effort(
+                        session_effort_pick, child_harness
+                    )
+                    effort_source = "the session's per-sub-agent effort"
+                except ValueError as exc:
+                    _logger.warning(
+                        "sub-agent %r runs on %r, which does not take effort %r "
+                        "(%s); the session's pick is not applied",
+                        sub_agent_name,
+                        child_harness,
+                        session_effort_pick,
+                        exc,
+                    )
+        if effective_effort is None:
             sub_spec = _find_subagent_spec(sub_agent_name, agent_spec)
             # ``getattr``: sub-specs also arrive as structural stubs that
             # carry only the fields a caller needed.

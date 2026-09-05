@@ -6619,6 +6619,17 @@
             "description": "For sub-agent sessions, the sub-agent type name within the parent's spec tree, e.g. `\"summarizer\"`. `None` for top-level sessions.",
             "title": "Sub Agent Name"
           },
+          "sub_effort_override": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sub Effort Override"
+          },
           "sub_harness_override": {
             "anyOf": [
               {

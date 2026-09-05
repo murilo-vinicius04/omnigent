@@ -1599,6 +1599,7 @@ _subagent_ordinal_counters: dict[tuple[str, str], int] = {}
 # harness the child will actually run.
 _session_sub_harness_overrides: dict[str, dict[str, str]] = {}
 _session_sub_model_overrides: dict[str, dict[str, str]] = {}
+_session_sub_effort_overrides: dict[str, dict[str, str]] = {}
 
 
 def note_session_sub_agent_overrides(
@@ -1606,6 +1607,7 @@ def note_session_sub_agent_overrides(
     *,
     harnesses: dict[str, str] | None,
     models: dict[str, str] | None,
+    efforts: dict[str, str] | None = None,
 ) -> None:
     """Record a session's per-sub-agent picks for later dispatches.
 
@@ -1617,12 +1619,15 @@ def note_session_sub_agent_overrides(
     :param session_id: Parent session id, e.g. ``"conv_abc123"``.
     :param harnesses: Sub-agent name -> harness, or ``None`` when unset.
     :param models: Sub-agent name -> model id, or ``None`` when unset.
+    :param efforts: Sub-agent name -> reasoning effort, or ``None``.
     :returns: None.
     """
     if harnesses:
         _session_sub_harness_overrides[session_id] = dict(harnesses)
     if models:
         _session_sub_model_overrides[session_id] = dict(models)
+    if efforts:
+        _session_sub_effort_overrides[session_id] = dict(efforts)
 
 
 def session_sub_agent_harness(session_id: str, sub_agent_name: str) -> str | None:
@@ -1645,6 +1650,16 @@ def session_sub_agent_model(session_id: str, sub_agent_name: str) -> str | None:
     return _session_sub_model_overrides.get(session_id, {}).get(sub_agent_name)
 
 
+def session_sub_agent_effort(session_id: str, sub_agent_name: str) -> str | None:
+    """Return the reasoning effort this session picked for *sub_agent_name*.
+
+    :param session_id: Parent session id, e.g. ``"conv_abc123"``.
+    :param sub_agent_name: Declared sub-agent name, e.g. ``"claude"``.
+    :returns: The picked effort, or ``None`` to use the spec's / harness's.
+    """
+    return _session_sub_effort_overrides.get(session_id, {}).get(sub_agent_name)
+
+
 def forget_session_sub_agent_overrides(session_id: str) -> None:
     """Drop a finished session's picks.
 
@@ -1653,6 +1668,7 @@ def forget_session_sub_agent_overrides(session_id: str) -> None:
     """
     _session_sub_harness_overrides.pop(session_id, None)
     _session_sub_model_overrides.pop(session_id, None)
+    _session_sub_effort_overrides.pop(session_id, None)
 
 
 def next_subagent_ordinal(parent_session_id: str, agent_type: str) -> int:
@@ -3497,6 +3513,7 @@ def create_runner_app(
             session_id,
             harnesses=_parse_sub_harness_override(snapshot.sub_harness_override),
             models=_parse_sub_harness_override(snapshot.sub_model_override),
+            efforts=_parse_sub_harness_override(snapshot.sub_effort_override),
         )
         _session_init_envelopes[session_id] = (time.monotonic(), envelope)
         return _SessionInitContext(envelope=envelope)
@@ -7799,6 +7816,7 @@ def create_runner_app(
                 cast(str | None, body.get("sub_harness_override"))
             ),
             models=_parse_sub_harness_override(cast(str | None, body.get("sub_model_override"))),
+            efforts=_parse_sub_harness_override(cast(str | None, body.get("sub_effort_override"))),
         )
         # Shared agent-switch invalidation for both dispatch paths.
         _ds_agent_id = dispatch.agent_id if dispatch else cast(str | None, body.get("agent_id"))

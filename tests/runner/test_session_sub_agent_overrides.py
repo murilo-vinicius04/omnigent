@@ -13,6 +13,7 @@ from omnigent.runner.app import (
     _parse_sub_harness_override,
     forget_session_sub_agent_overrides,
     note_session_sub_agent_overrides,
+    session_sub_agent_effort,
     session_sub_agent_harness,
     session_sub_agent_model,
 )
@@ -49,6 +50,7 @@ def test_init_envelope_carries_the_sub_agent_picks() -> None:
     conversation = _conversation(
         sub_harness_override='{"gpt":"antigravity-native"}',
         sub_model_override='{"gpt":"gemini-3.8-flash-low"}',
+        sub_effort_override='{"claude":"high"}',
     )
     envelope = parse_runner_session_init_envelope(
         build_runner_session_init_payload(conversation, server_version="0.6.0.dev0")
@@ -56,6 +58,7 @@ def test_init_envelope_carries_the_sub_agent_picks() -> None:
     assert envelope is not None
     assert envelope.snapshot.sub_harness_override == '{"gpt":"antigravity-native"}'
     assert envelope.snapshot.sub_model_override == '{"gpt":"gemini-3.8-flash-low"}'
+    assert envelope.snapshot.sub_effort_override == '{"claude":"high"}'
 
 
 def test_init_envelope_omits_picks_a_session_never_made() -> None:
@@ -66,6 +69,7 @@ def test_init_envelope_omits_picks_a_session_never_made() -> None:
     assert envelope is not None
     assert envelope.snapshot.sub_harness_override is None
     assert envelope.snapshot.sub_model_override is None
+    assert envelope.snapshot.sub_effort_override is None
 
 
 def test_registry_answers_per_head() -> None:
@@ -74,13 +78,16 @@ def test_registry_answers_per_head() -> None:
         "conv_reg",
         harnesses={"gpt": "antigravity-native"},
         models={"gpt": "gemini-3.8-flash-low"},
+        efforts={"gpt": "high"},
     )
     try:
         assert session_sub_agent_harness("conv_reg", "gpt") == "antigravity-native"
         assert session_sub_agent_model("conv_reg", "gpt") == "gemini-3.8-flash-low"
+        assert session_sub_agent_effort("conv_reg", "gpt") == "high"
         # An untouched head keeps whatever its spec declares.
         assert session_sub_agent_harness("conv_reg", "claude") is None
         assert session_sub_agent_model("conv_reg", "claude") is None
+        assert session_sub_agent_effort("conv_reg", "claude") is None
         # As does an unrelated session.
         assert session_sub_agent_harness("conv_other", "gpt") is None
     finally:

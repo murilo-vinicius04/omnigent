@@ -189,6 +189,7 @@ async def test_runner_event_forwards_sub_harness_override(
             "initial_items": [],
             "sub_harness_override": {"worker": "pi"},
             "sub_model_override": {"worker": "some-model"},
+            "sub_effort_override": {"worker": "high"},
         },
     )
     assert resp.status_code == 201, resp.text
@@ -211,6 +212,7 @@ async def test_runner_event_forwards_sub_harness_override(
         f"{captured['body'].get('sub_harness_override')!r}"
     )
     assert json.loads(captured["body"]["sub_model_override"]) == {"worker": "some-model"}
+    assert json.loads(captured["body"]["sub_effort_override"]) == {"worker": "high"}
 
 
 async def test_create_without_picks_forwards_nothing(
@@ -239,3 +241,81 @@ async def test_create_without_picks_forwards_nothing(
     )
     assert "sub_harness_override" not in (captured.get("body") or {})
     assert "sub_model_override" not in (captured.get("body") or {})
+    assert "sub_effort_override" not in (captured.get("body") or {})
+
+
+async def test_create_rejects_an_effort_for_an_unknown_sub_agent(
+    client: httpx.AsyncClient,
+) -> None:
+    """The KEY is checked here even though the VALUE cannot be.
+
+    Which efforts a head accepts depends on the harness it ends up on, which
+    this same request may be changing — so the value is validated at dispatch.
+    The name is knowable now, and a typo that silently ran the declared effort
+    is the failure this feature exists to end.
+    """
+    agent = await _bundle_agent(client, name="team-agent-effort")
+    resp = await client.post(
+        "/v1/sessions",
+        json={
+            "agent_id": agent["id"],
+            "initial_items": [],
+            "sub_effort_override": {"nobody": "high"},
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "nobody" in resp.text
+
+
+async def test_create_persists_an_effort_a_harness_might_reject(
+    client: httpx.AsyncClient,
+) -> None:
+    """A value outside any vocabulary is stored, not refused at create.
+
+    "ultra" is Pi's, and the head declares claude-sdk — but the harness is
+    settled at dispatch, so refusing here would reject a pick that a later
+    harness change makes valid. The dispatch drops what does not apply.
+    """
+    agent = await _bundle_agent(client, name="team-agent-effort-value")
+    resp = await client.post(
+        "/v1/sessions",
+        json={
+            "agent_id": agent["id"],
+            "initial_items": [],
+            "sub_effort_override": {"worker": "ultra"},
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    get = await client.get(f"/v1/sessions/{resp.json()['id']}")
+    assert json.loads(get.json()["sub_effort_override"]) == {"worker": "ultra"}
+
+
+async def test_overflowing_overrides_are_a_400_not_a_silent_truncation(
+    client: httpx.AsyncClient,
+) -> None:
+    """Picks too large for the column fail loud.
+
+    ``session_overrides`` is a 512-character column and each per-sub-agent
+    pick is a nested JSON string inside it, so a large team with all three set
+    passes the limit. SQLite ignores the declared width and MySQL truncates —
+    and a truncated blob decodes to nothing, taking every override on the
+    session with it. The check is in Python for exactly that reason.
+    """
+    names = [f"worker{index}" for index in range(8)]
+    agent = await create_test_agent(
+        client,
+        name="team-agent-wide",
+        sub_agents=[{"name": name} for name in names],
+    )
+    resp = await client.post(
+        "/v1/sessions",
+        json={
+            "agent_id": agent["id"],
+            "initial_items": [],
+            "sub_harness_override": dict.fromkeys(names, "antigravity-native"),
+            "sub_model_override": dict.fromkeys(names, "gemini-3.8-flash-low"),
+            "sub_effort_override": dict.fromkeys(names, "medium"),
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "512" in resp.text

@@ -130,6 +130,7 @@ async def test_dispatch_pins_the_sessions_harness_pick_on_the_child() -> None:
         PARENT_ID,
         harnesses={"worker": "pi"},
         models={"worker": "some-model"},
+        efforts={"worker": "high"},
     )
     created: list[dict[str, Any]] = []
     try:
@@ -144,6 +145,7 @@ async def test_dispatch_pins_the_sessions_harness_pick_on_the_child() -> None:
         f"session's pick — the dispatch read the bundle's declared head instead"
     )
     assert created[0].get("model_override") == "some-model"
+    assert created[0].get("reasoning_effort") == "high"
 
 
 @pytest.mark.asyncio
@@ -191,3 +193,48 @@ async def test_missing_cli_is_judged_on_the_picked_harness(
     assert probed == ["pi"], f"probed {probed!r}, not the picked harness"
     assert "pi" in output and output.startswith("Error")
     assert not created, "a child was created for a harness that cannot start here"
+
+
+@pytest.mark.asyncio
+async def test_an_effort_the_picked_harness_rejects_is_dropped_not_fatal() -> None:
+    """A stale effort loses the dispatch nothing.
+
+    "minimal" belongs to the OpenAI ladder and has no Anthropic alias, so the
+    head on claude-sdk cannot take it. The orchestrator's turn must not die
+    over a value a human chose at session create and is no longer present to
+    fix — unlike the dispatch argument and the spec's own value, whose callers
+    are.
+    """
+    runner_app.note_session_sub_agent_overrides(
+        PARENT_ID, harnesses=None, models=None, efforts={"worker": "minimal"}
+    )
+    created: list[dict[str, Any]] = []
+    try:
+        output = await _dispatch(created)
+    finally:
+        runner_app.forget_session_sub_agent_overrides(PARENT_ID)
+
+    assert not output.startswith("Error"), output
+    assert created
+    assert "reasoning_effort" not in created[0]
+
+
+@pytest.mark.asyncio
+async def test_the_effort_is_judged_against_the_harness_the_head_ends_up_on() -> None:
+    """The PICKED harness decides, not the one the spec declares.
+
+    "minimal" is refused by the head's declared claude-sdk and accepted by the
+    pi it was moved to — which is exactly why this cannot be validated at
+    session create, where the harness may still be about to change.
+    """
+    runner_app.note_session_sub_agent_overrides(
+        PARENT_ID, harnesses={"worker": "pi"}, models=None, efforts={"worker": "minimal"}
+    )
+    created: list[dict[str, Any]] = []
+    try:
+        output = await _dispatch(created)
+    finally:
+        runner_app.forget_session_sub_agent_overrides(PARENT_ID)
+
+    assert not output.startswith("Error"), output
+    assert created[0].get("reasoning_effort") == "minimal"

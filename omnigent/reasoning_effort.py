@@ -5,8 +5,12 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 from omnigent.llms.errors import PermanentLLMError
+
+if TYPE_CHECKING:
+    from omnigent.harness_capabilities import EffortFamily
 
 EFFORT_VALUES = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
 EFFORT_CLEAR_VALUES = frozenset({"default", "off", "reset"})
@@ -103,6 +107,31 @@ def nearest_pi_thinking_level(level: str, available: Iterable[str]) -> str | Non
     return min(offered, key=lambda value: abs(PI_THINKING_LADDER.index(value) - target))
 
 
+def efforts_by_family() -> dict[EffortFamily, frozenset[str]]:
+    """Return every effort family's vocabulary.
+
+    Every family that has a vocabulary must be listed: an unmapped family
+    falls through to the empty set, which callers read as "known harness with
+    no effort plumbing" and silently drop the effort. A new ``EffortFamily``
+    therefore has to be added here in the same change that declares it.
+
+    A function rather than a module constant because ``EffortFamily`` lives in
+    :mod:`omnigent.harness_capabilities`, and a module-level edge from here has
+    produced an import cycle before.
+
+    :returns: Family -> the values harnesses in it accept.
+    """
+    from omnigent.harness_capabilities import EffortFamily
+
+    return {
+        EffortFamily.ANTHROPIC: ANTHROPIC_EFFORTS,
+        EffortFamily.OPENAI: OPENAI_EFFORTS,
+        EffortFamily.GEMINI: GEMINI_EFFORTS,
+        EffortFamily.COPILOT: COPILOT_EFFORTS,
+        EffortFamily.PI: PI_EFFORTS,
+    }
+
+
 def efforts_for_harness(harness: str | None) -> frozenset[str] | None:
     """
     Return the effort vocabulary *harness* accepts.
@@ -124,7 +153,6 @@ def efforts_for_harness(harness: str | None) -> frozenset[str] | None:
     # of the package, and a module-level edge from here has produced an
     # import cycle before.
     from omnigent.harness_aliases import canonicalize_harness
-    from omnigent.harness_capabilities import EffortFamily
     from omnigent.harness_plugins import harness_capabilities
 
     if harness is None:
@@ -133,17 +161,7 @@ def efforts_for_harness(harness: str | None) -> frozenset[str] | None:
     capabilities = harness_capabilities().get(canonical)
     if capabilities is None:
         return None
-    # Every family that has a vocabulary must be listed: an unmapped family
-    # falls through to the empty set, which callers read as "known harness with
-    # no effort plumbing" and silently drop the effort. A new EffortFamily
-    # therefore has to be added here in the same change that declares it.
-    return {
-        EffortFamily.ANTHROPIC: ANTHROPIC_EFFORTS,
-        EffortFamily.OPENAI: OPENAI_EFFORTS,
-        EffortFamily.GEMINI: GEMINI_EFFORTS,
-        EffortFamily.COPILOT: COPILOT_EFFORTS,
-        EffortFamily.PI: PI_EFFORTS,
-    }.get(capabilities.effort, frozenset())
+    return efforts_by_family().get(capabilities.effort, frozenset())
 
 
 def format_supported(values: Iterable[str]) -> str:

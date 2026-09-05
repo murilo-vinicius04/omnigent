@@ -2002,6 +2002,63 @@ def _validated_sub_model_override(value: dict[str, str] | None, agent: Agent) ->
     )
 
 
+def _validated_sub_effort_override(value: dict[str, str] | None, agent: Agent) -> str | None:
+    """
+    Validate a session-create ``sub_effort_override`` and pack it for storage.
+
+    Every KEY must name a sub-agent the bound bundle declares, checked the same
+    way :func:`_validated_sub_harness_override` checks its own. The VALUE is
+    checked for shape only (a non-empty token) and not against an effort
+    vocabulary: which values a head accepts depends on the harness it ends up
+    on, and the same request may be changing that harness. The dispatch
+    validates it where the harness is settled, and its error names the values
+    that harness takes -- an answer this layer cannot give.
+
+    :param value: Sub-agent name -> effort, e.g. ``{"claude": "high"}``.
+    :param agent: The bound agent row.
+    :returns: A compact JSON string for ``session_overrides``, or ``None``.
+    :raises OmnigentError: ``invalid_input`` for an unknown sub-agent name, a
+        non-omnigent executor type, or an unloadable bundle.
+    """
+    if not value:
+        return None
+    import json as _json
+
+    from omnigent.runtime import get_agent_cache
+    from omnigent.spec._omnigent_compat import OMNIGENT_EXECUTOR_TYPE
+
+    try:
+        loaded = get_agent_cache().load(
+            agent.id, agent.bundle_location, expand_env=agent.session_id is None
+        )
+    except (KeyError, AttributeError, ValueError, ImportError, OSError) as exc:
+        raise OmnigentError(
+            f"sub_effort_override requires a loadable agent spec; "
+            f"agent {agent.name!r} failed to load: {exc}",
+            code=ErrorCode.INVALID_INPUT,
+        ) from exc
+    if loaded.spec.executor.type != OMNIGENT_EXECUTOR_TYPE:
+        raise OmnigentError(
+            f"sub_effort_override only applies to executor.type "
+            f"{OMNIGENT_EXECUTOR_TYPE!r} agents; agent {agent.name!r} "
+            f"declares executor.type {loaded.spec.executor.type!r}",
+            code=ErrorCode.INVALID_INPUT,
+        )
+    known = {child.name for child in loaded.spec.sub_agents if child.name}
+    for name in value:
+        if name not in known:
+            raise OmnigentError(
+                f"unknown sub-agent {name!r} for agent {agent.name!r}; "
+                f"declared sub-agents: {sorted(known) or 'none'}",
+                code=ErrorCode.INVALID_INPUT,
+            )
+    return _json.dumps(
+        {k: v.strip() for k, v in value.items() if v and v.strip()},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
 def _validated_harness_override_executor_type(agent: Agent) -> None:
     """Validate that *agent* is an ``executor.type: omnigent`` spec.
 
@@ -6754,6 +6811,8 @@ async def _dispatch_skill_slash_command_to_runner(
         runner_body["sub_harness_override"] = conv.sub_harness_override
     if conv.sub_model_override:
         runner_body["sub_model_override"] = conv.sub_model_override
+    if conv.sub_effort_override:
+        runner_body["sub_effort_override"] = conv.sub_effort_override
 
     try:
         await runner_client.post(
@@ -10741,6 +10800,7 @@ __all__ = [
     "_validated_harness_override",
     "_validated_harness_override_executor_type",
     "_validated_spec_smart_routing_harness",
+    "_validated_sub_effort_override",
     "_validated_sub_harness_override",
     "_validated_sub_model_override",
     "_validated_subagent_routing_override",

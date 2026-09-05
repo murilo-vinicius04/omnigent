@@ -158,7 +158,19 @@ _SESSION_OVERRIDE_KEYS = (
     # already allows a per-child model (examples/polly pins grok-4.5 on its
     # cursor head), and pinning one on the BRAIN would drag the heads with it.
     "sub_model_override",
+    # And its reasoning effort, third of the same shape. The spec allows a
+    # per-child ``executor.reasoning_effort`` for the same reason, and the
+    # session-wide effort is the brain's.
+    "sub_effort_override",
 )
+
+
+#: Width of the ``conversations.session_overrides`` column. Checked in Python
+#: because the backends disagree about the consequence of exceeding it: SQLite
+#: ignores the declared length, MySQL truncates, Postgres errors. Truncation is
+#: the dangerous one -- a half-written JSON blob decodes to nothing, so every
+#: override on the session would silently vanish together.
+SESSION_OVERRIDES_MAX_CHARS = 512
 
 
 def _encode_session_overrides(overrides: dict[str, str | None]) -> str | None:
@@ -172,11 +184,23 @@ def _encode_session_overrides(overrides: dict[str, str | None]) -> str | None:
     :param overrides: Mapping of override key to value (missing / ``None``
         values mean "unset").
     :returns: Compact JSON object string, or ``None`` when no override is set.
+    :raises ValueError: When the blob would not fit the column. Reachable
+        since the per-sub-agent picks arrived: each is a nested JSON string,
+        so a bundle with five heads and all three set passes 512.
     """
     data = {
         key: overrides[key] for key in _SESSION_OVERRIDE_KEYS if overrides.get(key) is not None
     }
-    return json.dumps(data, separators=(",", ":")) if data else None
+    if not data:
+        return None
+    encoded = json.dumps(data, separators=(",", ":"))
+    if len(encoded) > SESSION_OVERRIDES_MAX_CHARS:
+        raise ValueError(
+            f"session overrides are {len(encoded)} characters, over the "
+            f"{SESSION_OVERRIDES_MAX_CHARS}-character limit; set fewer "
+            f"per-sub-agent overrides (keys: {', '.join(sorted(data))})"
+        )
+    return encoded
 
 
 def _decode_session_overrides(raw: str | None) -> dict[str, str | None]:
@@ -252,6 +276,7 @@ def _to_conversation(
         harness_override=overrides["harness_override"],
         sub_harness_override=overrides["sub_harness_override"],
         sub_model_override=overrides["sub_model_override"],
+        sub_effort_override=overrides["sub_effort_override"],
         sub_agent_name=meta.sub_agent_name if meta else None,
         task_summary=meta.task_summary if meta else None,
         external_session_id=meta.external_session_id if meta else None,
@@ -2834,6 +2859,8 @@ class SqlAlchemyConversationStore(ConversationStore):
         _unset_sub_harness_override: bool = False,
         sub_model_override: str | None = None,
         _unset_sub_model_override: bool = False,
+        sub_effort_override: str | None = None,
+        _unset_sub_effort_override: bool = False,
         terminal_launch_args: list[str] | None = None,
         archived: bool | None = None,
         reported_model: str | None = None,
@@ -2941,6 +2968,12 @@ class SqlAlchemyConversationStore(ConversationStore):
                 overrides_changed = True
             elif sub_model_override is not None:
                 overrides["sub_model_override"] = sub_model_override
+                overrides_changed = True
+            if _unset_sub_effort_override:
+                overrides["sub_effort_override"] = None
+                overrides_changed = True
+            elif sub_effort_override is not None:
+                overrides["sub_effort_override"] = sub_effort_override
                 overrides_changed = True
             if overrides_changed:
                 row.session_overrides = _encode_session_overrides(overrides)

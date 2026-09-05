@@ -1542,6 +1542,11 @@ class _SessionCreateRequestBase(BaseModel):
     # two are chosen independently: a head can keep its harness and change
     # model, or the reverse.
     sub_model_override: dict[str, str] | None = None
+    # And its reasoning effort. Not validated here against a vocabulary: which
+    # values a head accepts depends on the harness it ends up on, which this
+    # same request may be changing, so the dispatch checks it where that is
+    # settled and says which values that harness takes.
+    sub_effort_override: dict[str, str] | None = None
     smart_routing_message: str | None = None
 
     @model_validator(mode="after")
@@ -2167,9 +2172,11 @@ class SessionResponse(BaseModel):
     # The session's per-sub-agent picks, as the compact ``{"name": "value"}``
     # JSON strings the server stores. Echoed back so a client can show what a
     # running session actually chose -- ``harness`` above is the BRAIN's, and
-    # nothing else in this response names a head.
+    # nothing else in this response names a head. Three independent knobs: a
+    # head can change any one and keep the others.
     sub_harness_override: str | None = None
     sub_model_override: str | None = None
+    sub_effort_override: str | None = None
     cost_control_mode_override: str | None = None
     subagent_routing_override: str | None = None
     context_window: int | None = None
