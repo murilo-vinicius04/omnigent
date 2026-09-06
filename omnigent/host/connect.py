@@ -2876,7 +2876,13 @@ class HostProcess:
                 error="the codex model probe failed — see the host log",
             )
 
-        if harness == "antigravity-native":
+        # Both spellings: ``antigravity-native`` wraps the agy TUI and
+        # ``antigravity`` is the in-process SDK, and the picker offers the
+        # latter. They are two clients of the same Antigravity service on the
+        # same account, so the ids agy lists are the ids either one accepts --
+        # and the CLI is the only one of the two that will enumerate them. A
+        # host without agy answers no rows rather than guessing.
+        if harness in ("antigravity", "antigravity-native"):
             probed_agy = await self._probed_antigravity_model_options()
             if probed_agy is None:
                 return HostModelOptionsResultFrame(

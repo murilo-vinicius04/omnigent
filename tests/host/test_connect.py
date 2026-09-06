@@ -203,10 +203,19 @@ async def test_handle_model_options_serves_the_antigravity_catalog(
     monkeypatch.setattr(antigravity_native_catalog, "antigravity_launch_catalog", _catalog)
     host = _make_host_process()
 
+    # BOTH spellings: `antigravity` is the in-process SDK and what the picker
+    # actually offers, `antigravity-native` wraps the agy TUI. Answering only
+    # the latter left the picker's own choice unanswered, so the model row sat
+    # on a failing request that react-query retried for ~45s.
     result = await host._handle_model_options(
-        HostModelOptionsFrame(request_id="req_agy", harness="antigravity-native"),
+        HostModelOptionsFrame(request_id="req_agy", harness="antigravity"),
+    )
+    native = await host._handle_model_options(
+        HostModelOptionsFrame(request_id="req_agy_native", harness="antigravity-native"),
     )
 
+    assert native.status == "ok"
+    assert native.models == result.models
     assert result.status == "ok"
     # ``source`` is stamped on by the host from ITS OWN provider config, which
     # varies per machine, so the assertion is on what the catalog supplied.

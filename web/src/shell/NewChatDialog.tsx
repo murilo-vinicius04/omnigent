@@ -1612,7 +1612,7 @@ function SubAgentConfigRow({
   // Follows the harness SELECTED in this dialog, not the declared one: pick
   // Antigravity for a head and the model list must be Antigravity's before
   // Save, or the two rows would disagree on screen.
-  const { data: modelOptions, isLoading: modelsLoading } = useHostModelOptions(
+  const { data: modelOptions } = useHostModelOptions(
     hostId,
     harness,
     hostId !== null && harness !== "",
@@ -1682,20 +1682,18 @@ function SubAgentConfigRow({
           </SelectContent>
         </Select>
       </ConfigRow>
-      {/* Only offered when the host can name models for the picked harness.
-          An empty catalog means this harness has no model-override plumbing
-          (or the host has not probed it yet), and an empty dropdown would
-          read as "no models exist" rather than "not selectable here". */}
-      {(options.length > 0 || modelsLoading) && (
+      {/* Only offered once the host has NAMED models for the picked harness.
+          Deliberately not rendered while the query is in flight: a harness the
+          host cannot answer for FAILS, and react-query retries it with backoff
+          for ~45s, so a loading state shows a dropdown that spins the whole
+          time and then vanishes. Appearing a beat late is the smaller lie. An
+          empty catalog means the harness has no model override to give, and an
+          empty dropdown would read as "no models exist" rather than "not
+          selectable here". */}
+      {options.length > 0 && (
         <ConfigRow
           label="Model"
-          description={
-            modelsLoading
-              ? "loading…"
-              : child.model
-                ? `declared: ${child.model}`
-                : "harness default"
-          }
+          description={child.model ? `declared: ${child.model}` : "harness default"}
         >
           <Select
             value={modelValue || MODEL_SELECT_DEFAULT}
