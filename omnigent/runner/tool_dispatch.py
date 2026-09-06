@@ -2422,9 +2422,25 @@ async def _execute_subagent_tool(
         # cause), and the orchestrator may re-dispatch into the same wall. The
         # which-probe here reads the same PATH the harness boot uses, so the
         # verdict can't disagree with the real launch.
-        from omnigent.onboarding.harness_install import missing_harness_cli
+        from omnigent.onboarding.harness_install import (
+            missing_harness_cli,
+            missing_harness_package,
+        )
 
         if child_harness is not None:
+            # A PYTHON package, checked first: the probe below only knows
+            # binaries, so an SDK-backed harness sails past it and fails inside
+            # the child with an ImportError the orchestrator sees only as
+            # "turn failed" -- and may re-dispatch into.
+            missing_package = missing_harness_package(child_harness)
+            if missing_package is not None:
+                return (
+                    f"Error: sub-agent {sub_agent_name!r} can't start on this "
+                    f"machine: harness {child_harness!r} is in-process and needs "
+                    f"a package that is not installed. Install it with: "
+                    f"{missing_package} (or don't dispatch to {sub_agent_name!r} "
+                    f"here)."
+                )
             missing_cli = missing_harness_cli(child_harness)
             if missing_cli is not None:
                 # Non-npm CLIs (e.g. cursor-agent) carry an ``install_hint``

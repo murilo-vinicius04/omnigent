@@ -159,6 +159,7 @@ import { isCurrentServerLocal } from "@/lib/serverOrigin";
 import {
   isFullySupportedNativeCodingAgent,
   isNativeCodingAgent,
+  NATIVE_CODING_AGENTS,
   isRecentHarness,
   nativeAgentHasCapability,
   nativeCodingAgentForAvailableAgent,
@@ -1618,6 +1619,24 @@ function SubAgentConfigRow({
     hostId !== null && harness !== "",
   );
   const options = modelOptions ?? [];
+  // A head may also run a vendor's own TUI, and for some vendors that is the
+  // ONLY shape that works on a given machine: `antigravity` is the in-process
+  // SDK (a Python package, and a glibc floor its bundled binary enforces),
+  // while `antigravity-native` drives the agy CLI. The brain list carries only
+  // the former, because that is what the harness catalog labels — so without
+  // these rows a head cannot be pointed at the one that runs here. Suffixed
+  // rather than left bare: the two spellings share a display name, and
+  // "Antigravity" twice in one dropdown says nothing.
+  const headEntries = useMemo(
+    (): [string, string][] => [
+      ...brainEntries.filter(([id]) => id !== AUTO_HARNESS_ID),
+      ...NATIVE_CODING_AGENTS.map((native): [string, string] => [
+        native.harness,
+        `${native.displayName} (terminal)`,
+      ]),
+    ],
+    [brainEntries],
+  );
   // A model remembered for a different harness is not in this catalog. Show
   // Default rather than a blank trigger; Save then sends nothing for the row.
   const modelValue = options.some((option) => option.id === model) ? model : "";
@@ -1653,10 +1672,9 @@ function SubAgentConfigRow({
             align="start"
             className="[&_[data-slot=select-item]]:pl-2.5"
           >
-            {brainEntries
-              // Auto routes the BRAIN; it means nothing for one
-              // named head, so it is not offered here.
-              .filter(([id]) => id !== AUTO_HARNESS_ID)
+            {headEntries
+              // ``Auto`` is already filtered out of headEntries: it routes the
+              // BRAIN and means nothing for one named head.
               .map(([id, label]) => (
                 <SelectItem
                   key={id}
