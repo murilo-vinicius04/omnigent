@@ -142,3 +142,42 @@ def test_missing_agy_answers_none(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(antigravity_native_launch, "agy_binary_path", _no_agy)
     assert asyncio.run(antigravity_launch_catalog()) is None
+
+
+def test_antigravity_offers_no_effort_to_a_picker() -> None:
+    """agy validates a reasoning effort and then ignores it.
+
+    Its executor says so — "the validated effort is informational; agy's model
+    selection determines the actual model + thinking budget ... and cannot be
+    overridden from this write path" — and ``build_agy_launch`` takes no
+    effort argument at all. The budget rides the model id instead
+    (``gemini-3.8-flash-high`` / ``-medium`` / ``-low``).
+
+    So the catalog keeps declaring the family the value is CHECKED against and
+    offers nothing to pick, because a control that changes nothing is worse
+    than no control.
+    """
+    from omnigent.harness_plugins import harness_capabilities
+
+    caps = harness_capabilities()
+    for harness in ("antigravity", "antigravity-native"):
+        row = caps[harness].as_dict()
+        assert row["effort"] == "gemini", "the validation family is unchanged"
+        assert row["efforts"] == [], f"{harness} must offer no effort to pick"
+
+    # The guard is specific to that claim, not a blanket silence: a harness
+    # whose effort reaches the harness still publishes its vocabulary.
+    assert caps["claude-sdk"].as_dict()["efforts"]
+
+
+def test_agy_launch_takes_no_effort_argument() -> None:
+    """The evidence for the row above, pinned against the launch itself.
+
+    If agy ever grows an effort flag, this fails and the capability's
+    ``effort_is_informational`` should be dropped in the same change.
+    """
+    import inspect
+
+    from omnigent.antigravity_native_launch import build_agy_launch
+
+    assert "effort" not in inspect.signature(build_agy_launch).parameters

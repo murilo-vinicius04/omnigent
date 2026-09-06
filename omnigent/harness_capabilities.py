@@ -108,6 +108,16 @@ class HarnessCapabilities:
     :param elicitation: How a policy ASK is surfaced to the web UI.
     :param resume: Whether a prior conversation is reattached or rebuilt.
     :param effort: Which reasoning-effort value set applies.
+    :param effort_is_informational: Whether the harness VALIDATES an effort
+        and then does nothing with it. Antigravity is the case: its executor
+        says "the validated effort is informational -- agy's model selection
+        determines the actual model + thinking budget on the agy side and
+        cannot be overridden from this write path", and ``build_agy_launch``
+        indeed takes no effort argument (the budget rides the model id:
+        ``gemini-3.8-flash-high`` / ``-medium`` / ``-low``). The family stays
+        declared, because that IS what the value is checked against; what
+        changes is that :attr:`as_dict`'s ``efforts`` reports nothing to
+        offer, so no picker renders a control that changes the run.
     :param model_family: Which model vendors the harness accepts.
     :param auth: Where the harness's credentials come from.
     :param subagents: Whether the harness can spawn Omnigent sub-agents.
@@ -154,6 +164,7 @@ class HarnessCapabilities:
     images: bool | None = None
     compaction: bool | None = None
     fork_history: ForkHistory = ForkHistory.NONE
+    effort_is_informational: bool = False
     shell_tool_name: str | None = None
     shell_tool_prompt: str | None = None
     instruction_delivery: InstructionDelivery = InstructionDelivery.UNKNOWN
@@ -161,11 +172,15 @@ class HarnessCapabilities:
     def as_dict(self) -> dict[str, object]:
         """Return a JSON-serializable view for the ``/v1/harnesses`` catalog.
 
-        ``effort`` names the family; ``efforts`` is the vocabulary that family
-        actually accepts, sorted for a stable wire shape. The family name alone
-        left every client mapping it back to values by hand -- the web carried
-        two such lists, and a harness whose family it did not know got no
-        control at all.
+        ``effort`` names the family the value is validated against;
+        ``efforts`` is what a picker may OFFER, sorted for a stable wire shape.
+        The two differ for a harness that validates an effort and then ignores
+        it (see :attr:`effort_is_informational`), where offering the values
+        would put a control on screen that changes nothing.
+
+        The family name alone left every client mapping it back to values by
+        hand -- the web carried two such lists, and a harness whose family it
+        did not know got no control at all.
         """
         from omnigent.reasoning_effort import efforts_by_family
 
@@ -174,7 +189,11 @@ class HarnessCapabilities:
             "elicitation": self.elicitation.value,
             "resume": self.resume.value,
             "effort": self.effort.value,
-            "efforts": sorted(efforts_by_family().get(self.effort, frozenset())),
+            "efforts": (
+                []
+                if self.effort_is_informational
+                else sorted(efforts_by_family().get(self.effort, frozenset()))
+            ),
             "model_family": self.model_family.value,
             "auth": self.auth.value,
             "subagents": self.subagents,
