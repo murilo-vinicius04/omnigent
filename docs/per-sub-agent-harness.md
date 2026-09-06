@@ -179,7 +179,8 @@ to", indented, one row per head:
   the choice is against something visible rather than a blank;
 - the effort row offers the vocabulary the SERVER declares for the picked
   harness, so a value from another ladder (`max` is Claude's) is never offered
-  to a head on Antigravity, and a harness with no effort plumbing gets no row.
+  to a head on Antigravity — which in fact gets no effort row at all, because
+  agy validates an effort and then ignores it (see below).
 
 **The Antigravity catalog.** The host answered `model_options` for
 `codex-native`, `pi-native`, `claude-native` and the claude-sdk family, and
@@ -198,8 +199,13 @@ clear it.
 
 Worth noting what the resulting list says about effort: agy's ids carry it
 (`gemini-3.8-flash-high`, `-medium`, `-low`), so for that harness picking the
-model IS picking the effort, and a separate per-head effort control would be a
-second name for the same knob.
+model IS picking the effort. That is not a nicety — agy has no other way in.
+Its executor calls a passed effort "informational … cannot be overridden from
+this write path", and `build_agy_launch` takes no effort argument at all. The
+capability now says so (`effort_is_informational`), so `capabilities.efforts`
+reports nothing for it and no picker renders a control that changes nothing.
+The declared `effort` family stays, because that is still what an incoming
+value is validated against.
 
 ## 5. What is covered by tests
 
