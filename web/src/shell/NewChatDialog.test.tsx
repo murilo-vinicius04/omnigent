@@ -5635,6 +5635,28 @@ describe("per-sub-agent harness picker", () => {
     expect(screen.getByTestId("new-chat-landing-sub-harness-gpt-antigravity-native")).toBeTruthy();
   });
 
+  it("gives the orchestrator its own model, not just the heads", async () => {
+    // THE GAP THIS PINS. The brain's model row is gated on native-wrapper
+    // capabilities, which a bundle agent has none of — so Debby's own brain
+    // had no model control while each of her heads could be pinned, and it
+    // ran on whatever the provider defaulted to. An orchestrator on an older
+    // model than the workers it directs.
+    mockDebby();
+    useHostModelOptionsMock.mockReturnValue({
+      data: [{ id: "claude-opus-5", model: "claude-opus-5", displayName: "claude-opus-5" }],
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useHostModelOptions>);
+    renderLanding();
+    openAgentConfig("a_debby");
+
+    pickSelectOption("new-chat-landing-config-brain-model", "claude-opus-5");
+    saveConfig();
+
+    const { body } = await submitAndReadBody("analyze this");
+    expect(body.model_override).toBe("claude-opus-5");
+  });
+
   it("sends the head's picked harness on create", async () => {
     // Joins the dropdown to the wire: the id a person clicks is the id the
     // create body carries, keyed by the head's declared name.

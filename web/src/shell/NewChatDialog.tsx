@@ -1572,6 +1572,73 @@ function SearchableModelPicker({
   );
 }
 
+/** The orchestrator's own Model row, for an agent that is not a native wrapper.
+ *
+ *  Its own component for the same reason the head rows are: the catalog is
+ *  fetched PER HARNESS, and the brain's harness is itself a dropdown above
+ *  this one. Follows the SELECTED harness, so switching the brain re-lists
+ *  before Save.
+ */
+function BrainModelRow({
+  hostId,
+  harness,
+  model,
+  onModelChange,
+}: {
+  hostId: string | null;
+  harness: string;
+  model: string;
+  onModelChange: (model: string) => void;
+}) {
+  const { data: modelOptions } = useHostModelOptions(
+    hostId,
+    harness,
+    hostId !== null && harness !== "" && harness !== AUTO_HARNESS_ID,
+  );
+  const options = modelOptions ?? [];
+  // A model carried over from another harness is not in this catalog; show
+  // Default rather than a value the picked harness would reject.
+  const modelValue = options.some((option) => option.id === model) ? model : "";
+  // Same rule as the head rows: nothing offered until the host has named
+  // models, because a harness it cannot answer for FAILS and retries behind a
+  // spinner rather than returning an empty list.
+  if (options.length === 0) return null;
+  return (
+    <ConfigRow label="Model" description="the orchestrator's own model">
+      <Select
+        value={modelValue || MODEL_SELECT_DEFAULT}
+        onValueChange={(value) => onModelChange(value === MODEL_SELECT_DEFAULT ? "" : value)}
+        componentId="new_chat.config.brain_model"
+        valueHasNoPii
+      >
+        <SelectTrigger
+          className="w-full cursor-pointer"
+          data-testid="new-chat-landing-config-brain-model"
+          aria-label="Orchestrator model"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent
+          position="popper"
+          align="start"
+          className="[&_[data-slot=select-item]]:pl-2.5"
+        >
+          <SelectItem value={MODEL_SELECT_DEFAULT}>Default</SelectItem>
+          {options.map((option) => (
+            <SelectItem
+              key={option.id}
+              value={option.id}
+              data-testid={`new-chat-landing-brain-model-${option.id}`}
+            >
+              {option.displayName ?? option.id}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </ConfigRow>
+  );
+}
+
 /** One row of the Configure dialog's "Delegates to" group: a head's harness
  *  and, beside it, the model that head runs.
  *
@@ -2049,6 +2116,9 @@ function HarnessConfigModal({
     } else if (brainDefault) {
       // Picking the spec default clears the override so the session tracks it.
       setPickedHarness(draftHarness === brainDefault ? null : draftHarness, agent.id);
+      // And the brain's own model, which rides the create as `model_override`
+      // exactly as a native wrapper's does.
+      setPickedModel(draftModel);
     }
     // The team, independent of the brain branch above: a bundle can keep its
     // declared brain and still retarget a head. Only entries that DIFFER from
@@ -2398,6 +2468,28 @@ function HarnessConfigModal({
                 </SelectContent>
               </Select>
             </ConfigRow>
+          )}
+          {/* The ORCHESTRATOR's model. Gated on the same condition as the row
+              above rather than on a native wrapper's capabilities, which is
+              what the model rows further up use -- a bundle agent is not a
+              native wrapper, so those gates are false for it and its brain had
+              no model control at all. It then ran on whatever the provider
+              resolves by default, while its heads could each be pinned: an
+              orchestrator on an older model than the workers it directs.
+
+              examples/debby left its brain unpinned deliberately, because a
+              pinned brain used to drag the family its heads were routed
+              within. A head with its own harness+model override no longer
+              inherits that way, so the reason is gone for any head that has
+              been picked -- and a head left alone still inherits, which is the
+              behaviour that comment describes. */}
+          {!hasPermission && !hasApproval && !hasCursor && !hasAgySkip && brainDefault && (
+            <BrainModelRow
+              hostId={host?.host_id ?? null}
+              harness={draftHarness ?? brainDefault}
+              model={draftModel}
+              onModelChange={setDraftModel}
+            />
           )}
 
           {/* The team, when the bundle has one.
@@ -4624,6 +4716,17 @@ export function NewChatLandingScreen() {
       const agentSupportsCursorMode = nativeAgentHasCapability(agent, "cursorMode");
       const agentSupportsAgySkip = nativeAgentHasCapability(agent, "skipPermissions");
       const agentSupportsModelPicker = nativeAgentHasCapability(agent, "modelPicker");
+      // A bundle agent is not a native wrapper, so every capability above is
+      // false for it -- which is why its brain's model never rode the create
+      // even once a row offered one. Its Model row is gated the same way the
+      // modal gates it: no native capabilities, and a declared brain harness.
+      const agentIsBundleBrain =
+        !agentSupportsPermissionMode &&
+        !agentSupportsApprovalMode &&
+        !agentSupportsCursorMode &&
+        !agentSupportsAgySkip &&
+        agent?.harness != null &&
+        agent.harness in brainHarnessLabelsAll;
       // Smart Routing — server-side. The fully-auto harness always routes
       // (harness + model), so send "on" to keep the persisted state consistent
       // with the lit routing icon. Otherwise only send it when routing is
@@ -4851,7 +4954,9 @@ export function NewChatLandingScreen() {
             model_override:
               !smartRoutingHarnessSelected &&
               !routingOwnsModel &&
-              (agentSupportsModelPicker || nativeAgent?.harness === "codex-native") &&
+              (agentSupportsModelPicker ||
+                nativeAgent?.harness === "codex-native" ||
+                agentIsBundleBrain) &&
               pickedModel
                 ? pickedModel
                 : undefined,
