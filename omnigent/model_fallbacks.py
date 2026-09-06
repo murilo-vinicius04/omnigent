@@ -35,8 +35,50 @@ _CODEX_ARM_PREFERENCE = StaticModelFallback(
     discovery_gap="a workspace listing ranks models by neither recency nor capability",
 )
 
+#: Aliases and ids to OFFER to the claude probe when Claude Code's own
+#: enumeration answers nothing. Candidates only: each is launched once and
+#: kept solely if the API serves it, so this table can never put a row in a
+#: picker on its own -- the same discipline as the codex ranking above.
+#:
+#: The gap is specific and measured. Omnigent enumerates Claude's models by
+#: running ``claude -p "/model"`` and reading the alias list the CLI prints;
+#: on CLI 2.1.178 that answers "/model isn't available in this environment",
+#: because slash commands do not exist in headless mode. On an API-keyed or
+#: gateway login the endpoint listing covers this. On a subscription login
+#: there is no endpoint, and nothing else enumerates: there is no ``claude
+#: models`` subcommand, ``~/.claude/settings.json`` holds a single pin, and
+#: the alias sets documented in ``claude --help`` ("e.g. 'fable', 'opus', or
+#: 'sonnet'") and in the SDK's own types ("sonnet", "opus", "haiku") are
+#: illustrative AND disagree with each other. So the catalog collapsed to the
+#: one model the probe run itself happened to use.
+_CLAUDE_SUBSCRIPTION_CANDIDATES = StaticModelFallback(
+    model_ids=(
+        # Aliases first: the CLI expands these itself, so their concrete ids
+        # come from the harness rather than from this table.
+        "opus",
+        "sonnet",
+        "haiku",
+        "fable",
+        # Then ids no alias currently points at. An alias tracks "the latest"
+        # of a family, so a newer model that has not become the alias target
+        # is invisible without naming it.
+        "claude-opus-5",
+        "claude-sonnet-5",
+    ),
+    owner="Claude subscription model probe (omnigent.claude_native)",
+    provenance=(
+        "aliases documented by `claude --help` and the claude-agent-sdk "
+        "types, plus current released ids"
+    ),
+    discovery_gap=(
+        "Claude Code's `/model` enumeration is unavailable in headless mode, "
+        "and a subscription login has no endpoint listing to fall back on"
+    ),
+)
+
 _STATIC_MODEL_FALLBACKS: dict[tuple[str, str], StaticModelFallback] = {
     (SUBSCRIPTION_KIND, "codex"): _CODEX_ARM_PREFERENCE,
+    (SUBSCRIPTION_KIND, "claude"): _CLAUDE_SUBSCRIPTION_CANDIDATES,
 }
 
 

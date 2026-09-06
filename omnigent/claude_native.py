@@ -1000,6 +1000,158 @@ async def _resolve_claude_model_aliases(
     }
 
 
+#: Store key for the servability answers below. Separate from the model
+#: catalog's own key because it is read differently: the catalog refreshes in
+#: the background once stale, and these runs cost tokens.
+_CANDIDATE_CATALOG_HARNESS = "claude-native-candidates"
+
+#: Prompt for the servability check below. It has to reach the API -- that
+#: round trip IS the check -- so it is the shortest thing that does.
+_CLAUDE_SERVABILITY_PROMPT = "ok"
+
+#: How long one servability check may take. Longer than the ``/model`` probes
+#: above because this one waits on a real completion, not a client-side
+#: refusal.
+_CLAUDE_SERVABILITY_TIMEOUT_S = 90.0
+
+
+async def _claude_probe_candidate(
+    claude_config: ClaudeNativeUcodeConfig | None,
+    candidate: str,
+) -> str | None:
+    """Launch one candidate and report the model that actually served it.
+
+    Two answers in one run. Whether this login can serve *candidate* at all --
+    an account that cannot gets ``404`` before any tokens are spent on it --
+    and, from the result's ``modelUsage``, the concrete id the harness
+    resolved it to, which is how an alias like ``opus`` becomes
+    ``claude-opus-4-8``.
+
+    Both need a real round trip. The cheap ``/model`` probes elsewhere in this
+    module are refused client-side, so their init event echoes whatever
+    ``--model`` was passed: ``claude-not-a-model`` "resolves" to itself.
+
+    :param claude_config: The resolved native launch config, or ``None``.
+    :param candidate: An alias or model id to try, e.g. ``"claude-opus-5"``.
+    :returns: The served model id, or ``None`` when it could not run.
+    """
+    command, launch_args, env = _claude_model_probe_invocation(claude_config)
+    # Swap the "/model" prompt for a real one, and cap the turn: the answer's
+    # content is irrelevant, only which model produced it.
+    launch_args = [_CLAUDE_SERVABILITY_PROMPT if arg == "/model" else arg for arg in launch_args]
+    launch_args.extend(("--max-turns", "1", "--output-format", "json", "--model", candidate))
+    try:
+        process = await asyncio.create_subprocess_exec(
+            command,
+            *launch_args,
+            cwd=str(Path.home()),
+            env=env,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError:
+        _logger.debug("Claude servability check could not launch for %r", candidate, exc_info=True)
+        return None
+    try:
+        async with asyncio.timeout(_CLAUDE_SERVABILITY_TIMEOUT_S):
+            stdout, _stderr = await process.communicate()
+    except (TimeoutError, asyncio.CancelledError):
+        if process.returncode is None:
+            process.kill()
+        with contextlib.suppress(Exception):
+            await process.wait()
+        # Inconclusive, not unservable. The candidate stays out of THIS
+        # catalog and is tried again the next time one is probed.
+        return None
+    if process.returncode != 0:
+        return None
+    try:
+        payload = json.loads(stdout.decode(errors="replace"))
+    except ValueError:
+        return None
+    # ``is_error`` catches the shapes that still exit 0 -- a refusal reported
+    # in the result envelope rather than as a process failure.
+    if not isinstance(payload, dict) or payload.get("is_error"):
+        return None
+    usage = payload.get("modelUsage")
+    if isinstance(usage, dict):
+        for model_id in usage:
+            if isinstance(model_id, str) and model_id:
+                return model_id
+    # It served, but did not say what with. The candidate is still real, so
+    # it keeps its own spelling rather than being dropped.
+    return candidate
+
+
+async def _servable_claude_candidates(
+    claude_config: ClaudeNativeUcodeConfig | None,
+) -> dict[str, str]:
+    """Candidates this login can serve, when the harness enumerated nothing.
+
+    Claude Code's own ``/model`` listing is unavailable headlessly, and a
+    subscription login has no endpoint listing behind it, so without this the
+    catalog collapses to the single model the enumeration run happened to use.
+    Candidates come from the owned table in :mod:`omnigent.model_fallbacks`;
+    every one is launched before it is offered, so that table cannot put a row
+    in a picker by itself.
+
+    Unlike every other probe in this module these runs cost real tokens, so
+    the answer is cached under its own store key and read back WITHOUT the
+    staleness refresh the model catalog uses. What a login can serve changes
+    when the CLI or the account does, and the key covers the first; an hourly
+    re-launch of every candidate would spend a completion apiece to re-learn
+    something that had not changed.
+
+    :param claude_config: The resolved native launch config, or ``None``.
+    :returns: ``{candidate: served model id}`` for those that answered, in the
+        table's order.
+    """
+    from omnigent.model_catalog_store import fingerprint_of, read_catalog, write_catalog
+    from omnigent.model_fallbacks import static_model_fallback
+    from omnigent.onboarding.provider_config import SUBSCRIPTION_KIND
+
+    table = static_model_fallback(SUBSCRIPTION_KIND, "claude")
+    if table is None:
+        return {}
+    # Keyed by the launch shape AND the candidate list, so editing the table
+    # re-probes rather than serving an answer about different names.
+    key = fingerprint_of(claude_catalog_fingerprint(claude_config), table.model_ids)
+    stored = read_catalog(_CANDIDATE_CATALOG_HARNESS, key)
+    if stored is not None:
+        return {
+            str(row["id"]): str(row.get("model") or row["id"])
+            for row in stored
+            if isinstance(row.get("id"), str)
+        }
+    semaphore = asyncio.Semaphore(_CLAUDE_ALIAS_RESOLUTION_CONCURRENCY)
+
+    async def _bounded(candidate: str) -> str | None:
+        async with semaphore:
+            return await _claude_probe_candidate(claude_config, candidate)
+
+    results = await asyncio.gather(
+        *(_bounded(candidate) for candidate in table.model_ids), return_exceptions=True
+    )
+    served = {
+        candidate: result
+        for candidate, result in zip(table.model_ids, results, strict=True)
+        if isinstance(result, str)
+    }
+    _logger.info(
+        "Claude enumeration was empty; %d/%d candidate models are servable here",
+        len(served),
+        len(table.model_ids),
+    )
+    if served:
+        write_catalog(
+            _CANDIDATE_CATALOG_HARNESS,
+            key,
+            [{"id": candidate, "model": model} for candidate, model in served.items()],
+        )
+    return served
+
+
 def _claude_alias_row(alias: str, resolution: dict[str, str]) -> dict[str, object]:
     """
     One picker row for a printed alias, shown as its resolution.
@@ -1126,7 +1278,23 @@ async def probe_claude_model_options(
     # model), which is exactly what the harness's ``default`` alias does —
     # listing it again would duplicate that row.
     aliases = [alias for alias in aliases if alias != "default"]
-    resolutions = await _resolve_claude_model_aliases(claude_config, aliases)
+    if aliases:
+        resolutions = await _resolve_claude_model_aliases(claude_config, aliases)
+    else:
+        # Headless Claude Code refuses ``/model``, so on a subscription login
+        # nothing enumerated. Launch candidates instead and keep what the API
+        # serves -- see :func:`_servable_claude_candidates`. Those runs already
+        # report the model each one resolved to, so the ``/model`` resolution
+        # pass is skipped rather than paying a second run per candidate.
+        served = await _servable_claude_candidates(claude_config)
+        aliases = list(served)
+        # The served id doubles as the label. The harness's human name ("Opus
+        # 4.8") comes from the ``/model`` output these rows never got, and an
+        # alias alone would leave the row saying "opus" without saying what
+        # opus is today.
+        resolutions = {
+            candidate: {"model": model, "label": model} for candidate, model in served.items()
+        }
     alias_rows: list[dict[str, object]] = []
     seen_models: set[object] = set()
     for alias in aliases:
