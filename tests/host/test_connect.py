@@ -248,6 +248,94 @@ async def test_handle_model_options_antigravity_failure_is_an_honest_empty(
     _cleanup_host(host)
 
 
+#: Picker ids the model-options dispatcher has no branch for, so a session on
+#: one gets no model row. Documented rather than silently tolerated: each is a
+#: harness a person can choose for a sub-agent head today, and `codex` is the
+#: one Debby's own GPT head declares. Shrinking this set is the fix; growing it
+#: needs a reason written here.
+_MODEL_OPTIONS_UNROUTED = frozenset(
+    {
+        "codex",  # only `codex-native` is routed, though both drive the same CLI
+        "pi",  # ditto `pi-native`
+        "copilot",
+        "cursor",
+        "cursor-native",
+        "devin",
+        "goose-native",
+        "grok",
+        "hermes",
+        "hermes-native",
+        "kimi-native",
+        "kiro-native",
+        "opencode-native",
+        "qwen-native",
+    }
+)
+
+
+async def test_every_picker_harness_is_routed_or_documented(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A harness a person can PICK must be one this dispatcher answers for.
+
+    THE SEAM THAT BROKE. The per-head dropdown offers `antigravity` — the only
+    antigravity row the harness catalog labels — while the dispatcher branched
+    on `antigravity-native` alone. Nothing joined the two, so the request
+    failed, the server turned it into a 502, and the UI retried it for ~45s
+    behind a spinner. Every test around it passed, because each asserted the
+    dispatcher answered for the spelling THE TEST chose.
+
+    So this walks the ids a person can actually choose and asserts each is
+    either routed or named in :data:`_MODEL_OPTIONS_UNROUTED` above. Adding a
+    picker row without a branch now fails here instead of in a dropdown.
+
+    The catalogs are stubbed because the question is ROUTING, not what any
+    vendor's probe returns on this machine.
+    """
+    from omnigent import claude_native, codex_native_app_server, pi_native_credentials
+    from omnigent.harness_plugins import harness_catalog, native_agents
+
+    rows = [{"id": "stub", "model": "stub", "displayName": "Stub"}]
+
+    async def _rows(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+        return rows
+
+    monkeypatch.setattr("omnigent.antigravity_native_catalog.antigravity_launch_catalog", _rows)
+    monkeypatch.setattr(codex_native_app_server, "codex_launch_catalog", _rows)
+    monkeypatch.setattr(claude_native, "claude_launch_catalog", _rows)
+    monkeypatch.setattr(claude_native, "resolve_native_claude_config", lambda *, spec, **_kw: None)
+    monkeypatch.setattr(pi_native_credentials, "pi_native_model_options", lambda: rows)
+    monkeypatch.setattr(
+        "omnigent.model_catalog.list_models_for_worker",
+        lambda *_args, **_kwargs: SimpleNamespace(models=[]),
+    )
+
+    host = _make_host_process()
+    pickable = [row["id"] for row in harness_catalog()] + [
+        agent.harness for agent in native_agents()
+    ]
+    unrouted: list[str] = []
+    try:
+        for harness in pickable:
+            result = await host._handle_model_options(
+                HostModelOptionsFrame(request_id=f"req_{harness}", harness=harness),
+            )
+            if result.status != "ok":
+                unrouted.append(harness)
+    finally:
+        _cleanup_host(host)
+
+    assert set(unrouted) <= _MODEL_OPTIONS_UNROUTED, (
+        f"these harnesses can be picked but get no model options: "
+        f"{sorted(set(unrouted) - _MODEL_OPTIONS_UNROUTED)}"
+    )
+    # Both antigravity spellings specifically: the SDK id is what the picker
+    # offers and the native id is what actually runs on a machine without the
+    # SDK's package, so BOTH have to answer.
+    assert "antigravity" not in unrouted
+    assert "antigravity-native" not in unrouted
+
+
 async def test_handle_model_options_claude_probe_failure_is_an_honest_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

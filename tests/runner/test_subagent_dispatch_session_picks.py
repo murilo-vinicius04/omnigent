@@ -238,3 +238,73 @@ async def test_the_effort_is_judged_against_the_harness_the_head_ends_up_on() ->
 
     assert not output.startswith("Error"), output
     assert created[0].get("reasoning_effort") == "minimal"
+
+
+@pytest.mark.asyncio
+async def test_a_head_whose_harness_needs_a_missing_package_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dispatch refuses before it creates the child.
+
+    THE BUG THIS PINS. ``antigravity`` is an in-process harness needing the
+    ``google-antigravity`` package, which no PATH probe can see — so it sailed
+    past the CLI check, the child was created, and the harness died inside it
+    with an ImportError the orchestrator only ever saw as "turn failed". It
+    could then re-dispatch into the same wall.
+
+    Note this test does NOT stub the package probe. The autouse fixture above
+    silences the CLI probe, and stubbing this one too is exactly how the
+    original hole stayed invisible: every dispatch test asserted against a
+    world where the harness was always installable.
+    """
+    from omnigent.onboarding import harness_install
+
+    monkeypatch.setattr(
+        harness_install,
+        "missing_harness_package",
+        lambda harness: (
+            "uv pip install 'omnigent[antigravity]'" if harness == "antigravity" else None
+        ),
+    )
+    runner_app.note_session_sub_agent_overrides(
+        PARENT_ID, harnesses={"worker": "antigravity"}, models=None
+    )
+    created: list[dict[str, Any]] = []
+    try:
+        output = await _dispatch(created)
+    finally:
+        runner_app.forget_session_sub_agent_overrides(PARENT_ID)
+
+    assert output.startswith("Error"), output
+    assert "omnigent[antigravity]" in output, (
+        "the refusal must name the install command, or the operator is told "
+        f"only that something is missing: {output!r}"
+    )
+    assert not created, "no child session may be created for a harness that cannot boot"
+
+
+@pytest.mark.asyncio
+async def test_the_package_probe_is_asked_about_the_real_harness() -> None:
+    """The probe runs unstubbed against the harness the head will use.
+
+    Guards the seam the other tests mock away: whatever
+    ``missing_harness_package`` says about ``antigravity`` here is what a real
+    dispatch would act on, so a change that makes the probe blind to an
+    uninstalled SDK fails here rather than in production.
+    """
+    from omnigent.onboarding.harness_install import missing_harness_package
+
+    # agy-backed: its requirement is a binary, which the CLI probe owns.
+    assert missing_harness_package("antigravity-native") is None
+    # A pure-SDK harness with nothing to install is not a package harness.
+    assert missing_harness_package("claude-sdk") is None
+
+    verdict = missing_harness_package("antigravity")
+    try:
+        import google_antigravity  # noqa: F401
+    except ImportError:
+        assert verdict is not None and "antigravity" in verdict, (
+            "the SDK is absent here, so the dispatch must be told what to install"
+        )
+    else:
+        assert verdict is None, "the SDK is installed, so nothing should be demanded"

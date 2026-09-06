@@ -5596,3 +5596,56 @@ describe("NewChatLandingScreen Smart Routing flavors are scoped separately", () 
     );
   });
 });
+
+describe("per-sub-agent harness picker", () => {
+  beforeEach(setupLandingMocks);
+
+  /** A two-head bundle shaped like examples/debby. */
+  function mockDebby(): void {
+    mockAgents([
+      {
+        id: "a_debby",
+        name: "debby",
+        display_name: "Debby",
+        description: null,
+        harness: "claude-sdk",
+        skills: [],
+        sub_agents: [
+          { name: "claude", description: null, harness: "claude-sdk", model: null },
+          { name: "gpt", description: null, harness: "codex", model: null },
+        ],
+      },
+    ]);
+  }
+
+  it("offers a vendor's own TUI, not just its in-process harness", () => {
+    // THE GAP THIS PINS. The list came from the harness catalog's labels,
+    // which carry exactly one antigravity row: `antigravity`, the in-process
+    // SDK. That harness needs a Python package and a glibc floor its bundled
+    // binary enforces, so on a machine without them a head pointed at it can
+    // never boot — while `antigravity-native`, driving the agy CLI, runs fine
+    // and was simply not offered.
+    mockDebby();
+    renderLanding();
+    openAgentConfig("a_debby");
+
+    openSelect("new-chat-landing-config-sub-harness-gpt");
+
+    expect(screen.getByTestId("new-chat-landing-sub-harness-gpt-antigravity")).toBeTruthy();
+    expect(screen.getByTestId("new-chat-landing-sub-harness-gpt-antigravity-native")).toBeTruthy();
+  });
+
+  it("sends the head's picked harness on create", async () => {
+    // Joins the dropdown to the wire: the id a person clicks is the id the
+    // create body carries, keyed by the head's declared name.
+    mockDebby();
+    renderLanding();
+    openAgentConfig("a_debby");
+    openSelect("new-chat-landing-config-sub-harness-gpt");
+    fireEvent.click(screen.getByTestId("new-chat-landing-sub-harness-gpt-antigravity-native"));
+    saveConfig();
+
+    const { body } = await submitAndReadBody("analyze this");
+    expect(body.sub_harness_override).toEqual({ gpt: "antigravity-native" });
+  });
+});
