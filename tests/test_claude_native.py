@@ -10008,7 +10008,7 @@ async def test_probe_claude_model_options_runs_bare(
 
 
 async def test_probe_falls_back_to_launching_candidates_when_nothing_enumerates(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Headless Claude Code refuses ``/model`` — candidates carry the catalog.
 
@@ -10023,6 +10023,11 @@ async def test_probe_falls_back_to_launching_candidates_when_nothing_enumerates(
     try and never a picker row: ``fable`` here is refused and does not appear,
     and ``opus`` appears as what it actually resolved to.
     """
+    # Own the catalog store. These answers are cached across probes (they cost
+    # real turns in production), so without this the assertion depends on
+    # whether some earlier test — or the developer's own machine — already
+    # wrote one, and it passes alone while failing in a full run.
+    monkeypatch.setattr("omnigent.model_catalog_store._data_dir", lambda: tmp_path)
     launched: list[str] = []
 
     class _FakeProcess:
@@ -10123,13 +10128,14 @@ async def test_candidate_verification_is_not_repaid_on_every_probe(
 
 
 async def test_probe_keeps_the_harness_enumeration_when_it_answers(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A CLI that still lists aliases never reaches the candidate table.
 
     The fallback exists for the headless refusal alone; on a build where
     ``/model`` answers, the harness's own list stays the only source.
     """
+    monkeypatch.setattr("omnigent.model_catalog_store._data_dir", lambda: tmp_path)
     launched: list[str] = []
 
     class _FakeProcess:
