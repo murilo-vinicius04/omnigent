@@ -3824,7 +3824,29 @@ def create_runner_app(
                     spec_entry = _sub_entry
                     spec = _unwrap_resolved_spec(_sub_entry)
                     _session_sub_agent_resolved[session_id] = True
-            harness_name = spec.executor.config.get("harness") or spec.executor.type
+            # The session's own harness pick outranks what the bundle declares,
+            # for exactly the reason its model does (read a few lines below): the
+            # bundle's team was fixed at authoring time, and a human choosing a
+            # harness in the config dialog is choosing it for THIS session. Read
+            # from the same init-envelope snapshot as ``model_override`` so the
+            # two picks cannot disagree about which session they describe --
+            # honoring one and not the other is what let a head whose pick said
+            # ``antigravity-native`` boot the spec's ``codex`` and die on a
+            # missing CLI, with the picked model applied on the way down.
+            #
+            # ``"auto"`` is Smart Routing's "not decided yet" sentinel rather
+            # than a harness name, so it defers to the spec here and the
+            # first-message router replaces it (see routing_class_from_snapshot).
+            _harness_override = (
+                init_context.envelope.snapshot.harness_override
+                if init_context.envelope is not None
+                else None
+            )
+            if _harness_override == "auto":
+                _harness_override = None
+            harness_name = (
+                _harness_override or spec.executor.config.get("harness") or spec.executor.type
+            )
             harness_name = canonicalize_harness(harness_name) or harness_name
 
             _start_verdict = await _evaluate_agent_start_gate(spec, harness_name)
