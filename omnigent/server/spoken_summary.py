@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import time
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
 from omnigent.db.enum_codecs import CONVERSATION_KIND
@@ -61,8 +62,32 @@ _SUB_AGENT_KINDS: frozenset[Any] = frozenset({"sub_agent", CONVERSATION_KIND.get
 # TTL cache for project config: project_id -> (expiry_monotonic, config_dict)
 _PROJECT_CONFIG_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
+#: Maximum number of session settings entries kept in memory before LRU eviction.
+MAX_SESSION_SETTINGS_CACHE_SIZE: int = 10_000
+
+
+class _SessionSettingsCache(OrderedDict[str, tuple[float, bool, str]]):
+    """Bounded LRU cache for session spoken summary settings."""
+
+    def __init__(self, max_size: int = MAX_SESSION_SETTINGS_CACHE_SIZE) -> None:
+        super().__init__()
+        self.max_size = max_size
+
+    def __setitem__(self, key: str, value: tuple[float, bool, str]) -> None:
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        while len(self) > self.max_size:
+            self.popitem(last=False)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if key in self:
+            self.move_to_end(key)
+            return super().get(key, default)
+        return default
+
+
 # TTL cache for session settings: session_id -> (expiry_monotonic, enabled, lang)
-_SESSION_SETTINGS_CACHE: dict[str, tuple[float, bool, str]] = {}
+_SESSION_SETTINGS_CACHE: _SessionSettingsCache = _SessionSettingsCache()
 
 
 def clear_spoken_summary_cache() -> None:
@@ -339,7 +364,10 @@ async def resolve_spoken_summary_settings_async(
     # 2. Check session cache
     cached_session = _SESSION_SETTINGS_CACHE.get(session_id)
     if cached_session is not None and now < cached_session[0]:
-        return cached_session[1], cached_session[2], None
+        if not cached_session[1] or conversation_store is None:
+            return cached_session[1], cached_session[2], None
+        conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+        return cached_session[1], cached_session[2], conv
 
     if conversation_store is None:
         return False, "auto", None
@@ -347,7 +375,7 @@ async def resolve_spoken_summary_settings_async(
     # 3. Read conversation off the event loop
     conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
     if conv is None:
-        _SESSION_SETTINGS_CACHE[session_id] = (now + ttl_seconds, False, "auto")
+        _SESSION_SETTINGS_CACHE[session_id] = (float("inf"), False, "auto")
         return False, "auto", None
 
     # Guard: sub-agent or child session cannot have spoken summary enabled
@@ -357,7 +385,7 @@ async def resolve_spoken_summary_settings_async(
         or conv.root_conversation_id not in (None, conv.id)
         or getattr(conv, "kind", None) in _SUB_AGENT_KINDS
     ):
-        _SESSION_SETTINGS_CACHE[session_id] = (now + ttl_seconds, False, "auto")
+        _SESSION_SETTINGS_CACHE[session_id] = (float("inf"), False, "auto")
         return False, "auto", conv
 
     # 4. Check conversation labels
@@ -365,7 +393,8 @@ async def resolve_spoken_summary_settings_async(
         raw_val = conv.labels["spoken_summary_enabled"].strip().lower()
         enabled = raw_val in ("true", "1", "yes", "on")
         lang = conv.labels.get("spoken_summary_language", "auto").strip() or "auto"
-        _SESSION_SETTINGS_CACHE[session_id] = (now + ttl_seconds, enabled, lang)
+        expiry = (now + ttl_seconds) if enabled else float("inf")
+        _SESSION_SETTINGS_CACHE[session_id] = (expiry, enabled, lang)
         return enabled, lang, conv
 
     # 5. Check project config with TTL cache
@@ -398,21 +427,24 @@ async def resolve_spoken_summary_settings_async(
                     or p_cfg.get("language")
                     or "auto"
                 ).strip()
-                _SESSION_SETTINGS_CACHE[session_id] = (now + ttl_seconds, enabled, lang or "auto")
+                expiry = (now + ttl_seconds) if enabled else float("inf")
+                _SESSION_SETTINGS_CACHE[session_id] = (expiry, enabled, lang or "auto")
                 return enabled, lang or "auto", conv
             if isinstance(spoken_cfg, bool):
                 enabled = spoken_cfg
                 lang = str(
                     p_cfg.get("spoken_summary_language") or p_cfg.get("language") or "auto"
                 ).strip()
-                _SESSION_SETTINGS_CACHE[session_id] = (now + ttl_seconds, enabled, lang or "auto")
+                expiry = (now + ttl_seconds) if enabled else float("inf")
+                _SESSION_SETTINGS_CACHE[session_id] = (expiry, enabled, lang or "auto")
                 return enabled, lang or "auto", conv
             if "spoken_summary_enabled" in p_cfg:
                 enabled = bool(p_cfg.get("spoken_summary_enabled", False))
                 lang = str(
                     p_cfg.get("spoken_summary_language") or p_cfg.get("language") or "auto"
                 ).strip()
-                _SESSION_SETTINGS_CACHE[session_id] = (now + ttl_seconds, enabled, lang or "auto")
+                expiry = (now + ttl_seconds) if enabled else float("inf")
+                _SESSION_SETTINGS_CACHE[session_id] = (expiry, enabled, lang or "auto")
                 return enabled, lang or "auto", conv
 
     # 6. Global env fallback
@@ -423,7 +455,8 @@ async def resolve_spoken_summary_settings_async(
         "on",
     )
     env_lang = os.environ.get("OMNIGENT_SPOKEN_SUMMARY_LANGUAGE", "auto").strip() or "auto"
-    _SESSION_SETTINGS_CACHE[session_id] = (now + ttl_seconds, env_enabled, env_lang)
+    expiry = (now + ttl_seconds) if env_enabled else float("inf")
+    _SESSION_SETTINGS_CACHE[session_id] = (expiry, env_enabled, env_lang)
     return env_enabled, env_lang, conv
 
 

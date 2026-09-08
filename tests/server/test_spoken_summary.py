@@ -599,7 +599,10 @@ async def test_subagent_with_no_parent_id_makes_zero_model_calls() -> None:
 
 @pytest.mark.asyncio
 async def test_no_summary_when_disabled() -> None:
-    """When spoken summary is disabled, no model call is made and no summary attached."""
+    """When spoken summary is disabled, no model call is made and repeat turns
+    make 0 DB queries.
+    """
+    clear_spoken_summary_cache()
     client = MockLLMClient()
     conv = Conversation(
         id="conv_disabled",
@@ -608,29 +611,74 @@ async def test_no_summary_when_disabled() -> None:
         updated_at=1,
         parent_conversation_id=None,
         kind="default",
+        project_id="proj_disabled",
     )
-    store = _FakeConversationStore(conversation=conv)
-    text_acc = [_LONG_RESPONSE_TEXT]
+    store = _FakeConversationStore(
+        conversation=conv,
+        project_config={"spoken_summary": {"enabled": False}},
+    )
+    text_acc_1 = [_LONG_RESPONSE_TEXT]
 
+    # Turn 1: production path (NO override passed)
     await _flush_relay_text(
         store,  # type: ignore[arg-type]
         "conv_disabled",
-        text_acc,
-        "resp_disabled",
+        text_acc_1,
+        "resp_disabled_1",
         "test-agent",
         is_terminal_completion=True,
-        spoken_summary_enabled=False,
         llm_client=client,
     )
 
     assert len(client.calls) == 0
     assert len(store.appended) == 1
-    content = store.appended[0].data.content
-    assert len(content) == 1
-    assert content[0]["type"] == "output_text"
-    # Off-path cost: ZERO DB queries when disabled
-    assert store.get_conversation_calls == 0
-    assert store.project_config_calls == 0
+    content_1 = store.appended[0].data.content
+    assert len(content_1) == 1
+    assert content_1[0]["type"] == "output_text"
+    # Turn 1 resolved settings: 1 get_conversation + 1 get_project_config
+    assert store.get_conversation_calls == 1
+    assert store.project_config_calls == 1
+
+    # Turn 2: production path on same session — MUST converge to genuinely ZERO repeat queries
+    text_acc_2 = [_LONG_RESPONSE_TEXT]
+    await _flush_relay_text(
+        store,  # type: ignore[arg-type]
+        "conv_disabled",
+        text_acc_2,
+        "resp_disabled_2",
+        "test-agent",
+        is_terminal_completion=True,
+        llm_client=client,
+    )
+
+    assert len(client.calls) == 0
+    assert len(store.appended) == 2
+    content_2 = store.appended[1].data.content
+    assert len(content_2) == 1
+    assert content_2[0]["type"] == "output_text"
+    # Off-path cost: ZERO repeat queries on turn 2
+    assert store.get_conversation_calls == 1
+    assert store.project_config_calls == 1
+
+    # Turn 3: simulate elapsed time far past any TTL window (e.g. 1000s later)
+    # The disabled status must remain cached without repeating queries.
+    with patch("time.monotonic", return_value=time.monotonic() + 1000.0):
+        text_acc_3 = [_LONG_RESPONSE_TEXT]
+        await _flush_relay_text(
+            store,  # type: ignore[arg-type]
+            "conv_disabled",
+            text_acc_3,
+            "resp_disabled_3",
+            "test-agent",
+            is_terminal_completion=True,
+            llm_client=client,
+        )
+
+    assert len(client.calls) == 0
+    assert len(store.appended) == 3
+    # STILL ZERO repeat queries!
+    assert store.get_conversation_calls == 1
+    assert store.project_config_calls == 1
 
 
 # ── Case 4: NO summary on failed, cancelled turns, or policy deny ──────
@@ -828,6 +876,134 @@ async def test_cancellation_mid_summary_still_persists_output_text() -> None:
     assert content[0]["type"] == "output_text"
     assert content[0]["text"] == _LONG_RESPONSE_TEXT
     # Buffer was cleared synchronously
+    assert len(text_acc) == 0
+
+
+@pytest.mark.asyncio
+async def test_real_task_cancel_mid_summary_still_persists_output_text() -> None:
+    """Calling task.cancel() for real on an in-flight flush preserves and persists output_text."""
+    started_event = asyncio.Event()
+
+    class RealCancellingClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        @property
+        def responses(self) -> Any:
+            return self
+
+        async def create(self, **kwargs: Any) -> Any:
+            self.calls.append(kwargs)
+            started_event.set()
+            await asyncio.sleep(60.0)
+
+    client = RealCancellingClient()
+    conv = Conversation(
+        id="conv_real_cancel",
+        root_conversation_id="conv_real_cancel",
+        created_at=1,
+        updated_at=1,
+        parent_conversation_id=None,
+        kind="default",
+    )
+    store = _FakeConversationStore(conversation=conv)
+    text_acc = [_LONG_RESPONSE_TEXT]
+
+    task = asyncio.create_task(
+        _flush_relay_text(
+            store,  # type: ignore[arg-type]
+            "conv_real_cancel",
+            text_acc,
+            "resp_real_cancel",
+            "test-agent",
+            is_terminal_completion=True,
+            spoken_summary_enabled=True,
+            llm_client=client,
+        )
+    )
+
+    await started_event.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Output text was safely persisted despite real task cancellation
+    assert len(store.appended) == 1
+    content = store.appended[0].data.content
+    assert len(content) == 1
+    assert content[0]["type"] == "output_text"
+    assert content[0]["text"] == _LONG_RESPONSE_TEXT
+    assert len(text_acc) == 0
+
+
+@pytest.mark.asyncio
+async def test_second_cancellation_during_append_still_persists_output_text() -> None:
+    """A second cancel() landing during store.append does not abort persistence
+    or lose the message.
+    """
+    started_event = asyncio.Event()
+
+    class RealCancellingClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        @property
+        def responses(self) -> Any:
+            return self
+
+        async def create(self, **kwargs: Any) -> Any:
+            self.calls.append(kwargs)
+            started_event.set()
+            await asyncio.sleep(60.0)
+
+    task_ref: list[asyncio.Task[Any]] = []
+
+    class SlowAppendStore(_FakeConversationStore):
+        def append(self, conversation_id: str, items: list[Any]) -> list[ConversationItem]:
+            if task_ref:
+                task_ref[0].cancel()
+            time.sleep(0.02)
+            return super().append(conversation_id, items)
+
+    client = RealCancellingClient()
+    conv = Conversation(
+        id="conv_double_cancel",
+        root_conversation_id="conv_double_cancel",
+        created_at=1,
+        updated_at=1,
+        parent_conversation_id=None,
+        kind="default",
+    )
+    store = SlowAppendStore(conversation=conv)
+    text_acc = [_LONG_RESPONSE_TEXT]
+
+    task = asyncio.create_task(
+        _flush_relay_text(
+            store,  # type: ignore[arg-type]
+            "conv_double_cancel",
+            text_acc,
+            "resp_double_cancel",
+            "test-agent",
+            is_terminal_completion=True,
+            spoken_summary_enabled=True,
+            llm_client=client,
+        )
+    )
+    task_ref.append(task)
+
+    await started_event.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Both cancels survived: output_text was persisted, buffer cleared, no loss
+    assert len(store.appended) == 1
+    content = store.appended[0].data.content
+    assert len(content) == 1
+    assert content[0]["type"] == "output_text"
+    assert content[0]["text"] == _LONG_RESPONSE_TEXT
     assert len(text_acc) == 0
 
 
@@ -1314,3 +1490,108 @@ async def test_disabled_feature_zero_model_calls_and_zero_uncached_project_confi
     # Assertions for BLOCKING 3
     assert len(client.calls) == 0
     assert store.project_config_calls == initial_db_queries  # ZERO additional queries!
+    assert store.get_conversation_calls == 1  # ZERO additional conversation queries!
+
+
+@pytest.mark.asyncio
+async def test_two_turn_enabled_project_config_generates_summaries_both_turns() -> None:
+    """Two-turn conversation on enabled project config path with no override
+    generates summary on both turns.
+    """
+    clear_spoken_summary_cache()
+    client = MockLLMClient(response_text="Database pool leaks were fixed. All unit tests pass.")
+    conv = Conversation(
+        id="conv_two_turn_enabled",
+        root_conversation_id="conv_two_turn_enabled",
+        created_at=1,
+        updated_at=1,
+        parent_conversation_id=None,
+        kind="default",
+        project_id="proj_enabled",
+    )
+    store = _FakeConversationStore(
+        conversation=conv,
+        project_config={"spoken_summary": {"enabled": True, "language": "en-US"}},
+    )
+
+    # Turn 1: production path (NO override passed)
+    text_acc_1 = [_LONG_RESPONSE_TEXT]
+    await _flush_relay_text(
+        store,  # type: ignore[arg-type]
+        "conv_two_turn_enabled",
+        text_acc_1,
+        "resp_turn_1",
+        "test-agent",
+        is_terminal_completion=True,
+        llm_client=client,
+    )
+
+    assert len(client.calls) == 1
+    assert len(store.appended) == 1
+    content_1 = store.appended[0].data.content
+    assert len(content_1) == 2
+    assert content_1[0]["type"] == "output_text"
+    assert content_1[1]["type"] == "spoken_summary"
+    assert content_1[1]["lang"] == "en-US"
+
+    # Turn 2: 30 seconds later on same session, NO override passed (cache hit)
+    text_acc_2 = [_LONG_RESPONSE_TEXT]
+    await _flush_relay_text(
+        store,  # type: ignore[arg-type]
+        "conv_two_turn_enabled",
+        text_acc_2,
+        "resp_turn_2",
+        "test-agent",
+        is_terminal_completion=True,
+        llm_client=client,
+    )
+
+    # In the buggy code, len(client.calls) was 1 because turn 2 hit cache returning conv=None
+    # With the fix, summary is generated for BOTH turns:
+    assert len(client.calls) == 2
+    assert len(store.appended) == 2
+    content_2 = store.appended[1].data.content
+    assert len(content_2) == 2
+    assert content_2[0]["type"] == "output_text"
+    assert content_2[1]["type"] == "spoken_summary"
+    assert content_2[1]["lang"] == "en-US"
+
+
+@pytest.mark.asyncio
+async def test_session_settings_cache_stops_growing_past_bound() -> None:
+    """_SESSION_SETTINGS_CACHE strictly evicts LRU entries and never grows past max_size."""
+    from omnigent.server.spoken_summary import (
+        _SESSION_SETTINGS_CACHE,
+        resolve_spoken_summary_settings_async,
+    )
+
+    clear_spoken_summary_cache()
+    original_max_size = _SESSION_SETTINGS_CACHE.max_size
+    try:
+        # Bound cache to a small size for testing eviction
+        _SESSION_SETTINGS_CACHE.max_size = 5
+
+        # Create 15 distinct sessions and resolve settings on the production path (no override)
+        for i in range(15):
+            s_id = f"session_bounded_{i}"
+            conv = Conversation(
+                id=s_id,
+                root_conversation_id=s_id,
+                created_at=1,
+                updated_at=1,
+                parent_conversation_id=None,
+                kind="default",
+            )
+            store = _FakeConversationStore(conversation=conv)
+            await resolve_spoken_summary_settings_async(s_id, store)  # type: ignore[arg-type]
+
+        # Assert the cache never grew past the bound
+        assert len(_SESSION_SETTINGS_CACHE) == 5
+        # Oldest entries (0 through 9) were evicted; newest (10 through 14) are retained
+        for i in range(10):
+            assert f"session_bounded_{i}" not in _SESSION_SETTINGS_CACHE
+        for i in range(10, 15):
+            assert f"session_bounded_{i}" in _SESSION_SETTINGS_CACHE
+    finally:
+        _SESSION_SETTINGS_CACHE.max_size = original_max_size
+        clear_spoken_summary_cache()

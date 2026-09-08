@@ -7447,6 +7447,9 @@ async def _flush_relay_text(
                 extra={"session_id": session_id},
             )
             cancelled_exc = exc
+            cur_task = asyncio.current_task()
+            if cur_task is not None and hasattr(cur_task, "uncancel"):
+                cur_task.uncancel()
         except Exception as exc:  # noqa: BLE001
             _logger.warning(
                 "Spoken summary generation failed for session=%s: %s; continuing without summary",
@@ -7462,6 +7465,9 @@ async def _flush_relay_text(
                 extra={"session_id": session_id},
             )
             cancelled_exc = exc
+            cur_task = asyncio.current_task()
+            if cur_task is not None and hasattr(cur_task, "uncancel"):
+                cur_task.uncancel()
 
     content: list[dict[str, Any]] = [{"type": "output_text", "text": text}]
     if spoken_summary_part is not None:
@@ -7469,21 +7475,40 @@ async def _flush_relay_text(
 
     import uuid
 
+    item = NewConversationItem(
+        type="message",
+        response_id=response_id or f"turn_{uuid.uuid4().hex}",
+        data=parse_item_data(
+            "message",
+            {
+                "type": "message",
+                "role": "assistant",
+                "agent": model_id or "unknown",
+                "content": content,
+            },
+        ),
+    )
+    append_fut = asyncio.ensure_future(
+        asyncio.to_thread(conversation_store.append, session_id, [item])
+    )
     try:
-        item = NewConversationItem(
-            type="message",
-            response_id=response_id or f"turn_{uuid.uuid4().hex}",
-            data=parse_item_data(
-                "message",
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "agent": model_id or "unknown",
-                    "content": content,
-                },
-            ),
-        )
-        persisted = await asyncio.to_thread(conversation_store.append, session_id, [item])
+        persisted = await asyncio.shield(append_fut)
+    except asyncio.CancelledError as exc:
+        cancelled_exc = cancelled_exc or exc
+        cur_task = asyncio.current_task()
+        if cur_task is not None and hasattr(cur_task, "uncancel"):
+            cur_task.uncancel()
+        try:
+            persisted = await append_fut
+        except Exception:  # noqa: BLE001
+            _logger.exception(
+                "Relay: failed to persist assistant text segment for session=%s",
+                session_id,
+                extra={"session_id": session_id},
+            )
+            if cancelled_exc is not None:
+                raise cancelled_exc from None
+            return
     except Exception:  # noqa: BLE001
         # Keep text_acc + the in-flight buffer so the narration isn't lost:
         # it still replays on reconnect and is retried at the next flush.
