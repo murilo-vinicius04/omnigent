@@ -1305,7 +1305,7 @@ function ComposerSendShortcutControl() {
   );
 }
 
-function SpokenSummaryPlaybackControl() {
+export function SpokenSummaryPlaybackControl() {
   const [value, setValue] = useState(() => readSpokenSummaryPlayback());
   const labelId = useId();
   const descriptionId = useId();

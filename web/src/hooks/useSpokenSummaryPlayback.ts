@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { Bubble } from "@/lib/renderItems";
+import type { Bubble, RenderItem } from "@/lib/renderItems";
 import { isMessageSpoken, markMessageSpoken, useSpeechPlaybackStore } from "@/lib/speechPlayback";
 
 /**
@@ -8,7 +8,7 @@ import { isMessageSpoken, markMessageSpoken, useSpeechPlaybackStore } from "@/li
  *
  * Guarantees:
  * - Requires positive evidence this client observed the turn arrive live (either seen in a
- *   non-final/streaming state, or matching the activeResponse id).
+ *   non-final/streaming state, or matching an actively streaming activeResponse id).
  * - Historical turns (e.g. loaded history after mount with [], page refresh, or in-SPA session
  *   switches) are never spoken.
  * - Uses a single stable identity (responseId) across streaming, reconcile, and skim-line controls
@@ -39,12 +39,20 @@ export function useSpokenSummaryPlayback(
       if (bubble.kind === "assistant") {
         const isStreamingLifecycle =
           bubble.lifecycle === "streaming" || (bubble.lifecycle as string) === "running";
-        const hasNonFinalItem = bubble.items.some((it) => it.kind === "text" && it.final === false);
-        const isActiveResponse = Boolean(
-          activeResponseId && activeResponseId === bubble.responseId,
+        const hasStreamingItem = bubble.items.some(
+          (it) =>
+            (it.kind === "text" && it.final === false) ||
+            (it.kind === "tool" && it.state === "input-available"),
+        );
+        // Only treat activeResponseId as live evidence when the response is actually streaming.
+        // A completed activeResponse must never count as live evidence.
+        const isActiveResponseStreaming = Boolean(
+          activeResponseId &&
+            activeResponseId === bubble.responseId &&
+            isStreamingLifecycle,
         );
 
-        if (isStreamingLifecycle || hasNonFinalItem || isActiveResponse) {
+        if (isStreamingLifecycle || hasStreamingItem || isActiveResponseStreaming) {
           observedLiveResponseIdsRef.current.add(bubble.responseId);
         }
       }
@@ -67,8 +75,28 @@ export function useSpokenSummaryPlayback(
         const isLatestTurn = i === lastAssistantIdx;
         const wasObservedLive = observedLiveResponseIdsRef.current.has(responseId);
 
-        const textItem = bubble.items.find((it) => it.kind === "text");
-        const isFinal = textItem ? textItem.final !== false : bubble.lifecycle !== "streaming";
+        // Select the text item that actually carries the spoken summary (the LAST/final one), not the first.
+        const textItems = bubble.items.filter(
+          (it): it is Extract<RenderItem, { kind: "text" }> => it.kind === "text",
+        );
+        const summaryItem = textItems
+          .slice()
+          .reverse()
+          .find((it) => Boolean(it.spokenSummary && it.spokenSummary.text.trim().length > 0));
+        const textItem = summaryItem ?? textItems[textItems.length - 1];
+
+        // Do NOT mark a turn spoken while bubble.lifecycle === "streaming" or while any item is still streaming.
+        // Both conditions must hold for the turn to be considered final:
+        // bubble.lifecycle !== "streaming" AND no item is still streaming.
+        const isBubbleStreaming =
+          bubble.lifecycle === "streaming" || (bubble.lifecycle as string) === "running";
+        const hasStreamingItem = bubble.items.some(
+          (it) =>
+            (it.kind === "text" && it.final === false) ||
+            (it.kind === "tool" && it.state === "input-available"),
+        );
+        const isFinal = !isBubbleStreaming && !hasStreamingItem;
+
         const summary = textItem?.spokenSummary;
         const hasValidSummary = Boolean(summary && summary.text.trim().length > 0);
 

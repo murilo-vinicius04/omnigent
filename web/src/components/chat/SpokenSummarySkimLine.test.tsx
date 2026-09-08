@@ -1,11 +1,27 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { useSpeechPlaybackStore } from "@/lib/speechPlayback";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  resetSpeechEngine,
+  setSpeechEngine,
+  type SpeechEngine,
+  useSpeechPlaybackStore,
+} from "@/lib/speechPlayback";
 import { SpokenSummarySkimLine } from "./SpokenSummarySkimLine";
 
-afterEach(cleanup);
+class MockSpeechEngine implements SpeechEngine {
+  isSupported = vi.fn().mockReturnValue(true);
+  speak = vi.fn();
+  stop = vi.fn();
+  isSpeaking = vi.fn().mockReturnValue(false);
+}
+
+afterEach(() => {
+  cleanup();
+  resetSpeechEngine();
+});
 
 beforeEach(() => {
+  setSpeechEngine(new MockSpeechEngine());
   useSpeechPlaybackStore.setState({ isSpeaking: false, speakingItemId: null });
 });
 
@@ -84,5 +100,30 @@ describe("SpokenSummarySkimLine", () => {
     expect(screen.getByTestId("spoken-summary-stop-button")).toBeInTheDocument();
     expect(screen.getByText("Stop")).toBeInTheDocument();
     expect(screen.queryByTestId("spoken-summary-play-button")).not.toBeInTheDocument();
+  });
+
+  it("displays Stop affordance and allows stopping when effectiveId is empty string", () => {
+    render(
+      <SpokenSummarySkimLine
+        summary={{ text: "Here is a brief summary.", lang: "en-US" }}
+        id=""
+        itemId=""
+      />,
+    );
+
+    const playBtn = screen.getByTestId("spoken-summary-play-button");
+    fireEvent.click(playBtn);
+
+    expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(true);
+    expect(useSpeechPlaybackStore.getState().speakingItemId).toBe("");
+
+    const stopBtn = screen.getByTestId("spoken-summary-stop-button");
+    expect(stopBtn).toBeInTheDocument();
+    expect(screen.getByText("Stop")).toBeInTheDocument();
+
+    fireEvent.click(stopBtn);
+    expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(false);
+    expect(useSpeechPlaybackStore.getState().speakingItemId).toBeNull();
+    expect(screen.getByTestId("spoken-summary-play-button")).toBeInTheDocument();
   });
 });

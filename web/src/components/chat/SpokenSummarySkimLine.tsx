@@ -24,7 +24,7 @@ export function SpokenSummarySkimLine({ summary, id, itemId }: SpokenSummarySkim
   const stop = useSpeechPlaybackStore((s) => s.stop);
 
   const effectiveId = id || itemId || "";
-  const isSpeaking = Boolean(effectiveId && speakingItemId === effectiveId);
+  const isSpeaking = Boolean(speakingItemId !== null && speakingItemId === effectiveId);
 
   const handleToggle = useCallback(
     (e: React.MouseEvent) => {

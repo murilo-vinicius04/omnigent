@@ -1,9 +1,11 @@
-import { cleanup, renderHook } from "@testing-library/react";
+import { cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Bubble } from "@/lib/renderItems";
+import type { Bubble, RenderItem } from "@/lib/renderItems";
 import type { ActiveResponse } from "@/store/types";
 import {
   BrowserSpeechEngine,
+  clearInMemorySpokenTracking,
+  isMessageSpoken,
   resetSpeechEngine,
   resetSpokenMessageTracking,
   setSpeechEngine,
@@ -11,6 +13,7 @@ import {
   useSpeechPlaybackStore,
 } from "@/lib/speechPlayback";
 import { writeSpokenSummaryPlayback } from "@/lib/spokenSummaryPlaybackPreferences";
+import { SpokenSummaryPlaybackControl } from "@/pages/SettingsPage";
 import { useSpokenSummaryPlayback } from "./useSpokenSummaryPlayback";
 
 class MockSpeechEngine implements SpeechEngine {
@@ -45,11 +48,27 @@ function makeAssistantBubble(
   };
 }
 
+function makeAssistantBubbleWithItems(
+  responseId: string,
+  items: RenderItem[],
+  lifecycle: ActiveResponse["state"] = "completed",
+): Bubble {
+  return {
+    kind: "assistant",
+    responseId,
+    stableId: responseId,
+    lifecycle,
+    error: null,
+    items,
+  };
+}
+
 describe("useSpokenSummaryPlayback", () => {
   let mockEngine: MockSpeechEngine;
 
   beforeEach(() => {
     localStorage.clear();
+    sessionStorage.clear();
     resetSpokenMessageTracking();
     useSpeechPlaybackStore.setState({ isSpeaking: false, speakingItemId: null });
     mockEngine = new MockSpeechEngine();
@@ -113,7 +132,7 @@ describe("useSpokenSummaryPlayback", () => {
 
     expect(mockEngine.speak).not.toHaveBeenCalled();
 
-    // Switch to Session B (history swap)
+    // Switch to Session B (history swap) where Session B's activeResponse was left completed in store
     const sessionBBubbles: Bubble[] = [
       makeAssistantBubble(
         "resp_b1",
@@ -131,7 +150,7 @@ describe("useSpokenSummaryPlayback", () => {
       ),
     ];
 
-    rerender({ bubbles: sessionBBubbles, activeResponseId: null });
+    rerender({ bubbles: sessionBBubbles, activeResponseId: "resp_b2" });
 
     expect(mockEngine.speak).not.toHaveBeenCalled();
     expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(false);
@@ -368,13 +387,258 @@ describe("useSpokenSummaryPlayback", () => {
     expect(mockEngine.stop).toHaveBeenCalled();
   });
 
+  it("plays spoken summary exactly once for a tool-using turn arriving incrementally", () => {
+    writeSpokenSummaryPlayback(true);
+
+    const { rerender } = renderHook(
+      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
+      { initialProps: { bubbles: [] as Bubble[], activeResponseId: "resp_tools" as string | null } },
+    );
+
+    // Step 1: Preliminary text arrives (final: true, no summary, turn streaming)
+    const step1Items: RenderItem[] = [
+      {
+        kind: "text",
+        itemId: "txt_prelim",
+        text: "I'll check the files...",
+        final: true,
+      },
+    ];
+    rerender({
+      bubbles: [makeAssistantBubbleWithItems("resp_tools", step1Items, "streaming")],
+      activeResponseId: "resp_tools",
+    });
+    expect(mockEngine.speak).not.toHaveBeenCalled();
+
+    // Step 2: Tool call item arrives (tool running)
+    const step2Items: RenderItem[] = [
+      ...step1Items,
+      {
+        kind: "tool",
+        itemId: "tool_1",
+        execution: {
+          callId: "call_1",
+          name: "list_files",
+          arguments: {},
+          argsSummary: "",
+          agentName: "test",
+          executedBy: "server",
+          output: null,
+        },
+        output: null,
+        state: "input-available",
+        startedAt: 100,
+        duration: undefined,
+      },
+    ];
+    rerender({
+      bubbles: [makeAssistantBubbleWithItems("resp_tools", step2Items, "streaming")],
+      activeResponseId: "resp_tools",
+    });
+    expect(mockEngine.speak).not.toHaveBeenCalled();
+
+    // Step 3: Tool result arrives (tool finished, turn still streaming)
+    const step3Items: RenderItem[] = [
+      step1Items[0]!,
+      {
+        kind: "tool",
+        itemId: "tool_1",
+        execution: {
+          callId: "call_1",
+          name: "list_files",
+          arguments: {},
+          argsSummary: "",
+          agentName: "test",
+          executedBy: "server",
+          output: "[\"file1.ts\"]",
+        },
+        output: "[\"file1.ts\"]",
+        state: "output-available",
+        startedAt: 100,
+        duration: 50,
+      },
+    ];
+    rerender({
+      bubbles: [makeAssistantBubbleWithItems("resp_tools", step3Items, "streaming")],
+      activeResponseId: "resp_tools",
+    });
+    expect(mockEngine.speak).not.toHaveBeenCalled();
+
+    // Step 4: Final answer arrives WITH spoken summary, turn completes
+    const step4Items: RenderItem[] = [
+      ...step3Items,
+      {
+        kind: "text",
+        itemId: "txt_final",
+        text: "Here is what I found in the files.",
+        final: true,
+        spokenSummary: {
+          text: "I found the requested files.",
+          lang: "en-US",
+        },
+      },
+    ];
+    rerender({
+      bubbles: [makeAssistantBubbleWithItems("resp_tools", step4Items, "completed")],
+      activeResponseId: null,
+    });
+
+    expect(mockEngine.speak).toHaveBeenCalledTimes(1);
+    expect(mockEngine.speak).toHaveBeenCalledWith(
+      "I found the requested files.",
+      "en-US",
+      expect.any(Function),
+      expect.any(Function),
+    );
+    expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(true);
+    expect(useSpeechPlaybackStore.getState().speakingItemId).toBe("resp_tools");
+  });
+
+  it("does NOT re-speak when bubbles re-render without new messages", () => {
+    writeSpokenSummaryPlayback(true);
+    const initialBubbles: Bubble[] = [];
+
+    const { rerender } = renderHook(
+      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
+      { initialProps: { bubbles: initialBubbles, activeResponseId: "resp_1" as string | null } },
+    );
+
+    const streamingBubbles: Bubble[] = [
+      makeAssistantBubble("resp_1", null, undefined, false, "streaming"),
+    ];
+    rerender({ bubbles: streamingBubbles, activeResponseId: "resp_1" });
+
+    const finalBubbles: Bubble[] = [
+      makeAssistantBubble(
+        "resp_1",
+        "item_1",
+        { text: "Summary 1", lang: "en-US" },
+        true,
+        "completed",
+      ),
+    ];
+    rerender({ bubbles: finalBubbles, activeResponseId: null });
+    expect(mockEngine.speak).toHaveBeenCalledTimes(1);
+
+    // Re-render with identical messages (new array instance)
+    rerender({ bubbles: [...finalBubbles], activeResponseId: null });
+    expect(mockEngine.speak).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT speak prepended historical messages when pagination loads older history", () => {
+    writeSpokenSummaryPlayback(true);
+    const currentBubbles: Bubble[] = [
+      makeAssistantBubble(
+        "resp_2",
+        "item_2",
+        { text: "Tail message", lang: "en-US" },
+        true,
+        "completed",
+      ),
+    ];
+
+    const { rerender } = renderHook(
+      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
+      { initialProps: { bubbles: currentBubbles, activeResponseId: null as string | null } },
+    );
+
+    // Prepend older history at the beginning of transcript (pagination load)
+    const prependedBubbles: Bubble[] = [
+      makeAssistantBubble(
+        "resp_1",
+        "item_1",
+        { text: "Older message", lang: "en-US" },
+        true,
+        "completed",
+      ),
+      ...currentBubbles,
+    ];
+
+    rerender({ bubbles: prependedBubbles, activeResponseId: null });
+
+    expect(mockEngine.speak).not.toHaveBeenCalled();
+  });
+
+  it("does not replay audio on hard reload mid-stream (sessionStorage persistence)", () => {
+    writeSpokenSummaryPlayback(true);
+
+    // 1. Live stream starts in tab
+    const initialStreamBubbles: Bubble[] = [
+      makeAssistantBubble("resp_reload", null, undefined, false, "streaming"),
+    ];
+    const { unmount } = renderHook(
+      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
+      {
+        initialProps: {
+          bubbles: initialStreamBubbles,
+          activeResponseId: "resp_reload" as string | null,
+        },
+      },
+    );
+
+    // Summary arrives and speech starts playing live
+    const spoken = useSpeechPlaybackStore
+      .getState()
+      .speakLiveSummary("resp_reload", "Summary before reload", "en-US");
+    expect(spoken).toBe(true);
+    expect(mockEngine.speak).toHaveBeenCalledTimes(1);
+
+    // 2. Hard reload mid-stream: component unmounts, speech stops, in-memory state is wiped,
+    // but sessionStorage persists in the same tab.
+    unmount();
+    clearInMemorySpokenTracking();
+    useSpeechPlaybackStore.setState({ isSpeaking: false, speakingItemId: null });
+
+    // 3. Tab reconnects to the still-running session
+    const { rerender: reloadedRerender } = renderHook(
+      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
+      {
+        initialProps: {
+          bubbles: initialStreamBubbles,
+          activeResponseId: "resp_reload" as string | null,
+        },
+      },
+    );
+
+    // 4. Turn finalizes after reload
+    const completedBubbles: Bubble[] = [
+      makeAssistantBubble(
+        "resp_reload",
+        "item_1",
+        { text: "Summary before reload", lang: "en-US" },
+        true,
+        "completed",
+      ),
+    ];
+    reloadedRerender({ bubbles: completedBubbles, activeResponseId: null });
+
+    // Assert speech is NOT played again from the top
+    expect(mockEngine.speak).toHaveBeenCalledTimes(1);
+  });
+
+  it("silences playback when storage cannot be consulted (bias toward silence)", () => {
+    const getItemSpy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("Storage access restricted");
+    });
+    try {
+      expect(isMessageSpoken("unseen_id")).toBe(true);
+    } finally {
+      getItemSpy.mockRestore();
+    }
+  });
+
   it("toggling 'Speak responses' OFF stops any in-flight utterance", () => {
     writeSpokenSummaryPlayback(true);
     useSpeechPlaybackStore.setState({ isSpeaking: true, speakingItemId: "resp_in_flight" });
 
-    // When user toggles off, settings control calls writeSpokenSummaryPlayback(false) and store.stop()
-    writeSpokenSummaryPlayback(false);
-    useSpeechPlaybackStore.getState().stop();
+    // Exercise SettingsPage's SpokenSummaryPlaybackControl component toggle handler
+    render(<SpokenSummaryPlaybackControl />);
+
+    const toggle = screen.getByTestId("spoken-summary-playback-toggle");
+    expect(toggle).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("data-state", "checked");
+
+    fireEvent.click(toggle);
 
     expect(mockEngine.stop).toHaveBeenCalled();
     expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(false);

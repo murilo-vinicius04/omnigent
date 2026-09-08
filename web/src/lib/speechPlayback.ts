@@ -74,18 +74,79 @@ export function resetSpeechEngine(): void {
   activeSpeechEngine = new BrowserSpeechEngine();
 }
 
+const SPOKEN_MESSAGES_SESSION_STORAGE_KEY = "spoken_summary_spoken_message_ids";
+
 /** Set of message IDs that have already been spoken or marked as historical. */
 const spokenMessageIds = new Set<string>();
 
+function readSessionStorageIds(): Set<string> | null {
+  if (typeof window === "undefined" || !window.sessionStorage) {
+    return new Set();
+  }
+  try {
+    const raw = window.sessionStorage.getItem(SPOKEN_MESSAGES_SESSION_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return new Set(parsed.filter((item): item is string => typeof item === "string"));
+    }
+    return new Set();
+  } catch {
+    // Bias is silence: if storage access throws or data is corrupted, signal unprovable state
+    return null;
+  }
+}
+
+function writeSessionStorageId(id: string): void {
+  if (typeof window === "undefined" || !window.sessionStorage) {
+    return;
+  }
+  try {
+    const ids = readSessionStorageIds() ?? new Set<string>();
+    ids.add(id);
+    window.sessionStorage.setItem(
+      SPOKEN_MESSAGES_SESSION_STORAGE_KEY,
+      JSON.stringify(Array.from(ids)),
+    );
+  } catch {
+    // Degrade gracefully
+  }
+}
+
 export function markMessageSpoken(id: string): void {
   spokenMessageIds.add(id);
+  writeSessionStorageId(id);
 }
 
 export function isMessageSpoken(id: string): boolean {
-  return spokenMessageIds.has(id);
+  if (spokenMessageIds.has(id)) {
+    return true;
+  }
+  const sessionIds = readSessionStorageIds();
+  // Bias is SILENCE: if we cannot prove the user has not already heard it, do not speak.
+  if (sessionIds === null) {
+    return true;
+  }
+  if (sessionIds.has(id)) {
+    spokenMessageIds.add(id);
+    return true;
+  }
+  return false;
 }
 
 export function resetSpokenMessageTracking(): void {
+  spokenMessageIds.clear();
+  if (typeof window !== "undefined" && window.sessionStorage) {
+    try {
+      window.sessionStorage.removeItem(SPOKEN_MESSAGES_SESSION_STORAGE_KEY);
+    } catch {
+      // Degrade gracefully
+    }
+  }
+}
+
+/** Testing helper: simulates a tab reload where in-memory state is wiped but sessionStorage persists. */
+export function clearInMemorySpokenTracking(): void {
   spokenMessageIds.clear();
 }
 

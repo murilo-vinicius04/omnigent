@@ -147,7 +147,10 @@ function TranscriptImpl({
     sessionStatus,
   ]);
 
-  useSpokenSummaryPlayback(bubbles, activeResponse?.responseId);
+  useSpokenSummaryPlayback(
+    bubbles,
+    activeResponse?.state === "streaming" ? activeResponse.responseId : null,
+  );
 
   // Single nav instance shared by hotkey + buttons. System-message bubbles are
   // excluded — the hotkey is for navigating real user turns, not markers.

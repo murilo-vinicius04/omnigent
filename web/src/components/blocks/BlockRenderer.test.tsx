@@ -13,6 +13,7 @@ import type { RenderItem } from "@/lib/renderItems";
 import { ConversationScrollLockContext } from "@/components/ai-elements/conversation";
 import { FileViewerContext } from "@/shell/FileViewerContext";
 import { normalizeExplicitMathDelimiters } from "@/components/ai-elements/mathMarkdown";
+import { useSpeechPlaybackStore } from "@/lib/speechPlayback";
 import { BlockRenderer } from "./BlockRenderer";
 
 afterEach(cleanup);
@@ -111,6 +112,33 @@ describe("BlockRenderer dispatch", () => {
     );
 
     expect(screen.queryByTestId("spoken-summary-skim-line")).not.toBeInTheDocument();
+  });
+
+  it("uses fallback msg:index when responseId is empty string and itemId is null", () => {
+    useSpeechPlaybackStore.setState({ isSpeaking: true, speakingItemId: "msg:0" });
+
+    const items: RenderItem[] = [
+      {
+        kind: "text",
+        itemId: null,
+        text: "Assistant message text.",
+        final: true,
+        spokenSummary: {
+          text: "Summary text.",
+          lang: "en-US",
+        },
+      },
+    ];
+
+    render(
+      <FileViewerContext.Provider value={FILE_VIEWER_NOOP}>
+        <BlockRenderer items={items} sessionStatus="idle" responseId="" />
+      </FileViewerContext.Provider>,
+    );
+
+    // With falsy-aware fallback, "" || null || "msg:0" produces "msg:0",
+    // matching speakingItemId "msg:0" so the Stop button is rendered.
+    expect(screen.getByTestId("spoken-summary-stop-button")).toBeInTheDocument();
   });
 
   it("renders a slash_command RenderItem via SlashCommandCard", () => {

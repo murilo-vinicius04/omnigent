@@ -789,7 +789,7 @@ function renderItem(
           {item.spokenSummary && item.spokenSummary.text.trim().length > 0 && (
             <SpokenSummarySkimLine
               summary={item.spokenSummary}
-              id={responseId ?? item.itemId ?? `msg:${index}`}
+              id={responseId || item.itemId || `msg:${index}`}
               itemId={item.itemId}
             />
           )}
