@@ -93,6 +93,22 @@ function getSessionStorage(): Storage | null {
   }
 }
 
+/**
+ * Loads the persisted spoken IDs from sessionStorage into memory caches.
+ *
+ * Deliberate bias and trade-off:
+ * On storage read errors (e.g. SecurityError, disabled cookies/storage) or corrupted data,
+ * this function intentionally initializes and returns an empty cache, causing `isMessageSpoken`
+ * to answer 'not spoken'.
+ *
+ * Why this trade-off:
+ * The opposite choice (returning 'spoken' on error) would permanently silence spoken summaries
+ * for any user in private browsing or environments where sessionStorage is blocked.
+ * The narrow consequence of biasing to 'not spoken' is that corrupt/blocked sessionStorage
+ * combined with a hard reload mid-stream can restart a partially-heard summary.
+ * Permanent silence is a strictly worse user failure than a rare mid-stream restart on hard reload,
+ * so biasing to 'not spoken' is the correct and intentional decision.
+ */
 function loadSessionStorageCache(): { ids: string[]; set: Set<string> } {
   if (persistedIdsCache !== null && persistedIdsSetCache !== null) {
     return { ids: persistedIdsCache, set: persistedIdsSetCache };
@@ -144,21 +160,34 @@ function loadSessionStorageCache(): { ids: string[]; set: Set<string> } {
   return { ids: persistedIdsCache, set: persistedIdsSetCache };
 }
 
-function writeSessionStorageId(id: string): void {
-  if (!id) return;
-  const { ids, set } = loadSessionStorageCache();
+function writeSessionStorageIds(newIds: string[]): void {
+  const validIds: string[] = [];
+  for (const id of newIds) {
+    if (id && typeof id === "string") {
+      validIds.push(id);
+    }
+  }
+  if (validIds.length === 0) return;
 
-  if (set.has(id)) {
-    return; // Already persisted, no storage write needed
+  const { ids, set } = loadSessionStorageCache();
+  let changed = false;
+
+  for (const id of validIds) {
+    if (!set.has(id)) {
+      ids.push(id);
+      set.add(id);
+      changed = true;
+    }
   }
 
-  ids.push(id);
-  set.add(id);
+  if (!changed) return;
 
+  // Bound persisted list to MAX_PERSISTED_SPOKEN_IDS (FIFO, oldest evicted from head)
   if (ids.length > MAX_PERSISTED_SPOKEN_IDS) {
-    const dropped = ids.shift();
-    if (dropped) {
-      set.delete(dropped);
+    const excess = ids.length - MAX_PERSISTED_SPOKEN_IDS;
+    const dropped = ids.splice(0, excess);
+    for (const d of dropped) {
+      set.delete(d);
     }
   }
 
@@ -172,10 +201,30 @@ function writeSessionStorageId(id: string): void {
   }
 }
 
+/**
+ * Mark a single message/turn as spoken or settled history.
+ */
 export function markMessageSpoken(id: string): void {
   if (!id) return;
   spokenMessageIds.add(id);
-  writeSessionStorageId(id);
+  writeSessionStorageIds([id]);
+}
+
+/**
+ * Batch mark multiple messages/turns as spoken or settled history.
+ * Performs a single sessionStorage persist across all marked IDs to prevent write churn and array thrashing.
+ */
+export function markMessagesSpoken(ids: string[]): void {
+  const valid: string[] = [];
+  for (const id of ids) {
+    if (id) {
+      spokenMessageIds.add(id);
+      valid.push(id);
+    }
+  }
+  if (valid.length > 0) {
+    writeSessionStorageIds(valid);
+  }
 }
 
 export function isMessageSpoken(id: string): boolean {

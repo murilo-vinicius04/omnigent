@@ -1,6 +1,10 @@
 import { useEffect, useRef } from "react";
 import type { Bubble, RenderItem, ToolState } from "@/lib/renderItems";
-import { isMessageSpoken, markMessageSpoken, useSpeechPlaybackStore } from "@/lib/speechPlayback";
+import {
+  isMessageSpoken,
+  markMessagesSpoken,
+  useSpeechPlaybackStore,
+} from "@/lib/speechPlayback";
 
 /**
  * Compile-time exhaustive check for ToolState.
@@ -35,8 +39,14 @@ export function isToolStreaming(state: ToolState): boolean {
  *   so mid-turn itemId stamping never causes duplicate playback.
  * - Cancels in-flight speech when a new summary arrives, on session switch, or on unmount.
  * - Falsy responseId turns are never spoken and never marked spoken.
+ * - Active turn deferral: turns that finish without a summary are only deferred from marking
+ *   while the store still considers the response active. Once retired (or demoted by a newer turn),
+ *   they are indexed as spoken so late-arriving rebuilds never replay past turns.
  */
-export function useSpokenSummaryPlayback(bubbles: Bubble[]): void {
+export function useSpokenSummaryPlayback(
+  bubbles: Bubble[],
+  activeResponseId?: string | null,
+): void {
   // Set of responseIds that were positively observed streaming live in this client session.
   const observedLiveResponseIdsRef = useRef<Set<string>>(new Set());
   const speakLiveSummary = useSpeechPlaybackStore((s) => s.speakLiveSummary);
@@ -84,6 +94,8 @@ export function useSpokenSummaryPlayback(bubbles: Bubble[]): void {
     }
 
     // 3. Process turns with stable responseId identity.
+    const toMarkSpoken = new Set<string>();
+
     for (let i = 0; i < bubbles.length; i++) {
       const bubble = bubbles[i];
       if (bubble?.kind === "assistant") {
@@ -94,6 +106,7 @@ export function useSpokenSummaryPlayback(bubbles: Bubble[]): void {
 
         const isLatestTurn = i === lastAssistantIdx;
         const wasObservedLive = observedLiveResponseIdsRef.current.has(responseId);
+        const isStillActive = Boolean(activeResponseId && activeResponseId === responseId);
 
         // Select the text item that actually carries the spoken summary (the LAST/final one), not the first.
         const textItems = bubble.items.filter(
@@ -108,6 +121,9 @@ export function useSpokenSummaryPlayback(bubbles: Bubble[]): void {
         // Do NOT mark a turn spoken while bubble.lifecycle === "streaming" or while any item is still streaming.
         // Both conditions must hold for the turn to be considered final:
         // bubble.lifecycle !== "streaming" AND no item is still streaming.
+        // Known deliberate bound: A tool stuck in 'input-available' (e.g. hung tool or pending approval)
+        // holds isFinal false indefinitely, so the turn never speaks and never gets marked.
+        // This deliberate bias to silence prevents premature playback.
         const isBubbleStreaming =
           bubble.lifecycle === "streaming" || (bubble.lifecycle as string) === "running";
         const hasStreamingItem = bubble.items.some(
@@ -120,21 +136,26 @@ export function useSpokenSummaryPlayback(bubbles: Bubble[]): void {
         const summary = textItem?.spokenSummary;
         const hasValidSummary = Boolean(summary && summary.text.trim().length > 0);
 
-        if (!isMessageSpoken(responseId)) {
+        if (!isMessageSpoken(responseId) && !toMarkSpoken.has(responseId)) {
           // Speak ONLY if:
           // - We observed positive evidence that this client watched the turn arrive live
           // - It is the latest assistant turn at the transcript tail
           // - It is finalized and has a valid non-empty summary
           if (wasObservedLive && isLatestTurn && isFinal && hasValidSummary) {
             speakLiveSummary(responseId, summary!.text, summary!.lang);
-          } else if (isFinal && (!wasObservedLive || !isLatestTurn)) {
-            // Settled history or non-tail turn: index as spoken so it is never replayed later.
-            markMessageSpoken(responseId);
+          } else if (isFinal && (!wasObservedLive || !isLatestTurn || !isStillActive)) {
+            // Settled history, non-tail turn, or retired active response without a summary:
+            // queue for single-persist batch marking so it is never replayed later.
+            toMarkSpoken.add(responseId);
           }
         }
       }
     }
-  }, [bubbles, speakLiveSummary, stop]);
+
+    if (toMarkSpoken.size > 0) {
+      markMessagesSpoken(Array.from(toMarkSpoken));
+    }
+  }, [bubbles, activeResponseId, speakLiveSummary, stop]);
 
   // Cancel in-flight speech when the component unmounts or user navigates away.
   useEffect(() => {
