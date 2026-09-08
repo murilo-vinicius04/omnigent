@@ -416,4 +416,64 @@ describe("ProjectSettingsDialog", () => {
       expect(updateMock).toHaveBeenCalledWith("p_1", { agent_id: "ag_claude", model: "opus" }),
     );
   });
+
+  it("seeds spoken summary fields from stored config", async () => {
+    getProjectMock.mockResolvedValue({
+      id: "p_1",
+      name: "Work",
+      config: { spoken_summary_enabled: true, spoken_summary_language: "pt-BR" },
+    });
+    renderDialog();
+    await waitFor(() =>
+      expect(screen.getByTestId("project-settings-spoken-summary")).toHaveAttribute(
+        "data-state",
+        "checked",
+      ),
+    );
+    expect(screen.getByTestId("project-settings-spoken-summary-language")).toHaveTextContent(
+      "pt-BR",
+    );
+  });
+
+  it("submits spoken summary toggle when enabled", async () => {
+    getProjectMock.mockResolvedValue({ id: "p_1", name: "Work", config: {} });
+    renderDialog();
+    await waitFor(() =>
+      expect((screen.getByTestId("project-settings-save") as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+
+    fireEvent.click(screen.getByTestId("project-settings-spoken-summary"));
+    fireEvent.click(screen.getByTestId("project-settings-save"));
+
+    await waitFor(() => expect(updateMock).toHaveBeenCalled());
+    expect(updateMock).toHaveBeenCalledWith("p_1", { spoken_summary_enabled: true });
+  });
+
+  it("language selector submits the right ProjectConfig payload", async () => {
+    getProjectMock.mockResolvedValue({
+      id: "p_1",
+      name: "Work",
+      config: { spoken_summary_enabled: true },
+    });
+    renderDialog();
+    await waitFor(() =>
+      expect((screen.getByTestId("project-settings-save") as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+
+    fireEvent.click(screen.getByTestId("project-settings-spoken-summary-language"));
+    const option = await screen.findByRole("option", { name: "pt-BR" });
+    fireEvent.click(option);
+    fireEvent.click(screen.getByTestId("project-settings-save"));
+
+    await waitFor(() =>
+      expect(updateMock).toHaveBeenCalledWith("p_1", {
+        spoken_summary_enabled: true,
+        spoken_summary_language: "pt-BR",
+      }),
+    );
+  });
 });

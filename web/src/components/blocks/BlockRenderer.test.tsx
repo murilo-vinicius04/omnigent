@@ -44,6 +44,53 @@ const renderMarkdownText = (text: string) =>
   );
 
 describe("BlockRenderer dispatch", () => {
+  it("renders the skim-line when the spoken_summary part is present", () => {
+    const items: RenderItem[] = [
+      {
+        kind: "text",
+        itemId: "msg_1",
+        text: "This is the full detailed assistant response that should remain visible.",
+        final: true,
+        spokenSummary: {
+          text: "Compact skim summary.",
+          lang: "pt-BR",
+        },
+      },
+    ];
+    render(
+      <FileViewerContext.Provider value={FILE_VIEWER_NOOP}>
+        <BlockRenderer items={items} sessionStatus="idle" />
+      </FileViewerContext.Provider>,
+    );
+
+    expect(screen.getByTestId("spoken-summary-skim-line")).toBeInTheDocument();
+    expect(screen.getByText("Compact skim summary.")).toBeInTheDocument();
+    expect(
+      screen.getByText("This is the full detailed assistant response that should remain visible."),
+    ).toBeInTheDocument();
+  });
+
+  it("renders nothing extra when the spoken_summary part is absent", () => {
+    const items: RenderItem[] = [
+      {
+        kind: "text",
+        itemId: "msg_2",
+        text: "Normal assistant response without spoken summary.",
+        final: true,
+      },
+    ];
+    render(
+      <FileViewerContext.Provider value={FILE_VIEWER_NOOP}>
+        <BlockRenderer items={items} sessionStatus="idle" />
+      </FileViewerContext.Provider>,
+    );
+
+    expect(screen.queryByTestId("spoken-summary-skim-line")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Normal assistant response without spoken summary."),
+    ).toBeInTheDocument();
+  });
+
   it("renders a slash_command RenderItem via SlashCommandCard", () => {
     const items: RenderItem[] = [
       {

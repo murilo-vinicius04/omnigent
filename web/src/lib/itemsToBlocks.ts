@@ -320,12 +320,16 @@ function assistantMessageToBlock(item: MessageItem): TextDone {
     .filter((b): b is { type: "output_text"; text: string } => b.type === "output_text")
     .map((b) => b.text)
     .join("");
+  const spokenPart = item.content.find(
+    (b): b is { type: "spoken_summary"; text: string; lang: string } => b.type === "spoken_summary",
+  );
   return {
     type: "text_done",
     ctx: ctxFor(item),
     fullText: text,
     hasCodeBlocks: text.includes("```"),
     ...(item.interrupted === true ? { interrupted: true } : {}),
+    ...(spokenPart ? { spokenSummary: { text: spokenPart.text, lang: spokenPart.lang } } : {}),
   };
 }
 

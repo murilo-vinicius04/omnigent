@@ -102,6 +102,8 @@ export interface TextDelta {
   index?: number;
   /** `true` on the last chunk for `messageId`. `undefined` when not native streaming. */
   final?: boolean;
+  /** Optional server-side spoken summary. */
+  spokenSummary?: { text: string; lang: string };
 }
 
 // ── Reasoning ────────────────────────────────────────────

@@ -166,6 +166,7 @@ interface ReducerState {
   // Active server-assigned response id, set on each `response.created`.
   // Stamped onto every emitted block's `ctx.responseId`.
   responseId: string;
+  spokenSummary?: { text: string; lang: string };
 }
 
 function createState(flushThreshold: number): ReducerState {
@@ -187,6 +188,7 @@ function createState(flushThreshold: number): ReducerState {
     turn: 0,
     started: false,
     responseId: "",
+    spokenSummary: undefined,
   };
 }
 
@@ -254,7 +256,11 @@ function* closeReasoning(state: ReducerState): Generator<AnyBlock> {
  * non-message boundary (tool call, terminal event without a preceding
  * message_done).
  */
-function* closeText(state: ReducerState, itemId: string | null = null): Generator<AnyBlock> {
+function* closeText(
+  state: ReducerState,
+  itemId: string | null = null,
+  spokenSummary?: { text: string; lang: string },
+): Generator<AnyBlock> {
   if (!state.inText) return;
   if (state.accumulated) {
     yield {
@@ -264,14 +270,17 @@ function* closeText(state: ReducerState, itemId: string | null = null): Generato
     } satisfies TextChunk;
     state.accumulated = "";
   }
+  const summary = spokenSummary ?? state.spokenSummary;
   yield {
     type: "text_done",
     ctx: ctx(state, itemId),
     fullText: state.fullText,
     hasCodeBlocks: state.fullText.includes("```"),
+    ...(summary ? { spokenSummary: summary } : {}),
   } satisfies TextDone;
   state.inText = false;
   state.fullText = "";
+  state.spokenSummary = undefined;
 }
 
 function outputTextFromMessageContent(content: Record<string, unknown>[]): string {
@@ -281,6 +290,21 @@ function outputTextFromMessageContent(content: Record<string, unknown>[]): strin
     if (typeof block.text === "string") text += block.text;
   }
   return text;
+}
+
+function spokenSummaryFromMessageContent(
+  content: Record<string, unknown>[],
+): { text: string; lang: string } | undefined {
+  for (const block of content) {
+    if (
+      block.type === "spoken_summary" &&
+      typeof block.text === "string" &&
+      typeof block.lang === "string"
+    ) {
+      return { text: block.text, lang: block.lang };
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -471,6 +495,7 @@ function* processEvent(state: ReducerState, event: StreamEvent): Generator<AnyBl
       state.inText = true;
       state.accumulated += event.delta;
       state.fullText += event.delta;
+      if (event.spokenSummary) state.spokenSummary = event.spokenSummary;
 
       while (state.accumulated.includes("\n")) {
         const idx = state.accumulated.indexOf("\n");
@@ -689,6 +714,7 @@ function* processEvent(state: ReducerState, event: StreamEvent): Generator<AnyBl
     case "message_done": {
       const isResponseSwitch = !!event.responseId && event.responseId !== state.responseId;
       const hadOpenText = state.inText;
+      const spokenSummary = spokenSummaryFromMessageContent(event.content);
       // Snapshot accumulated text BEFORE closeText resets state.fullText —
       // used by the content-equality dedup below to handle the session-stream
       // race where ``response.created`` was lost (subscribe registered after
@@ -702,7 +728,11 @@ function* processEvent(state: ReducerState, event: StreamEvent): Generator<AnyBl
       if (hadOpenText) {
         // On a response switch, event.itemId belongs to the new message — don't
         // attach it to the old text block being closed.
-        yield* closeText(state, isResponseSwitch ? null : event.itemId || null);
+        yield* closeText(
+          state,
+          isResponseSwitch ? null : event.itemId || null,
+          isResponseSwitch ? undefined : spokenSummary,
+        );
       }
 
       // A message_done with a new id is a genuine turn transition (the
@@ -737,6 +767,7 @@ function* processEvent(state: ReducerState, event: StreamEvent): Generator<AnyBl
           ctx: ctx(state, event.itemId || null),
           fullText: text,
           hasCodeBlocks: text.includes("```"),
+          ...(spokenSummary ? { spokenSummary } : {}),
         } satisfies TextDone;
       }
       return;

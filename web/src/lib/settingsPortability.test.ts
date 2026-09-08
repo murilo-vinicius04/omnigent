@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { COMPOSER_SEND_SHORTCUT_STORAGE_KEY } from "./composerSendShortcutPreferences";
+import { SPOKEN_SUMMARY_PLAYBACK_STORAGE_KEY } from "./spokenSummaryPlaybackPreferences";
 import { applyImportedSettings, collectSettings } from "./settingsPortability";
 
 beforeEach(() => localStorage.clear());
@@ -17,5 +18,21 @@ describe("composer shortcut portability", () => {
       settings: { [COMPOSER_SEND_SHORTCUT_STORAGE_KEY]: "true" },
     });
     expect(localStorage.getItem(COMPOSER_SEND_SHORTCUT_STORAGE_KEY)).toBe("true");
+  });
+});
+
+describe("spoken summary playback portability", () => {
+  it("exports, imports, and clears the device-local preference", () => {
+    localStorage.setItem(SPOKEN_SUMMARY_PLAYBACK_STORAGE_KEY, "true");
+    expect(collectSettings()?.settings[SPOKEN_SUMMARY_PLAYBACK_STORAGE_KEY]).toBe("true");
+
+    applyImportedSettings({ version: 1, settings: {} });
+    expect(localStorage.getItem(SPOKEN_SUMMARY_PLAYBACK_STORAGE_KEY)).toBeNull();
+
+    applyImportedSettings({
+      version: 1,
+      settings: { [SPOKEN_SUMMARY_PLAYBACK_STORAGE_KEY]: "true" },
+    });
+    expect(localStorage.getItem(SPOKEN_SUMMARY_PLAYBACK_STORAGE_KEY)).toBe("true");
   });
 });

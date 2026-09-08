@@ -438,7 +438,24 @@ export function parseEvent(rawType: string, data: Record<string, unknown>): Stre
     const messageId = typeof data.message_id === "string" ? data.message_id : undefined;
     const index = typeof data.index === "number" ? data.index : undefined;
     const final = typeof data.final === "boolean" ? data.final : undefined;
-    return { type: "text_delta", delta, messageId, index, final } satisfies TextDelta;
+    const rawSummary =
+      data.spoken_summary && typeof data.spoken_summary === "object"
+        ? (data.spoken_summary as Record<string, unknown>)
+        : data.spokenSummary && typeof data.spokenSummary === "object"
+          ? (data.spokenSummary as Record<string, unknown>)
+          : undefined;
+    const spokenSummary =
+      rawSummary && typeof rawSummary.text === "string" && typeof rawSummary.lang === "string"
+        ? { text: rawSummary.text, lang: rawSummary.lang }
+        : undefined;
+    return {
+      type: "text_delta",
+      delta,
+      messageId,
+      index,
+      final,
+      ...(spokenSummary ? { spokenSummary } : {}),
+    } satisfies TextDelta;
   }
   if (eventType === "response.function_call_output.delta") {
     const callId = data.call_id;

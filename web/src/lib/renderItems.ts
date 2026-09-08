@@ -52,7 +52,13 @@ export type ToolState =
 
 /** A single rendered item inside an assistant bubble. */
 export type RenderItem =
-  | { kind: "text"; itemId: string | null; text: string; final: boolean }
+  | {
+      kind: "text";
+      itemId: string | null;
+      text: string;
+      final: boolean;
+      spokenSummary?: { text: string; lang: string };
+    }
   | {
       kind: "reasoning";
       itemId: string | null;
@@ -1582,6 +1588,7 @@ function textItem(run: AnyBlock[]): RenderItem {
         itemId: b.ctx.itemId,
         text: b.fullText,
         final: true,
+        ...(b.spokenSummary ? { spokenSummary: b.spokenSummary } : {}),
       };
     }
   }
