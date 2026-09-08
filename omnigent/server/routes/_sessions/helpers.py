@@ -7298,6 +7298,11 @@ async def _flush_relay_text(
     *,
     deny_reason: str | None = None,
     evaluate_response_phase: bool = False,
+    is_terminal_completion: bool = False,
+    spoken_summary_enabled: bool | None = None,
+    spoken_summary_language: str | None = None,
+    spoken_summary_model: str | None = None,
+    llm_client: Any | None = None,
 ) -> None:
     """
     Persist buffered assistant text as a message item and clear the buffer.
@@ -7358,6 +7363,12 @@ async def _flush_relay_text(
     :param evaluate_response_phase: When ``True`` (terminal flush), gate
         the text through the spec's RESPONSE-phase policies before
         persisting.
+    :param is_terminal_completion: When ``True``, this flush marks a terminal
+        ``response.completed`` event eligible for spoken summary generation.
+    :param spoken_summary_enabled: Optional override for spoken summary enable toggle.
+    :param spoken_summary_language: Optional override for spoken summary target language.
+    :param spoken_summary_model: Optional override for spoken summary LLM model.
+    :param llm_client: Optional pre-configured LLM client instance.
     """
     if not text_acc:
         return
@@ -7392,6 +7403,49 @@ async def _flush_relay_text(
         # DENY could flip to ALLOW and leak the original text.
         text_acc[:] = [text]
         _publish_policy_deny(session_id, deny_reason)
+
+    spoken_summary_part: dict[str, Any] | None = None
+    spoken_summary_usage: dict[str, Any] | None = None
+    if is_terminal_completion and deny_reason is None:
+        try:
+            from omnigent.server.spoken_summary import (
+                generate_spoken_summary,
+                resolve_spoken_summary_settings,
+                should_generate_spoken_summary,
+            )
+
+            conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+            enabled, language = resolve_spoken_summary_settings(
+                conv,
+                conversation_store,
+                override_enabled=spoken_summary_enabled,
+                override_language=spoken_summary_language,
+            )
+            if should_generate_spoken_summary(
+                conv,
+                text,
+                is_terminal_completion=is_terminal_completion,
+                deny_reason=deny_reason,
+                enabled=enabled,
+            ):
+                spoken_summary_part, spoken_summary_usage = await generate_spoken_summary(
+                    text,
+                    language=language,
+                    model_override=spoken_summary_model,
+                    llm_client=llm_client,
+                )
+        except Exception as exc:  # noqa: BLE001
+            _logger.info(
+                "Spoken summary generation failed for session=%s: %s; continuing without summary",
+                session_id,
+                exc,
+                extra={"session_id": session_id},
+            )
+
+    content: list[dict[str, Any]] = [{"type": "output_text", "text": text}]
+    if spoken_summary_part is not None:
+        content.append(spoken_summary_part)
+
     import uuid
 
     try:
@@ -7404,7 +7458,7 @@ async def _flush_relay_text(
                     "type": "message",
                     "role": "assistant",
                     "agent": model_id or "unknown",
-                    "content": [{"type": "output_text", "text": text}],
+                    "content": content,
                 },
             ),
         )
@@ -7418,6 +7472,21 @@ async def _flush_relay_text(
             extra={"session_id": session_id},
         )
         return
+
+    if spoken_summary_usage:
+        try:
+            await asyncio.to_thread(
+                conversation_store.increment_session_usage,
+                session_id,
+                spoken_summary_usage,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.info(
+                "Failed to attribute spoken summary usage for session=%s: %s",
+                session_id,
+                exc,
+                extra={"session_id": session_id},
+            )
     # Confirmed persisted — now safe to clear. Synchronous (no await before
     # the next yield), so no reconnect observes the committed message and a
     # stale replay together.

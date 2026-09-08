@@ -50,6 +50,16 @@ export interface ProjectConfig {
    * the harness's own configured default.
    */
   model?: string;
+  /**
+   * When true, generates a short spoken summary on terminal turn completion
+   * for top-level sessions. Defaults to false.
+   */
+  spoken_summary_enabled?: boolean;
+  /**
+   * Language for the spoken summary. Defaults to "auto" (matches assistant
+   * response language). Any BCP-47 tag (e.g. "pt-BR", "en-US") forces that language.
+   */
+  spoken_summary_language?: string;
 }
 
 /** A first-class project. Mirrors the `ProjectObject` response shape. */
