@@ -7298,6 +7298,11 @@ async def _flush_relay_text(
     *,
     deny_reason: str | None = None,
     evaluate_response_phase: bool = False,
+    is_terminal_completion: bool = False,
+    spoken_summary_enabled: bool | None = None,
+    spoken_summary_language: str | None = None,
+    spoken_summary_model: str | None = None,
+    llm_client: Any | None = None,
 ) -> None:
     """
     Persist buffered assistant text as a message item and clear the buffer.
@@ -7358,6 +7363,12 @@ async def _flush_relay_text(
     :param evaluate_response_phase: When ``True`` (terminal flush), gate
         the text through the spec's RESPONSE-phase policies before
         persisting.
+    :param is_terminal_completion: When ``True``, this flush marks a terminal
+        ``response.completed`` event eligible for spoken summary generation.
+    :param spoken_summary_enabled: Optional override for spoken summary enable toggle.
+    :param spoken_summary_language: Optional override for spoken summary target language.
+    :param spoken_summary_model: Optional override for spoken summary LLM model.
+    :param llm_client: Optional pre-configured LLM client instance.
     """
     if not text_acc:
         return
@@ -7392,23 +7403,112 @@ async def _flush_relay_text(
         # DENY could flip to ALLOW and leak the original text.
         text_acc[:] = [text]
         _publish_policy_deny(session_id, deny_reason)
+
+    spoken_summary_part: dict[str, Any] | None = None
+    spoken_summary_usage: dict[str, Any] | None = None
+    cancelled_exc: BaseException | None = None
+    if is_terminal_completion and deny_reason is None:
+        try:
+            from omnigent.server.spoken_summary import (
+                SPOKEN_SUMMARY_THRESHOLD_CHARS,
+                generate_spoken_summary,
+                resolve_spoken_summary_settings_async,
+                should_generate_spoken_summary,
+            )
+
+            # Quick check: skip if explicitly disabled or text is <= threshold
+            if (
+                spoken_summary_enabled is not False
+                and len(text.strip()) > SPOKEN_SUMMARY_THRESHOLD_CHARS
+            ):
+                enabled, language, conv = await resolve_spoken_summary_settings_async(
+                    session_id,
+                    conversation_store,
+                    override_enabled=spoken_summary_enabled,
+                    override_language=spoken_summary_language,
+                )
+                if should_generate_spoken_summary(
+                    conv,
+                    text,
+                    is_terminal_completion=is_terminal_completion,
+                    deny_reason=deny_reason,
+                    enabled=enabled,
+                ):
+                    spoken_summary_part, spoken_summary_usage = await generate_spoken_summary(
+                        text,
+                        language=language,
+                        model_override=spoken_summary_model,
+                        llm_client=llm_client,
+                    )
+        except asyncio.CancelledError as exc:
+            _logger.warning(
+                "Spoken summary cancelled for session=%s; continuing without summary",
+                session_id,
+                extra={"session_id": session_id},
+            )
+            cancelled_exc = exc
+            cur_task = asyncio.current_task()
+            if cur_task is not None and hasattr(cur_task, "uncancel"):
+                cur_task.uncancel()
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "Spoken summary generation failed for session=%s: %s; continuing without summary",
+                session_id,
+                exc,
+                extra={"session_id": session_id},
+            )
+        except BaseException as exc:  # noqa: BLE001
+            _logger.warning(
+                "Spoken summary unexpected error for session=%s: %s; continuing without summary",
+                session_id,
+                exc,
+                extra={"session_id": session_id},
+            )
+            cancelled_exc = exc
+            cur_task = asyncio.current_task()
+            if cur_task is not None and hasattr(cur_task, "uncancel"):
+                cur_task.uncancel()
+
+    content: list[dict[str, Any]] = [{"type": "output_text", "text": text}]
+    if spoken_summary_part is not None:
+        content.append(spoken_summary_part)
+
     import uuid
 
+    item = NewConversationItem(
+        type="message",
+        response_id=response_id or f"turn_{uuid.uuid4().hex}",
+        data=parse_item_data(
+            "message",
+            {
+                "type": "message",
+                "role": "assistant",
+                "agent": model_id or "unknown",
+                "content": content,
+            },
+        ),
+    )
+    append_fut = asyncio.ensure_future(
+        asyncio.to_thread(conversation_store.append, session_id, [item])
+    )
     try:
-        item = NewConversationItem(
-            type="message",
-            response_id=response_id or f"turn_{uuid.uuid4().hex}",
-            data=parse_item_data(
-                "message",
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "agent": model_id or "unknown",
-                    "content": [{"type": "output_text", "text": text}],
-                },
-            ),
-        )
-        persisted = await asyncio.to_thread(conversation_store.append, session_id, [item])
+        persisted = await asyncio.shield(append_fut)
+    except asyncio.CancelledError as exc:
+        cancelled_exc = cancelled_exc or exc
+        cur_task = asyncio.current_task()
+        if cur_task is not None and hasattr(cur_task, "uncancel"):
+            cur_task.uncancel()
+        try:
+            persisted = await append_fut
+        except Exception:  # noqa: BLE001
+            _logger.exception(
+                "Relay: failed to persist assistant text segment for session=%s",
+                session_id,
+                extra={"session_id": session_id},
+            )
+            if cancelled_exc is not None:
+                raise cancelled_exc from None
+            return
     except Exception:  # noqa: BLE001
         # Keep text_acc + the in-flight buffer so the narration isn't lost:
         # it still replays on reconnect and is retried at the next flush.
@@ -7417,7 +7517,10 @@ async def _flush_relay_text(
             session_id,
             extra={"session_id": session_id},
         )
+        if cancelled_exc is not None:
+            raise cancelled_exc from None
         return
+
     # Confirmed persisted — now safe to clear. Synchronous (no await before
     # the next yield), so no reconnect observes the committed message and a
     # stale replay together.
@@ -7433,6 +7536,24 @@ async def _flush_relay_text(
         item=persisted[0].to_api_dict(),
     )
     session_stream.publish(session_id, done_event.model_dump())
+
+    if spoken_summary_usage and cancelled_exc is None:
+        try:
+            await asyncio.to_thread(
+                conversation_store.increment_session_usage,
+                session_id,
+                spoken_summary_usage,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "Failed to attribute spoken summary usage for session=%s: %s",
+                session_id,
+                exc,
+                extra={"session_id": session_id},
+            )
+
+    if cancelled_exc is not None:
+        raise cancelled_exc
 
 
 def _agent_provider_family(agent: Agent) -> str | None:

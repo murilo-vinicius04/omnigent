@@ -235,3 +235,31 @@ BACKGROUND_TITLE_CLAUDE_ECONOMY_MODEL = _BACKGROUND_TITLE_FALLBACKS["claude"].mo
 
 #: The codex-family arm background session titles pin.
 BACKGROUND_TITLE_CODEX_ECONOMY_MODEL = _BACKGROUND_TITLE_FALLBACKS["codex"].model_ids[0]
+
+#: Cheapest current fast/mini models for spoken summary rewrites.
+_SPOKEN_SUMMARY_FALLBACKS: dict[str, StaticModelFallback] = {
+    "gemini": StaticModelFallback(
+        model_ids=("gemini-2.5-flash",),
+        owner="Spoken summary server (omnigent.server.spoken_summary)",
+        provenance="Cheapest current Gemini Flash tier for voice rewrite (ADR-0018)",
+        discovery_gap=(
+            "the spoken summary rewriter needs a fast, cheap model default "
+            "before session models are loaded"
+        ),
+    ),
+    "openai": StaticModelFallback(
+        model_ids=("gpt-4o-mini",),
+        owner="Spoken summary server (omnigent.server.spoken_summary)",
+        provenance="Cheapest current OpenAI Mini tier for voice rewrite",
+        discovery_gap=(
+            "the spoken summary rewriter needs a fast, cheap model default "
+            "before session models are loaded"
+        ),
+    ),
+}
+
+#: Default Gemini model for spoken summary rewrites.
+SPOKEN_SUMMARY_GEMINI_DEFAULT_MODEL = _SPOKEN_SUMMARY_FALLBACKS["gemini"].model_ids[0]
+
+#: Default OpenAI model for spoken summary rewrites.
+SPOKEN_SUMMARY_OPENAI_DEFAULT_MODEL = _SPOKEN_SUMMARY_FALLBACKS["openai"].model_ids[0]

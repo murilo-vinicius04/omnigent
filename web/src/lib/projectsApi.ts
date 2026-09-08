@@ -51,12 +51,13 @@ export interface ProjectConfig {
    */
   model?: string;
   /**
-   * When true, assistant messages generate an accompanying spoken summary.
+   * When true, generates a short spoken summary on terminal turn completion
+   * for top-level sessions. Defaults to false.
    */
   spoken_summary_enabled?: boolean;
   /**
-   * Language code for generated spoken summaries ("auto" to match the response,
-   * or a BCP-47 tag like "pt-BR", "en-US").
+   * Language for the spoken summary. Defaults to "auto" (matches the assistant
+   * response language). Any BCP-47 tag (e.g. "pt-BR", "en-US") forces that language.
    */
   spoken_summary_language?: string;
 }

@@ -1428,6 +1428,21 @@ class SqlAlchemyConversationStore(ConversationStore):
             )
             return result.rowcount > 0
 
+    def get_project_config(self, project_id: str) -> dict[str, Any]:
+        """
+        Return the stored config dictionary for a project, or empty dict if not found.
+
+        :param project_id: Unique project identifier.
+        :returns: Decoded project config dict, or empty dict.
+        """
+        from omnigent.stores.project_store.sqlalchemy_store import _decode_config
+
+        with self._session("get_project_config") as session:
+            row = session.get(SqlProject, (current_workspace_id(), project_id))
+            if row is None:
+                return {}
+            return _decode_config(row.config)
+
     def increment_session_usage(
         self,
         conversation_id: str,

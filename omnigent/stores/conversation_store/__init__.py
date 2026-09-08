@@ -1085,6 +1085,16 @@ class ConversationStore(ABC):
         """
         ...
 
+    def get_project_config(self, project_id: str) -> dict[str, Any]:
+        """
+        Return the stored config dictionary for a project, or empty dict if not found.
+
+        :param project_id: Unique project identifier.
+        :returns: Decoded project config dict, or empty dict.
+        """
+        del project_id
+        return {}
+
     @abstractmethod
     def increment_session_usage(
         self,

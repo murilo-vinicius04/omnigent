@@ -10270,7 +10270,7 @@
         ]
       },
       "patch": {
-        "description": "Update one of the caller's projects (e.g. rename).\n\n**Parameters**\n\n- `body` \u2014 Fields to change; `None` fields are left unchanged.\n\n**Returns:** The updated project as a serialized dict.\n\n**Raises**\n\n- `OmnigentError` \u2014 401 if unauthenticated, 404 if not found / not owned, 409 if the new name collides with another of the caller's projects.",
+        "description": "Update one of the caller's projects (e.g. rename or config update).\n\n**Parameters**\n\n- `body` \u2014 Fields to change; `None` fields are left unchanged.\n\n**Returns:** The updated project as a serialized dict.\n\n**Raises**\n\n- `OmnigentError` \u2014 401 if unauthenticated, 404 if not found / not owned, 409 if the new name collides with another of the caller's projects.",
         "operationId": "update_project_v1_projects__project_id__patch",
         "parameters": [
           {
@@ -10301,6 +10301,60 @@
                 "schema": {
                   "additionalProperties": true,
                   "title": "Response Update Project V1 Projects  Project Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Project",
+        "tags": [
+          "projects"
+        ]
+      },
+      "put": {
+        "description": "Update one of the caller's projects (e.g. rename or config update).\n\n**Parameters**\n\n- `body` \u2014 Fields to change; `None` fields are left unchanged.\n\n**Returns:** The updated project as a serialized dict.\n\n**Raises**\n\n- `OmnigentError` \u2014 401 if unauthenticated, 404 if not found / not owned, 409 if the new name collides with another of the caller's projects.",
+        "operationId": "update_project_v1_projects__project_id__put",
+        "parameters": [
+          {
+            "description": "The project to update.",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Project V1 Projects  Project Id  Put",
                   "type": "object"
                 }
               }
