@@ -660,8 +660,9 @@ async def test_no_summary_when_disabled() -> None:
     assert store.get_conversation_calls == 1
     assert store.project_config_calls == 1
 
-    # Turn 3: simulate elapsed time far past any TTL window (e.g. 1000s later)
-    # The disabled status must remain cached without repeating queries.
+    # Turn 3: far past the TTL window. The disabled result must EXPIRE and be re-resolved,
+    # otherwise enabling the feature later could never take effect on this session.
+    # Staleness is bounded by the TTL; it is not cached for the process lifetime.
     with patch("time.monotonic", return_value=time.monotonic() + 1000.0):
         text_acc_3 = [_LONG_RESPONSE_TEXT]
         await _flush_relay_text(
@@ -676,9 +677,9 @@ async def test_no_summary_when_disabled() -> None:
 
     assert len(client.calls) == 0
     assert len(store.appended) == 3
-    # STILL ZERO repeat queries!
-    assert store.get_conversation_calls == 1
-    assert store.project_config_calls == 1
+    # Exactly one re-resolution after the TTL lapsed — not one per turn.
+    assert store.get_conversation_calls == 2
+    assert store.project_config_calls == 2
 
 
 # ── Case 4: NO summary on failed, cancelled turns, or policy deny ──────
@@ -1595,3 +1596,82 @@ async def test_session_settings_cache_stops_growing_past_bound() -> None:
     finally:
         _SESSION_SETTINGS_CACHE.max_size = original_max_size
         clear_spoken_summary_cache()
+
+
+@pytest.mark.asyncio
+async def test_enabling_after_a_disabled_resolution_takes_effect_once_ttl_lapses() -> None:
+    """A session first resolved as disabled must pick the feature up when it is later enabled.
+
+    Caching the disabled verdict permanently pins the session off for the life of the
+    process: turning "Speak responses" on in project settings would silently do nothing on
+    every existing session, while new sessions worked.
+    """
+    from omnigent.server.spoken_summary import resolve_spoken_summary_settings_async
+
+    clear_spoken_summary_cache()
+    conv = Conversation(
+        id="conv_late_enable",
+        root_conversation_id="conv_late_enable",
+        created_at=1,
+        updated_at=1,
+        parent_conversation_id=None,
+        kind="default",
+        project_id="proj_late_enable",
+    )
+    store = _FakeConversationStore(
+        conversation=conv,
+        project_config={"spoken_summary": {"enabled": False}},
+    )
+
+    enabled, _, _ = await resolve_spoken_summary_settings_async("conv_late_enable", store)  # type: ignore[arg-type]
+    assert enabled is False
+
+    # Admin turns it on. Within the TTL the cached verdict still stands (bounded staleness).
+    store.project_config = {"spoken_summary": {"enabled": True, "language": "pt-BR"}}
+    enabled, _, _ = await resolve_spoken_summary_settings_async("conv_late_enable", store)  # type: ignore[arg-type]
+    assert enabled is False
+
+    # Past the TTL both caches re-resolve and the change lands.
+    with patch("time.monotonic", return_value=time.monotonic() + 1000.0):
+        enabled, lang, conv_out = await resolve_spoken_summary_settings_async(  # type: ignore[arg-type]
+            "conv_late_enable", store
+        )
+    assert enabled is True
+    assert lang == "pt-BR"
+    # conv must come back too, or should_generate_spoken_summary rejects the turn.
+    assert conv_out is not None
+
+
+@pytest.mark.asyncio
+async def test_sub_agent_disable_is_cached_permanently() -> None:
+    """The sub-agent guard is structural and immutable, so it never re-queries.
+
+    This is the cost property worth keeping: sub-agent turns are the high-volume ones.
+    """
+    from omnigent.server.spoken_summary import resolve_spoken_summary_settings_async
+
+    clear_spoken_summary_cache()
+    sub_conv = Conversation(
+        id="conv_sub",
+        root_conversation_id="conv_root",
+        created_at=1,
+        updated_at=1,
+        parent_conversation_id="conv_root",
+        kind="default",
+        project_id="proj_sub",
+    )
+    store = _FakeConversationStore(
+        conversation=sub_conv,
+        project_config={"spoken_summary": {"enabled": True}},
+    )
+
+    enabled, _, _ = await resolve_spoken_summary_settings_async("conv_sub", store)  # type: ignore[arg-type]
+    assert enabled is False
+    queries_after_first = store.get_conversation_calls
+
+    with patch("time.monotonic", return_value=time.monotonic() + 100_000.0):
+        for _ in range(5):
+            enabled, _, _ = await resolve_spoken_summary_settings_async("conv_sub", store)  # type: ignore[arg-type]
+            assert enabled is False
+
+    assert store.get_conversation_calls == queries_after_first

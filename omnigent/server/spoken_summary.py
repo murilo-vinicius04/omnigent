@@ -96,6 +96,7 @@ def clear_spoken_summary_cache() -> None:
     _SESSION_SETTINGS_CACHE.clear()
 
 
+# fmt: off
 # Common stopwords for fast, zero-dependency BCP-47 language detection.
 # Restricted to grammatical function words (no domain/content words).
 _PORTUGUESE_STOPWORDS = frozenset(
@@ -150,6 +151,7 @@ _ENGLISH_STOPWORDS = frozenset(
         "how", "our",
     }
 )
+# fmt: on
 
 
 def strip_markdown_for_speech(text: str) -> str:
@@ -375,10 +377,13 @@ async def resolve_spoken_summary_settings_async(
     # 3. Read conversation off the event loop
     conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
     if conv is None:
-        _SESSION_SETTINGS_CACHE[session_id] = (float("inf"), False, "auto")
+        # A missing row can be a transient miss (replica lag, not-yet-committed), so this
+        # result expires rather than pinning the session off for the process lifetime.
+        _SESSION_SETTINGS_CACHE[session_id] = (now + ttl_seconds, False, "auto")
         return False, "auto", None
 
-    # Guard: sub-agent or child session cannot have spoken summary enabled
+    # Guard: sub-agent or child session cannot have spoken summary enabled.
+    # Structural and immutable for the conversation's life, so this one never expires.
     if (
         conv.parent_conversation_id is not None
         or getattr(conv, "parent_session_id", None) is not None
@@ -393,7 +398,7 @@ async def resolve_spoken_summary_settings_async(
         raw_val = conv.labels["spoken_summary_enabled"].strip().lower()
         enabled = raw_val in ("true", "1", "yes", "on")
         lang = conv.labels.get("spoken_summary_language", "auto").strip() or "auto"
-        expiry = (now + ttl_seconds) if enabled else float("inf")
+        expiry = now + ttl_seconds
         _SESSION_SETTINGS_CACHE[session_id] = (expiry, enabled, lang)
         return enabled, lang, conv
 
@@ -427,7 +432,7 @@ async def resolve_spoken_summary_settings_async(
                     or p_cfg.get("language")
                     or "auto"
                 ).strip()
-                expiry = (now + ttl_seconds) if enabled else float("inf")
+                expiry = now + ttl_seconds
                 _SESSION_SETTINGS_CACHE[session_id] = (expiry, enabled, lang or "auto")
                 return enabled, lang or "auto", conv
             if isinstance(spoken_cfg, bool):
@@ -435,7 +440,7 @@ async def resolve_spoken_summary_settings_async(
                 lang = str(
                     p_cfg.get("spoken_summary_language") or p_cfg.get("language") or "auto"
                 ).strip()
-                expiry = (now + ttl_seconds) if enabled else float("inf")
+                expiry = now + ttl_seconds
                 _SESSION_SETTINGS_CACHE[session_id] = (expiry, enabled, lang or "auto")
                 return enabled, lang or "auto", conv
             if "spoken_summary_enabled" in p_cfg:
@@ -443,7 +448,7 @@ async def resolve_spoken_summary_settings_async(
                 lang = str(
                     p_cfg.get("spoken_summary_language") or p_cfg.get("language") or "auto"
                 ).strip()
-                expiry = (now + ttl_seconds) if enabled else float("inf")
+                expiry = now + ttl_seconds
                 _SESSION_SETTINGS_CACHE[session_id] = (expiry, enabled, lang or "auto")
                 return enabled, lang or "auto", conv
 
@@ -455,7 +460,7 @@ async def resolve_spoken_summary_settings_async(
         "on",
     )
     env_lang = os.environ.get("OMNIGENT_SPOKEN_SUMMARY_LANGUAGE", "auto").strip() or "auto"
-    expiry = (now + ttl_seconds) if env_enabled else float("inf")
+    expiry = now + ttl_seconds
     _SESSION_SETTINGS_CACHE[session_id] = (expiry, env_enabled, env_lang)
     return env_enabled, env_lang, conv
 
