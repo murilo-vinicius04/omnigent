@@ -765,7 +765,13 @@ function* processEvent(state: ReducerState, event: StreamEvent): Generator<AnyBl
       // race against fresh subscribe registration).
       if (hadOpenText && text === accumulatedFromDeltas) return;
 
-      if (text) {
+      // Emit when there is text, and ALSO for a text-less item that carries a
+      // spoken summary: the rewrite is persisted as its own message (the one it
+      // describes is already durable, and items are append-only), so gating on
+      // `text` alone drops it on the live path while a later reload — which
+      // rebuilds through itemsToBlocks — shows it. buildBubbles lifts the
+      // summary onto the turn's text and discards this empty carrier.
+      if (text || spokenSummary) {
         yield {
           type: "text_done",
           ctx: ctx(state, event.itemId || null),

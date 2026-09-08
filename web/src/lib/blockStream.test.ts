@@ -72,6 +72,38 @@ describe("BlockStream — response_start", () => {
   });
 });
 
+describe("BlockStream — text-less spoken summary item", () => {
+  it("emits a summary-carrying block for a message with no text of its own", () => {
+    // A native-harness rewrite is persisted as its own message keyed to the same
+    // response: the message it describes is already durable and items are
+    // append-only. Gating emission on `text` alone dropped it on the live path,
+    // so it only appeared after a reload.
+    const blocks = reduce([
+      { type: "response_created", response: makeResponse({ responseId: "resp_1" }) },
+      { type: "text_delta", delta: "I fixed the pool leak." },
+      {
+        type: "message_done",
+        content: [{ type: "output_text", text: "I fixed the pool leak." }],
+        itemId: "msg_1",
+        responseId: "resp_1",
+      },
+      {
+        type: "message_done",
+        content: [{ type: "spoken_summary", text: "Consertei o vazamento.", lang: "pt-BR" }],
+        itemId: "msg_2",
+        responseId: "resp_1",
+      },
+    ]);
+
+    const carrier = blocks.find(
+      (b): b is Extract<AnyBlock, { type: "text_done" }> =>
+        b.type === "text_done" && b.fullText === "" && Boolean(b.spokenSummary),
+    );
+    expect(carrier).toBeDefined();
+    expect(carrier!.spokenSummary).toEqual({ text: "Consertei o vazamento.", lang: "pt-BR" });
+  });
+});
+
 describe("BlockStream — block ctx carries response_id and item_id", () => {
   it("every block ctx.responseId is the active response id from response.created", () => {
     const blocks = reduce([
