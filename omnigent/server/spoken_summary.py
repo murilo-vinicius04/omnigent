@@ -10,6 +10,7 @@ The original response (output_text) is never shortened, altered, or replaced.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import re
@@ -20,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from omnigent.db.enum_codecs import CONVERSATION_KIND
 from omnigent.model_fallbacks import (
+    SPOKEN_SUMMARY_AGY_DEFAULT_MODEL,
     SPOKEN_SUMMARY_GEMINI_DEFAULT_MODEL,
     SPOKEN_SUMMARY_OPENAI_DEFAULT_MODEL,
 )
@@ -32,7 +34,7 @@ _logger = logging.getLogger(__name__)
 
 #: Character length threshold below which the assistant text is already short
 #: enough to be spoken directly; the rewrite is skipped. Matches ADR-0018.
-SPOKEN_SUMMARY_THRESHOLD_CHARS: int = 320
+SPOKEN_SUMMARY_THRESHOLD_CHARS: int = 120
 
 #: Maximum character limit for a spoken summary (~600 chars, cut at word boundary).
 SPOKEN_SUMMARY_MAX_CHARS: int = 600
@@ -50,6 +52,46 @@ def get_spoken_summary_timeout_s() -> float:
         except ValueError:
             pass
     return SPOKEN_SUMMARY_DEFAULT_TIMEOUT_S
+
+
+#: agy binary used for the rewrite. Overridable for tests / non-PATH installs.
+SPOKEN_SUMMARY_AGY_BIN: str = "agy"
+
+#: Timeout for the agy rewrite. Spawning a CLI is slower than an API call
+#: (~6s observed), and the rewrite runs after the turn has already ended,
+#: so this is deliberately far looser than the API path's budget.
+SPOKEN_SUMMARY_AGY_TIMEOUT_S: float = 45.0
+
+
+def get_spoken_summary_agy_timeout_s() -> float:
+    """Return the configured or default timeout for the agy rewrite."""
+    raw = os.environ.get("OMNIGENT_SPOKEN_SUMMARY_AGY_TIMEOUT_S", "").strip()
+    if raw:
+        try:
+            val = float(raw)
+        except ValueError:
+            return SPOKEN_SUMMARY_AGY_TIMEOUT_S
+        if val > 0:
+            return val
+    return SPOKEN_SUMMARY_AGY_TIMEOUT_S
+
+
+def use_agy_backend(model_override: str | None = None) -> bool:
+    """Whether the friendly rewrite runs through agy rather than a direct API call.
+
+    agy is the default backend: it authenticates with its own Google account
+    (``~/.gemini``), so the rewrite costs nothing against the session's own
+    provider quota and needs no API key. The direct-API path remains available
+    as an explicit opt-in for deployments that configure a summary model.
+
+    :param model_override: Caller's explicit model override, if any.
+    :returns: True when the agy backend should be used.
+    """
+    if model_override and model_override.strip():
+        return False
+    if os.environ.get("OMNIGENT_SPOKEN_SUMMARY_MODEL", "").strip():
+        return False
+    return os.environ.get("OMNIGENT_SPOKEN_SUMMARY_BACKEND", "agy").strip().lower() == "agy"
 
 
 #: Hard timeout (seconds) for the spoken summary rewrite call.
@@ -667,6 +709,82 @@ def should_generate_spoken_summary(
     return True
 
 
+async def _generate_via_agy(
+    cleaned_text: str,
+    *,
+    language: str,
+    timeout_s: float,
+) -> str | None:
+    """Rewrite an assistant reply into friendly prose by spawning ``agy --print``.
+
+    Mirrors the upstream background-title generator's approach (see
+    :mod:`omnigent.runner.background_titles.claude_native`): a short-lived
+    non-interactive CLI process, authenticated by the vendor CLI's own login,
+    so no API key is involved. Unlike that per-harness registry, this one
+    generator serves EVERY harness: the point is to move the rewrite off the
+    answering model's quota entirely.
+
+    :param cleaned_text: Sanitized assistant output prose.
+    :param language: Target language ("auto" or a BCP-47 tag).
+    :param timeout_s: Hard timeout for the CLI call.
+    :returns: The raw rewritten text, or ``None`` on any failure.
+    """
+    prompt = build_spoken_summary_prompt(cleaned_text, language)
+    model = (
+        os.environ.get("OMNIGENT_SPOKEN_SUMMARY_AGY_MODEL", "").strip()
+        or SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
+    )
+    binary = os.environ.get("OMNIGENT_SPOKEN_SUMMARY_AGY_BIN", "").strip() or (
+        SPOKEN_SUMMARY_AGY_BIN
+    )
+    args = [
+        "--print",
+        prompt,
+        "--model",
+        model,
+        "--output-format",
+        "text",
+        # No tools, no slash-command expansion: this is a pure text rewrite of
+        # untrusted assistant output, so the CLI must not act on it.
+        "--disable-slash-commands",
+        "--effort",
+        "low",
+    ]
+    try:
+        process = await asyncio.create_subprocess_exec(
+            binary,
+            *args,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        _logger.warning(
+            "Friendly rewrite skipped: %r not found on PATH",
+            binary,
+        )
+        return None
+
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_s)
+    except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+        if process.returncode is None:
+            process.kill()
+        with contextlib.suppress(Exception):
+            await process.wait()
+        raise
+
+    if process.returncode != 0:
+        _logger.warning(
+            "Friendly rewrite failed: %s exited %s: %s",
+            binary,
+            process.returncode,
+            stderr.decode(errors="replace").strip()[-500:],
+        )
+        return None
+    return stdout.decode(errors="replace").strip()
+
+
 async def generate_spoken_summary(
     text: str,
     *,
@@ -691,9 +809,38 @@ async def generate_spoken_summary(
     if not cleaned_text:
         return None, None
 
-    effective_timeout = timeout_s if timeout_s is not None else get_spoken_summary_timeout_s()
+    # An explicitly supplied client forces the API path, so the backend decision
+    # and the timeout budget must agree — otherwise an API call inherits agy's
+    # far looser budget.
+    via_agy = use_agy_backend(model_override) and llm_client is None
+    if timeout_s is not None:
+        effective_timeout = timeout_s
+    elif via_agy:
+        effective_timeout = get_spoken_summary_agy_timeout_s()
+    else:
+        effective_timeout = get_spoken_summary_timeout_s()
 
     async def _worker() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        if via_agy:
+            raw = await _generate_via_agy(
+                cleaned_text,
+                language=language,
+                timeout_s=effective_timeout,
+            )
+            if not raw:
+                return None, None
+            summary_text = clamp_sentences(raw, max_sentences=3, input_text=text)
+            if not summary_text:
+                return None, None
+            lang_tag = (
+                language
+                if language and language != "auto"
+                else detect_bcp47_language(summary_text)
+            )
+            # agy bills against its own Google account, not the session's
+            # provider quota, so there is no usage delta to attribute here.
+            return {"type": "spoken_summary", "text": summary_text, "lang": lang_tag}, None
+
         model = resolve_spoken_summary_model(model_override)
         connection = await asyncio.to_thread(resolve_spoken_summary_connection, model)
 

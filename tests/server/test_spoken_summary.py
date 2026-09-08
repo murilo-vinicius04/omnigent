@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -184,6 +185,19 @@ class _FakeConversationStore:
 
 
 # ── Unit tests for spoken summary utilities ──────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _default_to_api_backend() -> Any:
+    """Keep tests off the real `agy` CLI unless they opt in.
+
+    agy is the production default for the rewrite, and it shells out to a real
+    binary that makes a network call. Unit tests must never do that by
+    accident, so this pins the API path; the agy tests clear the variable
+    themselves.
+    """
+    with patch.dict(os.environ, {"OMNIGENT_SPOKEN_SUMMARY_BACKEND": "api"}):
+        yield
 
 
 def test_strip_markdown_for_speech() -> None:
@@ -1799,3 +1813,82 @@ async def test_native_idle_edge_skips_sub_agent_sessions() -> None:
         )
 
     assert store.appended == []
+
+
+# ── agy backend: the friendly rewrite runs off the session's own quota ─────
+
+
+def test_agy_is_the_default_backend_and_yields_to_explicit_config() -> None:
+    """agy is the default; an explicitly configured model opts back into the API path."""
+    from omnigent.server.spoken_summary import use_agy_backend
+
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("OMNIGENT_SPOKEN_SUMMARY_MODEL", None)
+        os.environ.pop("OMNIGENT_SPOKEN_SUMMARY_BACKEND", None)
+        assert use_agy_backend() is True
+        # An explicit per-call model override is a deliberate API-path opt-in.
+        assert use_agy_backend("gemini/gemini-2.5-flash") is False
+
+    with patch.dict(os.environ, {"OMNIGENT_SPOKEN_SUMMARY_MODEL": "gpt-4o-mini"}):
+        assert use_agy_backend() is False
+
+    with patch.dict(os.environ, {"OMNIGENT_SPOKEN_SUMMARY_BACKEND": "api"}):
+        assert use_agy_backend() is False
+
+
+@pytest.mark.asyncio
+async def test_generate_via_agy_spawns_print_mode_and_needs_no_api_key() -> None:
+    """The rewrite shells out to `agy --print` — no LLM client, no API key."""
+    from omnigent.server import spoken_summary as ss
+
+    captured: dict[str, Any] = {}
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"  Consertei o vazamento no pool de conexoes.  \n", b""
+
+    async def _fake_exec(binary: str, *args: str, **kwargs: Any) -> _FakeProc:
+        captured["binary"] = binary
+        captured["args"] = list(args)
+        return _FakeProc()
+
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("OMNIGENT_SPOKEN_SUMMARY_MODEL", None)
+        os.environ.pop("OMNIGENT_SPOKEN_SUMMARY_BACKEND", None)
+        with patch("asyncio.create_subprocess_exec", _fake_exec):
+            part, usage = await ss.generate_spoken_summary(
+                _LONG_RESPONSE_TEXT,
+                language="pt-BR",
+            )
+
+    assert captured["binary"] == "agy"
+    assert "--print" in captured["args"]
+    # Pinned to the cheap Gemini Flash tier, and forbidden from acting on the text.
+    assert "gemini-3.8-flash-low" in captured["args"]
+    assert "--disable-slash-commands" in captured["args"]
+    assert part is not None
+    assert part["type"] == "spoken_summary"
+    assert part["text"] == "Consertei o vazamento no pool de conexoes."
+    assert part["lang"] == "pt-BR"
+    # agy bills its own Google account, so nothing is charged to the session.
+    assert usage is None
+
+
+@pytest.mark.asyncio
+async def test_generate_via_agy_returns_none_when_binary_missing() -> None:
+    """A missing agy binary degrades to no summary, never an exception."""
+    from omnigent.server import spoken_summary as ss
+
+    async def _boom(*args: Any, **kwargs: Any) -> Any:
+        raise FileNotFoundError("agy")
+
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("OMNIGENT_SPOKEN_SUMMARY_MODEL", None)
+        os.environ.pop("OMNIGENT_SPOKEN_SUMMARY_BACKEND", None)
+        with patch("asyncio.create_subprocess_exec", _boom):
+            part, usage = await ss.generate_spoken_summary(_LONG_RESPONSE_TEXT)
+
+    assert part is None
+    assert usage is None

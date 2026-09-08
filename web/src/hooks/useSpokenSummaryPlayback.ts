@@ -6,11 +6,12 @@ import type { ActiveResponse } from "@/store/types";
 /**
  * How long after a turn finalizes a summary may still arrive and be spoken.
  *
- * The server generates the summary after the turn completes, capped at 4s
- * (`OMNIGENT_SPOKEN_SUMMARY_TIMEOUT_S`), so a real one lands within seconds or never.
- * Raise this to match if that timeout is raised past this window.
+ * The rewrite runs after the turn completes, and its default backend spawns the
+ * `agy` CLI (~6s observed, capped at `OMNIGENT_SPOKEN_SUMMARY_AGY_TIMEOUT_S`), so a
+ * real one lands within tens of seconds or never. Wide enough to cover that backend,
+ * still bounded so a rebuild minutes later can never replay a turn already read.
  */
-const LIVE_SUMMARY_WINDOW_MS = 15_000;
+const LIVE_SUMMARY_WINDOW_MS = 60_000;
 
 /**
  * Compile-time exhaustive check for ToolState.

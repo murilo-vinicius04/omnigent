@@ -256,6 +256,19 @@ _SPOKEN_SUMMARY_FALLBACKS: dict[str, StaticModelFallback] = {
             "before session models are loaded"
         ),
     ),
+    "agy": StaticModelFallback(
+        model_ids=("gemini-3.8-flash-low",),
+        owner="Spoken summary server (omnigent.server.spoken_summary)",
+        provenance=(
+            "Cheapest Gemini Flash tier listed by `agy models`; the rewrite runs "
+            "through the agy CLI so it bills that CLI's own Google account rather "
+            "than the answering session's provider quota"
+        ),
+        discovery_gap=(
+            "the rewrite spawns a vendor CLI before any session model catalog is "
+            "loaded, and no discovery API ranks that CLI's arms by cost"
+        ),
+    ),
 }
 
 #: Default Gemini model for spoken summary rewrites.
@@ -263,3 +276,6 @@ SPOKEN_SUMMARY_GEMINI_DEFAULT_MODEL = _SPOKEN_SUMMARY_FALLBACKS["gemini"].model_
 
 #: Default OpenAI model for spoken summary rewrites.
 SPOKEN_SUMMARY_OPENAI_DEFAULT_MODEL = _SPOKEN_SUMMARY_FALLBACKS["openai"].model_ids[0]
+
+#: Default agy model for spoken summary rewrites (the default backend).
+SPOKEN_SUMMARY_AGY_DEFAULT_MODEL = _SPOKEN_SUMMARY_FALLBACKS["agy"].model_ids[0]
