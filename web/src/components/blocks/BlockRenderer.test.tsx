@@ -45,7 +45,7 @@ const renderMarkdownText = (text: string) =>
   );
 
 describe("BlockRenderer dispatch", () => {
-  it("renders the skim-line when the spoken_summary part is present", () => {
+  it("shows the rewrite as the answer and keeps the original one click away", () => {
     const items: RenderItem[] = [
       {
         kind: "text",
@@ -64,8 +64,12 @@ describe("BlockRenderer dispatch", () => {
       </FileViewerContext.Provider>,
     );
 
-    expect(screen.getByTestId("spoken-summary-skim-line")).toBeInTheDocument();
+    // The rewrite is the default view; the original is behind the toggle.
+    expect(screen.getByTestId("friendly-response")).toBeInTheDocument();
     expect(screen.getByText("Compact skim summary.")).toBeInTheDocument();
+    expect(screen.queryByTestId("friendly-response-original")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("friendly-response-toggle"));
     expect(
       screen.getByText("This is the full detailed assistant response that should remain visible."),
     ).toBeInTheDocument();
@@ -114,7 +118,7 @@ describe("BlockRenderer dispatch", () => {
     expect(screen.queryByTestId("spoken-summary-skim-line")).not.toBeInTheDocument();
   });
 
-  it("renders skim-line without playback controls when responseId is empty string and itemId is null", () => {
+  it("renders the rewrite without playback controls when responseId is empty and itemId is null", () => {
     useSpeechPlaybackStore.setState({ isSpeaking: true, speakingItemId: "msg:0" });
 
     const items: RenderItem[] = [
@@ -136,12 +140,15 @@ describe("BlockRenderer dispatch", () => {
       </FileViewerContext.Provider>,
     );
 
-    // When there is no usable ID (responseId is "" and itemId is null),
-    // skim-line renders summary text but NO playback controls (no synthetic msg:index).
-    expect(screen.getByTestId("spoken-summary-skim-line")).toBeInTheDocument();
-    expect(screen.getByTestId("spoken-summary-text")).toHaveTextContent("Summary text.");
-    expect(screen.queryByTestId("spoken-summary-play-button")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("spoken-summary-stop-button")).not.toBeInTheDocument();
+    // With no usable id (responseId "" and itemId null) the rewrite still renders,
+    // but without playback controls — no synthetic msg:index identity is invented.
+    expect(screen.getByTestId("friendly-response")).toBeInTheDocument();
+    expect(screen.getByTestId("friendly-response-text")).toHaveTextContent("Summary text.");
+    expect(screen.queryByTestId("friendly-response-play")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("friendly-response-stop")).not.toBeInTheDocument();
+    // The original is still reachable — that guarantee does not depend on an id.
+    fireEvent.click(screen.getByTestId("friendly-response-toggle"));
+    expect(screen.getByText("Assistant message text.")).toBeInTheDocument();
   });
 
   it("renders a slash_command RenderItem via SlashCommandCard", () => {

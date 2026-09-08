@@ -331,25 +331,33 @@ def clamp_sentences(
 
 
 def build_spoken_summary_instructions(language: str = "auto") -> str:
-    """Construct the system instructions for spoken summary generation."""
+    """Construct the system instructions for the friendly rewrite.
+
+    This version is what the reader sees by default, with the model's original
+    reply one click away. Because the original is always reachable, this may
+    drop code and detail freely: its job is to say what happened in plain
+    language, not to be a faithful substitute.
+    """
     lang_instruction = (
-        "Same language they were answered in."
+        "Write in the same language the reply is written in."
         if not language or language == "auto"
         else (
-            f"The summary MUST be in {language} regardless of the language of the "
-            "original response."
+            f"Write in {language} regardless of the language of the original reply. "
+            "Technical terms and identifiers stay as they are."
         )
     )
     return (
-        "Rewrite this assistant reply as something spoken aloud to the person who asked. "
+        "Rewrite this assistant reply the way a person would explain it out loud to "
+        "the colleague who asked. "
         f"{lang_instruction} "
-        "At most three short sentences. Plain spoken prose only. "
-        "Drop code blocks, file paths, bullet lists, tables, and long numbers -- "
-        "say what happened and the outcome instead. "
-        "Written to be heard, not read. "
-        "Never add information, never comment on the answer's quality, never say you are "
-        "summarising. "
-        "Reply with the spoken text only."
+        "Say what was done, what was found, and what it means for them. "
+        "Plain spoken prose only, a short paragraph at most. "
+        "Leave out code blocks, file paths, commands, tables, and long numbers -- "
+        "the reader has the original one click away for those. "
+        "Prefer everyday words over jargon and short sentences over long ones. "
+        "Never add information, never speculate, never comment on the answer's quality, "
+        "never mention that you are rewriting. "
+        "Reply with the rewritten text only."
     )
 
 
@@ -829,7 +837,7 @@ async def generate_spoken_summary(
             )
             if not raw:
                 return None, None
-            summary_text = clamp_sentences(raw, max_sentences=3, input_text=text)
+            summary_text = clamp_sentences(raw, max_sentences=6, max_chars=900, input_text=text)
             if not summary_text:
                 return None, None
             lang_tag = (

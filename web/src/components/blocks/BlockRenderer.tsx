@@ -35,7 +35,7 @@ import type { SessionStatus } from "@/lib/types";
 import type { ActiveResponse } from "@/store/types";
 import { cn } from "@/lib/utils";
 import { FilePathAwareMessageResponse } from "./ChatMarkdown";
-import { SpokenSummarySkimLine } from "@/components/chat/SpokenSummarySkimLine";
+import { FriendlyResponse } from "@/components/chat/FriendlyResponse";
 import { ElicitationCard } from "./ApprovalCard";
 import { ReasoningView } from "./ReasoningView";
 import { SlashCommandCard } from "./SlashCommandCard";
@@ -786,14 +786,16 @@ function renderItem(
           data-testid="assistant-text-section"
           className={cn("min-w-0", followsText && "mt-2")}
         >
-          {item.spokenSummary && item.spokenSummary.text.trim().length > 0 && (
-            <SpokenSummarySkimLine
+          {item.spokenSummary && item.spokenSummary.text.trim().length > 0 ? (
+            <FriendlyResponse
               summary={item.spokenSummary}
               id={responseId || item.itemId || undefined}
-              itemId={item.itemId}
-            />
+            >
+              <FilePathAwareMessageResponse>{item.text}</FilePathAwareMessageResponse>
+            </FriendlyResponse>
+          ) : (
+            <FilePathAwareMessageResponse>{item.text}</FilePathAwareMessageResponse>
           )}
-          <FilePathAwareMessageResponse>{item.text}</FilePathAwareMessageResponse>
         </div>
       );
     case "reasoning":

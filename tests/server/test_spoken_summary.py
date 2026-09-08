@@ -1102,7 +1102,7 @@ async def test_prompt_injection_delimiter_framing_and_instruction_separation() -
     call = client.calls[0]
     # Instructions passed in system instructions
     instructions = call.get("instructions", "")
-    assert "Rewrite this assistant reply as something spoken aloud" in instructions
+    assert "Rewrite this assistant reply the way a person would explain it" in instructions
     # User message contains delimiter framing
     user_content = call["input"][0]["content"]
     assert "UNTRUSTED_CONTENT_" in user_content
