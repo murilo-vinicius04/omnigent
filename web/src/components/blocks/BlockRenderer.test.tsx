@@ -13,6 +13,7 @@ import type { RenderItem } from "@/lib/renderItems";
 import { ConversationScrollLockContext } from "@/components/ai-elements/conversation";
 import { FileViewerContext } from "@/shell/FileViewerContext";
 import { normalizeExplicitMathDelimiters } from "@/components/ai-elements/mathMarkdown";
+import { useSpeechPlaybackStore } from "@/lib/speechPlayback";
 import { BlockRenderer } from "./BlockRenderer";
 
 afterEach(cleanup);
@@ -44,6 +45,105 @@ const renderMarkdownText = (text: string) =>
   );
 
 describe("BlockRenderer dispatch", () => {
+  it("renders the skim-line when the spoken_summary part is present", () => {
+    const items: RenderItem[] = [
+      {
+        kind: "text",
+        itemId: "msg_1",
+        text: "This is the full detailed assistant response that should remain visible.",
+        final: true,
+        spokenSummary: {
+          text: "Compact skim summary.",
+          lang: "pt-BR",
+        },
+      },
+    ];
+    render(
+      <FileViewerContext.Provider value={FILE_VIEWER_NOOP}>
+        <BlockRenderer items={items} sessionStatus="idle" />
+      </FileViewerContext.Provider>,
+    );
+
+    expect(screen.getByTestId("spoken-summary-skim-line")).toBeInTheDocument();
+    expect(screen.getByText("Compact skim summary.")).toBeInTheDocument();
+    expect(
+      screen.getByText("This is the full detailed assistant response that should remain visible."),
+    ).toBeInTheDocument();
+  });
+
+  it("renders nothing extra when the spoken_summary part is absent", () => {
+    const items: RenderItem[] = [
+      {
+        kind: "text",
+        itemId: "msg_2",
+        text: "Normal assistant response without spoken summary.",
+        final: true,
+      },
+    ];
+    render(
+      <FileViewerContext.Provider value={FILE_VIEWER_NOOP}>
+        <BlockRenderer items={items} sessionStatus="idle" />
+      </FileViewerContext.Provider>,
+    );
+
+    expect(screen.queryByTestId("spoken-summary-skim-line")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Normal assistant response without spoken summary."),
+    ).toBeInTheDocument();
+  });
+
+  it("does not render an empty skim-line pill when spokenSummary text is empty", () => {
+    const items: RenderItem[] = [
+      {
+        kind: "text",
+        itemId: "msg_empty",
+        text: "Response with empty summary.",
+        final: true,
+        spokenSummary: {
+          text: "   ",
+          lang: "en-US",
+        },
+      },
+    ];
+    render(
+      <FileViewerContext.Provider value={FILE_VIEWER_NOOP}>
+        <BlockRenderer items={items} sessionStatus="idle" />
+      </FileViewerContext.Provider>,
+    );
+
+    expect(screen.queryByTestId("spoken-summary-skim-line")).not.toBeInTheDocument();
+  });
+
+  it("renders skim-line without playback controls when responseId is empty string and itemId is null", () => {
+    useSpeechPlaybackStore.setState({ isSpeaking: true, speakingItemId: "msg:0" });
+
+    const items: RenderItem[] = [
+      {
+        kind: "text",
+        itemId: null,
+        text: "Assistant message text.",
+        final: true,
+        spokenSummary: {
+          text: "Summary text.",
+          lang: "en-US",
+        },
+      },
+    ];
+
+    render(
+      <FileViewerContext.Provider value={FILE_VIEWER_NOOP}>
+        <BlockRenderer items={items} sessionStatus="idle" responseId="" />
+      </FileViewerContext.Provider>,
+    );
+
+    // When there is no usable ID (responseId is "" and itemId is null),
+    // skim-line renders summary text but NO playback controls (no synthetic msg:index).
+    expect(screen.getByTestId("spoken-summary-skim-line")).toBeInTheDocument();
+    expect(screen.getByTestId("spoken-summary-text")).toHaveTextContent("Summary text.");
+    expect(screen.queryByTestId("spoken-summary-play-button")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("spoken-summary-stop-button")).not.toBeInTheDocument();
+  });
+
   it("renders a slash_command RenderItem via SlashCommandCard", () => {
     const items: RenderItem[] = [
       {

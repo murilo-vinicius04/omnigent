@@ -4828,7 +4828,11 @@ export async function pumpStreamEvents(
         const bufferAt = buffer.findIndex(matchesStreamed);
         if (bufferAt !== -1) {
           const streamed = buffer[bufferAt] as TextDone;
-          buffer[bufferAt] = { ...streamed, ctx: { ...streamed.ctx, itemId } };
+          buffer[bufferAt] = {
+            ...streamed,
+            ctx: { ...streamed.ctx, itemId },
+            ...(block.spokenSummary ? { spokenSummary: block.spokenSummary } : {}),
+          };
           continue;
         }
         if (get().blocks.some(matchesStreamed)) {
@@ -4840,7 +4844,11 @@ export async function pumpStreamEvents(
             if (at === -1) return {};
             const streamed = s.blocks[at]!;
             const next = s.blocks.slice();
-            next[at] = { ...streamed, ctx: { ...streamed.ctx, itemId } };
+            next[at] = {
+              ...streamed,
+              ctx: { ...streamed.ctx, itemId },
+              ...(block.spokenSummary ? { spokenSummary: block.spokenSummary } : {}),
+            };
             return { blocks: next };
           });
           continue;

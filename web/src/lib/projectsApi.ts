@@ -50,6 +50,15 @@ export interface ProjectConfig {
    * the harness's own configured default.
    */
   model?: string;
+  /**
+   * When true, assistant messages generate an accompanying spoken summary.
+   */
+  spoken_summary_enabled?: boolean;
+  /**
+   * Language code for generated spoken summaries ("auto" to match the response,
+   * or a BCP-47 tag like "pt-BR", "en-US").
+   */
+  spoken_summary_language?: string;
 }
 
 /** A first-class project. Mirrors the `ProjectObject` response shape. */

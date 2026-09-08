@@ -58,7 +58,8 @@ export type MessageContentBlock =
   | { type: "input_text"; text: string }
   | { type: "input_image"; file_id: string; filename?: string }
   | { type: "input_file"; file_id: string; filename?: string }
-  | { type: "output_text"; text: string };
+  | { type: "output_text"; text: string }
+  | { type: "spoken_summary"; text: string; lang: string };
 
 /** A single tool call paired with its result. Mirrors `ToolExecution`. */
 export interface ToolExecution {
@@ -257,6 +258,8 @@ export interface TextDone {
   hasCodeBlocks: boolean;
   /** True when this persisted assistant text came from an interrupted turn. */
   interrupted?: boolean;
+  /** Optional server-side spoken summary. */
+  spokenSummary?: { text: string; lang: string };
 }
 
 // ── Reasoning ────────────────────────────────────────────

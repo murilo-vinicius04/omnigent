@@ -254,7 +254,11 @@ function* closeReasoning(state: ReducerState): Generator<AnyBlock> {
  * non-message boundary (tool call, terminal event without a preceding
  * message_done).
  */
-function* closeText(state: ReducerState, itemId: string | null = null): Generator<AnyBlock> {
+function* closeText(
+  state: ReducerState,
+  itemId: string | null = null,
+  spokenSummary?: { text: string; lang: string },
+): Generator<AnyBlock> {
   if (!state.inText) return;
   if (state.accumulated) {
     yield {
@@ -269,18 +273,42 @@ function* closeText(state: ReducerState, itemId: string | null = null): Generato
     ctx: ctx(state, itemId),
     fullText: state.fullText,
     hasCodeBlocks: state.fullText.includes("```"),
+    ...(spokenSummary ? { spokenSummary } : {}),
   } satisfies TextDone;
   state.inText = false;
   state.fullText = "";
 }
 
-function outputTextFromMessageContent(content: Record<string, unknown>[]): string {
+function outputTextFromMessageContent(content: unknown): string {
+  if (!Array.isArray(content)) return "";
   let text = "";
   for (const block of content) {
-    if (block.type !== "output_text") continue;
-    if (typeof block.text === "string") text += block.text;
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (b.type !== "output_text") continue;
+    if (typeof b.text === "string") text += b.text;
   }
   return text;
+}
+
+export function spokenSummaryFromMessageContent(
+  content: unknown,
+): { text: string; lang: string } | undefined {
+  if (!Array.isArray(content)) return undefined;
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (
+      b.type === "spoken_summary" &&
+      typeof b.text === "string" &&
+      b.text.trim().length > 0 &&
+      typeof b.lang === "string" &&
+      b.lang.trim().length > 0
+    ) {
+      return { text: b.text, lang: b.lang };
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -687,8 +715,10 @@ function* processEvent(state: ReducerState, event: StreamEvent): Generator<AnyBl
 
     // ── Message done ────────────────────────────────
     case "message_done": {
+      const content = Array.isArray(event.content) ? event.content : [];
       const isResponseSwitch = !!event.responseId && event.responseId !== state.responseId;
       const hadOpenText = state.inText;
+      const spokenSummary = spokenSummaryFromMessageContent(content);
       // Snapshot accumulated text BEFORE closeText resets state.fullText —
       // used by the content-equality dedup below to handle the session-stream
       // race where ``response.created`` was lost (subscribe registered after
@@ -702,7 +732,11 @@ function* processEvent(state: ReducerState, event: StreamEvent): Generator<AnyBl
       if (hadOpenText) {
         // On a response switch, event.itemId belongs to the new message — don't
         // attach it to the old text block being closed.
-        yield* closeText(state, isResponseSwitch ? null : event.itemId || null);
+        yield* closeText(
+          state,
+          isResponseSwitch ? null : event.itemId || null,
+          isResponseSwitch ? undefined : spokenSummary,
+        );
       }
 
       // A message_done with a new id is a genuine turn transition (the
@@ -721,7 +755,7 @@ function* processEvent(state: ReducerState, event: StreamEvent): Generator<AnyBl
       // avoid duplication. Response-switch: emit event.content as the new body.
       if (hadOpenText && !isResponseSwitch) return;
 
-      const text = outputTextFromMessageContent(event.content);
+      const text = outputTextFromMessageContent(content);
 
       // Race-safe dedup: even on a perceived response switch, if the deltas
       // that just closed accumulated EXACTLY the text in ``event.content``,
@@ -737,6 +771,7 @@ function* processEvent(state: ReducerState, event: StreamEvent): Generator<AnyBl
           ctx: ctx(state, event.itemId || null),
           fullText: text,
           hasCodeBlocks: text.includes("```"),
+          ...(spokenSummary ? { spokenSummary } : {}),
         } satisfies TextDone;
       }
       return;

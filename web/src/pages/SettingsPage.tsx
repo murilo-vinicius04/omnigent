@@ -174,6 +174,7 @@ import {
 } from "@/lib/transcriptViewPreferences";
 import { readDefaultBaseBranch, writeDefaultBaseBranch } from "@/lib/baseBranchPreferences";
 import { readAlwaysSteer, writeAlwaysSteer } from "@/lib/alwaysSteerPreferences";
+import { SpokenSummaryPlaybackControl } from "@/components/chat/SpokenSummaryPlaybackControl";
 import {
   readSubmitWithModEnter,
   writeSubmitWithModEnter,
@@ -225,6 +226,8 @@ import {
   updateBridge,
 } from "@/lib/nativeBridge";
 import { cn } from "@/lib/utils";
+
+export { SpokenSummaryPlaybackControl };
 
 // Admin-only management surfaces, rendered as the Members / Policies settings
 // sub-categories. Visible to admins in all modes (accounts, OIDC, single-user).
@@ -1300,6 +1303,7 @@ function ComposerSendShortcutControl() {
   );
 }
 
+
 /** App-wide behavior settings. */
 function GeneralSection() {
   return (
@@ -1310,6 +1314,9 @@ function GeneralSection() {
           <ComposerSendShortcutControl />
           <div className="mt-4 border-t border-border pt-4">
             <AlwaysSteerControl />
+          </div>
+          <div className="mt-4 border-t border-border pt-4">
+            <SpokenSummaryPlaybackControl />
           </div>
         </div>
       </div>

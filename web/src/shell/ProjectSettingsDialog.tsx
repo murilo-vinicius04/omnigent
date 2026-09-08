@@ -140,6 +140,8 @@ export function ProjectSettingsDialog({
   // Default model for new sessions, only meaningful when the default agent is
   // a native harness with a model choice; NONE stores no default (unset key).
   const [model, setModel] = useState<string>(NONE);
+  const [spokenSummaryEnabled, setSpokenSummaryEnabled] = useState(false);
+  const [spokenSummaryLanguage, setSpokenSummaryLanguage] = useState("auto");
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
 
   // The agent picker and the host Select portal their dropdowns OUTSIDE
@@ -186,6 +188,8 @@ export function ProjectSettingsDialog({
     setBaseBranch(c.base_branch ?? "");
     setAgentId(c.agent_id ?? null);
     setModel(c.model ?? NONE);
+    setSpokenSummaryEnabled(c.spoken_summary_enabled ?? false);
+    setSpokenSummaryLanguage(c.spoken_summary_language ?? "auto");
     setWorkspaceOpen(false);
   }, [open, stored, loadFailed]);
 
@@ -228,6 +232,15 @@ export function ProjectSettingsDialog({
     const agentUnresolved = agentId != null && selectedAgent === null;
     if (supportsModelDefault && model !== NONE) config.model = model;
     else if (!agentUnresolved) delete config.model;
+
+    if (spokenSummaryEnabled) config.spoken_summary_enabled = true;
+    else delete config.spoken_summary_enabled;
+
+    if (spokenSummaryLanguage && spokenSummaryLanguage !== "auto") {
+      config.spoken_summary_language = spokenSummaryLanguage;
+    } else {
+      delete config.spoken_summary_language;
+    }
 
     updateConfig.mutate(
       { id: projectId, name: projectName, config },
@@ -469,6 +482,41 @@ export function ProjectSettingsDialog({
               />
             </Field>
           )}
+
+          <Field
+            label="Spoken summary"
+            hint="Generate a compact spoken summary alongside assistant responses"
+          >
+            <div className="flex sm:justify-end">
+              <Switch
+                data-testid="project-settings-spoken-summary"
+                checked={spokenSummaryEnabled}
+                onCheckedChange={setSpokenSummaryEnabled}
+                disabled={isLoading}
+              />
+            </div>
+          </Field>
+
+          <Field label="Summary language" hint="Language for generated spoken summaries">
+            <Select
+              value={spokenSummaryLanguage}
+              onValueChange={setSpokenSummaryLanguage}
+              disabled={isLoading}
+              onOpenChange={onDropdownOpenChange}
+            >
+              <SelectTrigger
+                className="w-full"
+                data-testid="project-settings-spoken-summary-language"
+              >
+                <SelectValue placeholder="Match response" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">Match response</SelectItem>
+                <SelectItem value="pt-BR">pt-BR</SelectItem>
+                <SelectItem value="en-US">en-US</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
 
           <Field label="Agent" hint="Default agent / harness for new sessions">
             <div className="flex flex-col items-end gap-1" data-testid="project-settings-agent">

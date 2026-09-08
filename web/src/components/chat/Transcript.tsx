@@ -22,6 +22,7 @@ import { TranscriptScrollbar } from "@/pages/TranscriptScrollbar";
 import { TurnRail, type Turn } from "@/pages/TurnRail";
 import { StreamBudgetBanner } from "@/components/StreamBudgetBanner";
 import { useUserMessageNav } from "@/hooks/useUserMessageNav";
+import { useSpokenSummaryPlayback } from "@/hooks/useSpokenSummaryPlayback";
 import { ChatPlanAccordion } from "@/shell/ChatPlanAccordion";
 import { RunnerStartingIndicator, McpStartupIndicator } from "@/pages/ChatIndicators";
 import { CHAT_COLUMN_WIDTH } from "@/pages/chatLayout";
@@ -145,6 +146,8 @@ function TranscriptImpl({
     subagentRoutingOverride,
     sessionStatus,
   ]);
+
+  useSpokenSummaryPlayback(bubbles, activeResponse);
 
   // Single nav instance shared by hotkey + buttons. System-message bubbles are
   // excluded — the hotkey is for navigating real user turns, not markers.
