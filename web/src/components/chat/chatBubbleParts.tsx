@@ -818,6 +818,7 @@ function AssistantBubble({
         <MessageContent className={spansFullColumn || foldOnly ? "w-full" : undefined}>
           <BlockRenderer
             items={bubble.items}
+            responseId={bubble.responseId}
             sessionStatus={sessionStatus}
             turnLifecycle={bubble.lifecycle}
             workedForS={bubble.workedForS}

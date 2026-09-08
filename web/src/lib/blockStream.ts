@@ -166,7 +166,6 @@ interface ReducerState {
   // Active server-assigned response id, set on each `response.created`.
   // Stamped onto every emitted block's `ctx.responseId`.
   responseId: string;
-  spokenSummary?: { text: string; lang: string };
 }
 
 function createState(flushThreshold: number): ReducerState {
@@ -188,7 +187,6 @@ function createState(flushThreshold: number): ReducerState {
     turn: 0,
     started: false,
     responseId: "",
-    spokenSummary: undefined,
   };
 }
 
@@ -270,38 +268,44 @@ function* closeText(
     } satisfies TextChunk;
     state.accumulated = "";
   }
-  const summary = spokenSummary ?? state.spokenSummary;
   yield {
     type: "text_done",
     ctx: ctx(state, itemId),
     fullText: state.fullText,
     hasCodeBlocks: state.fullText.includes("```"),
-    ...(summary ? { spokenSummary: summary } : {}),
+    ...(spokenSummary ? { spokenSummary } : {}),
   } satisfies TextDone;
   state.inText = false;
   state.fullText = "";
-  state.spokenSummary = undefined;
 }
 
-function outputTextFromMessageContent(content: Record<string, unknown>[]): string {
+function outputTextFromMessageContent(content: unknown): string {
+  if (!Array.isArray(content)) return "";
   let text = "";
   for (const block of content) {
-    if (block.type !== "output_text") continue;
-    if (typeof block.text === "string") text += block.text;
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (b.type !== "output_text") continue;
+    if (typeof b.text === "string") text += b.text;
   }
   return text;
 }
 
-function spokenSummaryFromMessageContent(
-  content: Record<string, unknown>[],
+export function spokenSummaryFromMessageContent(
+  content: unknown,
 ): { text: string; lang: string } | undefined {
+  if (!Array.isArray(content)) return undefined;
   for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
     if (
-      block.type === "spoken_summary" &&
-      typeof block.text === "string" &&
-      typeof block.lang === "string"
+      b.type === "spoken_summary" &&
+      typeof b.text === "string" &&
+      b.text.trim().length > 0 &&
+      typeof b.lang === "string" &&
+      b.lang.trim().length > 0
     ) {
-      return { text: block.text, lang: block.lang };
+      return { text: b.text, lang: b.lang };
     }
   }
   return undefined;
@@ -495,7 +499,6 @@ function* processEvent(state: ReducerState, event: StreamEvent): Generator<AnyBl
       state.inText = true;
       state.accumulated += event.delta;
       state.fullText += event.delta;
-      if (event.spokenSummary) state.spokenSummary = event.spokenSummary;
 
       while (state.accumulated.includes("\n")) {
         const idx = state.accumulated.indexOf("\n");
@@ -712,9 +715,10 @@ function* processEvent(state: ReducerState, event: StreamEvent): Generator<AnyBl
 
     // ── Message done ────────────────────────────────
     case "message_done": {
+      const content = Array.isArray(event.content) ? event.content : [];
       const isResponseSwitch = !!event.responseId && event.responseId !== state.responseId;
       const hadOpenText = state.inText;
-      const spokenSummary = spokenSummaryFromMessageContent(event.content);
+      const spokenSummary = spokenSummaryFromMessageContent(content);
       // Snapshot accumulated text BEFORE closeText resets state.fullText —
       // used by the content-equality dedup below to handle the session-stream
       // race where ``response.created`` was lost (subscribe registered after
@@ -751,7 +755,7 @@ function* processEvent(state: ReducerState, event: StreamEvent): Generator<AnyBl
       // avoid duplication. Response-switch: emit event.content as the new body.
       if (hadOpenText && !isResponseSwitch) return;
 
-      const text = outputTextFromMessageContent(event.content);
+      const text = outputTextFromMessageContent(content);
 
       // Race-safe dedup: even on a perceived response switch, if the deltas
       // that just closed accumulated EXACTLY the text in ``event.content``,

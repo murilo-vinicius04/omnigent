@@ -35,7 +35,11 @@ import {
   slashCommandEchoText,
   structuredErrorFields,
 } from "./blocks";
-import { formatNativeLabel, formatToolArgsBrief } from "./blockStream";
+import {
+  formatNativeLabel,
+  formatToolArgsBrief,
+  spokenSummaryFromMessageContent,
+} from "./blockStream";
 import {
   type CompactionItem,
   type ConversationItem,
@@ -317,19 +321,23 @@ function userMessageToBlock(item: MessageItem): UserMessageBlock {
 
 function assistantMessageToBlock(item: MessageItem): TextDone {
   const text = item.content
-    .filter((b): b is { type: "output_text"; text: string } => b.type === "output_text")
+    .filter(
+      (b): b is { type: "output_text"; text: string } =>
+        b &&
+        typeof b === "object" &&
+        b.type === "output_text" &&
+        typeof (b as Record<string, unknown>).text === "string",
+    )
     .map((b) => b.text)
     .join("");
-  const spokenPart = item.content.find(
-    (b): b is { type: "spoken_summary"; text: string; lang: string } => b.type === "spoken_summary",
-  );
+  const spokenSummary = spokenSummaryFromMessageContent(item.content);
   return {
     type: "text_done",
     ctx: ctxFor(item),
     fullText: text,
     hasCodeBlocks: text.includes("```"),
     ...(item.interrupted === true ? { interrupted: true } : {}),
-    ...(spokenPart ? { spokenSummary: { text: spokenPart.text, lang: spokenPart.lang } } : {}),
+    ...(spokenSummary ? { spokenSummary } : {}),
   };
 }
 

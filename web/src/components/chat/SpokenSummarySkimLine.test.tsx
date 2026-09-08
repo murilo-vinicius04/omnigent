@@ -69,4 +69,20 @@ describe("SpokenSummarySkimLine", () => {
     expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(false);
     expect(useSpeechPlaybackStore.getState().speakingItemId).toBeNull();
   });
+
+  it("with itemId null, asserts the Stop control appears while that message is speaking", () => {
+    useSpeechPlaybackStore.setState({ isSpeaking: true, speakingItemId: "resp_null_item" });
+
+    render(
+      <SpokenSummarySkimLine
+        summary={{ text: "Here is a brief summary.", lang: "en-US" }}
+        id="resp_null_item"
+        itemId={null}
+      />,
+    );
+
+    expect(screen.getByTestId("spoken-summary-stop-button")).toBeInTheDocument();
+    expect(screen.getByText("Stop")).toBeInTheDocument();
+    expect(screen.queryByTestId("spoken-summary-play-button")).not.toBeInTheDocument();
+  });
 });

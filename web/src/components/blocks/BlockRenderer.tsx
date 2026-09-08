@@ -74,6 +74,7 @@ const FOLD_EXPAND_ANCHOR_HOLD_MS = 400;
 
 interface BlockRendererProps {
   items: RenderItem[];
+  responseId?: string;
   sessionStatus: SessionStatus;
   onRetryError?: (item: Extract<RenderItem, { kind: "error" }>) => Promise<void>;
   /**
@@ -228,6 +229,7 @@ type ToolRunFragment =
 
 export function BlockRenderer({
   items,
+  responseId,
   sessionStatus,
   turnLifecycle,
   workedForS,
@@ -320,12 +322,17 @@ export function BlockRenderer({
     return (
       <>
         <TurnWorkedFold workedForS={workedForS} animateCollapse={animateCollapse}>
-          {renderSequence(process, { liveEdge: false })}
+          {renderSequence(process, { liveEdge: false, responseId })}
         </TurnWorkedFold>
         {exempt.map(({ item, index }) =>
-          renderItem(item, index, false, false, false, onRetryError),
+          renderItem(item, index, false, false, false, onRetryError, responseId),
         )}
-        {renderSequence(final, { liveEdge: false, indexBase: finalStart, onRetryError })}
+        {renderSequence(final, {
+          liveEdge: false,
+          indexBase: finalStart,
+          onRetryError,
+          responseId,
+        })}
       </>
     );
   }
@@ -334,6 +341,7 @@ export function BlockRenderer({
     liveEdge: isTurnLive,
     suppressReasoningDuration: showsWorking,
     onRetryError,
+    responseId,
   });
 }
 
@@ -346,7 +354,13 @@ export function BlockRenderer({
  */
 function renderSequence(
   items: RenderItem[],
-  { liveEdge, suppressReasoningDuration = false, indexBase = 0, onRetryError }: TurnSequenceOptions,
+  {
+    liveEdge,
+    suppressReasoningDuration = false,
+    indexBase = 0,
+    onRetryError,
+    responseId,
+  }: TurnSequenceOptions,
 ): ReactNode[] {
   const rendered: ReactNode[] = [];
   let previousRenderedItemWasText = false;
@@ -387,13 +401,15 @@ function renderSequence(
           <div key={`tool-group-with-tail:${indexBase + runStart}`} className="space-y-1">
             <ToolGroupSummary tools={group.tools} />
             {tail.map((fragment, idx) =>
-              renderToolRunFragment(fragment, indexBase + runStart, idx),
+              renderToolRunFragment(fragment, indexBase + runStart, idx, responseId),
             )}
           </div>,
         );
       } else {
         for (let idx = 0; idx < fragments.length; idx += 1) {
-          rendered.push(renderToolRunFragment(fragments[idx]!, indexBase + runStart, idx));
+          rendered.push(
+            renderToolRunFragment(fragments[idx]!, indexBase + runStart, idx, responseId),
+          );
         }
       }
       previousRenderedItemWasText = false;
@@ -409,6 +425,7 @@ function renderSequence(
         suppressReasoningDuration,
         followsText,
         onRetryError,
+        responseId,
       ),
     );
     previousRenderedItemWasText = item.kind === "text";
@@ -422,6 +439,7 @@ interface TurnSequenceOptions {
   suppressReasoningDuration?: boolean;
   indexBase?: number;
   onRetryError?: BlockRendererProps["onRetryError"];
+  responseId?: string;
 }
 
 interface TurnPartition {
@@ -694,13 +712,22 @@ function renderToolRunFragment(
   fragment: ToolRunFragment,
   runStart: number,
   fragmentIndex: number,
+  responseId?: string,
 ): ReactNode {
   if (fragment.kind === "group") {
     return (
       <ToolGroupSummary key={`tool-group:${runStart}:${fragmentIndex}`} tools={fragment.tools} />
     );
   }
-  return renderItem(fragment.tool, runStart + fragment.index, false);
+  return renderItem(
+    fragment.tool,
+    runStart + fragment.index,
+    false,
+    false,
+    false,
+    undefined,
+    responseId,
+  );
 }
 
 const ADVISE_MODELS_NAMES = new Set(["sys_advise_models", "mcp__omnigent__sys_advise_models"]);
@@ -748,6 +775,7 @@ function renderItem(
   suppressReasoningDuration = false,
   followsText = false,
   onRetryError?: BlockRendererProps["onRetryError"],
+  responseId?: string,
 ): ReactNode {
   const key = keyFor(item, index);
   switch (item.kind) {
@@ -758,8 +786,12 @@ function renderItem(
           data-testid="assistant-text-section"
           className={cn("min-w-0", followsText && "mt-2")}
         >
-          {item.spokenSummary && (
-            <SpokenSummarySkimLine summary={item.spokenSummary} itemId={item.itemId} />
+          {item.spokenSummary && item.spokenSummary.text.trim().length > 0 && (
+            <SpokenSummarySkimLine
+              summary={item.spokenSummary}
+              id={responseId ?? item.itemId ?? `msg:${index}`}
+              itemId={item.itemId}
+            />
           )}
           <FilePathAwareMessageResponse>{item.text}</FilePathAwareMessageResponse>
         </div>

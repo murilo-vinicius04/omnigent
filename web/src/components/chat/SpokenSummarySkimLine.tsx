@@ -7,7 +7,10 @@ export interface SpokenSummarySkimLineProps {
     text: string;
     lang: string;
   };
-  itemId: string | null;
+  /** Stable identifier for playback tracking (e.g. responseId). */
+  id?: string;
+  /** @deprecated use `id` */
+  itemId?: string | null;
 }
 
 /**
@@ -15,13 +18,13 @@ export interface SpokenSummarySkimLineProps {
  * Keeps the full response completely visible and untouched, while offering
  * quick visual skimming and an immediate stop/play affordance for read-aloud speech.
  */
-export function SpokenSummarySkimLine({ summary, itemId }: SpokenSummarySkimLineProps) {
+export function SpokenSummarySkimLine({ summary, id, itemId }: SpokenSummarySkimLineProps) {
   const speakingItemId = useSpeechPlaybackStore((s) => s.speakingItemId);
   const playManual = useSpeechPlaybackStore((s) => s.playManual);
   const stop = useSpeechPlaybackStore((s) => s.stop);
 
-  const effectiveId = itemId || summary.text;
-  const isSpeaking = speakingItemId === effectiveId;
+  const effectiveId = id || itemId || "";
+  const isSpeaking = Boolean(effectiveId && speakingItemId === effectiveId);
 
   const handleToggle = useCallback(
     (e: React.MouseEvent) => {

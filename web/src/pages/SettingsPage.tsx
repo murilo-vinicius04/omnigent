@@ -178,6 +178,7 @@ import {
   readSpokenSummaryPlayback,
   writeSpokenSummaryPlayback,
 } from "@/lib/spokenSummaryPlaybackPreferences";
+import { getSpeechEngine, useSpeechPlaybackStore } from "@/lib/speechPlayback";
 import {
   readSubmitWithModEnter,
   writeSubmitWithModEnter,
@@ -1308,15 +1309,19 @@ function SpokenSummaryPlaybackControl() {
   const [value, setValue] = useState(() => readSpokenSummaryPlayback());
   const labelId = useId();
   const descriptionId = useId();
-  const isSupported =
-    typeof window !== "undefined" &&
-    "speechSynthesis" in window &&
-    typeof window.SpeechSynthesisUtterance !== "undefined";
+  const isSupported = getSpeechEngine().isSupported();
+  const stopPlayback = useSpeechPlaybackStore((s) => s.stop);
 
-  const toggle = useCallback((next: boolean) => {
-    setValue(next);
-    writeSpokenSummaryPlayback(next);
-  }, []);
+  const toggle = useCallback(
+    (next: boolean) => {
+      setValue(next);
+      writeSpokenSummaryPlayback(next);
+      if (!next) {
+        stopPlayback();
+      }
+    },
+    [stopPlayback],
+  );
 
   return (
     <div className="flex items-start justify-between gap-6">

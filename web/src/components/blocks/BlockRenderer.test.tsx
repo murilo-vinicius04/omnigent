@@ -91,6 +91,28 @@ describe("BlockRenderer dispatch", () => {
     ).toBeInTheDocument();
   });
 
+  it("does not render an empty skim-line pill when spokenSummary text is empty", () => {
+    const items: RenderItem[] = [
+      {
+        kind: "text",
+        itemId: "msg_empty",
+        text: "Response with empty summary.",
+        final: true,
+        spokenSummary: {
+          text: "   ",
+          lang: "en-US",
+        },
+      },
+    ];
+    render(
+      <FileViewerContext.Provider value={FILE_VIEWER_NOOP}>
+        <BlockRenderer items={items} sessionStatus="idle" />
+      </FileViewerContext.Provider>,
+    );
+
+    expect(screen.queryByTestId("spoken-summary-skim-line")).not.toBeInTheDocument();
+  });
+
   it("renders a slash_command RenderItem via SlashCommandCard", () => {
     const items: RenderItem[] = [
       {
