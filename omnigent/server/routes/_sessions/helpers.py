@@ -3947,6 +3947,68 @@ def _merge_pending_file_blocks(
     return item.model_copy(update={"data": merged_data})
 
 
+def _restore_pending_original_text(
+    item: NewConversationItem,
+    pending_content: list[dict[str, Any]],
+) -> NewConversationItem:
+    """
+    Show the reader their own words, with the English the model saw alongside.
+
+    Acts only when the pending entry carries an explicit ``translated_text``
+    block, stamped when the inbound translation actually ran. Text differing
+    between the pending entry and the transcript is NOT a signal on its own —
+    an "@"-mention marker is rewritten on the way through — so relying on that
+    would corrupt untranslated messages.
+
+    :param item: The parsed user-message item, whose text is the English that
+        was dispatched to the harness.
+    :param pending_content: The drained pending entry's blocks, carrying the
+        reader's original text and the translation marker.
+    :returns: A copy of *item* with the reader's text restored, else *item*.
+    """
+    if not isinstance(item.data, MessageData):
+        return item
+    marker = next(
+        (
+            block
+            for block in pending_content
+            if isinstance(block, dict)
+            and block.get("type") == "translated_text"
+            and isinstance(block.get("text"), str)
+        ),
+        None,
+    )
+    if marker is None:
+        return item
+    original = _message_text(
+        [
+            block
+            for block in pending_content
+            if isinstance(block, dict) and block.get("type") != "translated_text"
+        ]
+    )
+    if not original:
+        return item
+    rebuilt: list[dict[str, Any]] = []
+    swapped = False
+    for block in item.data.content:
+        if not isinstance(block, dict):
+            rebuilt.append(block)
+            continue
+        is_text = isinstance(block.get("text"), str) or isinstance(block.get("input_text"), str)
+        if is_text and not swapped:
+            rebuilt.append({**block, "text": original})
+            swapped = True
+            continue
+        if is_text:
+            continue
+        rebuilt.append(block)
+    if not swapped:
+        return item
+    rebuilt.append({"type": "translated_text", "text": marker["text"], "lang": "en-US"})
+    return item.model_copy(update={"data": item.data.model_copy(update={"content": rebuilt})})
+
+
 def _message_text(content: list[dict[str, Any]]) -> str | None:
     """
     Extract joined text from message content blocks.

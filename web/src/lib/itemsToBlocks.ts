@@ -39,6 +39,7 @@ import {
   formatNativeLabel,
   formatToolArgsBrief,
   spokenSummaryFromMessageContent,
+  translatedTextFromMessageContent,
 } from "./blockStream";
 import {
   type CompactionItem,
@@ -300,9 +301,11 @@ function isClaudeTaskNotificationMessage(item: MessageItem): boolean {
 }
 
 function userMessageToBlock(item: MessageItem): UserMessageBlock {
+  const translatedText = translatedTextFromMessageContent(item.content);
   return {
     type: "user_message",
     ctx: ctxFor(item),
+    ...(translatedText ? { translatedText } : {}),
     // Forward the full content array verbatim so the renderer can
     // pluck text, images, and files without the translator imposing
     // an interpretation. Cast restricts to the user-input subset

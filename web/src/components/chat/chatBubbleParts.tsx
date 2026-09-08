@@ -23,6 +23,7 @@ import {
   Loader2Icon,
   XIcon,
 } from "lucide-react";
+import { TranslatedMessageToggle } from "@/components/chat/TranslatedMessageToggle";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { userColor, userColorTint, userInitials } from "@/lib/userBadge";
@@ -711,6 +712,9 @@ function UserBubble({ bubble }: { bubble: Extract<Bubble, { kind: "user" }> }) {
               `breaks` keeps single newlines as line breaks. Empty text renders
               nothing rather than an empty markdown block. */}
             {text && <FilePathAwareMessageResponse breaks>{text}</FilePathAwareMessageResponse>}
+            {bubble.translatedText && (
+              <TranslatedMessageToggle translated={bubble.translatedText} />
+            )}
           </MessageContent>
         </div>
         {/* Skip an empty row when there is neither a timestamp nor a copy

@@ -119,6 +119,12 @@ export interface UserMessageBlock {
   /** Same shape as `MessageItem.content` from the items API. */
   content: MessageContentBlock[];
   /**
+   * The English this message was translated into before dispatch, present only
+   * when inbound translation ran. `content` is what the reader wrote; this is
+   * what the answering model received, shown behind a toggle.
+   */
+  translatedText?: string;
+  /**
    * Stable React key for the rendered bubble, set ONLY when this block
    * was promoted from an optimistic `pendingUserMessages` entry on
    * `session.input.consumed`. It carries that entry's client temp id so

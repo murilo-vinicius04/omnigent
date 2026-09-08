@@ -154,6 +154,11 @@ export type Bubble =
       kind: "user";
       itemId: string;
       content: MessageContentBlock[];
+      /**
+       * The English the answering model received, when inbound translation
+       * ran. `content` is what the reader wrote; this is shown behind a toggle.
+       */
+      translatedText?: string;
       /** Human author email, when known. */
       createdBy?: string;
       /** Epoch seconds of this message, when known — server-stamped from
@@ -797,6 +802,7 @@ function walkBubbles(
         kind: "user",
         itemId: b.ctx.itemId ?? `user_${i}`,
         content: b.content,
+        ...(b.translatedText ? { translatedText: b.translatedText } : {}),
         ...(b.ctx.createdBy !== undefined ? { createdBy: b.ctx.createdBy } : {}),
         // Server stamp on cold load, client stamp while live — display
         // only, so either clock is correct here.

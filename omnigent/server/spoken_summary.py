@@ -717,27 +717,22 @@ def should_generate_spoken_summary(
     return True
 
 
-async def _generate_via_agy(
-    cleaned_text: str,
-    *,
-    language: str,
-    timeout_s: float,
-) -> str | None:
-    """Rewrite an assistant reply into friendly prose by spawning ``agy --print``.
+async def run_agy_prompt(prompt: str, *, timeout_s: float) -> str | None:
+    """Run a one-shot prompt through the ``agy`` CLI and return its text.
 
     Mirrors the upstream background-title generator's approach (see
     :mod:`omnigent.runner.background_titles.claude_native`): a short-lived
-    non-interactive CLI process, authenticated by the vendor CLI's own login,
-    so no API key is involved. Unlike that per-harness registry, this one
-    generator serves EVERY harness: the point is to move the rewrite off the
-    answering model's quota entirely.
+    non-interactive vendor CLI process, authenticated by that CLI's own login,
+    so no API key is involved and the call bills agy's Google account rather
+    than the answering session's provider quota.
 
-    :param cleaned_text: Sanitized assistant output prose.
-    :param language: Target language ("auto" or a BCP-47 tag).
+    Never raises for an ordinary failure — a missing binary or non-zero exit
+    logs and returns ``None``. Cancellation and timeout propagate.
+
+    :param prompt: The complete prompt to run.
     :param timeout_s: Hard timeout for the CLI call.
-    :returns: The raw rewritten text, or ``None`` on any failure.
+    :returns: Trimmed stdout, or ``None`` on failure.
     """
-    prompt = build_spoken_summary_prompt(cleaned_text, language)
     model = (
         os.environ.get("OMNIGENT_SPOKEN_SUMMARY_AGY_MODEL", "").strip()
         or SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
@@ -752,8 +747,8 @@ async def _generate_via_agy(
         model,
         "--output-format",
         "text",
-        # No tools, no slash-command expansion: this is a pure text rewrite of
-        # untrusted assistant output, so the CLI must not act on it.
+        # No tools, no slash-command expansion: the input is untrusted text to
+        # be rewritten, so the CLI must never act on it.
         "--disable-slash-commands",
         "--effort",
         "low",
@@ -767,10 +762,7 @@ async def _generate_via_agy(
             stderr=asyncio.subprocess.PIPE,
         )
     except FileNotFoundError:
-        _logger.warning(
-            "Friendly rewrite skipped: %r not found on PATH",
-            binary,
-        )
+        _logger.warning("agy prompt skipped: %r not found on PATH", binary)
         return None
 
     try:
@@ -784,13 +776,32 @@ async def _generate_via_agy(
 
     if process.returncode != 0:
         _logger.warning(
-            "Friendly rewrite failed: %s exited %s: %s",
+            "agy prompt failed: %s exited %s: %s",
             binary,
             process.returncode,
             stderr.decode(errors="replace").strip()[-500:],
         )
         return None
     return stdout.decode(errors="replace").strip()
+
+
+async def _generate_via_agy(
+    cleaned_text: str,
+    *,
+    language: str,
+    timeout_s: float,
+) -> str | None:
+    """Rewrite an assistant reply into friendly prose through the agy CLI.
+
+    :param cleaned_text: Sanitized assistant output prose.
+    :param language: Target language ("auto" or a BCP-47 tag).
+    :param timeout_s: Hard timeout for the CLI call.
+    :returns: The raw rewritten text, or ``None`` on any failure.
+    """
+    return await run_agy_prompt(
+        build_spoken_summary_prompt(cleaned_text, language),
+        timeout_s=timeout_s,
+    )
 
 
 async def generate_spoken_summary(

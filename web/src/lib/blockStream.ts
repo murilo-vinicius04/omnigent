@@ -291,6 +291,24 @@ function outputTextFromMessageContent(content: unknown): string {
   return text;
 }
 
+/**
+ * Extract the English a user message was translated into before dispatch.
+ *
+ * Present only when inbound translation ran: the block body is what the reader
+ * wrote, and this is what the answering model actually received.
+ */
+export function translatedTextFromMessageContent(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (b.type === "translated_text" && typeof b.text === "string" && b.text.trim().length > 0) {
+      return b.text;
+    }
+  }
+  return undefined;
+}
+
 export function spokenSummaryFromMessageContent(
   content: unknown,
 ): { text: string; lang: string } | undefined {

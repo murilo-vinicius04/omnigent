@@ -1892,3 +1892,112 @@ async def test_generate_via_agy_returns_none_when_binary_missing() -> None:
 
     assert part is None
     assert usage is None
+
+
+# ── Inbound translation: the reader writes their language, the model reads English ──
+
+
+def test_inbound_translation_only_runs_for_non_english_readers() -> None:
+    """A reader already writing English gains nothing from a round trip."""
+    from omnigent.server.inbound_translation import inbound_translation_enabled
+
+    assert inbound_translation_enabled("pt-BR") is True
+    assert inbound_translation_enabled("es") is True
+    assert inbound_translation_enabled("en-US") is False
+    assert inbound_translation_enabled("en") is False
+    assert inbound_translation_enabled("auto") is False
+    assert inbound_translation_enabled(None) is False
+
+    with patch.dict(os.environ, {"OMNIGENT_INBOUND_TRANSLATION_ENABLED": "0"}):
+        assert inbound_translation_enabled("pt-BR") is False
+
+
+@pytest.mark.asyncio
+async def test_inbound_translation_skips_short_messages_without_calling_agy() -> None:
+    """Short inputs ("ok", "vai") are not worth seconds of latency."""
+    from omnigent.server import inbound_translation as it
+
+    called = False
+
+    async def _fake(prompt: str, **kwargs: Any) -> str:
+        nonlocal called
+        called = True
+        return "never"
+
+    with patch("omnigent.server.spoken_summary.run_agy_prompt", _fake):
+        out = await it.translate_inbound_message("ok vai", source_language="pt-BR")
+
+    assert out is None
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_inbound_translation_returns_none_on_implausible_output() -> None:
+    """A model that answers the message instead of restating it is rejected."""
+    from omnigent.server import inbound_translation as it
+
+    async def _answers_instead(prompt: str, **kwargs: Any) -> str:
+        return "Sure! Here is a very long essay answering your question. " * 40
+
+    with patch("omnigent.server.spoken_summary.run_agy_prompt", _answers_instead):
+        out = await it.translate_inbound_message(
+            "mostra o que eu falei e no toggle a traducao",
+            source_language="pt-BR",
+        )
+
+    assert out is None
+
+
+def test_restore_pending_original_text_swaps_and_attaches_english() -> None:
+    """The reader sees their own words; the dispatched English rides alongside."""
+    from omnigent.entities import MessageData, NewConversationItem
+    from omnigent.server.routes._sessions.helpers import _restore_pending_original_text
+
+    item = NewConversationItem(
+        type="message",
+        response_id="resp_1",
+        data=MessageData(
+            type="message",
+            role="user",
+            content=[{"type": "input_text", "text": "Show me what I said."}],
+        ),
+    )
+    pending = [
+        {"type": "input_text", "text": "mostra o que eu falei"},
+        {"type": "translated_text", "text": "Show me what I said."},
+    ]
+
+    out = _restore_pending_original_text(item, pending)
+    content = out.data.content
+
+    assert content[0]["text"] == "mostra o que eu falei"
+    translated = [b for b in content if b.get("type") == "translated_text"]
+    assert len(translated) == 1
+    assert translated[0]["text"] == "Show me what I said."
+
+    # Only the reader's text survives as the body — the marker is not doubled.
+    assert len([b for b in content if b.get("type") == "input_text"]) == 1
+
+
+def test_restore_pending_original_text_is_a_noop_without_translation() -> None:
+    """An untranslated session is left exactly as it was."""
+    from omnigent.entities import MessageData, NewConversationItem
+    from omnigent.server.routes._sessions.helpers import _restore_pending_original_text
+
+    item = NewConversationItem(
+        type="message",
+        response_id="resp_1",
+        data=MessageData(
+            type="message",
+            role="user",
+            content=[{"type": "input_text", "text": "same text"}],
+        ),
+    )
+    # No marker means no translation ran, so an "@"-mention rewrite of the text
+    # must never be mistaken for one.
+    assert (
+        _restore_pending_original_text(
+            item, [{"type": "input_text", "text": "[Attached: /tmp/a.png]\nsame text"}]
+        )
+        is item
+    )

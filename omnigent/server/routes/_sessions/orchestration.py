@@ -289,6 +289,7 @@ from omnigent.server.routes._sessions.helpers import (
     _resolve_llm_model,
     _resolve_subagent_spec,
     _resource_event_item_from_sse,
+    _restore_pending_original_text,
     _routing_decision_item_from_sse,
     _RunnerForwardResult,
     _seed_missing_title_from_user_message,
@@ -2264,6 +2265,10 @@ async def _persist_external_conversation_item(
         if drained is not None:
             cleared_pending_id = drained.pending_id
             item = _merge_pending_file_blocks(item, drained.content)
+            # Inbound translation dispatched an English restatement, so the
+            # transcript mirrors English back. Show the reader their own words
+            # and keep that English one click away.
+            item = _restore_pending_original_text(item, drained.content)
             # Apply the original sender's identity recorded at POST time.
             # The transcript forwarder is the single writer here and has no
             # auth context, so the persisted item would otherwise have
@@ -5623,6 +5628,71 @@ async def _dispatch_session_event_to_runner(*args: Any, **kwargs: Any) -> Any:
         return await _facade._dispatch_session_event_to_runner(*args, **kwargs)
 
 
+async def _translate_inbound_content(
+    session_id: str,
+    content: list[Any],
+    conversation_store: ConversationStore,
+) -> tuple[list[Any], str | None]:
+    """Return *content* with its text restated in English, when configured.
+
+    Uses the session's own spoken-summary language as the reader's language, so
+    one setting governs both directions: replies come back in that language and
+    messages go out in English. Returns *content* untouched when translation is
+    off, the reader already writes English, or anything fails.
+
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :param content: The outgoing message's content blocks.
+    :param conversation_store: Store used to resolve the session's language.
+    :returns: ``(content to dispatch, the English text)``; the second is
+        ``None`` when no translation ran.
+    """
+    try:
+        from omnigent.server.inbound_translation import (
+            inbound_translation_enabled,
+            translate_inbound_message,
+        )
+        from omnigent.server.spoken_summary import resolve_spoken_summary_settings_async
+
+        _enabled, language, _conv = await resolve_spoken_summary_settings_async(
+            session_id, conversation_store
+        )
+        if not inbound_translation_enabled(language):
+            return content, None
+        text = _message_text([b for b in content if isinstance(b, dict)])
+        if not text:
+            return content, None
+        translated = await translate_inbound_message(text, source_language=language)
+        if not translated:
+            return content, None
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - forwarding the original is always safe
+        _logger.warning(
+            "Inbound translation skipped for session=%s: %s",
+            session_id,
+            exc,
+            extra={"session_id": session_id},
+        )
+        return content, None
+
+    rebuilt: list[Any] = []
+    swapped = False
+    for block in content:
+        if not isinstance(block, dict):
+            rebuilt.append(block)
+            continue
+        is_text = isinstance(block.get("text"), str) or isinstance(block.get("input_text"), str)
+        if is_text and not swapped:
+            key = "text" if isinstance(block.get("text"), str) else "input_text"
+            rebuilt.append({**block, key: translated})
+            swapped = True
+            continue
+        if is_text:
+            continue
+        rebuilt.append(block)
+    return (rebuilt, translated) if swapped else (content, None)
+
+
 async def _dispatch_session_event_to_runner_impl(
     session_id: str,
     conv: Conversation,
@@ -5752,11 +5822,28 @@ async def _dispatch_session_event_to_runner_impl(
         # back on any failure/cancellation so a message the TUI never
         # received doesn't replay as a ghost.
         content = body.data.get("content")
-        pending_id: str | None = (
-            pending_inputs.record(session_id, content, created_by=created_by)
+        # Translate the reader's message to English before the harness sees it.
+        # The pending entry keeps the original plus a marker naming the English
+        # that was dispatched, so the transcript can show the reader their own
+        # words with that English one click away. Any failure dispatches the
+        # message unchanged.
+        dispatch_content, translated_en = (
+            await _translate_inbound_content(session_id, content, conversation_store)
             if isinstance(content, list) and content
+            else (content, None)
+        )
+        pending_content = (
+            [*content, {"type": "translated_text", "text": translated_en}]
+            if translated_en and isinstance(content, list)
+            else content
+        )
+        pending_id: str | None = (
+            pending_inputs.record(session_id, pending_content, created_by=created_by)
+            if isinstance(pending_content, list) and pending_content
             else None
         )
+        if translated_en:
+            body.data["content"] = dispatch_content
         # ── Server-side routing for native terminal sessions ────────
         # Same logic as the SDK path in _forward_event_to_runner: if
         # the toggle is on and no model_override is set, call the
