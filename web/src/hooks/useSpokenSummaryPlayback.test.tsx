@@ -20,6 +20,15 @@ import { writeSpokenSummaryPlayback } from "@/lib/spokenSummaryPlaybackPreferenc
 import { SpokenSummaryPlaybackControl } from "@/components/chat/SpokenSummaryPlaybackControl";
 import { isToolStreaming, useSpokenSummaryPlayback } from "./useSpokenSummaryPlayback";
 
+function streamingResponse(responseId: string): ActiveResponse {
+  return { responseId, state: "streaming", error: null };
+}
+
+/** A response the store has finalized, `ageMs` milliseconds ago. */
+function completedResponse(responseId: string, ageMs = 0): ActiveResponse {
+  return { responseId, state: "completed", error: null, completedAt: Date.now() - ageMs };
+}
+
 class MockSpeechEngine implements SpeechEngine {
   isSupported = vi.fn().mockReturnValue(true);
   speak = vi.fn((_text: string, _lang?: string, _onEnd?: () => void, _onError?: () => void) => {});
@@ -93,10 +102,9 @@ describe("useSpokenSummaryPlayback", () => {
 
   it("mounts with [], rerenders with full populated history array, asserts speak was NOT called", () => {
     writeSpokenSummaryPlayback(true);
-    const { rerender } = renderHook(
-      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
-      { initialProps: { bubbles: [] as Bubble[] } },
-    );
+    const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
+      initialProps: { bubbles: [] as Bubble[] },
+    });
 
     expect(mockEngine.speak).not.toHaveBeenCalled();
 
@@ -135,10 +143,9 @@ describe("useSpokenSummaryPlayback", () => {
       ),
     ];
 
-    const { rerender } = renderHook(
-      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
-      { initialProps: { bubbles: sessionABubbles } },
-    );
+    const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
+      initialProps: { bubbles: sessionABubbles },
+    });
 
     expect(mockEngine.speak).not.toHaveBeenCalled();
 
@@ -178,10 +185,9 @@ describe("useSpokenSummaryPlayback", () => {
       ),
     ];
 
-    const { rerender } = renderHook(
-      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
-      { initialProps: { bubbles: initialBubbles } },
-    );
+    const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
+      initialProps: { bubbles: initialBubbles },
+    });
 
     // 1. Streaming arrives: non-final, itemId null, lifecycle streaming
     const streamingBubbles: Bubble[] = [
@@ -235,10 +241,9 @@ describe("useSpokenSummaryPlayback", () => {
     writeSpokenSummaryPlayback(false);
     const initialBubbles: Bubble[] = [];
 
-    const { rerender } = renderHook(
-      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
-      { initialProps: { bubbles: initialBubbles } },
-    );
+    const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
+      initialProps: { bubbles: initialBubbles },
+    });
 
     const streamingBubbles: Bubble[] = [
       makeAssistantBubble("resp_1", null, undefined, false, "streaming"),
@@ -264,10 +269,9 @@ describe("useSpokenSummaryPlayback", () => {
     writeSpokenSummaryPlayback(true);
     const initialBubbles: Bubble[] = [];
 
-    const { rerender } = renderHook(
-      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
-      { initialProps: { bubbles: initialBubbles } },
-    );
+    const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
+      initialProps: { bubbles: initialBubbles },
+    });
 
     const streamingBubbles: Bubble[] = [
       makeAssistantBubble("resp_1", null, undefined, false, "streaming"),
@@ -286,10 +290,9 @@ describe("useSpokenSummaryPlayback", () => {
     writeSpokenSummaryPlayback(true);
     const initialBubbles: Bubble[] = [];
 
-    const { rerender } = renderHook(
-      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
-      { initialProps: { bubbles: initialBubbles } },
-    );
+    const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
+      initialProps: { bubbles: initialBubbles },
+    });
 
     const streamingBubbles: Bubble[] = [
       makeAssistantBubble(
@@ -307,10 +310,9 @@ describe("useSpokenSummaryPlayback", () => {
 
   it("does NOT speak when spoken summary text is empty string or whitespace", () => {
     writeSpokenSummaryPlayback(true);
-    const { rerender } = renderHook(
-      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
-      { initialProps: { bubbles: [] as Bubble[] } },
-    );
+    const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
+      initialProps: { bubbles: [] as Bubble[] },
+    });
 
     const streamingBubbles: Bubble[] = [
       makeAssistantBubble("resp_1", null, undefined, false, "streaming"),
@@ -327,10 +329,9 @@ describe("useSpokenSummaryPlayback", () => {
 
   it("cancels in-flight speech when a new summary arrives", () => {
     writeSpokenSummaryPlayback(true);
-    const { rerender } = renderHook(
-      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
-      { initialProps: { bubbles: [] as Bubble[] } },
-    );
+    const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
+      initialProps: { bubbles: [] as Bubble[] },
+    });
 
     // Turn 1 streams and completes
     const bubbles1Streaming: Bubble[] = [
@@ -400,10 +401,9 @@ describe("useSpokenSummaryPlayback", () => {
   it("plays spoken summary exactly once for a tool-using turn arriving incrementally", () => {
     writeSpokenSummaryPlayback(true);
 
-    const { rerender } = renderHook(
-      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
-      { initialProps: { bubbles: [] as Bubble[] } },
-    );
+    const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
+      initialProps: { bubbles: [] as Bubble[] },
+    });
 
     // Step 1: Preliminary text arrives (final: true, no summary, turn streaming)
     const step1Items: RenderItem[] = [
@@ -504,11 +504,11 @@ describe("useSpokenSummaryPlayback", () => {
     writeSpokenSummaryPlayback(true);
 
     const { rerender } = renderHook(
-      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
+      ({ bubbles, activeResponse }) => useSpokenSummaryPlayback(bubbles, activeResponse),
       {
         initialProps: {
           bubbles: [] as Bubble[],
-          activeResponseId: "resp_tool_gap" as string | null,
+          activeResponse: streamingResponse("resp_tool_gap") as ActiveResponse | null,
         },
       },
     );
@@ -524,7 +524,7 @@ describe("useSpokenSummaryPlayback", () => {
     ];
     rerender({
       bubbles: [makeAssistantBubbleWithItems("resp_tool_gap", step1Items, "streaming")],
-      activeResponseId: "resp_tool_gap",
+      activeResponse: streamingResponse("resp_tool_gap"),
     });
     expect(mockEngine.speak).not.toHaveBeenCalled();
 
@@ -551,7 +551,7 @@ describe("useSpokenSummaryPlayback", () => {
     ];
     rerender({
       bubbles: [makeAssistantBubbleWithItems("resp_tool_gap", step2Items, "streaming")],
-      activeResponseId: "resp_tool_gap",
+      activeResponse: streamingResponse("resp_tool_gap"),
     });
     expect(mockEngine.speak).not.toHaveBeenCalled();
 
@@ -579,7 +579,7 @@ describe("useSpokenSummaryPlayback", () => {
     ];
     rerender({
       bubbles: [makeAssistantBubbleWithItems("resp_tool_gap", step3Items, "completed")],
-      activeResponseId: "resp_tool_gap",
+      activeResponse: streamingResponse("resp_tool_gap"),
     });
     // Critical assertion: summary must NOT be marked spoken early in the gap while response is still active
     expect(mockEngine.speak).not.toHaveBeenCalled();
@@ -601,7 +601,7 @@ describe("useSpokenSummaryPlayback", () => {
     ];
     rerender({
       bubbles: [makeAssistantBubbleWithItems("resp_tool_gap", step4Items, "completed")],
-      activeResponseId: "resp_tool_gap",
+      activeResponse: streamingResponse("resp_tool_gap"),
     });
 
     // Proves summary speaks exactly once and was not silenced by early marking
@@ -624,15 +624,20 @@ describe("useSpokenSummaryPlayback", () => {
     const markMessagesSpokenSpy = vi.spyOn(speechPlayback, "markMessagesSpoken");
 
     const { rerender } = renderHook(
-      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
-      { initialProps: { bubbles: [] as Bubble[], activeResponseId: "" as string | null } },
+      ({ bubbles, activeResponse }) => useSpokenSummaryPlayback(bubbles, activeResponse),
+      {
+        initialProps: {
+          bubbles: [] as Bubble[],
+          activeResponse: streamingResponse("") as ActiveResponse | null,
+        },
+      },
     );
 
     // Stream arrives with empty string responseId
     const emptyRidStreaming: Bubble[] = [
       makeAssistantBubble("", null, undefined, false, "streaming"),
     ];
-    rerender({ bubbles: emptyRidStreaming, activeResponseId: "" });
+    rerender({ bubbles: emptyRidStreaming, activeResponse: streamingResponse("") });
 
     // Empty responseId bubble finalizes with a summary
     const emptyRidCompleted: Bubble[] = [
@@ -644,7 +649,7 @@ describe("useSpokenSummaryPlayback", () => {
         "completed",
       ),
     ];
-    rerender({ bubbles: emptyRidCompleted, activeResponseId: null });
+    rerender({ bubbles: emptyRidCompleted, activeResponse: null });
 
     // The hook guard `if (!responseId) continue` must prevent delegating to playback or marking.
     // Isolating via store and module spies ensures downstream guards in speechPlayback
@@ -658,11 +663,11 @@ describe("useSpokenSummaryPlayback", () => {
     writeSpokenSummaryPlayback(true);
 
     const { rerender } = renderHook(
-      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
+      ({ bubbles, activeResponse }) => useSpokenSummaryPlayback(bubbles, activeResponse),
       {
         initialProps: {
           bubbles: [] as Bubble[],
-          activeResponseId: "resp_1" as string | null,
+          activeResponse: streamingResponse("resp_1") as ActiveResponse | null,
         },
       },
     );
@@ -670,27 +675,27 @@ describe("useSpokenSummaryPlayback", () => {
     // 1. Turn 1 observed live streaming
     rerender({
       bubbles: [makeAssistantBubble("resp_1", null, undefined, false, "streaming")],
-      activeResponseId: "resp_1",
+      activeResponse: streamingResponse("resp_1"),
     });
     expect(mockEngine.speak).not.toHaveBeenCalled();
 
     // 2. Turn 1 completes without a summary while still active in store
     rerender({
       bubbles: [makeAssistantBubble("resp_1", "item_1", undefined, true, "completed")],
-      activeResponseId: "resp_1",
+      activeResponse: streamingResponse("resp_1"),
     });
     // Deferred from marking while active
     expect(isMessageSpoken("resp_1")).toBe(false);
     expect(mockEngine.speak).not.toHaveBeenCalled();
 
     // 3. A newer assistant turn arrives (resp_2), demoting resp_1 via !isLatestTurn
-    // (even if store still holds resp_1 as activeResponseId, demotion alone forces marking)
+    // (even if the store still holds resp_1 as the active response, demotion alone forces marking)
     rerender({
       bubbles: [
         makeAssistantBubble("resp_1", "item_1", undefined, true, "completed"),
         makeAssistantBubble("resp_2", null, undefined, false, "streaming"),
       ],
-      activeResponseId: "resp_1",
+      activeResponse: streamingResponse("resp_1"),
     });
 
     // resp_1 was demoted: unmarked state exits and turn becomes marked spoken
@@ -709,21 +714,25 @@ describe("useSpokenSummaryPlayback", () => {
         ),
         makeAssistantBubble("resp_2", null, undefined, false, "streaming"),
       ],
-      activeResponseId: "resp_1",
+      activeResponse: streamingResponse("resp_1"),
     });
 
     expect(mockEngine.speak).not.toHaveBeenCalled();
   });
 
-  it("marks a turn spoken when retired from active store and asserts silence when rebuilt with a summary", () => {
+  it("stays silent when a summary surfaces past the live window with the response still in the store (no send in between)", () => {
+    // Production ordering. The store does NOT clear `activeResponse` when a turn completes —
+    // it only clears it on the next send (chatStore setActive on send). So while the user sits
+    // reading, the completed response is still there with the SAME responseId. Any guard keyed
+    // on response identity alone therefore stays true and cannot bound the replay window.
     writeSpokenSummaryPlayback(true);
 
     const { rerender } = renderHook(
-      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
+      ({ bubbles, activeResponse }) => useSpokenSummaryPlayback(bubbles, activeResponse),
       {
         initialProps: {
           bubbles: [] as Bubble[],
-          activeResponseId: "resp_1" as string | null,
+          activeResponse: streamingResponse("resp_1") as ActiveResponse | null,
         },
       },
     );
@@ -731,30 +740,24 @@ describe("useSpokenSummaryPlayback", () => {
     // 1. Turn 1 observed live streaming
     rerender({
       bubbles: [makeAssistantBubble("resp_1", null, undefined, false, "streaming")],
-      activeResponseId: "resp_1",
+      activeResponse: streamingResponse("resp_1"),
     });
     expect(mockEngine.speak).not.toHaveBeenCalled();
 
-    // 2. Client gets response.completed but misses output_item.done carrying summary (SSE reconnect gap).
-    // Lifecycle is completed with no streaming items, no summary, but response is still active in store.
+    // 2. Client gets response.completed but misses the output_item.done carrying the summary
+    // (SSE reconnect gap). Finalized, no summary. Still within the live window, so the turn is
+    // deferred rather than marked: a real summary may yet arrive (the server generates it after
+    // completion, capped at ~4s).
     rerender({
       bubbles: [makeAssistantBubble("resp_1", "item_1", undefined, true, "completed")],
-      activeResponseId: "resp_1",
+      activeResponse: completedResponse("resp_1"),
     });
-    // Left unmarked while still active
     expect(isMessageSpoken("resp_1")).toBe(false);
     expect(mockEngine.speak).not.toHaveBeenCalled();
 
-    // 3. Response is retired: store sets activeResponse to null (no longer active)
-    rerender({
-      bubbles: [makeAssistantBubble("resp_1", "item_1", undefined, true, "completed")],
-      activeResponseId: null,
-    });
-    // The unmarked window exits: resp_1 must now be marked spoken
-    expect(isMessageSpoken("resp_1")).toBe(true);
-    expect(mockEngine.speak).not.toHaveBeenCalled();
-
-    // 4. Minutes later bubbles are rebuilt from server data carrying the persisted summary.
+    // 3. Minutes pass with the user reading. NO send occurs, so the store still holds resp_1 —
+    // only its completedAt has aged out of the live window. The transcript is then rebuilt from
+    // server data (history refetch / pagination) and the persisted message DOES carry a summary.
     // Must assert SILENCE: never replay a turn the user finished reading long ago.
     rerender({
       bubbles: [
@@ -766,11 +769,58 @@ describe("useSpokenSummaryPlayback", () => {
           "completed",
         ),
       ],
-      activeResponseId: null,
+      activeResponse: completedResponse("resp_1", 5 * 60_000),
     });
 
     expect(mockEngine.speak).not.toHaveBeenCalled();
     expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(false);
+    // And it is now indexed, so no later rebuild can revive it either.
+    expect(isMessageSpoken("resp_1")).toBe(true);
+  });
+
+  it("still speaks when the summary arrives shortly after the turn finalizes (server generates it post-completion)", () => {
+    // Guards the opposite failure: bounding the window must not kill autoplay for real turns,
+    // whose summary legitimately lands a few seconds after response.completed.
+    writeSpokenSummaryPlayback(true);
+
+    const { rerender } = renderHook(
+      ({ bubbles, activeResponse }) => useSpokenSummaryPlayback(bubbles, activeResponse),
+      {
+        initialProps: {
+          bubbles: [] as Bubble[],
+          activeResponse: streamingResponse("resp_1") as ActiveResponse | null,
+        },
+      },
+    );
+
+    rerender({
+      bubbles: [makeAssistantBubble("resp_1", null, undefined, false, "streaming")],
+      activeResponse: streamingResponse("resp_1"),
+    });
+
+    // Finalized, summary not yet generated.
+    rerender({
+      bubbles: [makeAssistantBubble("resp_1", "item_1", undefined, true, "completed")],
+      activeResponse: completedResponse("resp_1"),
+    });
+    expect(mockEngine.speak).not.toHaveBeenCalled();
+
+    // Summary lands 3s later, inside the live window: must speak.
+    rerender({
+      bubbles: [
+        makeAssistantBubble(
+          "resp_1",
+          "item_1",
+          { text: "Fixed the pool leak. Tests pass.", lang: "en-US" },
+          true,
+          "completed",
+        ),
+      ],
+      activeResponse: completedResponse("resp_1", 3_000),
+    });
+
+    expect(mockEngine.speak).toHaveBeenCalledTimes(1);
+    expect(mockEngine.speak.mock.calls[0]?.[0]).toBe("Fixed the pool leak. Tests pass.");
   });
 
   it("batches multiple turn marks into a single sessionStorage setItem persist (eliminates write churn)", () => {
@@ -807,10 +857,9 @@ describe("useSpokenSummaryPlayback", () => {
     writeSpokenSummaryPlayback(true);
     const initialBubbles: Bubble[] = [];
 
-    const { rerender } = renderHook(
-      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
-      { initialProps: { bubbles: initialBubbles } },
-    );
+    const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
+      initialProps: { bubbles: initialBubbles },
+    });
 
     const streamingBubbles: Bubble[] = [
       makeAssistantBubble("resp_1", null, undefined, false, "streaming"),
@@ -846,10 +895,9 @@ describe("useSpokenSummaryPlayback", () => {
       ),
     ];
 
-    const { rerender } = renderHook(
-      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
-      { initialProps: { bubbles: currentBubbles } },
-    );
+    const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
+      initialProps: { bubbles: currentBubbles },
+    });
 
     // Prepend older history at the beginning of transcript (pagination load)
     const prependedBubbles: Bubble[] = [
@@ -875,14 +923,11 @@ describe("useSpokenSummaryPlayback", () => {
     const initialStreamBubbles: Bubble[] = [
       makeAssistantBubble("resp_reload", null, undefined, false, "streaming"),
     ];
-    const { unmount } = renderHook(
-      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
-      {
-        initialProps: {
-          bubbles: initialStreamBubbles,
-        },
+    const { unmount } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
+      initialProps: {
+        bubbles: initialStreamBubbles,
       },
-    );
+    });
 
     // Summary arrives and speech starts playing live
     const spoken = useSpeechPlaybackStore

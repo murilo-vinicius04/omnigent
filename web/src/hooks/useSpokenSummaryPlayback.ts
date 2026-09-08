@@ -1,10 +1,16 @@
 import { useEffect, useRef } from "react";
 import type { Bubble, RenderItem, ToolState } from "@/lib/renderItems";
-import {
-  isMessageSpoken,
-  markMessagesSpoken,
-  useSpeechPlaybackStore,
-} from "@/lib/speechPlayback";
+import { isMessageSpoken, markMessagesSpoken, useSpeechPlaybackStore } from "@/lib/speechPlayback";
+import type { ActiveResponse } from "@/store/types";
+
+/**
+ * How long after a turn finalizes a summary may still arrive and be spoken.
+ *
+ * The server generates the summary after the turn completes, capped at 4s
+ * (`OMNIGENT_SPOKEN_SUMMARY_TIMEOUT_S`), so a real one lands within seconds or never.
+ * Raise this to match if that timeout is raised past this window.
+ */
+const LIVE_SUMMARY_WINDOW_MS = 15_000;
 
 /**
  * Compile-time exhaustive check for ToolState.
@@ -39,13 +45,14 @@ export function isToolStreaming(state: ToolState): boolean {
  *   so mid-turn itemId stamping never causes duplicate playback.
  * - Cancels in-flight speech when a new summary arrives, on session switch, or on unmount.
  * - Falsy responseId turns are never spoken and never marked spoken.
- * - Active turn deferral: turns that finish without a summary are only deferred from marking
- *   while the store still considers the response active. Once retired (or demoted by a newer turn),
- *   they are indexed as spoken so late-arriving rebuilds never replay past turns.
+ * - Live-window bound: a turn whose response has gone stale is indexed as spoken rather than
+ *   played, so a rebuild surfacing a summary minutes later (history refetch, pagination, SSE
+ *   reconnect gap) can never replay a turn the user already read. `activeResponse` is not
+ *   cleared on completion, so liveness comes from its state/completedAt, not its id.
  */
 export function useSpokenSummaryPlayback(
   bubbles: Bubble[],
-  activeResponseId?: string | null,
+  activeResponse?: ActiveResponse | null,
 ): void {
   // Set of responseIds that were positively observed streaming live in this client session.
   const observedLiveResponseIdsRef = useRef<Set<string>>(new Set());
@@ -106,7 +113,17 @@ export function useSpokenSummaryPlayback(
 
         const isLatestTurn = i === lastAssistantIdx;
         const wasObservedLive = observedLiveResponseIdsRef.current.has(responseId);
-        const isStillActive = Boolean(activeResponseId && activeResponseId === responseId);
+        // A completed response stays in the store until the next send, so identity alone never
+        // goes false while the user reads. Stale is a disqualifier, not a liveness requirement:
+        // suppressing without positive evidence would silence turns that have no active response.
+        const isResponseStale = Boolean(
+          activeResponse &&
+          // Another response is live, or this one finalized too long ago for a real summary.
+          (activeResponse.responseId !== responseId ||
+            (activeResponse.state !== "streaming" &&
+              activeResponse.completedAt !== undefined &&
+              Date.now() - activeResponse.completedAt > LIVE_SUMMARY_WINDOW_MS)),
+        );
 
         // Select the text item that actually carries the spoken summary (the LAST/final one), not the first.
         const textItems = bubble.items.filter(
@@ -141,10 +158,13 @@ export function useSpokenSummaryPlayback(
           // - We observed positive evidence that this client watched the turn arrive live
           // - It is the latest assistant turn at the transcript tail
           // - It is finalized and has a valid non-empty summary
-          if (wasObservedLive && isLatestTurn && isFinal && hasValidSummary) {
+          // - The response has not gone stale. This gate belongs here, not only on the marking
+          //   branch: the branches are exclusive, so a marking-only guard is unreachable exactly
+          //   when the speak conditions hold — the replay case.
+          if (wasObservedLive && isLatestTurn && isFinal && hasValidSummary && !isResponseStale) {
             speakLiveSummary(responseId, summary!.text, summary!.lang);
-          } else if (isFinal && (!wasObservedLive || !isLatestTurn || !isStillActive)) {
-            // Settled history, non-tail turn, or retired active response without a summary:
+          } else if (isFinal && (!wasObservedLive || !isLatestTurn || isResponseStale)) {
+            // Settled history, non-tail turn, or a response past its live window:
             // queue for single-persist batch marking so it is never replayed later.
             toMarkSpoken.add(responseId);
           }
@@ -155,7 +175,7 @@ export function useSpokenSummaryPlayback(
     if (toMarkSpoken.size > 0) {
       markMessagesSpoken(Array.from(toMarkSpoken));
     }
-  }, [bubbles, activeResponseId, speakLiveSummary, stop]);
+  }, [bubbles, activeResponse, speakLiveSummary, stop]);
 
   // Cancel in-flight speech when the component unmounts or user navigates away.
   useEffect(() => {
