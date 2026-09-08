@@ -74,60 +74,117 @@ export function resetSpeechEngine(): void {
   activeSpeechEngine = new BrowserSpeechEngine();
 }
 
-const SPOKEN_MESSAGES_SESSION_STORAGE_KEY = "spoken_summary_spoken_message_ids";
+export const SPOKEN_MESSAGES_SESSION_STORAGE_KEY = "omnigent:spoken-summary:spoken-ids";
+export const MAX_PERSISTED_SPOKEN_IDS = 200;
 
-/** Set of message IDs that have already been spoken or marked as historical. */
+/** Unbounded in-memory set of all spoken or historical message IDs. */
 const spokenMessageIds = new Set<string>();
 
-function readSessionStorageIds(): Set<string> | null {
-  if (typeof window === "undefined" || !window.sessionStorage) {
-    return new Set();
-  }
+/** In-memory FIFO array of IDs persisted in sessionStorage (capped at MAX_PERSISTED_SPOKEN_IDS). */
+let persistedIdsCache: string[] | null = null;
+let persistedIdsSetCache: Set<string> | null = null;
+
+function getSessionStorage(): Storage | null {
+  if (typeof window === "undefined") return null;
   try {
-    const raw = window.sessionStorage.getItem(SPOKEN_MESSAGES_SESSION_STORAGE_KEY);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      return new Set(parsed.filter((item): item is string => typeof item === "string"));
-    }
-    return new Set();
+    return window.sessionStorage ?? null;
   } catch {
-    // Bias is silence: if storage access throws or data is corrupted, signal unprovable state
     return null;
   }
 }
 
-function writeSessionStorageId(id: string): void {
-  if (typeof window === "undefined" || !window.sessionStorage) {
-    return;
+function loadSessionStorageCache(): { ids: string[]; set: Set<string> } {
+  if (persistedIdsCache !== null && persistedIdsSetCache !== null) {
+    return { ids: persistedIdsCache, set: persistedIdsSetCache };
   }
+
+  persistedIdsCache = [];
+  persistedIdsSetCache = new Set();
+
+  const storage = getSessionStorage();
+  if (!storage) {
+    return { ids: persistedIdsCache, set: persistedIdsSetCache };
+  }
+
   try {
-    const ids = readSessionStorageIds() ?? new Set<string>();
-    ids.add(id);
-    window.sessionStorage.setItem(
-      SPOKEN_MESSAGES_SESSION_STORAGE_KEY,
-      JSON.stringify(Array.from(ids)),
-    );
+    const raw = storage.getItem(SPOKEN_MESSAGES_SESSION_STORAGE_KEY);
+    if (!raw) {
+      return { ids: persistedIdsCache, set: persistedIdsSetCache };
+    }
+
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      const valid = parsed.filter(
+        (x): x is string => typeof x === "string" && x.length > 0,
+      );
+      // Keep at most MAX_PERSISTED_SPOKEN_IDS (FIFO, most recent at tail)
+      const capped = valid.slice(-MAX_PERSISTED_SPOKEN_IDS);
+      persistedIdsCache = capped;
+      persistedIdsSetCache = new Set(capped);
+      for (const id of capped) {
+        spokenMessageIds.add(id);
+      }
+    } else {
+      // Self-heal corruption: stored value is not an array, remove it once so next load starts clean
+      try {
+        storage.removeItem(SPOKEN_MESSAGES_SESSION_STORAGE_KEY);
+      } catch {
+        // Degrade gracefully
+      }
+    }
   } catch {
-    // Degrade gracefully
+    // Self-heal corruption: parse error or storage error, remove item once
+    try {
+      storage.removeItem(SPOKEN_MESSAGES_SESSION_STORAGE_KEY);
+    } catch {
+      // Degrade gracefully
+    }
+  }
+
+  return { ids: persistedIdsCache, set: persistedIdsSetCache };
+}
+
+function writeSessionStorageId(id: string): void {
+  if (!id) return;
+  const { ids, set } = loadSessionStorageCache();
+
+  if (set.has(id)) {
+    return; // Already persisted, no storage write needed
+  }
+
+  ids.push(id);
+  set.add(id);
+
+  if (ids.length > MAX_PERSISTED_SPOKEN_IDS) {
+    const dropped = ids.shift();
+    if (dropped) {
+      set.delete(dropped);
+    }
+  }
+
+  const storage = getSessionStorage();
+  if (!storage) return;
+
+  try {
+    storage.setItem(SPOKEN_MESSAGES_SESSION_STORAGE_KEY, JSON.stringify(ids));
+  } catch {
+    // Degrade gracefully to in-memory only tracking
   }
 }
 
 export function markMessageSpoken(id: string): void {
+  if (!id) return;
   spokenMessageIds.add(id);
   writeSessionStorageId(id);
 }
 
 export function isMessageSpoken(id: string): boolean {
+  if (!id) return false;
   if (spokenMessageIds.has(id)) {
     return true;
   }
-  const sessionIds = readSessionStorageIds();
-  // Bias is SILENCE: if we cannot prove the user has not already heard it, do not speak.
-  if (sessionIds === null) {
-    return true;
-  }
-  if (sessionIds.has(id)) {
+  const { set } = loadSessionStorageCache();
+  if (set.has(id)) {
     spokenMessageIds.add(id);
     return true;
   }
@@ -136,9 +193,12 @@ export function isMessageSpoken(id: string): boolean {
 
 export function resetSpokenMessageTracking(): void {
   spokenMessageIds.clear();
-  if (typeof window !== "undefined" && window.sessionStorage) {
+  persistedIdsCache = null;
+  persistedIdsSetCache = null;
+  const storage = getSessionStorage();
+  if (storage) {
     try {
-      window.sessionStorage.removeItem(SPOKEN_MESSAGES_SESSION_STORAGE_KEY);
+      storage.removeItem(SPOKEN_MESSAGES_SESSION_STORAGE_KEY);
     } catch {
       // Degrade gracefully
     }
@@ -148,6 +208,8 @@ export function resetSpokenMessageTracking(): void {
 /** Testing helper: simulates a tab reload where in-memory state is wiped but sessionStorage persists. */
 export function clearInMemorySpokenTracking(): void {
   spokenMessageIds.clear();
+  persistedIdsCache = null;
+  persistedIdsSetCache = null;
 }
 
 interface SpeechPlaybackStoreState {
@@ -165,6 +227,8 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
   speakLiveSummary: (itemId: string, text: string, lang?: string) => {
     // Hard requirement: do NOT autoplay anything when toggle is OFF.
     if (!readSpokenSummaryPlayback()) return false;
+    // Never treat empty/falsy ID as a valid speaking identity
+    if (!itemId) return false;
     // Hard requirement: speak ONLY on newly-arrived live messages.
     if (isMessageSpoken(itemId)) return false;
     markMessageSpoken(itemId);
@@ -196,6 +260,7 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
   },
 
   playManual: (itemId: string, text: string, lang?: string) => {
+    if (!itemId) return;
     const { speakingItemId, stop } = get();
     if (speakingItemId === itemId) {
       stop();

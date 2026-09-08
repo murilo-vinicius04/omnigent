@@ -102,7 +102,7 @@ describe("SpokenSummarySkimLine", () => {
     expect(screen.queryByTestId("spoken-summary-play-button")).not.toBeInTheDocument();
   });
 
-  it("displays Stop affordance and allows stopping when effectiveId is empty string", () => {
+  it("renders without playback controls when effectiveId is empty string", () => {
     render(
       <SpokenSummarySkimLine
         summary={{ text: "Here is a brief summary.", lang: "en-US" }}
@@ -111,19 +111,9 @@ describe("SpokenSummarySkimLine", () => {
       />,
     );
 
-    const playBtn = screen.getByTestId("spoken-summary-play-button");
-    fireEvent.click(playBtn);
-
-    expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(true);
-    expect(useSpeechPlaybackStore.getState().speakingItemId).toBe("");
-
-    const stopBtn = screen.getByTestId("spoken-summary-stop-button");
-    expect(stopBtn).toBeInTheDocument();
-    expect(screen.getByText("Stop")).toBeInTheDocument();
-
-    fireEvent.click(stopBtn);
-    expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(false);
-    expect(useSpeechPlaybackStore.getState().speakingItemId).toBeNull();
-    expect(screen.getByTestId("spoken-summary-play-button")).toBeInTheDocument();
+    expect(screen.getByTestId("spoken-summary-skim-line")).toBeInTheDocument();
+    expect(screen.getByTestId("spoken-summary-text")).toHaveTextContent("Here is a brief summary.");
+    expect(screen.queryByTestId("spoken-summary-play-button")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("spoken-summary-stop-button")).not.toBeInTheDocument();
   });
 });

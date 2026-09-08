@@ -114,7 +114,7 @@ describe("BlockRenderer dispatch", () => {
     expect(screen.queryByTestId("spoken-summary-skim-line")).not.toBeInTheDocument();
   });
 
-  it("uses fallback msg:index when responseId is empty string and itemId is null", () => {
+  it("renders skim-line without playback controls when responseId is empty string and itemId is null", () => {
     useSpeechPlaybackStore.setState({ isSpeaking: true, speakingItemId: "msg:0" });
 
     const items: RenderItem[] = [
@@ -136,9 +136,12 @@ describe("BlockRenderer dispatch", () => {
       </FileViewerContext.Provider>,
     );
 
-    // With falsy-aware fallback, "" || null || "msg:0" produces "msg:0",
-    // matching speakingItemId "msg:0" so the Stop button is rendered.
-    expect(screen.getByTestId("spoken-summary-stop-button")).toBeInTheDocument();
+    // When there is no usable ID (responseId is "" and itemId is null),
+    // skim-line renders summary text but NO playback controls (no synthetic msg:index).
+    expect(screen.getByTestId("spoken-summary-skim-line")).toBeInTheDocument();
+    expect(screen.getByTestId("spoken-summary-text")).toHaveTextContent("Summary text.");
+    expect(screen.queryByTestId("spoken-summary-play-button")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("spoken-summary-stop-button")).not.toBeInTheDocument();
   });
 
   it("renders a slash_command RenderItem via SlashCommandCard", () => {

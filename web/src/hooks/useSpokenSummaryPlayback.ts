@@ -1,24 +1,42 @@
 import { useEffect, useRef } from "react";
-import type { Bubble, RenderItem } from "@/lib/renderItems";
+import type { Bubble, RenderItem, ToolState } from "@/lib/renderItems";
 import { isMessageSpoken, markMessageSpoken, useSpeechPlaybackStore } from "@/lib/speechPlayback";
+
+/**
+ * Compile-time exhaustive check for ToolState.
+ * Returns true if the tool execution is currently in-progress / streaming.
+ */
+export function isToolStreaming(state: ToolState): boolean {
+  switch (state) {
+    case "input-available":
+      return true;
+    case "output-available":
+    case "output-error":
+    case "cancelled":
+    case "no-output":
+      return false;
+    default: {
+      const exhaustiveCheck: never = state;
+      return exhaustiveCheck;
+    }
+  }
+}
 
 /**
  * Hook to coordinate read-aloud playback of newly-arrived live assistant messages
  * carrying a spoken_summary part.
  *
  * Guarantees:
- * - Requires positive evidence this client observed the turn arrive live (either seen in a
- *   non-final/streaming state, or matching an actively streaming activeResponse id).
+ * - Requires positive evidence this client observed the turn arrive live (seen in a
+ *   non-final/streaming state).
  * - Historical turns (e.g. loaded history after mount with [], page refresh, or in-SPA session
  *   switches) are never spoken.
  * - Uses a single stable identity (responseId) across streaming, reconcile, and skim-line controls
  *   so mid-turn itemId stamping never causes duplicate playback.
  * - Cancels in-flight speech when a new summary arrives, on session switch, or on unmount.
+ * - Falsy responseId turns are never spoken and never marked spoken.
  */
-export function useSpokenSummaryPlayback(
-  bubbles: Bubble[],
-  activeResponseId?: string | null,
-): void {
+export function useSpokenSummaryPlayback(bubbles: Bubble[]): void {
   // Set of responseIds that were positively observed streaming live in this client session.
   const observedLiveResponseIdsRef = useRef<Set<string>>(new Set());
   const speakLiveSummary = useSpeechPlaybackStore((s) => s.speakLiveSummary);
@@ -37,23 +55,21 @@ export function useSpokenSummaryPlayback(
     // 1. Positive evidence collection: observe live/streaming turns.
     for (const bubble of bubbles) {
       if (bubble.kind === "assistant") {
+        const responseId = bubble.responseId;
+        if (!responseId) {
+          continue;
+        }
+
         const isStreamingLifecycle =
           bubble.lifecycle === "streaming" || (bubble.lifecycle as string) === "running";
         const hasStreamingItem = bubble.items.some(
           (it) =>
             (it.kind === "text" && it.final === false) ||
-            (it.kind === "tool" && it.state === "input-available"),
-        );
-        // Only treat activeResponseId as live evidence when the response is actually streaming.
-        // A completed activeResponse must never count as live evidence.
-        const isActiveResponseStreaming = Boolean(
-          activeResponseId &&
-            activeResponseId === bubble.responseId &&
-            isStreamingLifecycle,
+            (it.kind === "tool" && isToolStreaming(it.state)),
         );
 
-        if (isStreamingLifecycle || hasStreamingItem || isActiveResponseStreaming) {
-          observedLiveResponseIdsRef.current.add(bubble.responseId);
+        if (isStreamingLifecycle || hasStreamingItem) {
+          observedLiveResponseIdsRef.current.add(responseId);
         }
       }
     }
@@ -72,6 +88,10 @@ export function useSpokenSummaryPlayback(
       const bubble = bubbles[i];
       if (bubble?.kind === "assistant") {
         const responseId = bubble.responseId;
+        if (!responseId) {
+          continue;
+        }
+
         const isLatestTurn = i === lastAssistantIdx;
         const wasObservedLive = observedLiveResponseIdsRef.current.has(responseId);
 
@@ -93,7 +113,7 @@ export function useSpokenSummaryPlayback(
         const hasStreamingItem = bubble.items.some(
           (it) =>
             (it.kind === "text" && it.final === false) ||
-            (it.kind === "tool" && it.state === "input-available"),
+            (it.kind === "tool" && isToolStreaming(it.state)),
         );
         const isFinal = !isBubbleStreaming && !hasStreamingItem;
 
@@ -107,14 +127,14 @@ export function useSpokenSummaryPlayback(
           // - It is finalized and has a valid non-empty summary
           if (wasObservedLive && isLatestTurn && isFinal && hasValidSummary) {
             speakLiveSummary(responseId, summary!.text, summary!.lang);
-          } else if (isFinal) {
+          } else if (isFinal && (!wasObservedLive || !isLatestTurn)) {
             // Settled history or non-tail turn: index as spoken so it is never replayed later.
             markMessageSpoken(responseId);
           }
         }
       }
     }
-  }, [bubbles, activeResponseId, speakLiveSummary, stop]);
+  }, [bubbles, speakLiveSummary, stop]);
 
   // Cancel in-flight speech when the component unmounts or user navigates away.
   useEffect(() => {

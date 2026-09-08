@@ -6,15 +6,18 @@ import {
   BrowserSpeechEngine,
   clearInMemorySpokenTracking,
   isMessageSpoken,
+  markMessageSpoken,
+  MAX_PERSISTED_SPOKEN_IDS,
   resetSpeechEngine,
   resetSpokenMessageTracking,
   setSpeechEngine,
   type SpeechEngine,
+  SPOKEN_MESSAGES_SESSION_STORAGE_KEY,
   useSpeechPlaybackStore,
 } from "@/lib/speechPlayback";
 import { writeSpokenSummaryPlayback } from "@/lib/spokenSummaryPlaybackPreferences";
-import { SpokenSummaryPlaybackControl } from "@/pages/SettingsPage";
-import { useSpokenSummaryPlayback } from "./useSpokenSummaryPlayback";
+import { SpokenSummaryPlaybackControl } from "@/components/chat/SpokenSummaryPlaybackControl";
+import { isToolStreaming, useSpokenSummaryPlayback } from "./useSpokenSummaryPlayback";
 
 class MockSpeechEngine implements SpeechEngine {
   isSupported = vi.fn().mockReturnValue(true);
@@ -84,8 +87,8 @@ describe("useSpokenSummaryPlayback", () => {
   it("mounts with [], rerenders with full populated history array, asserts speak was NOT called", () => {
     writeSpokenSummaryPlayback(true);
     const { rerender } = renderHook(
-      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
-      { initialProps: { bubbles: [] as Bubble[], activeResponseId: null as string | null } },
+      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
+      { initialProps: { bubbles: [] as Bubble[] } },
     );
 
     expect(mockEngine.speak).not.toHaveBeenCalled();
@@ -107,7 +110,7 @@ describe("useSpokenSummaryPlayback", () => {
       ),
     ];
 
-    rerender({ bubbles: historyBubbles, activeResponseId: null });
+    rerender({ bubbles: historyBubbles });
 
     expect(mockEngine.speak).not.toHaveBeenCalled();
     expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(false);
@@ -126,8 +129,8 @@ describe("useSpokenSummaryPlayback", () => {
     ];
 
     const { rerender } = renderHook(
-      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
-      { initialProps: { bubbles: sessionABubbles, activeResponseId: null as string | null } },
+      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
+      { initialProps: { bubbles: sessionABubbles } },
     );
 
     expect(mockEngine.speak).not.toHaveBeenCalled();
@@ -150,7 +153,7 @@ describe("useSpokenSummaryPlayback", () => {
       ),
     ];
 
-    rerender({ bubbles: sessionBBubbles, activeResponseId: "resp_b2" });
+    rerender({ bubbles: sessionBBubbles });
 
     expect(mockEngine.speak).not.toHaveBeenCalled();
     expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(false);
@@ -169,8 +172,8 @@ describe("useSpokenSummaryPlayback", () => {
     ];
 
     const { rerender } = renderHook(
-      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
-      { initialProps: { bubbles: initialBubbles, activeResponseId: null as string | null } },
+      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
+      { initialProps: { bubbles: initialBubbles } },
     );
 
     // 1. Streaming arrives: non-final, itemId null, lifecycle streaming
@@ -178,7 +181,7 @@ describe("useSpokenSummaryPlayback", () => {
       ...initialBubbles,
       makeAssistantBubble("resp_live", null, undefined, false, "streaming"),
     ];
-    rerender({ bubbles: streamingBubbles, activeResponseId: "resp_live" });
+    rerender({ bubbles: streamingBubbles });
     expect(mockEngine.speak).not.toHaveBeenCalled();
 
     // 2. Turn completes: final true, spokenSummary attached, itemId still null (before reconcile)
@@ -192,7 +195,7 @@ describe("useSpokenSummaryPlayback", () => {
         "completed",
       ),
     ];
-    rerender({ bubbles: finalBeforeReconcile, activeResponseId: null });
+    rerender({ bubbles: finalBeforeReconcile });
 
     expect(mockEngine.speak).toHaveBeenCalledTimes(1);
     expect(mockEngine.speak).toHaveBeenCalledWith(
@@ -215,7 +218,7 @@ describe("useSpokenSummaryPlayback", () => {
         "completed",
       ),
     ];
-    rerender({ bubbles: reconciledBubbles, activeResponseId: null });
+    rerender({ bubbles: reconciledBubbles });
 
     // Assert speak was called exactly ONCE
     expect(mockEngine.speak).toHaveBeenCalledTimes(1);
@@ -226,14 +229,14 @@ describe("useSpokenSummaryPlayback", () => {
     const initialBubbles: Bubble[] = [];
 
     const { rerender } = renderHook(
-      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
-      { initialProps: { bubbles: initialBubbles, activeResponseId: "resp_1" as string | null } },
+      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
+      { initialProps: { bubbles: initialBubbles } },
     );
 
     const streamingBubbles: Bubble[] = [
       makeAssistantBubble("resp_1", null, undefined, false, "streaming"),
     ];
-    rerender({ bubbles: streamingBubbles, activeResponseId: "resp_1" });
+    rerender({ bubbles: streamingBubbles });
 
     const finalBubbles: Bubble[] = [
       makeAssistantBubble(
@@ -244,7 +247,7 @@ describe("useSpokenSummaryPlayback", () => {
         "completed",
       ),
     ];
-    rerender({ bubbles: finalBubbles, activeResponseId: null });
+    rerender({ bubbles: finalBubbles });
 
     expect(mockEngine.speak).not.toHaveBeenCalled();
     expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(false);
@@ -255,19 +258,19 @@ describe("useSpokenSummaryPlayback", () => {
     const initialBubbles: Bubble[] = [];
 
     const { rerender } = renderHook(
-      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
-      { initialProps: { bubbles: initialBubbles, activeResponseId: "resp_1" as string | null } },
+      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
+      { initialProps: { bubbles: initialBubbles } },
     );
 
     const streamingBubbles: Bubble[] = [
       makeAssistantBubble("resp_1", null, undefined, false, "streaming"),
     ];
-    rerender({ bubbles: streamingBubbles, activeResponseId: "resp_1" });
+    rerender({ bubbles: streamingBubbles });
 
     const finalBubbles: Bubble[] = [
       makeAssistantBubble("resp_1", "item_1", undefined, true, "completed"),
     ];
-    rerender({ bubbles: finalBubbles, activeResponseId: null });
+    rerender({ bubbles: finalBubbles });
 
     expect(mockEngine.speak).not.toHaveBeenCalled();
   });
@@ -277,8 +280,8 @@ describe("useSpokenSummaryPlayback", () => {
     const initialBubbles: Bubble[] = [];
 
     const { rerender } = renderHook(
-      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
-      { initialProps: { bubbles: initialBubbles, activeResponseId: "resp_1" as string | null } },
+      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
+      { initialProps: { bubbles: initialBubbles } },
     );
 
     const streamingBubbles: Bubble[] = [
@@ -290,7 +293,7 @@ describe("useSpokenSummaryPlayback", () => {
         "streaming",
       ),
     ];
-    rerender({ bubbles: streamingBubbles, activeResponseId: "resp_1" });
+    rerender({ bubbles: streamingBubbles });
 
     expect(mockEngine.speak).not.toHaveBeenCalled();
   });
@@ -298,19 +301,19 @@ describe("useSpokenSummaryPlayback", () => {
   it("does NOT speak when spoken summary text is empty string or whitespace", () => {
     writeSpokenSummaryPlayback(true);
     const { rerender } = renderHook(
-      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
-      { initialProps: { bubbles: [] as Bubble[], activeResponseId: "resp_1" as string | null } },
+      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
+      { initialProps: { bubbles: [] as Bubble[] } },
     );
 
     const streamingBubbles: Bubble[] = [
       makeAssistantBubble("resp_1", null, undefined, false, "streaming"),
     ];
-    rerender({ bubbles: streamingBubbles, activeResponseId: "resp_1" });
+    rerender({ bubbles: streamingBubbles });
 
     const finalBubbles: Bubble[] = [
       makeAssistantBubble("resp_1", "item_1", { text: "   ", lang: "en-US" }, true, "completed"),
     ];
-    rerender({ bubbles: finalBubbles, activeResponseId: null });
+    rerender({ bubbles: finalBubbles });
 
     expect(mockEngine.speak).not.toHaveBeenCalled();
   });
@@ -318,15 +321,15 @@ describe("useSpokenSummaryPlayback", () => {
   it("cancels in-flight speech when a new summary arrives", () => {
     writeSpokenSummaryPlayback(true);
     const { rerender } = renderHook(
-      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
-      { initialProps: { bubbles: [] as Bubble[], activeResponseId: "resp_1" as string | null } },
+      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
+      { initialProps: { bubbles: [] as Bubble[] } },
     );
 
     // Turn 1 streams and completes
     const bubbles1Streaming: Bubble[] = [
       makeAssistantBubble("resp_1", null, undefined, false, "streaming"),
     ];
-    rerender({ bubbles: bubbles1Streaming, activeResponseId: "resp_1" });
+    rerender({ bubbles: bubbles1Streaming });
 
     const bubbles1Done: Bubble[] = [
       makeAssistantBubble(
@@ -337,7 +340,7 @@ describe("useSpokenSummaryPlayback", () => {
         "completed",
       ),
     ];
-    rerender({ bubbles: bubbles1Done, activeResponseId: null });
+    rerender({ bubbles: bubbles1Done });
 
     expect(mockEngine.stop).toHaveBeenCalled();
     expect(mockEngine.speak).toHaveBeenCalledWith(
@@ -354,7 +357,7 @@ describe("useSpokenSummaryPlayback", () => {
       ...bubbles1Done,
       makeAssistantBubble("resp_2", null, undefined, false, "streaming"),
     ];
-    rerender({ bubbles: bubbles2Streaming, activeResponseId: "resp_2" });
+    rerender({ bubbles: bubbles2Streaming });
 
     const bubbles2Done: Bubble[] = [
       ...bubbles1Done,
@@ -366,7 +369,7 @@ describe("useSpokenSummaryPlayback", () => {
         "completed",
       ),
     ];
-    rerender({ bubbles: bubbles2Done, activeResponseId: null });
+    rerender({ bubbles: bubbles2Done });
 
     // In-flight audio must be cancelled
     expect(mockEngine.stop).toHaveBeenCalledTimes(1);
@@ -391,8 +394,8 @@ describe("useSpokenSummaryPlayback", () => {
     writeSpokenSummaryPlayback(true);
 
     const { rerender } = renderHook(
-      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
-      { initialProps: { bubbles: [] as Bubble[], activeResponseId: "resp_tools" as string | null } },
+      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
+      { initialProps: { bubbles: [] as Bubble[] } },
     );
 
     // Step 1: Preliminary text arrives (final: true, no summary, turn streaming)
@@ -406,7 +409,6 @@ describe("useSpokenSummaryPlayback", () => {
     ];
     rerender({
       bubbles: [makeAssistantBubbleWithItems("resp_tools", step1Items, "streaming")],
-      activeResponseId: "resp_tools",
     });
     expect(mockEngine.speak).not.toHaveBeenCalled();
 
@@ -433,7 +435,6 @@ describe("useSpokenSummaryPlayback", () => {
     ];
     rerender({
       bubbles: [makeAssistantBubbleWithItems("resp_tools", step2Items, "streaming")],
-      activeResponseId: "resp_tools",
     });
     expect(mockEngine.speak).not.toHaveBeenCalled();
 
@@ -450,9 +451,9 @@ describe("useSpokenSummaryPlayback", () => {
           argsSummary: "",
           agentName: "test",
           executedBy: "server",
-          output: "[\"file1.ts\"]",
+          output: '["file1.ts"]',
         },
-        output: "[\"file1.ts\"]",
+        output: '["file1.ts"]',
         state: "output-available",
         startedAt: 100,
         duration: 50,
@@ -460,7 +461,6 @@ describe("useSpokenSummaryPlayback", () => {
     ];
     rerender({
       bubbles: [makeAssistantBubbleWithItems("resp_tools", step3Items, "streaming")],
-      activeResponseId: "resp_tools",
     });
     expect(mockEngine.speak).not.toHaveBeenCalled();
 
@@ -480,7 +480,6 @@ describe("useSpokenSummaryPlayback", () => {
     ];
     rerender({
       bubbles: [makeAssistantBubbleWithItems("resp_tools", step4Items, "completed")],
-      activeResponseId: null,
     });
 
     expect(mockEngine.speak).toHaveBeenCalledTimes(1);
@@ -494,19 +493,156 @@ describe("useSpokenSummaryPlayback", () => {
     expect(useSpeechPlaybackStore.getState().speakingItemId).toBe("resp_tools");
   });
 
+  it("plays spoken summary exactly once for a tool turn when store reports NON-streaming lifecycle in the tool gap", () => {
+    writeSpokenSummaryPlayback(true);
+
+    const { rerender } = renderHook(
+      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
+      { initialProps: { bubbles: [] as Bubble[] } },
+    );
+
+    // Step 1: Preliminary text arrives (final: true, no summary, turn streaming)
+    const step1Items: RenderItem[] = [
+      {
+        kind: "text",
+        itemId: "txt_prelim",
+        text: "Checking data...",
+        final: true,
+      },
+    ];
+    rerender({
+      bubbles: [makeAssistantBubbleWithItems("resp_tool_gap", step1Items, "streaming")],
+    });
+    expect(mockEngine.speak).not.toHaveBeenCalled();
+
+    // Step 2: Tool call item arrives (tool running: state = input-available)
+    const step2Items: RenderItem[] = [
+      ...step1Items,
+      {
+        kind: "tool",
+        itemId: "tool_1",
+        execution: {
+          callId: "call_1",
+          name: "fetch_data",
+          arguments: {},
+          argsSummary: "",
+          agentName: "test",
+          executedBy: "server",
+          output: null,
+        },
+        output: null,
+        state: "input-available",
+        startedAt: 100,
+        duration: undefined,
+      },
+    ];
+    rerender({
+      bubbles: [makeAssistantBubbleWithItems("resp_tool_gap", step2Items, "streaming")],
+    });
+    expect(mockEngine.speak).not.toHaveBeenCalled();
+
+    // Step 3: Tool result arrives (state = output-available), BUT store reports a NON-streaming lifecycle ("completed")
+    // in the gap before the final assistant message arrives.
+    const step3Items: RenderItem[] = [
+      step1Items[0]!,
+      {
+        kind: "tool",
+        itemId: "tool_1",
+        execution: {
+          callId: "call_1",
+          name: "fetch_data",
+          arguments: {},
+          argsSummary: "",
+          agentName: "test",
+          executedBy: "server",
+          output: '{"status":"ok"}',
+        },
+        output: '{"status":"ok"}',
+        state: "output-available",
+        startedAt: 100,
+        duration: 50,
+      },
+    ];
+    rerender({
+      bubbles: [makeAssistantBubbleWithItems("resp_tool_gap", step3Items, "completed")],
+    });
+    // Critical assertion: summary must NOT be marked spoken early in the gap
+    expect(mockEngine.speak).not.toHaveBeenCalled();
+    expect(isMessageSpoken("resp_tool_gap")).toBe(false);
+
+    // Step 4: Final message arrives with spoken summary, turn completes
+    const step4Items: RenderItem[] = [
+      ...step3Items,
+      {
+        kind: "text",
+        itemId: "txt_final",
+        text: "Data was successfully fetched.",
+        final: true,
+        spokenSummary: {
+          text: "Data was fetched successfully.",
+          lang: "en-US",
+        },
+      },
+    ];
+    rerender({
+      bubbles: [makeAssistantBubbleWithItems("resp_tool_gap", step4Items, "completed")],
+    });
+
+    // Proves summary speaks exactly once and was not silenced by early marking
+    expect(mockEngine.speak).toHaveBeenCalledTimes(1);
+    expect(mockEngine.speak).toHaveBeenCalledWith(
+      "Data was fetched successfully.",
+      "en-US",
+      expect.any(Function),
+      expect.any(Function),
+    );
+    expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(true);
+    expect(useSpeechPlaybackStore.getState().speakingItemId).toBe("resp_tool_gap");
+  });
+
+  it("skips bubbles with empty-string responseId (never speaks and never marks spoken)", () => {
+    writeSpokenSummaryPlayback(true);
+
+    const { rerender } = renderHook(
+      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
+      { initialProps: { bubbles: [] as Bubble[] } },
+    );
+
+    // Stream arrives with empty string responseId
+    const emptyRidStreaming: Bubble[] = [
+      makeAssistantBubble("", null, undefined, false, "streaming"),
+    ];
+    rerender({ bubbles: emptyRidStreaming });
+
+    // Empty responseId bubble finalizes with a summary
+    const emptyRidCompleted: Bubble[] = [
+      makeAssistantBubble(
+        "",
+        "item_1",
+        { text: "Should never speak", lang: "en-US" },
+        true,
+        "completed",
+      ),
+    ];
+    rerender({ bubbles: emptyRidCompleted });
+
+    expect(mockEngine.speak).not.toHaveBeenCalled();
+    expect(isMessageSpoken("")).toBe(false);
+  });
+
   it("does NOT re-speak when bubbles re-render without new messages", () => {
     writeSpokenSummaryPlayback(true);
     const initialBubbles: Bubble[] = [];
 
     const { rerender } = renderHook(
-      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
-      { initialProps: { bubbles: initialBubbles, activeResponseId: "resp_1" as string | null } },
+      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
+      { initialProps: { bubbles: initialBubbles } },
     );
 
     const streamingBubbles: Bubble[] = [
       makeAssistantBubble("resp_1", null, undefined, false, "streaming"),
     ];
-    rerender({ bubbles: streamingBubbles, activeResponseId: "resp_1" });
+    rerender({ bubbles: streamingBubbles });
 
     const finalBubbles: Bubble[] = [
       makeAssistantBubble(
@@ -517,11 +653,11 @@ describe("useSpokenSummaryPlayback", () => {
         "completed",
       ),
     ];
-    rerender({ bubbles: finalBubbles, activeResponseId: null });
+    rerender({ bubbles: finalBubbles });
     expect(mockEngine.speak).toHaveBeenCalledTimes(1);
 
     // Re-render with identical messages (new array instance)
-    rerender({ bubbles: [...finalBubbles], activeResponseId: null });
+    rerender({ bubbles: [...finalBubbles] });
     expect(mockEngine.speak).toHaveBeenCalledTimes(1);
   });
 
@@ -538,8 +674,8 @@ describe("useSpokenSummaryPlayback", () => {
     ];
 
     const { rerender } = renderHook(
-      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
-      { initialProps: { bubbles: currentBubbles, activeResponseId: null as string | null } },
+      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
+      { initialProps: { bubbles: currentBubbles } },
     );
 
     // Prepend older history at the beginning of transcript (pagination load)
@@ -554,7 +690,7 @@ describe("useSpokenSummaryPlayback", () => {
       ...currentBubbles,
     ];
 
-    rerender({ bubbles: prependedBubbles, activeResponseId: null });
+    rerender({ bubbles: prependedBubbles });
 
     expect(mockEngine.speak).not.toHaveBeenCalled();
   });
@@ -567,11 +703,10 @@ describe("useSpokenSummaryPlayback", () => {
       makeAssistantBubble("resp_reload", null, undefined, false, "streaming"),
     ];
     const { unmount } = renderHook(
-      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
+      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
       {
         initialProps: {
           bubbles: initialStreamBubbles,
-          activeResponseId: "resp_reload" as string | null,
         },
       },
     );
@@ -591,11 +726,10 @@ describe("useSpokenSummaryPlayback", () => {
 
     // 3. Tab reconnects to the still-running session
     const { rerender: reloadedRerender } = renderHook(
-      ({ bubbles, activeResponseId }) => useSpokenSummaryPlayback(bubbles, activeResponseId),
+      ({ bubbles }) => useSpokenSummaryPlayback(bubbles),
       {
         initialProps: {
           bubbles: initialStreamBubbles,
-          activeResponseId: "resp_reload" as string | null,
         },
       },
     );
@@ -610,28 +744,89 @@ describe("useSpokenSummaryPlayback", () => {
         "completed",
       ),
     ];
-    reloadedRerender({ bubbles: completedBubbles, activeResponseId: null });
+    reloadedRerender({ bubbles: completedBubbles });
 
     // Assert speech is NOT played again from the top
     expect(mockEngine.speak).toHaveBeenCalledTimes(1);
   });
 
-  it("silences playback when storage cannot be consulted (bias toward silence)", () => {
-    const getItemSpy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-      throw new Error("Storage access restricted");
+  describe("sessionStorage persistence and resilience", () => {
+    it("falls back to in-memory-only tracking when sessionStorage throws (never permanently silences)", () => {
+      const getItemSpy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+        throw new Error("Storage access restricted");
+      });
+      const setItemSpy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        throw new Error("Storage quota exceeded");
+      });
+
+      try {
+        clearInMemorySpokenTracking();
+        // Storage throws: must NOT return true (permanent silence) for an unseen id
+        expect(isMessageSpoken("unseen_turn")).toBe(false);
+
+        // Marking as spoken succeeds in-memory
+        markMessageSpoken("unseen_turn");
+        expect(isMessageSpoken("unseen_turn")).toBe(true);
+      } finally {
+        getItemSpy.mockRestore();
+        setItemSpy.mockRestore();
+      }
     });
-    try {
-      expect(isMessageSpoken("unseen_id")).toBe(true);
-    } finally {
-      getItemSpy.mockRestore();
-    }
+
+    it("self-heals corrupted sessionStorage (invalid JSON or non-array) by removing key", () => {
+      // 1. Corrupt JSON
+      sessionStorage.setItem(SPOKEN_MESSAGES_SESSION_STORAGE_KEY, "not{valid:json");
+      clearInMemorySpokenTracking();
+      expect(isMessageSpoken("any_id")).toBe(false);
+      expect(sessionStorage.getItem(SPOKEN_MESSAGES_SESSION_STORAGE_KEY)).toBeNull();
+
+      // 2. Non-array JSON value
+      sessionStorage.setItem(
+        SPOKEN_MESSAGES_SESSION_STORAGE_KEY,
+        JSON.stringify({ not: "an array" }),
+      );
+      clearInMemorySpokenTracking();
+      expect(isMessageSpoken("any_id")).toBe(false);
+      expect(sessionStorage.getItem(SPOKEN_MESSAGES_SESSION_STORAGE_KEY)).toBeNull();
+    });
+
+    it("caps persisted list at 200 IDs FIFO in insertion order", () => {
+      clearInMemorySpokenTracking();
+      sessionStorage.clear();
+
+      for (let i = 0; i < 250; i++) {
+        markMessageSpoken(`id_${i}`);
+      }
+
+      const raw = sessionStorage.getItem(SPOKEN_MESSAGES_SESSION_STORAGE_KEY);
+      expect(raw).not.toBeNull();
+      const stored = JSON.parse(raw!);
+      expect(Array.isArray(stored)).toBe(true);
+      expect(stored.length).toBe(MAX_PERSISTED_SPOKEN_IDS);
+      expect(stored.length).toBe(200);
+      // FIFO: oldest 50 (id_0..id_49) were dropped; contains id_50..id_249
+      expect(stored[0]).toBe("id_50");
+      expect(stored[stored.length - 1]).toBe("id_249");
+      expect(stored).not.toContain("id_0");
+      expect(stored).not.toContain("id_49");
+    });
+  });
+
+  describe("isToolStreaming", () => {
+    it("returns true only for input-available and false for settled states", () => {
+      expect(isToolStreaming("input-available")).toBe(true);
+      expect(isToolStreaming("output-available")).toBe(false);
+      expect(isToolStreaming("output-error")).toBe(false);
+      expect(isToolStreaming("cancelled")).toBe(false);
+      expect(isToolStreaming("no-output")).toBe(false);
+    });
   });
 
   it("toggling 'Speak responses' OFF stops any in-flight utterance", () => {
     writeSpokenSummaryPlayback(true);
     useSpeechPlaybackStore.setState({ isSpeaking: true, speakingItemId: "resp_in_flight" });
 
-    // Exercise SettingsPage's SpokenSummaryPlaybackControl component toggle handler
+    // Exercise decoupled SpokenSummaryPlaybackControl component toggle handler
     render(<SpokenSummaryPlaybackControl />);
 
     const toggle = screen.getByTestId("spoken-summary-playback-toggle");
