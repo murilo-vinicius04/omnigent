@@ -1546,6 +1546,24 @@ function buildAssistantItems(
     i += 1;
   }
 
+  // A native harness persists its spoken summary as its own item, because the
+  // message it describes is already durable and items are append-only. That
+  // item has no text of its own, so it is dropped above as an empty trailing
+  // message — lift its summary onto the turn's text before it goes.
+  const carriedSummary = blocks.find(
+    (b): b is Extract<AnyBlock, { type: "text_done" }> =>
+      b.type === "text_done" && b.fullText.length === 0 && Boolean(b.spokenSummary),
+  )?.spokenSummary;
+  if (carriedSummary) {
+    for (let k = items.length - 1; k >= 0; k -= 1) {
+      const item = items[k]!;
+      if (item.kind === "text" && item.text.length > 0) {
+        if (!item.spokenSummary) items[k] = { ...item, spokenSummary: carriedSummary };
+        break;
+      }
+    }
+  }
+
   return items;
 }
 

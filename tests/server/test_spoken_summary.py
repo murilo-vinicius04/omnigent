@@ -1675,3 +1675,127 @@ async def test_sub_agent_disable_is_cached_permanently() -> None:
             assert enabled is False
 
     assert store.get_conversation_calls == queries_after_first
+
+
+# ── Native harness path: the external_session_status idle edge ─────────
+
+
+@pytest.mark.asyncio
+async def test_native_idle_edge_attaches_spoken_summary() -> None:
+    """A native turn ending on `idle` gets a summary persisted as its own item.
+
+    Native forwarders never emit `response.completed`, so the relay's terminal
+    flush never runs for them and no summary was ever produced on this path.
+    """
+    from omnigent.server.routes._sessions.helpers import _attach_native_spoken_summary
+
+    clear_spoken_summary_cache()
+    conv = Conversation(
+        id="conv_native",
+        root_conversation_id="conv_native",
+        created_at=1,
+        updated_at=1,
+        parent_conversation_id=None,
+        kind="default",
+        project_id="proj_native",
+    )
+    store = _FakeConversationStore(
+        conversation=conv,
+        project_config={"spoken_summary": {"enabled": True, "language": "pt-BR"}},
+    )
+
+    async def _fake_generate(text: str, **kwargs: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        return (
+            {"type": "spoken_summary", "text": "Consertei o vazamento.", "lang": "pt-BR"},
+            {"input_tokens": 10, "output_tokens": 5},
+        )
+
+    with patch("omnigent.server.spoken_summary.generate_spoken_summary", _fake_generate):
+        await _attach_native_spoken_summary(
+            store,  # type: ignore[arg-type]
+            "conv_native",
+            "resp_native_1",
+            _LONG_RESPONSE_TEXT,
+        )
+
+    assert len(store.appended) == 1
+    item = store.appended[0]
+    assert item.response_id == "resp_native_1"
+    content = item.data.content
+    # Summary only: the message it describes is already durable and items are append-only.
+    assert len(content) == 1
+    assert content[0]["type"] == "spoken_summary"
+    assert content[0]["text"] == "Consertei o vazamento."
+    assert content[0]["lang"] == "pt-BR"
+    # Usage is attributed to the session like the relay path does.
+    assert store.usage_increments
+
+
+@pytest.mark.asyncio
+async def test_native_idle_edge_skips_short_text_without_calling_model() -> None:
+    """Short turns never reach the model on the native path either."""
+    from omnigent.server.routes._sessions.helpers import _attach_native_spoken_summary
+
+    clear_spoken_summary_cache()
+    store = _FakeConversationStore(
+        conversation=Conversation(
+            id="conv_short",
+            root_conversation_id="conv_short",
+            created_at=1,
+            updated_at=1,
+            parent_conversation_id=None,
+            kind="default",
+            project_id="proj_native",
+        ),
+        project_config={"spoken_summary": {"enabled": True}},
+    )
+    called = False
+
+    async def _fake_generate(text: str, **kwargs: Any) -> tuple[None, None]:
+        nonlocal called
+        called = True
+        return None, None
+
+    with patch("omnigent.server.spoken_summary.generate_spoken_summary", _fake_generate):
+        await _attach_native_spoken_summary(
+            store,  # type: ignore[arg-type]
+            "conv_short",
+            "resp_short",
+            "too short to summarize",
+        )
+
+    assert called is False
+    assert store.appended == []
+
+
+@pytest.mark.asyncio
+async def test_native_idle_edge_skips_sub_agent_sessions() -> None:
+    """Sub-agent turns stay silent on the native path, same as the relay path."""
+    from omnigent.server.routes._sessions.helpers import _attach_native_spoken_summary
+
+    clear_spoken_summary_cache()
+    store = _FakeConversationStore(
+        conversation=Conversation(
+            id="conv_child",
+            root_conversation_id="conv_root",
+            created_at=1,
+            updated_at=1,
+            parent_conversation_id="conv_root",
+            kind="default",
+            project_id="proj_native",
+        ),
+        project_config={"spoken_summary": {"enabled": True}},
+    )
+
+    async def _fake_generate(text: str, **kwargs: Any) -> tuple[None, None]:
+        raise AssertionError("sub-agent turns must never call the summary model")
+
+    with patch("omnigent.server.spoken_summary.generate_spoken_summary", _fake_generate):
+        await _attach_native_spoken_summary(
+            store,  # type: ignore[arg-type]
+            "conv_child",
+            "resp_child",
+            _LONG_RESPONSE_TEXT,
+        )
+
+    assert store.appended == []

@@ -7556,6 +7556,123 @@ async def _flush_relay_text(
         raise cancelled_exc
 
 
+async def _attach_native_spoken_summary(
+    conversation_store: ConversationStore | None,
+    session_id: str,
+    response_id: str | None,
+    text: str | None,
+) -> None:
+    """
+    Generate a spoken summary for a native-harness turn and persist it.
+
+    Native forwarders never emit ``response.completed``, so the relay's
+    terminal flush — the only place a summary is produced for scaffold
+    harnesses — never runs for them. This is the equivalent hook on the native
+    path: the ``external_session_status`` ``idle`` edge, which is where a
+    native turn actually ends.
+
+    The summary is appended as its own assistant message carrying only the
+    spoken-summary part, keyed to the turn's ``response_id``. Conversation
+    items are append-only and the message it describes is already durable, so
+    the summary rides alongside it rather than being merged into it.
+
+    Never raises: any failure logs and leaves the turn untouched.
+
+    :param conversation_store: Store used to persist the summary item.
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :param response_id: Response id of the turn being summarized.
+    :param text: The turn's final assistant text.
+    :returns: None.
+    """
+    if conversation_store is None or not text or not response_id:
+        return
+    try:
+        from omnigent.server.spoken_summary import (
+            SPOKEN_SUMMARY_THRESHOLD_CHARS,
+            generate_spoken_summary,
+            resolve_spoken_summary_settings_async,
+            should_generate_spoken_summary,
+        )
+
+        if len(text.strip()) <= SPOKEN_SUMMARY_THRESHOLD_CHARS:
+            return
+        enabled, language, conv = await resolve_spoken_summary_settings_async(
+            session_id,
+            conversation_store,
+        )
+        if not should_generate_spoken_summary(
+            conv,
+            text,
+            is_terminal_completion=True,
+            deny_reason=None,
+            enabled=enabled,
+        ):
+            return
+        spoken_summary_part, spoken_summary_usage = await generate_spoken_summary(
+            text,
+            language=language,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning(
+            "Native spoken summary failed for session=%s: %s; continuing without summary",
+            session_id,
+            exc,
+            extra={"session_id": session_id},
+        )
+        return
+
+    if spoken_summary_part is None:
+        return
+
+    item = NewConversationItem(
+        type="message",
+        response_id=response_id,
+        data=parse_item_data(
+            "message",
+            {
+                "type": "message",
+                "role": "assistant",
+                "agent": "spoken_summary",
+                "content": [spoken_summary_part],
+            },
+        ),
+    )
+    try:
+        persisted = await asyncio.to_thread(conversation_store.append, session_id, [item])
+    except Exception:  # noqa: BLE001
+        _logger.exception(
+            "Failed to persist native spoken summary for session=%s",
+            session_id,
+            extra={"session_id": session_id},
+        )
+        return
+
+    session_stream.publish(
+        session_id,
+        OutputItemDoneEvent(
+            type="response.output_item.done",
+            item=persisted[0].to_api_dict(),
+        ).model_dump(),
+    )
+
+    if spoken_summary_usage:
+        try:
+            await asyncio.to_thread(
+                conversation_store.increment_session_usage,
+                session_id,
+                spoken_summary_usage,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "Failed to attribute native spoken summary usage for session=%s: %s",
+                session_id,
+                exc,
+                extra={"session_id": session_id},
+            )
+
+
 def _agent_provider_family(agent: Agent) -> str | None:
     """Return the provider family of an agent's harness, or ``None``.
 

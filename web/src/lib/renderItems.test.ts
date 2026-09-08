@@ -88,6 +88,33 @@ describe("buildBubbles — bubble grouping", () => {
     expect((asst.items[0] as Extract<RenderItem, { kind: "text" }>).text).toBe("Hi!");
   });
 
+  it("attaches a summary-only block to the turn's text instead of replacing it", () => {
+    // Native harnesses persist the summary as its own item: the message it
+    // describes is already durable and conversation items are append-only.
+    const blocks: AnyBlock[] = [
+      {
+        type: "text_done",
+        ctx: ctx({ itemId: "a1", responseId: "resp_1" }),
+        fullText: "I fixed the connection pool leak and all tests pass.",
+        hasCodeBlocks: false,
+      },
+      {
+        type: "text_done",
+        ctx: ctx({ itemId: "a2", responseId: "resp_1" }),
+        fullText: "",
+        hasCodeBlocks: false,
+        spokenSummary: { text: "Consertei o vazamento.", lang: "pt-BR" },
+      },
+    ];
+    const bubbles = buildBubbles(blocks, null);
+    const asst = bubbles[bubbles.length - 1] as Extract<Bubble, { kind: "assistant" }>;
+    expect(asst.items.length).toBe(1);
+    const item = asst.items[0] as Extract<RenderItem, { kind: "text" }>;
+    // The answer must survive — a summary-only item must never blank the turn.
+    expect(item.text).toBe("I fixed the connection pool leak and all tests pass.");
+    expect(item.spokenSummary).toEqual({ text: "Consertei o vazamento.", lang: "pt-BR" });
+  });
+
   it("propagates ctx.createdBy onto the user bubble", () => {
     const blocks: AnyBlock[] = [
       {

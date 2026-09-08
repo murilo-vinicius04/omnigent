@@ -127,6 +127,7 @@ from omnigent.server.routes._sessions.helpers import (
     _TUI_INJECT_FORWARD_TIMEOUT_S,
     SessionLiveness,
     _apply_pending_policy_ask_writes,
+    _attach_native_spoken_summary,
     _await_settled_managed_launch,
     _background_task_delivery_status,
     _build_actor,
@@ -1315,6 +1316,15 @@ def register_events_routes(
                         output_tokens=None,
                         cost_usd=None,
                     )
+                )
+            # Native forwarders never emit ``response.completed``, so this idle
+            # edge is where a native turn ends and its summary is produced.
+            if status == "idle":
+                await _attach_native_spoken_summary(
+                    conversation_store,
+                    session_id,
+                    response_id,
+                    data.get("output") if isinstance(data.get("output"), str) else None,
                 )
             forward_body = body.model_dump()
             forward_body["data"] = data
