@@ -6479,6 +6479,7 @@ async def _relay_runner_stream_once(
                             # topology can evaluate the spec's RESPONSE-phase
                             # output policies over the final assistant text.
                             evaluate_response_phase=_deny_reason is None,
+                            is_terminal_completion=(evt_type == "response.completed"),
                         )
                         # A failed append leaves text_acc intact for a retry
                         # at a later flush — re-arm the marker so the retry

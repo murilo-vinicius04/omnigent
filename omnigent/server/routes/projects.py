@@ -111,13 +111,14 @@ def create_projects_router(
             raise OmnigentError("Project not found", code=ErrorCode.NOT_FOUND)
         return _to_response(project)
 
+    @router.put("/projects/{project_id}")
     @router.patch("/projects/{project_id}")
     async def update_project(
         request: Request,
         project_id: str,
         body: UpdateProjectRequest,
     ) -> dict[str, Any]:
-        """Update one of the caller's projects (e.g. rename).
+        """Update one of the caller's projects (e.g. rename or config update).
 
         :param request: The incoming request, used to identify the user.
         :param project_id: The project to update.
