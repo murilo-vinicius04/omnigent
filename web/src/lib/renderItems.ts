@@ -19,6 +19,7 @@
 // Pure function. No React, no DOM. Tested in `renderItems.test.ts`.
 
 import type {
+  AttachedFile,
   AnyBlock,
   MessageContentBlock,
   RoutingDecisionBlock,
@@ -58,6 +59,8 @@ export type RenderItem =
       text: string;
       final: boolean;
       spokenSummary?: { text: string; lang: string };
+      /** Files this turn attached, lifted from its message blocks. */
+      files?: AttachedFile[];
     }
   | {
       kind: "reasoning";
@@ -1560,6 +1563,21 @@ function buildAssistantItems(
     (b): b is Extract<AnyBlock, { type: "text_done" }> =>
       b.type === "text_done" && b.fullText.length === 0 && Boolean(b.spokenSummary),
   )?.spokenSummary;
+  const carriedFiles = blocks
+    .filter(
+      (b): b is Extract<AnyBlock, { type: "text_done" }> =>
+        b.type === "text_done" && b.fullText.length === 0 && Boolean(b.files),
+    )
+    .flatMap((b) => b.files ?? []);
+  if (carriedFiles.length > 0) {
+    for (let k = items.length - 1; k >= 0; k -= 1) {
+      const item = items[k]!;
+      if (item.kind === "text" && item.text.length > 0) {
+        items[k] = { ...item, files: [...(item.files ?? []), ...carriedFiles] };
+        break;
+      }
+    }
+  }
   if (carriedSummary) {
     for (let k = items.length - 1; k >= 0; k -= 1) {
       const item = items[k]!;
@@ -1613,6 +1631,7 @@ function textItem(run: AnyBlock[]): RenderItem {
         text: b.fullText,
         final: true,
         ...(b.spokenSummary ? { spokenSummary: b.spokenSummary } : {}),
+        ...(b.files ? { files: b.files } : {}),
       };
     }
   }

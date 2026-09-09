@@ -11,10 +11,12 @@ import asyncio
 import contextlib
 import json
 import math
+import mimetypes
 import re
 import secrets
 import time
 import urllib.parse
+import uuid
 import weakref
 from collections import deque
 from collections.abc import (
@@ -27,6 +29,7 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal, cast
 
 import httpx
@@ -7616,6 +7619,101 @@ async def _flush_relay_text(
 
     if cancelled_exc is not None:
         raise cancelled_exc
+
+
+async def attach_assistant_file(
+    conversation_store: ConversationStore | None,
+    file_store: Any | None,
+    artifact_store: Any | None,
+    session_id: str,
+    response_id: str | None,
+    path: str | Path,
+    *,
+    caption: str | None = None,
+) -> str | None:
+    """
+    Persist a local file as an assistant attachment on this turn.
+
+    Agents produce artifacts -- screenshots, charts, generated audio -- and the
+    transcript is where the reader looks for them. The bytes go to the artifact
+    store under a new file id, and the id rides on the message as an
+    ``output_file`` block the web transcript renders inline.
+
+    Never raises: a failed attachment leaves the turn untouched.
+
+    :param conversation_store: Store used to append the message.
+    :param file_store: Store that mints the file id and metadata.
+    :param artifact_store: Store that holds the bytes.
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :param response_id: Response id the attachment belongs to.
+    :param path: Local file to attach.
+    :param caption: Optional text shown above the attachment.
+    :returns: The stored file id, or ``None`` when nothing was attached.
+    """
+    if conversation_store is None or file_store is None or artifact_store is None:
+        return None
+    source = Path(path)
+    try:
+        content = await asyncio.to_thread(source.read_bytes)
+    except OSError as exc:
+        _logger.warning("Could not read attachment %s: %s", source, exc)
+        return None
+
+    content_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+    try:
+        stored = await asyncio.to_thread(
+            file_store.create,
+            source.name,
+            len(content),
+            content_type,
+            session_id,
+        )
+        await asyncio.to_thread(artifact_store.put, stored.id, content)
+    except Exception:  # noqa: BLE001 - an attachment must never fail the turn
+        _logger.exception(
+            "Could not store attachment %s for session=%s",
+            source,
+            session_id,
+            extra={"session_id": session_id},
+        )
+        return None
+
+    blocks: list[dict[str, Any]] = []
+    if caption and caption.strip():
+        blocks.append({"type": "output_text", "text": caption.strip()})
+    blocks.append(
+        {
+            "type": "output_file",
+            "file_id": stored.id,
+            "filename": source.name,
+            "mime_type": content_type,
+        }
+    )
+    item = NewConversationItem(
+        type="message",
+        response_id=response_id or f"turn_{uuid.uuid4().hex}",
+        data=parse_item_data(
+            "message",
+            {"type": "message", "role": "assistant", "agent": "attachment", "content": blocks},
+        ),
+    )
+    try:
+        persisted = await asyncio.to_thread(conversation_store.append, session_id, [item])
+    except Exception:  # noqa: BLE001
+        _logger.exception(
+            "Could not persist attachment for session=%s",
+            session_id,
+            extra={"session_id": session_id},
+        )
+        return None
+
+    session_stream.publish(
+        session_id,
+        OutputItemDoneEvent(
+            type="response.output_item.done", item=persisted[0].to_api_dict()
+        ).model_dump(),
+    )
+    return stored.id
 
 
 async def _refresh_voice_observations_if_due(

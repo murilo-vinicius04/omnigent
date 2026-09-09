@@ -113,6 +113,15 @@ export interface ResponseStartBlock {
  * never produces it (its consumers — terminal frontends — render the
  * user input directly, not as a block).
  */
+/** A file an assistant message attached, resolved for display by the renderer. */
+export interface AttachedFile {
+  /** Store id, resolved to a session-scoped content URL at render time. */
+  fileId: string;
+  filename: string;
+  /** MIME type, e.g. "audio/mpeg". Empty when the producer did not set one. */
+  mimeType: string;
+}
+
 export interface UserMessageBlock {
   type: "user_message";
   ctx: BlockContext;
@@ -266,6 +275,8 @@ export interface TextDone {
   interrupted?: boolean;
   /** Optional server-side spoken summary. */
   spokenSummary?: { text: string; lang: string };
+  /** Files this assistant message attached. */
+  files?: AttachedFile[];
 }
 
 // ── Reasoning ────────────────────────────────────────────

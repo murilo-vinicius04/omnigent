@@ -38,6 +38,7 @@ import {
 import {
   formatNativeLabel,
   formatToolArgsBrief,
+  outputFilesFromMessageContent,
   spokenSummaryFromMessageContent,
   translatedTextFromMessageContent,
 } from "./blockStream";
@@ -334,6 +335,7 @@ function assistantMessageToBlock(item: MessageItem): TextDone {
     .map((b) => b.text)
     .join("");
   const spokenSummary = spokenSummaryFromMessageContent(item.content);
+  const files = outputFilesFromMessageContent(item.content);
   return {
     type: "text_done",
     ctx: ctxFor(item),
@@ -341,6 +343,7 @@ function assistantMessageToBlock(item: MessageItem): TextDone {
     hasCodeBlocks: text.includes("```"),
     ...(item.interrupted === true ? { interrupted: true } : {}),
     ...(spokenSummary ? { spokenSummary } : {}),
+    ...(files ? { files } : {}),
   };
 }
 

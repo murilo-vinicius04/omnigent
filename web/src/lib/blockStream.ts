@@ -11,6 +11,7 @@
 
 import {
   type AnyBlock,
+  type AttachedFile,
   type BlockContext,
   type CompactionBlock,
   type CompactionInProgressBlock,
@@ -289,6 +290,30 @@ function outputTextFromMessageContent(content: unknown): string {
     if (typeof b.text === "string") text += b.text;
   }
   return text;
+}
+
+/**
+ * Extract files an assistant message attached, if any.
+ *
+ * Agents produce artifacts — screenshots, charts, generated audio — and the
+ * transcript is where the reader expects to find them. The block carries only
+ * the store id; the renderer resolves it to a session-scoped content URL.
+ */
+export function outputFilesFromMessageContent(content: unknown): AttachedFile[] | undefined {
+  if (!Array.isArray(content)) return undefined;
+  const files: AttachedFile[] = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (b.type !== "output_file") continue;
+    if (typeof b.file_id !== "string" || !b.file_id.trim()) continue;
+    files.push({
+      fileId: b.file_id,
+      filename: typeof b.filename === "string" && b.filename ? b.filename : b.file_id,
+      mimeType: typeof b.mime_type === "string" ? b.mime_type : "",
+    });
+  }
+  return files.length > 0 ? files : undefined;
 }
 
 /**
@@ -737,6 +762,7 @@ function* processEvent(state: ReducerState, event: StreamEvent): Generator<AnyBl
       const isResponseSwitch = !!event.responseId && event.responseId !== state.responseId;
       const hadOpenText = state.inText;
       const spokenSummary = spokenSummaryFromMessageContent(content);
+      const files = outputFilesFromMessageContent(content);
       // Snapshot accumulated text BEFORE closeText resets state.fullText —
       // used by the content-equality dedup below to handle the session-stream
       // race where ``response.created`` was lost (subscribe registered after
@@ -789,13 +815,14 @@ function* processEvent(state: ReducerState, event: StreamEvent): Generator<AnyBl
       // `text` alone drops it on the live path while a later reload — which
       // rebuilds through itemsToBlocks — shows it. buildBubbles lifts the
       // summary onto the turn's text and discards this empty carrier.
-      if (text || spokenSummary) {
+      if (text || spokenSummary || files) {
         yield {
           type: "text_done",
           ctx: ctx(state, event.itemId || null),
           fullText: text,
           hasCodeBlocks: text.includes("```"),
           ...(spokenSummary ? { spokenSummary } : {}),
+          ...(files ? { files } : {}),
         } satisfies TextDone;
       }
       return;
