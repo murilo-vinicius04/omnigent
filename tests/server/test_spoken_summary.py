@@ -2246,3 +2246,19 @@ def test_summary_turn_claim_is_bounded() -> None:
     assert _claim_summary_turn("conv_bound", f"resp_{_SUMMARIZED_RESPONSES_MAX + 49}") is False
     assert _claim_summary_turn("conv_bound", "resp_0") is True
     _SUMMARIZED_RESPONSES.clear()
+
+
+def test_rewrite_is_told_to_keep_the_reader_s_decision(tmp_path: Any) -> None:
+    """A question in the reply must survive into the rewrite.
+
+    The rewrite is the only version most readers see. One that turns "do you
+    want A or B?" into "the best thing is A" has taken the decision away
+    without the reader ever learning they were asked -- observed live, where a
+    closing question became a flat recommendation.
+    """
+    from omnigent.server.spoken_summary import build_spoken_summary_instructions
+
+    out = build_spoken_summary_instructions("pt-BR")
+    assert "still phrased as a question" in out
+    # And it must be told where to put it, so the ask is not buried mid-paragraph.
+    assert "END with" in out
