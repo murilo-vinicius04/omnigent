@@ -89,6 +89,7 @@ _METHOD_CANCEL_CASCADE_STEPS = "CancelCascadeSteps"
 _METHOD_HANDLE_CASCADE_USER_INTERACTION = "HandleCascadeUserInteraction"
 _METHOD_SEND_USER_CASCADE_MESSAGE = "SendUserCascadeMessage"
 _METHOD_START_CASCADE = "StartCascade"
+_METHOD_RETRIEVE_USER_QUOTA_SUMMARY = "RetrieveUserQuotaSummary"
 _METHOD_GET_AVAILABLE_MODELS = "GetAvailableModels"
 _METHOD_GET_ALL_CASCADE_TRAJECTORIES = "GetAllCascadeTrajectories"
 _METHOD_STREAM_AGENT_STATE_UPDATES = "StreamAgentStateUpdates"
@@ -115,6 +116,13 @@ _PROBE_TIMEOUT_S = 2.0
 # deadlocked). This deadline still bounds a truly-hung agy so a functional call
 # cannot block forever.
 _RPC_CALL_TIMEOUT_S = 30.0
+
+# ``RetrieveUserQuotaSummary`` is served from agy's in-process quota cache
+# (refreshed on its own schedule by ``doRefreshQuota``), so it normally answers
+# instantly. It gets its own short deadline rather than ``_RPC_CALL_TIMEOUT_S``
+# because its only caller renders the composer tray: a slow answer must degrade
+# to "no quota row" quickly, never stall a UI request for half a minute.
+_QUOTA_TIMEOUT_S = 6.0
 
 # Timeout policy for the persistent ``StreamAgentStateUpdates`` long-poll. The
 # connect-stream stays open across the whole turn (and idles between turns), so
@@ -515,6 +523,65 @@ def get_trajectory_steps(port: int, cascade_id: str) -> list[dict[str, object]]:
     body = response.json()  # ValueError on non-JSON 200 propagates (documented)
     steps = body.get("steps") if isinstance(body, dict) else None
     return list(steps) if isinstance(steps, list) else []
+
+
+def retrieve_user_quota_summary() -> dict[str, object] | None:
+    """
+    Return the signed-in Antigravity account's plan quota, or ``None``.
+
+    This is the data agy's own ``/usage`` screen renders: per model-group
+    ("Gemini Models", "Claude and GPT models") a list of buckets, each with a
+    ``window`` (``"5h"`` / ``"weekly"``), a ``remainingFraction`` in ``[0, 1]``
+    and a ``resetTime``.
+
+    Deliberately asks the **local** language server rather than Google. agy
+    proxies this RPC upstream to
+    ``cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary``, but that
+    upstream call answers ``403`` ("no valid license of this product") for a
+    consumer login even with agy's own OAuth token, because product entitlement
+    is resolved from client identity agy supplies and we cannot reproduce.
+    Asking agy instead sidesteps the problem entirely: agy already holds the
+    credential and the entitlement, and its answer is by construction the same
+    one the user sees in ``/usage``.
+
+    Unlike the conversation-scoped calls in this module this takes no port:
+    quota is an account-wide fact, so *any* live agy is an equally valid
+    source and no ``GetConversationMetadata`` ownership check is needed. Ports
+    come from :func:`_candidate_agy_rpc_ports`, which has already validated
+    each one with ``Heartbeat``.
+
+    Fail-soft by design (a discovery probe, like :func:`_conversation_matches`,
+    not a functional read): every transport/parse failure moves to the next
+    candidate port and an exhausted list returns ``None``. The caller renders a
+    tray widget, so "no answer" must degrade to "no row", never to an error.
+
+    :returns: The ``response`` object (``{"groups": [...], "description": ...}``)
+        from the first agy that answers with a non-empty group list, or ``None``
+        when no running agy could supply it (commonly: no agy running at all).
+    """
+    for port in _candidate_agy_rpc_ports():
+        url = _rpc_url(port, _METHOD_RETRIEVE_USER_QUOTA_SUMMARY)
+        _assert_loopback_url(url)
+        try:
+            with _sync_client(_QUOTA_TIMEOUT_S) as client:
+                response = client.post(
+                    url,
+                    headers={"Content-Type": "application/json"},
+                    content=b"{}",
+                )
+            if response.status_code != 200:
+                continue
+            body = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            _logger.debug("agy quota probe failed on port %s: %s", port, exc)
+            continue
+        summary = body.get("response") if isinstance(body, dict) else None
+        # An agy that is up but has not yet completed its first quota refresh
+        # answers 200 with no groups; treat that as "not this one" and keep
+        # looking rather than reporting an empty quota panel as authoritative.
+        if isinstance(summary, dict) and summary.get("groups"):
+            return summary
+    return None
 
 
 def cancel_cascade_steps(port: int, cascade_id: str) -> bool:

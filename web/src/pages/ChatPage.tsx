@@ -229,7 +229,7 @@ import { useIsMobileViewport } from "@/hooks/useIsMobileViewport";
 import { ConnectionIndicator } from "./ChatIndicators";
 import { CHAT_COLUMN_WIDTH } from "./chatLayout";
 import { Transcript } from "@/components/chat/Transcript";
-import { formatSessionCostUsd } from "@/lib/formatCost";
+import { PlanLimitPills } from "@/components/PlanLimitPills";
 
 /** Server-info as consumers see it: the probe's result, or "loading". */
 type ServerInfoValue = ServerInfo | "loading";
@@ -2013,26 +2013,6 @@ export function buildSlashCommandWithArgsSet(
 const RING_CIRCUMFERENCE = 2 * Math.PI * 5.5;
 
 /** Circular progress ring showing how much context window is used, with the used percentage beside it. */
-/**
- * Cumulative spend for this session, beside the context ring.
- *
- * The number already existed, but only inside the Agent info popover -- so the
- * status row showed how full the context was while saying nothing about what
- * the session had cost. Both are running totals a reader watches, so they
- * belong in the same place.
- */
-function SessionCostPill({ costUsd }: { costUsd: number }) {
-  return (
-    <span
-      data-testid="composer-session-cost"
-      className="inline-flex items-center gap-1 font-mono text-sm tabular-nums text-muted-foreground"
-      title="Session cost so far"
-    >
-      {formatSessionCostUsd(costUsd)}
-    </span>
-  );
-}
-
 function ContextRing({ contextWindow, tokensUsed }: { contextWindow: number; tokensUsed: number }) {
   const pct = Math.min(tokensUsed / contextWindow, 1);
   // Arc, %, label, and tooltip all encode context USED: a fresh session
@@ -2202,7 +2182,6 @@ function ComposerStatusLine({
 }) {
   const conversationId = useChatStore((s) => s.conversationId);
   const contextWindow = useChatStore((s) => s.contextWindow);
-  const sessionCostUsd = useChatStore((s) => s.sessionCostUsd);
   const tokensUsed = useChatStore((s) => s.tokensUsed);
   const codexPlanMode = useChatStore((s) => s.codexPlanMode);
   // Seeded from the session snapshot on bind (chatStore.sessionBindingPatch),
@@ -2291,7 +2270,9 @@ function ComposerStatusLine({
           </span>
         )}
         {showGoal && goal && <GoalStatusPill goal={goal} />}
-        {showRing && sessionCostUsd != null && <SessionCostPill costUsd={sessionCostUsd} />}
+        {/* Plan limits sit beside the context ring, not inside it: the ring is
+            per-conversation, these are the host-wide subscription windows. */}
+        <PlanLimitPills />
         {showRing && <ContextRing contextWindow={contextWindow} tokensUsed={tokensUsed} />}
       </div>
     </div>
