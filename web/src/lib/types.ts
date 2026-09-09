@@ -233,6 +233,8 @@ export interface NestedSessionItem {
  * `omnigent.server.schemas.ModelUsage`.
  */
 export interface ModelUsage {
+  /** Requests made to this model; recorded for backends that report no tokens. */
+  calls: number | null;
   inputTokens: number | null;
   outputTokens: number | null;
   totalTokens: number | null;

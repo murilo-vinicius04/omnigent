@@ -1803,8 +1803,13 @@ class ModelUsage(BaseModel):
         (same "priced ⟺ key present" contract as the session total); ``None``
         when the model is unpriced, so the sum of priced per-model costs
         equals the session ``total_cost_usd``.
+    :param calls: Number of requests made to this model, e.g. ``12``. Recorded
+        for backends that report no tokens or price at all -- a CLI billing its
+        own account -- so the model still shows what it did rather than being
+        absent from the breakdown entirely. ``None`` when not recorded.
     """
 
+    calls: int | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     total_tokens: int | None = None

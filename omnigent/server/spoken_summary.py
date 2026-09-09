@@ -808,6 +808,17 @@ async def run_agy_prompt(prompt: str, *, timeout_s: float) -> str | None:
     return stdout.decode(errors="replace").strip()
 
 
+def _agy_usage_model_id() -> str:
+    """Return the model id the rewriter's usage is attributed under.
+
+    :returns: The agy model id, e.g. ``"gemini-3.8-flash-low"``.
+    """
+    return (
+        os.environ.get("OMNIGENT_SPOKEN_SUMMARY_AGY_MODEL", "").strip()
+        or SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
+    )
+
+
 async def _generate_via_agy(
     cleaned_text: str,
     *,
@@ -879,9 +890,16 @@ async def generate_spoken_summary(
                 if language and language != "auto"
                 else detect_bcp47_language(summary_text)
             )
-            # agy bills against its own Google account, not the session's
-            # provider quota, so there is no usage delta to attribute here.
-            return {"type": "spoken_summary", "text": summary_text, "lang": lang_tag}, None
+            # agy bills its own Google account, so there is no USD cost to add
+            # to the session, and its CLI reports no token counts. Attribute
+            # the one thing that is actually known -- that a call happened --
+            # so the rewriter appears in the breakdown next to the model whose
+            # quota it exists to save, instead of being invisible.
+            agy_usage: dict[str, Any] = {"by_model": {_agy_usage_model_id(): {"calls": 1}}}
+            return (
+                {"type": "spoken_summary", "text": summary_text, "lang": lang_tag},
+                agy_usage,
+            )
 
         model = resolve_spoken_summary_model(model_override)
         connection = await asyncio.to_thread(resolve_spoken_summary_connection, model)

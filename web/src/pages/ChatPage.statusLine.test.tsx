@@ -158,13 +158,23 @@ describe("Composer status line (branch + context ring)", () => {
     vi.restoreAllMocks();
   });
 
-  it("never renders the session cost in the status line", () => {
-    // Cost moved to the agent-info popover. A priced cost here would mean
-    // the move regressed and the cost is being shown in two places.
+  it("shows the session cost beside the context ring", () => {
+    // Deliberately reverses the upstream move of cost into the agent-info
+    // popover: context fullness and spend are the two running totals a reader
+    // watches, and burying one of them behind a popover meant the status line
+    // answered "how full" while staying silent on "how much". The popover
+    // keeps the per-model breakdown; this is the total only.
     useChatStore.setState({ contextWindow: 100_000, tokensUsed: 25_000, sessionCostUsd: 1.23 });
     renderComposer();
-    expect(screen.queryByText(/session cost/i)).toBeNull();
-    expect(screen.queryByText("$1.23")).toBeNull();
+    expect(screen.getByTestId("composer-session-cost").textContent).toBe("$1.23");
+  });
+
+  it("keeps the cost out of the status line when there is no context ring", () => {
+    // The cost rides with the ring rather than standing on its own, so a
+    // priced session with no context info cannot resurrect the tray.
+    useChatStore.setState({ contextWindow: null, tokensUsed: null, sessionCostUsd: 1.23 });
+    renderComposer();
+    expect(screen.queryByTestId("composer-session-cost")).toBeNull();
   });
 
   it("omits the tray when neither branch nor ring is visible", () => {

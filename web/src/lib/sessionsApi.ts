@@ -89,6 +89,7 @@ export interface PostEventResponse {
  * optional (absent when that bucket was not recorded for the model).
  */
 interface ModelUsageWire {
+  calls?: number | null;
   input_tokens?: number | null;
   output_tokens?: number | null;
   total_tokens?: number | null;
@@ -291,6 +292,7 @@ function usageByModelFromWire(
   const out: Record<string, ModelUsage> = {};
   for (const [model, usage] of Object.entries(wire)) {
     out[model] = {
+      calls: usage.calls ?? null,
       inputTokens: usage.input_tokens ?? null,
       outputTokens: usage.output_tokens ?? null,
       totalTokens: usage.total_tokens ?? null,

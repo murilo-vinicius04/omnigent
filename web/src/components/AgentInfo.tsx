@@ -161,6 +161,9 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
  * the ``ModelUsage`` field to its row label. Cost is rendered separately.
  */
 const MODEL_TOKEN_ROWS: readonly { key: keyof ModelUsage; label: string }[] = [
+  // First so a model that reports only calls -- a CLI billing its own
+  // account -- still renders a row instead of an empty group.
+  { key: "calls", label: "Calls" },
   { key: "inputTokens", label: "Input" },
   { key: "outputTokens", label: "Output" },
   { key: "cacheReadInputTokens", label: "Cache read" },

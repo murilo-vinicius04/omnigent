@@ -1872,8 +1872,10 @@ async def test_generate_via_agy_spawns_print_mode_and_needs_no_api_key() -> None
     assert part["type"] == "spoken_summary"
     assert part["text"] == "Consertei o vazamento no pool de conexoes."
     assert part["lang"] == "pt-BR"
-    # agy bills its own Google account, so nothing is charged to the session.
-    assert usage is None
+    # agy bills its own Google account, so nothing is charged to the session --
+    # but the call is still attributed, or the rewriter is invisible in the
+    # usage breakdown next to the model whose quota it exists to save.
+    assert usage == {"by_model": {"gemini-3.8-flash-low": {"calls": 1}}}
 
 
 @pytest.mark.asyncio

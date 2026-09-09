@@ -703,6 +703,7 @@ _deferred_elicitation_clear_tasks: set[asyncio.Task[None]] = set()
 
 
 _MODEL_TOKEN_KEYS = (
+    "calls",
     "input_tokens",
     "output_tokens",
     "total_tokens",
