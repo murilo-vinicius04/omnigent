@@ -7618,6 +7618,66 @@ async def _flush_relay_text(
         raise cancelled_exc
 
 
+async def _refresh_voice_observations_if_due(
+    conversation_store: ConversationStore | None,
+    session_id: str,
+) -> None:
+    """Let the rewriter revise its notes on how this reader writes.
+
+    Runs on the turn-end edge, every
+    :data:`~omnigent.server.voice_profile.VOICE_PROFILE_REFRESH_EVERY_TURNS`
+    turns, so the voice keeps adapting instead of being seeded once. Never
+    raises: a failed refresh leaves the existing notes untouched.
+
+    :param conversation_store: Store used to read the reader's own messages.
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :returns: None.
+    """
+    if conversation_store is None:
+        return
+    try:
+        from omnigent.server.voice_profile import (
+            VOICE_PROFILE_REFRESH_EVERY_TURNS,
+            refresh_voice_observations,
+        )
+
+        page = await asyncio.to_thread(
+            conversation_store.list_items,
+            session_id,
+            limit=60,
+            order="desc",
+            type="message",
+        )
+        texts: list[str] = []
+        for item in page.data:
+            if not isinstance(item.data, MessageData):
+                continue
+            if item.data.role != "user" or item.data.is_meta:
+                continue
+            # The reader's own words, never the English restatement of them.
+            own = _message_text(
+                [
+                    block
+                    for block in item.data.content
+                    if isinstance(block, dict) and block.get("type") != "translated_text"
+                ]
+            )
+            if own and not own.startswith("[System:"):
+                texts.append(own)
+        if not texts or len(texts) % VOICE_PROFILE_REFRESH_EVERY_TURNS != 0:
+            return
+        await refresh_voice_observations(texts)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the reader's voice must survive any failure
+        _logger.warning(
+            "Voice observation refresh skipped for session=%s: %s",
+            session_id,
+            exc,
+            extra={"session_id": session_id},
+        )
+
+
 async def _attach_native_spoken_summary(
     conversation_store: ConversationStore | None,
     session_id: str,

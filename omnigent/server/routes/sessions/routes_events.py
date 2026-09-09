@@ -167,6 +167,7 @@ from omnigent.server.routes._sessions.helpers import (
     _publish_policy_deny,
     _publish_session_superseded,
     _publish_status,
+    _refresh_voice_observations_if_due,
     _remove_session_worktree_best_effort,
     _require_external_status_forward,
     _signal_harness_elicitation_resolved_by_id,
@@ -1326,6 +1327,9 @@ def register_events_routes(
                     response_id,
                     data.get("output") if isinstance(data.get("output"), str) else None,
                 )
+                # Keep the rewriter's notes on this reader current, so the voice
+                # goes on adapting rather than being seeded once.
+                await _refresh_voice_observations_if_due(conversation_store, session_id)
             forward_body = body.model_dump()
             forward_body["data"] = data
             runner_result = await _forward_session_change_to_runner(

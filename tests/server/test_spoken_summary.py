@@ -2064,3 +2064,78 @@ def test_writing_voice_samples_preserves_the_readers_own_prose(tmp_path: Any) ->
     assert "Me chama de chefe." in out
     assert "- mensagem nova de verdade" in out
     assert "velho exemplo" not in out
+
+
+# ── The profile keeps learning, and never eats the reader's own prose ──
+
+
+@pytest.mark.asyncio
+async def test_observation_refresh_preserves_the_readers_prose(tmp_path: Any) -> None:
+    """Only the maintained section is rewritten; the reader's own notes stand."""
+    from omnigent.server import voice_profile as vp
+
+    async def _fake(prompt: str, **kwargs: Any) -> str:
+        return "- fala em minusculas\n- odeia formalidade"
+
+    with patch.dict(os.environ, {"OMNIGENT_CONFIG_HOME": str(tmp_path)}):
+        path = vp.ensure_voice_profile()
+        path.write_text(
+            "# Voice\n\nMe chama de chefe.\n\n"
+            f"{vp.VOICE_PROFILE_OBSERVATIONS_HEADING}\n\n- nota antiga\n",
+            encoding="utf-8",
+        )
+        with patch("omnigent.server.spoken_summary.run_agy_prompt", _fake):
+            changed = await vp.refresh_voice_observations(["manda ver"])
+        out = path.read_text(encoding="utf-8")
+
+    assert changed is True
+    assert "Me chama de chefe." in out
+    assert "- fala em minusculas" in out
+    assert "nota antiga" not in out
+
+
+@pytest.mark.asyncio
+async def test_observation_refresh_leaves_the_profile_alone_on_failure(tmp_path: Any) -> None:
+    """A failed refresh must never cost the reader their existing voice."""
+    from omnigent.server import voice_profile as vp
+
+    async def _boom(prompt: str, **kwargs: Any) -> str:
+        raise RuntimeError("agy down")
+
+    with patch.dict(os.environ, {"OMNIGENT_CONFIG_HOME": str(tmp_path)}):
+        path = vp.ensure_voice_profile()
+        path.write_text(
+            f"# Voice\n\nprosa minha\n\n{vp.VOICE_PROFILE_OBSERVATIONS_HEADING}\n\n- nota boa\n",
+            encoding="utf-8",
+        )
+        with patch("omnigent.server.spoken_summary.run_agy_prompt", _boom):
+            changed = await vp.refresh_voice_observations(["manda ver"])
+        out = path.read_text(encoding="utf-8")
+
+    assert changed is False
+    assert "prosa minha" in out
+    assert "- nota boa" in out
+
+
+@pytest.mark.asyncio
+async def test_observation_refresh_revises_rather_than_restarts(tmp_path: Any) -> None:
+    """The current notes are handed to the model so they accumulate."""
+    from omnigent.server import voice_profile as vp
+
+    captured: dict[str, str] = {}
+
+    async def _capture(prompt: str, **kwargs: Any) -> str:
+        captured["prompt"] = prompt
+        return "- nota nova"
+
+    with patch.dict(os.environ, {"OMNIGENT_CONFIG_HOME": str(tmp_path)}):
+        path = vp.ensure_voice_profile()
+        path.write_text(
+            f"# Voice\n\n{vp.VOICE_PROFILE_OBSERVATIONS_HEADING}\n\n- ja sabia disso\n",
+            encoding="utf-8",
+        )
+        with patch("omnigent.server.spoken_summary.run_agy_prompt", _capture):
+            await vp.refresh_voice_observations(["manda ver"])
+
+    assert "- ja sabia disso" in captured["prompt"]
+    assert "Do not restart from scratch." in captured["prompt"]
