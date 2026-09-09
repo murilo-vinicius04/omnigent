@@ -3363,6 +3363,33 @@ describe("chatStore — send (file attachments)", () => {
     await sendPromise;
   });
 
+  it("carries the dispatched English onto the promoted user bubble", async () => {
+    // The user bubble is owned by the optimistic insert and only its itemId is
+    // backfilled, so the translation must ride in on session.input.consumed or
+    // it never appears until a full reload.
+    await useChatStore.getState().send("mostra o que eu falei", "agent_xyz");
+
+    handleSessionEvent({
+      type: "session_input_consumed",
+      itemId: "msg_translated_1",
+      itemType: "message",
+      data: {
+        role: "user",
+        content: [
+          { type: "input_text", text: "mostra o que eu falei" },
+          { type: "translated_text", text: "Show me what I said.", lang: "en-US" },
+        ],
+      },
+      clearedPendingId: null,
+    } as never);
+
+    const block = useChatStore
+      .getState()
+      .blocks.find((b) => b.type === "user_message" && b.ctx.itemId === "msg_translated_1");
+    expect(block).toBeDefined();
+    expect((block as { translatedText?: string }).translatedText).toBe("Show me what I said.");
+  });
+
   it("preserves the real file_id through a text-only consumed event", async () => {
     // End-to-end claude-native: upload → text-only consumed event →
     // promoted bubble must carry the real id so UserBubble takes the

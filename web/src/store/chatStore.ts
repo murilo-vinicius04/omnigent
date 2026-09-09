@@ -4986,6 +4986,25 @@ function userContentFromEvent(event: SessionInputConsumedEvent): MessageContentB
   );
 }
 
+/**
+ * The English a user message was translated into before dispatch, if any.
+ *
+ * `userContentFromEvent` keeps only the renderable input blocks, so the
+ * translation marker is read separately here.
+ */
+function translatedTextFromEvent(event: SessionInputConsumedEvent): string | undefined {
+  const raw = event.data.content;
+  if (!Array.isArray(raw)) return undefined;
+  for (const block of raw) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (b.type === "translated_text" && typeof b.text === "string" && b.text.trim().length > 0) {
+      return b.text;
+    }
+  }
+  return undefined;
+}
+
 function hasCommittedItem(blocks: AnyBlock[], itemId: string): boolean {
   return itemId !== "" && blocks.some((block) => block.ctx.itemId === itemId);
 }
@@ -5038,6 +5057,7 @@ function committedUserBlock(
   stableKey?: string,
   createdBy?: string,
   createdAtS?: number,
+  translatedText?: string,
 ): UserMessageBlock {
   return {
     type: "user_message",
@@ -5057,6 +5077,7 @@ function committedUserBlock(
       ...(createdAtS !== undefined ? { clientCreatedAtS: createdAtS } : {}),
     },
     content,
+    ...(translatedText ? { translatedText } : {}),
     stableKey,
   };
 }
@@ -5795,6 +5816,7 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
                   matched.tempId,
                   event.createdBy ?? matched.author,
                   matched.createdAtS,
+                  translatedTextFromEvent(event),
                 ),
               ],
             };
@@ -5829,6 +5851,7 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
                 head.tempId,
                 event.createdBy ?? head.author,
                 head.createdAtS,
+                translatedTextFromEvent(event),
               ),
             ],
           };
@@ -5840,7 +5863,14 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
         return {
           blocks: [
             ...s.blocks,
-            committedUserBlock(event.itemId, eventContent, undefined, event.createdBy),
+            committedUserBlock(
+              event.itemId,
+              eventContent,
+              undefined,
+              event.createdBy,
+              undefined,
+              translatedTextFromEvent(event),
+            ),
           ],
         };
       });
