@@ -138,6 +138,14 @@ dependencies = [
 # working; the underlying packages are now default deps above.
 claude-sdk = []
 openai-agents = []
+# Server-side speech for spoken summaries. Multi-gigabyte (CUDA + a 0.5B
+# model), so it stays opt-in; without it summaries ship silently and the
+# browser's own speech engine is used. setuptools is pinned because the
+# watermarker imports pkg_resources, removed in setuptools 81.
+tts = [
+    "chatterbox-tts>=0.1.7",
+    "setuptools<81",
+]
 # `all` carries dependencies moved out of the default install that internal
 # CI / dev workflows still exercise.
 all = [

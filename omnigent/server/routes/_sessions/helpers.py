@@ -7776,11 +7776,63 @@ async def _refresh_voice_observations_if_due(
         )
 
 
+async def _summary_audio_block(
+    file_store: Any | None,
+    artifact_store: Any | None,
+    session_id: str,
+    text: str,
+    language: str,
+) -> dict[str, Any] | None:
+    """Synthesize a summary and store it, returning the block that plays it.
+
+    Never raises: without the tts extra, or on any failure, the summary ships
+    silently and the client keeps its own speech engine.
+
+    :param file_store: Store that mints the file id.
+    :param artifact_store: Store that holds the audio bytes.
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :param text: Summary text to speak.
+    :param language: Target language tag, e.g. ``"pt-BR"``.
+    :returns: An ``output_file`` block, or ``None``.
+    """
+    if file_store is None or artifact_store is None or not text.strip():
+        return None
+    try:
+        from omnigent.server.tts import synthesize_summary
+
+        audio = await synthesize_summary(text, language=language)
+        if not audio:
+            return None
+        stored = await asyncio.to_thread(
+            file_store.create, "resumo.wav", len(audio), "audio/wav", session_id
+        )
+        await asyncio.to_thread(artifact_store.put, stored.id, audio)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - a silent summary beats a failed turn
+        _logger.warning(
+            "Could not attach summary audio for session=%s",
+            session_id,
+            extra={"session_id": session_id},
+            exc_info=True,
+        )
+        return None
+    return {
+        "type": "output_file",
+        "file_id": stored.id,
+        "filename": "resumo.wav",
+        "mime_type": "audio/wav",
+    }
+
+
 async def _attach_native_spoken_summary(
     conversation_store: ConversationStore | None,
     session_id: str,
     response_id: str | None,
     text: str | None,
+    *,
+    file_store: Any | None = None,
+    artifact_store: Any | None = None,
 ) -> None:
     """
     Generate a spoken summary for a native-harness turn and persist it.
@@ -7802,6 +7854,8 @@ async def _attach_native_spoken_summary(
     :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
     :param response_id: Response id of the turn being summarized.
     :param text: The turn's final assistant text.
+    :param file_store: Store used for summary audio; audio is skipped without it.
+    :param artifact_store: Store used for summary audio bytes.
     :returns: None.
     """
     if conversation_store is None or not text or not response_id:
@@ -7846,6 +7900,19 @@ async def _attach_native_spoken_summary(
     if spoken_summary_part is None:
         return
 
+    content: list[dict[str, Any]] = [spoken_summary_part]
+    # Speak it in the configured voice and ship the audio with the summary, so
+    # playback does not fall back to the host's own speech engine.
+    audio_block = await _summary_audio_block(
+        file_store,
+        artifact_store,
+        session_id,
+        str(spoken_summary_part.get("text") or ""),
+        str(spoken_summary_part.get("lang") or "pt-BR"),
+    )
+    if audio_block is not None:
+        content.append(audio_block)
+
     item = NewConversationItem(
         type="message",
         response_id=response_id,
@@ -7855,7 +7922,7 @@ async def _attach_native_spoken_summary(
                 "type": "message",
                 "role": "assistant",
                 "agent": "spoken_summary",
-                "content": [spoken_summary_part],
+                "content": content,
             },
         ),
     )

@@ -1326,6 +1326,8 @@ def register_events_routes(
                     session_id,
                     response_id,
                     data.get("output") if isinstance(data.get("output"), str) else None,
+                    file_store=file_store,
+                    artifact_store=artifact_store,
                 )
                 # Keep the rewriter's notes on this reader current, so the voice
                 # goes on adapting rather than being seeded once.
