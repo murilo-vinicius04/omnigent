@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,15 @@ TTS_MAX_CHARS: int = 1200
 
 _model: Any = None
 _model_failed: bool = False
+
+#: Serializes model load and generation.
+#:
+#: Chatterbox keeps per-generation alignment state on the model instance, so two
+#: concurrent ``generate`` calls on the shared singleton corrupt each other and
+#: raise ``stack expects each tensor to be equal size``. The work is GPU-bound
+#: and already effectively serialized, so holding a lock across it costs nothing
+#: and also stops two callers from loading the model twice.
+_synthesis_lock = threading.Lock()
 
 
 def tts_enabled() -> bool:
@@ -111,26 +121,27 @@ def _synthesize_sync(text: str, language: str) -> bytes | None:
     :param language: BCP-47 tag; only its language subtag is used.
     :returns: WAV bytes, or ``None`` when synthesis is unavailable.
     """
-    model = _load_model()
-    if model is None:
-        return None
-    reference = _ensure_voice_reference(model)
-    try:
-        import io
+    with _synthesis_lock:
+        model = _load_model()
+        if model is None:
+            return None
+        reference = _ensure_voice_reference(model)
+        try:
+            import io
 
-        import torchaudio as ta
+            import torchaudio as ta
 
-        lang = (language or "pt").split("-")[0].lower()
-        kwargs: dict[str, Any] = {"exaggeration": 0.4, "cfg_weight": 0.6, "temperature": 0.7}
-        if reference is not None:
-            kwargs["audio_prompt_path"] = str(reference)
-        wav = model.generate(text, language_id=lang, **kwargs)
-        buffer = io.BytesIO()
-        ta.save(buffer, wav.cpu(), model.sr, format="wav")
-        return buffer.getvalue()
-    except Exception:  # noqa: BLE001 - a silent summary beats a failed turn
-        _logger.warning("Summary speech generation failed", exc_info=True)
-        return None
+            lang = (language or "pt").split("-")[0].lower()
+            kwargs: dict[str, Any] = {"exaggeration": 0.4, "cfg_weight": 0.6, "temperature": 0.7}
+            if reference is not None:
+                kwargs["audio_prompt_path"] = str(reference)
+            wav = model.generate(text, language_id=lang, **kwargs)
+            buffer = io.BytesIO()
+            ta.save(buffer, wav.cpu(), model.sr, format="wav")
+            return buffer.getvalue()
+        except Exception:  # noqa: BLE001 - a silent summary beats a failed turn
+            _logger.warning("Summary speech generation failed", exc_info=True)
+            return None
 
 
 async def synthesize_summary(text: str, *, language: str = "pt-BR") -> bytes | None:

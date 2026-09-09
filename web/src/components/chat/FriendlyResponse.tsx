@@ -64,7 +64,13 @@ export function FriendlyResponse({ summary, id, children }: FriendlyResponseProp
       stop();
       void el.play().then(
         () => setAudioPlaying(true),
-        () => setAudioPlaying(false),
+        () => {
+          // The recording is gone -- a session keeps only its newest ones, so
+          // an older summary outlives its audio. Read it with the browser
+          // engine rather than leaving the control silent.
+          setAudioPlaying(false);
+          playManual(effectiveId, summary.text, summary.lang);
+        },
       );
       return;
     }

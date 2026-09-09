@@ -270,6 +270,35 @@ interface SpeechPlaybackStoreState {
 /** The server-audio element currently playing, so `stop` can silence it. */
 let activeAudio: HTMLAudioElement | null = null;
 
+/**
+ * Speak *text* through the host engine and track it as the active utterance.
+ *
+ * Shared by the default path and by the fallback taken when a summary's
+ * recording is missing, so both report speaking state identically.
+ */
+function speakWithEngine(
+  itemId: string,
+  text: string,
+  lang: string | undefined,
+  set: (partial: Partial<SpeechPlaybackStoreState>) => void,
+  get: () => SpeechPlaybackStoreState,
+): boolean {
+  const engine = getSpeechEngine();
+  if (!engine.isSupported()) return false;
+
+  // Hard requirement: cancel in-flight speech when a new summary arrives.
+  engine.stop();
+  set({ isSpeaking: true, speakingItemId: itemId });
+
+  const clear = () => {
+    if (get().speakingItemId === itemId) {
+      set({ isSpeaking: false, speakingItemId: null });
+    }
+  };
+  engine.speak(text, lang, clear, clear);
+  return true;
+}
+
 export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get) => ({
   isSpeaking: false,
   speakingItemId: null,
@@ -291,37 +320,26 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
       const clear = () => {
         if (get().speakingItemId === itemId) set({ isSpeaking: false, speakingItemId: null });
       };
+      // A session keeps only its newest recordings, so audio can be absent for
+      // a summary that still names one. That is a real media error, and the
+      // host engine is better than silence.
+      const fallBackToEngine = () => {
+        clear();
+        activeAudio = null;
+        speakWithEngine(itemId, text, lang, set, get);
+      };
       el.addEventListener("ended", clear);
-      el.addEventListener("error", clear);
+      el.addEventListener("error", fallBackToEngine);
       activeAudio = el;
+      // A rejected play() here is usually the browser's autoplay policy, not a
+      // broken file. Falling back would answer a blocked good recording with
+      // the robotic voice the generated one exists to replace, so stay silent
+      // and let the reader press play.
       void el.play().catch(clear);
       return true;
     }
 
-    const engine = getSpeechEngine();
-    if (!engine.isSupported()) return false;
-
-    // Hard requirement: cancel in-flight speech when a new summary arrives.
-    engine.stop();
-
-    set({ isSpeaking: true, speakingItemId: itemId });
-
-    engine.speak(
-      text,
-      lang,
-      () => {
-        if (get().speakingItemId === itemId) {
-          set({ isSpeaking: false, speakingItemId: null });
-        }
-      },
-      () => {
-        if (get().speakingItemId === itemId) {
-          set({ isSpeaking: false, speakingItemId: null });
-        }
-      },
-    );
-
-    return true;
+    return speakWithEngine(itemId, text, lang, set, get);
   },
 
   playManual: (itemId: string, text: string, lang?: string) => {

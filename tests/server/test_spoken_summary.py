@@ -2159,3 +2159,88 @@ def test_voice_profile_matches_register_but_never_the_readers_typing(tmp_path: A
     assert "match their REGISTER, never their TYPING" in out
     # The guard must trail the profile it constrains, or the profile outranks it.
     assert out.index("never their TYPING") > out.index("abrevia tudo")
+
+
+@pytest.mark.asyncio
+async def test_native_idle_edge_summarizes_a_turn_only_once() -> None:
+    """Repeated `idle` edges for one turn must not re-summarize it.
+
+    A native turn can push `external_session_status` idle several times. Each
+    extra pass spent another rewrite call and another speech synthesis on a turn
+    already summarized -- and because those syntheses then ran concurrently on a
+    model that is not reentrant, most of them failed and their summaries shipped
+    with no audio at all.
+    """
+    from omnigent.server.routes._sessions.helpers import (
+        _SUMMARIZED_RESPONSES,
+        _attach_native_spoken_summary,
+    )
+
+    _SUMMARIZED_RESPONSES.clear()
+    clear_spoken_summary_cache()
+    conv = Conversation(
+        id="conv_once",
+        root_conversation_id="conv_once",
+        created_at=1,
+        updated_at=1,
+        parent_conversation_id=None,
+        kind="default",
+        project_id="proj_once",
+    )
+    store = _FakeConversationStore(
+        conversation=conv,
+        project_config={"spoken_summary": {"enabled": True, "language": "pt-BR"}},
+    )
+
+    calls = 0
+
+    async def _fake_generate(text: str, **kwargs: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        nonlocal calls
+        calls += 1
+        return (
+            {"type": "spoken_summary", "text": "Resumo unico.", "lang": "pt-BR"},
+            {"input_tokens": 10, "output_tokens": 5},
+        )
+
+    with patch("omnigent.server.spoken_summary.generate_spoken_summary", _fake_generate):
+        for _ in range(4):
+            await _attach_native_spoken_summary(
+                store,  # type: ignore[arg-type]
+                "conv_once",
+                "resp_once_1",
+                _LONG_RESPONSE_TEXT,
+            )
+
+    assert calls == 1
+    assert len(store.appended) == 1
+
+    # A different turn in the same session is still summarized.
+    with patch("omnigent.server.spoken_summary.generate_spoken_summary", _fake_generate):
+        await _attach_native_spoken_summary(
+            store,  # type: ignore[arg-type]
+            "conv_once",
+            "resp_once_2",
+            _LONG_RESPONSE_TEXT,
+        )
+
+    assert calls == 2
+    assert len(store.appended) == 2
+    _SUMMARIZED_RESPONSES.clear()
+
+
+def test_summary_turn_claim_is_bounded() -> None:
+    """The claim must not grow without bound on a long-lived server."""
+    from omnigent.server.routes._sessions.helpers import (
+        _SUMMARIZED_RESPONSES,
+        _SUMMARIZED_RESPONSES_MAX,
+        _claim_summary_turn,
+    )
+
+    _SUMMARIZED_RESPONSES.clear()
+    for i in range(_SUMMARIZED_RESPONSES_MAX + 50):
+        assert _claim_summary_turn("conv_bound", f"resp_{i}") is True
+    assert len(_SUMMARIZED_RESPONSES) == _SUMMARIZED_RESPONSES_MAX
+    # The oldest claims were evicted; the newest are still held.
+    assert _claim_summary_turn("conv_bound", f"resp_{_SUMMARIZED_RESPONSES_MAX + 49}") is False
+    assert _claim_summary_turn("conv_bound", "resp_0") is True
+    _SUMMARIZED_RESPONSES.clear()

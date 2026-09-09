@@ -45,6 +45,32 @@ describe("FriendlyResponse", () => {
 describe("FriendlyResponse — server-synthesized audio", () => {
   const withAudio = { text: "Consertei o vazamento.", lang: "pt-BR", audioFileId: "f_audio_1" };
 
+  it("falls back to the browser engine when the recording has been pruned", async () => {
+    // A session keeps only its newest recordings, so an older summary still
+    // names an audio file whose bytes are gone. The control must speak, not
+    // sit silent.
+    const play = vi
+      .spyOn(window.HTMLMediaElement.prototype, "play")
+      .mockRejectedValue(new Error("404"));
+    const speak = vi
+      .spyOn(useSpeechPlaybackStore.getState(), "playManual")
+      .mockImplementation(() => {});
+    useChatStore.setState({ conversationId: "conv_1" } as never);
+
+    render(
+      <FriendlyResponse summary={withAudio} id="resp_gone">
+        <div>original</div>
+      </FriendlyResponse>,
+    );
+
+    fireEvent.click(screen.getByTestId("friendly-response-play"));
+    await vi.waitFor(() => expect(speak).toHaveBeenCalled());
+    expect(speak).toHaveBeenCalledWith("resp_gone", withAudio.text, withAudio.lang);
+
+    play.mockRestore();
+    speak.mockRestore();
+  });
+
   it("plays the generated audio from the read-aloud control, not the browser engine", () => {
     const play = vi
       .spyOn(window.HTMLMediaElement.prototype, "play")

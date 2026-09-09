@@ -18,7 +18,7 @@ import time
 import urllib.parse
 import uuid
 import weakref
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -7776,6 +7776,68 @@ async def _refresh_voice_observations_if_due(
         )
 
 
+#: Filename every summary audio is stored under, and the marker that picks
+#: them out of a session's other files when pruning.
+SUMMARY_AUDIO_FILENAME = "resumo.wav"
+
+#: How many summary recordings a session keeps. Each is an uncompressed WAV of
+#: a summary the reader hears once, so they are a cache, not a record: past this
+#: the oldest are dropped rather than growing the artifact store forever.
+SUMMARY_AUDIO_KEEP_PER_SESSION = 10
+
+#: Upper bound on files examined per prune, so a session with a large file list
+#: cannot turn one summary into an unbounded scan.
+_SUMMARY_AUDIO_SCAN_LIMIT = 200
+
+
+async def _prune_summary_audio(
+    file_store: Any,
+    artifact_store: Any,
+    session_id: str,
+    keep: int = SUMMARY_AUDIO_KEEP_PER_SESSION,
+) -> int:
+    """Drop all but the newest *keep* summary recordings for a session.
+
+    Never raises: pruning is housekeeping, and failing to reclaim space must
+    not cost the reader the summary that triggered it.
+
+    :param file_store: Store holding the file metadata.
+    :param artifact_store: Store holding the audio bytes.
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :param keep: How many of the newest recordings to keep.
+    :returns: Number of recordings deleted.
+    """
+    if file_store is None or artifact_store is None or keep < 0:
+        return 0
+    deleted = 0
+    try:
+        page = await asyncio.to_thread(
+            file_store.list, session_id, _SUMMARY_AUDIO_SCAN_LIMIT, None, None, "desc", False
+        )
+        recordings = [f for f in page.data if f.filename == SUMMARY_AUDIO_FILENAME]
+        for stale in recordings[keep:]:
+            # Metadata first: a row without bytes reads as a missing file, while
+            # bytes without a row would leak with nothing left pointing at them.
+            if await asyncio.to_thread(file_store.delete, stale.id, session_id):
+                deleted += 1
+            try:
+                await asyncio.to_thread(artifact_store.delete, stale.id)
+            except Exception:  # noqa: BLE001 - the row is already gone
+                _logger.debug("Summary audio bytes already absent for %s", stale.id)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - housekeeping never breaks a turn
+        _logger.warning(
+            "Could not prune summary audio for session=%s",
+            session_id,
+            extra={"session_id": session_id},
+            exc_info=True,
+        )
+    if deleted:
+        _logger.info("Pruned %d old summary recording(s) for session=%s", deleted, session_id)
+    return deleted
+
+
 async def _summary_audio_file_id(
     file_store: Any | None,
     artifact_store: Any | None,
@@ -7804,9 +7866,13 @@ async def _summary_audio_file_id(
         if not audio:
             return None
         stored = await asyncio.to_thread(
-            file_store.create, "resumo.wav", len(audio), "audio/wav", session_id
+            file_store.create, SUMMARY_AUDIO_FILENAME, len(audio), "audio/wav", session_id
         )
         await asyncio.to_thread(artifact_store.put, stored.id, audio)
+        # Keep the session's recordings to a fixed window now that a new one
+        # exists, so the store holds a rolling cache rather than every summary
+        # ever spoken.
+        await _prune_summary_audio(file_store, artifact_store, session_id)
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 - a silent summary beats a failed turn
@@ -7818,6 +7884,39 @@ async def _summary_audio_file_id(
         )
         return None
     return str(stored.id)
+
+
+#: Turns already summarized on the native idle edge, newest last.
+#:
+#: A native turn's ``external_session_status`` ``idle`` edge is not emitted once:
+#: a single turn can push it several times. Without a claim each edge spends
+#: another rewrite call and another synthesis on a turn already summarized, and
+#: the reader ends up with duplicate bubbles for one answer. Bounded because a
+#: long-lived server would otherwise hold every response id it ever saw.
+_SUMMARIZED_RESPONSES: OrderedDict[tuple[str, str], None] = OrderedDict()
+
+#: How many recent turns the claim above remembers.
+_SUMMARIZED_RESPONSES_MAX = 512
+
+
+def _claim_summary_turn(session_id: str, response_id: str) -> bool:
+    """Claim the right to summarize one turn, once.
+
+    Claiming is synchronous and happens before the first ``await``, so on the
+    single-threaded event loop two idle edges for the same turn can never both
+    win it.
+
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :param response_id: Response id of the turn being summarized.
+    :returns: True for the first caller for this turn, False afterwards.
+    """
+    key = (session_id, response_id)
+    if key in _SUMMARIZED_RESPONSES:
+        return False
+    _SUMMARIZED_RESPONSES[key] = None
+    while len(_SUMMARIZED_RESPONSES) > _SUMMARIZED_RESPONSES_MAX:
+        _SUMMARIZED_RESPONSES.popitem(last=False)
+    return True
 
 
 async def _attach_native_spoken_summary(
@@ -7876,6 +7975,13 @@ async def _attach_native_spoken_summary(
             deny_reason=None,
             enabled=enabled,
         ):
+            return
+        # Claimed here rather than on entry: an idle edge can arrive before the
+        # turn's text is complete, and a claim taken before eligibility is
+        # settled would be spent by an edge that then bails -- blocking the
+        # edge that actually had something to summarize. The check-and-set is
+        # synchronous, so despite the awaits above only one edge can win it.
+        if not _claim_summary_turn(session_id, response_id):
             return
         spoken_summary_part, spoken_summary_usage = await generate_spoken_summary(
             text,
