@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { readSpokenSummaryPlayback } from "./spokenSummaryPlaybackPreferences";
+import { isNarrationEnabled } from "./sessionNarrationPreferences";
 
 /**
  * Engine interface for text-to-speech playback.
@@ -262,7 +262,13 @@ export function clearInMemorySpokenTracking(): void {
 interface SpeechPlaybackStoreState {
   isSpeaking: boolean;
   speakingItemId: string | null;
-  speakLiveSummary: (itemId: string, text: string, lang?: string, audioUrl?: string) => boolean;
+  speakLiveSummary: (
+    itemId: string,
+    text: string,
+    lang?: string,
+    audioUrl?: string,
+    sessionId?: string | null,
+  ) => boolean;
   playManual: (itemId: string, text: string, lang?: string) => void;
   stop: () => void;
 }
@@ -303,9 +309,17 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
   isSpeaking: false,
   speakingItemId: null,
 
-  speakLiveSummary: (itemId: string, text: string, lang?: string, audioUrl?: string) => {
-    // Hard requirement: do NOT autoplay anything when toggle is OFF.
-    if (!readSpokenSummaryPlayback()) return false;
+  speakLiveSummary: (
+    itemId: string,
+    text: string,
+    lang?: string,
+    audioUrl?: string,
+    sessionId?: string | null,
+  ) => {
+    // Hard requirement: do NOT autoplay anything when narration is OFF. The
+    // session's own switch decides; the device default only fills in for a
+    // session the reader has not set either way.
+    if (!isNarrationEnabled(sessionId ?? null)) return false;
     // Never treat empty/falsy ID as a valid speaking identity
     if (!itemId) return false;
     // Hard requirement: speak ONLY on newly-arrived live messages.

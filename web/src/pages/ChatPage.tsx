@@ -169,6 +169,7 @@ import {
   type WorkspaceFile,
 } from "@/hooks/useWorkspaceChangedFiles";
 import { ComposerMicButton } from "@/components/ComposerMicButton";
+import { ComposerNarrateButton } from "@/components/ComposerNarrateButton";
 import { isCostRoutingSession, isSubagentRoutingSession } from "@/components/CostRoutingControl";
 import {
   SMART_ROUTING_ARMS,
@@ -3686,6 +3687,7 @@ function ComposerImpl({
               <PaperclipIcon className="size-4" data-icon-size="16" />
               <span className="sr-only">Attach files</span>
             </Button>
+            <ComposerNarrateButton disabled={disabled || isReadOnly} />
             <ComposerMicButton
               enableHotkey
               disabled={disabled || isReadOnly || hasPendingElicitation}

@@ -58,6 +58,14 @@ export type RenderItem =
       itemId: string | null;
       text: string;
       final: boolean;
+      /**
+       * Server stamp (epoch seconds) for the message this text came from.
+       *
+       * A spoken summary is appended as its own item well after the turn it
+       * describes, so its own stamp -- not the turn's -- is what says whether
+       * it just arrived or is being replayed from history.
+       */
+      createdAtS?: number;
       spokenSummary?: { text: string; lang: string; audioFileId?: string };
       /** Files this turn attached, lifted from its message blocks. */
       files?: AttachedFile[];
@@ -1630,6 +1638,7 @@ function textItem(run: AnyBlock[]): RenderItem {
         itemId: b.ctx.itemId,
         text: b.fullText,
         final: true,
+        ...(b.ctx.createdAtS !== undefined ? { createdAtS: b.ctx.createdAtS } : {}),
         ...(b.spokenSummary ? { spokenSummary: b.spokenSummary } : {}),
         ...(b.files ? { files: b.files } : {}),
       };

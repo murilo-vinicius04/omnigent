@@ -164,14 +164,39 @@ export function useSpokenSummaryPlayback(
           // - The response has not gone stale. This gate belongs here, not only on the marking
           //   branch: the branches are exclusive, so a marking-only guard is unreachable exactly
           //   when the speak conditions hold — the replay case.
-          if (wasObservedLive && isLatestTurn && isFinal && hasValidSummary && !isResponseStale) {
+          // A summary is appended as its own item long after the turn it
+          // describes, so its own server stamp says whether it just arrived.
+          // That is the signal that survives a reload: `wasObservedLive` is
+          // evidence this client watched the turn stream, which a client that
+          // loaded the page after the turn ended can never have, leaving a
+          // freshly-arrived summary unspoken. Either is enough; the spoken
+          // index and the live window still bound replay.
+          const summaryAgeS =
+            summary && textItem?.createdAtS !== undefined
+              ? Date.now() / 1000 - textItem.createdAtS
+              : undefined;
+          const isFreshSummary =
+            summaryAgeS !== undefined &&
+            summaryAgeS >= 0 &&
+            summaryAgeS * 1000 < LIVE_SUMMARY_WINDOW_MS;
+
+          if (
+            (wasObservedLive || isFreshSummary) &&
+            isLatestTurn &&
+            isFinal &&
+            hasValidSummary &&
+            !isResponseStale
+          ) {
             // Prefer the server-synthesized audio; the host engine is the fallback.
             const audioUrl =
               summary!.audioFileId && sessionId
                 ? `/v1/sessions/${encodeURIComponent(sessionId)}/resources/files/${encodeURIComponent(summary!.audioFileId)}/content`
                 : undefined;
-            speakLiveSummary(responseId, summary!.text, summary!.lang, audioUrl);
-          } else if (isFinal && (!wasObservedLive || !isLatestTurn || isResponseStale)) {
+            speakLiveSummary(responseId, summary!.text, summary!.lang, audioUrl, sessionId);
+          } else if (
+            isFinal &&
+            ((!wasObservedLive && !isFreshSummary) || !isLatestTurn || isResponseStale)
+          ) {
             // Settled history, non-tail turn, or a response past its live window:
             // queue for single-persist batch marking so it is never replayed later.
             toMarkSpoken.add(responseId);

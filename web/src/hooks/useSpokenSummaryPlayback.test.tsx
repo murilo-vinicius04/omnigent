@@ -20,6 +20,7 @@ import { writeSpokenSummaryPlayback } from "@/lib/spokenSummaryPlaybackPreferenc
 import { useChatStore } from "@/store/chatStore";
 import { SpokenSummaryPlaybackControl } from "@/components/chat/SpokenSummaryPlaybackControl";
 import { isToolStreaming, useSpokenSummaryPlayback } from "./useSpokenSummaryPlayback";
+import { useNarrationStore } from "@/lib/sessionNarrationPreferences";
 
 function streamingResponse(responseId: string): ActiveResponse {
   return { responseId, state: "streaming", error: null };
@@ -1158,5 +1159,76 @@ describe("useSpokenSummaryPlayback — server audio", () => {
     // The host engine must stay silent when real audio exists.
     expect(engine.speak).not.toHaveBeenCalled();
     play.mockRestore();
+  });
+});
+
+describe("useSpokenSummaryPlayback — summaries that arrive after a reload", () => {
+  beforeEach(() => {
+    resetSpokenMessageTracking();
+    writeSpokenSummaryPlayback(true);
+    useNarrationStore.setState({ overrides: {} });
+  });
+
+  /** Bubble whose summary carries its own server stamp, as the real one does. */
+  function bubbleWithStampedSummary(responseId: string, createdAtS: number): Bubble {
+    return {
+      kind: "assistant",
+      responseId,
+      stableId: responseId,
+      lifecycle: "completed",
+      error: null,
+      items: [
+        {
+          kind: "text",
+          itemId: "i1",
+          text: "resposta completa",
+          final: true,
+          createdAtS,
+          spokenSummary: { text: "resumo falado", lang: "pt-BR" },
+        },
+      ],
+    } as Bubble;
+  }
+
+  it("speaks a just-arrived summary even when the turn was never watched live", () => {
+    // The rewrite lands ~30s after the turn ends. A reader who opened the page
+    // in that gap never saw the turn stream, so positive liveness can never be
+    // collected -- and autoplay would stay silent forever.
+    const speak = vi.spyOn(useSpeechPlaybackStore.getState(), "speakLiveSummary");
+    const bubbles = [bubbleWithStampedSummary("resp_fresh", Date.now() / 1000 - 5)];
+
+    renderHook(() => useSpokenSummaryPlayback(bubbles, null));
+
+    expect(speak).toHaveBeenCalled();
+    expect(speak.mock.calls[0]?.[0]).toBe("resp_fresh");
+    speak.mockRestore();
+  });
+
+  it("never speaks an old summary rebuilt from history", () => {
+    const speak = vi.spyOn(useSpeechPlaybackStore.getState(), "speakLiveSummary");
+    const bubbles = [bubbleWithStampedSummary("resp_old", Date.now() / 1000 - 3600)];
+
+    renderHook(() => useSpokenSummaryPlayback(bubbles, null));
+
+    expect(speak).not.toHaveBeenCalled();
+    // Indexed as settled history so a later rebuild cannot replay it either.
+    expect(isMessageSpoken("resp_old")).toBe(true);
+    speak.mockRestore();
+  });
+
+  it("stays silent when narration is off for the session", () => {
+    useNarrationStore.getState().setEnabled("conv_x", false);
+    useChatStore.setState({ conversationId: "conv_x" } as never);
+    const bubbles = [bubbleWithStampedSummary("resp_muted", Date.now() / 1000 - 2)];
+
+    renderHook(() => useSpokenSummaryPlayback(bubbles, null));
+
+    // The session switch is what decides, even though the device default is on.
+    expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(false);
+    expect(
+      useSpeechPlaybackStore
+        .getState()
+        .speakLiveSummary("resp_muted2", "resumo", "pt-BR", undefined, "conv_x"),
+    ).toBe(false);
   });
 });
