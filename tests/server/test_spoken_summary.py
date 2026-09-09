@@ -2139,3 +2139,23 @@ async def test_observation_refresh_revises_rather_than_restarts(tmp_path: Any) -
 
     assert "- ja sabia disso" in captured["prompt"]
     assert "Do not restart from scratch." in captured["prompt"]
+
+
+def test_voice_profile_matches_register_but_never_the_readers_typing(tmp_path: Any) -> None:
+    """A reader's chat shorthand is a typing habit, not a voice to imitate.
+
+    The rewrite is also fed to the speech engine, where "vc" and "tbm" are read
+    aloud as gibberish, so the register must carry over without the orthography.
+    """
+    from omnigent.server import voice_profile as vp
+    from omnigent.server.spoken_summary import build_spoken_summary_instructions
+
+    with patch.dict(os.environ, {"OMNIGENT_CONFIG_HOME": str(tmp_path)}):
+        vp.voice_profile_path().write_text(
+            "- abrevia tudo: vc, tbm, pq\n- nao usa acento", encoding="utf-8"
+        )
+        out = build_spoken_summary_instructions("pt-BR")
+
+    assert "match their REGISTER, never their TYPING" in out
+    # The guard must trail the profile it constrains, or the profile outranks it.
+    assert out.index("never their TYPING") > out.index("abrevia tudo")
