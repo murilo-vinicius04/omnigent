@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useChatStore } from "@/store/chatStore";
 import type { Bubble, RenderItem, ToolState } from "@/lib/renderItems";
 import { isMessageSpoken, markMessagesSpoken, useSpeechPlaybackStore } from "@/lib/speechPlayback";
 import type { ActiveResponse } from "@/store/types";
@@ -57,6 +58,7 @@ export function useSpokenSummaryPlayback(
 ): void {
   // Set of responseIds that were positively observed streaming live in this client session.
   const observedLiveResponseIdsRef = useRef<Set<string>>(new Set());
+  const sessionId = useChatStore((s) => s.conversationId);
   const speakLiveSummary = useSpeechPlaybackStore((s) => s.speakLiveSummary);
   const stop = useSpeechPlaybackStore((s) => s.stop);
 
@@ -163,7 +165,12 @@ export function useSpokenSummaryPlayback(
           //   branch: the branches are exclusive, so a marking-only guard is unreachable exactly
           //   when the speak conditions hold — the replay case.
           if (wasObservedLive && isLatestTurn && isFinal && hasValidSummary && !isResponseStale) {
-            speakLiveSummary(responseId, summary!.text, summary!.lang);
+            // Prefer the server-synthesized audio; the host engine is the fallback.
+            const audioUrl =
+              summary!.audioFileId && sessionId
+                ? `/v1/sessions/${encodeURIComponent(sessionId)}/resources/files/${encodeURIComponent(summary!.audioFileId)}/content`
+                : undefined;
+            speakLiveSummary(responseId, summary!.text, summary!.lang, audioUrl);
           } else if (isFinal && (!wasObservedLive || !isLatestTurn || isResponseStale)) {
             // Settled history, non-tail turn, or a response past its live window:
             // queue for single-persist batch marking so it is never replayed later.
@@ -176,7 +183,7 @@ export function useSpokenSummaryPlayback(
     if (toMarkSpoken.size > 0) {
       markMessagesSpoken(Array.from(toMarkSpoken));
     }
-  }, [bubbles, activeResponse, speakLiveSummary, stop]);
+  }, [bubbles, activeResponse, sessionId, speakLiveSummary, stop]);
 
   // Cancel in-flight speech when the component unmounts or user navigates away.
   useEffect(() => {

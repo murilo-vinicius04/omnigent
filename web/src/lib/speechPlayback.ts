@@ -130,9 +130,7 @@ function loadSessionStorageCache(): { ids: string[]; set: Set<string> } {
 
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
-      const valid = parsed.filter(
-        (x): x is string => typeof x === "string" && x.length > 0,
-      );
+      const valid = parsed.filter((x): x is string => typeof x === "string" && x.length > 0);
       // Keep at most MAX_PERSISTED_SPOKEN_IDS (FIFO, most recent at tail)
       const capped = valid.slice(-MAX_PERSISTED_SPOKEN_IDS);
       persistedIdsCache = capped;
@@ -264,16 +262,19 @@ export function clearInMemorySpokenTracking(): void {
 interface SpeechPlaybackStoreState {
   isSpeaking: boolean;
   speakingItemId: string | null;
-  speakLiveSummary: (itemId: string, text: string, lang?: string) => boolean;
+  speakLiveSummary: (itemId: string, text: string, lang?: string, audioUrl?: string) => boolean;
   playManual: (itemId: string, text: string, lang?: string) => void;
   stop: () => void;
 }
+
+/** The server-audio element currently playing, so `stop` can silence it. */
+let activeAudio: HTMLAudioElement | null = null;
 
 export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get) => ({
   isSpeaking: false,
   speakingItemId: null,
 
-  speakLiveSummary: (itemId: string, text: string, lang?: string) => {
+  speakLiveSummary: (itemId: string, text: string, lang?: string, audioUrl?: string) => {
     // Hard requirement: do NOT autoplay anything when toggle is OFF.
     if (!readSpokenSummaryPlayback()) return false;
     // Never treat empty/falsy ID as a valid speaking identity
@@ -281,6 +282,21 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
     // Hard requirement: speak ONLY on newly-arrived live messages.
     if (isMessageSpoken(itemId)) return false;
     markMessageSpoken(itemId);
+
+    // Server-synthesized audio when this summary has it: the host engine is a
+    // fallback, not the default, so autoplay matches the read-aloud button.
+    if (audioUrl) {
+      const el = new Audio(audioUrl);
+      set({ isSpeaking: true, speakingItemId: itemId });
+      const clear = () => {
+        if (get().speakingItemId === itemId) set({ isSpeaking: false, speakingItemId: null });
+      };
+      el.addEventListener("ended", clear);
+      el.addEventListener("error", clear);
+      activeAudio = el;
+      void el.play().catch(clear);
+      return true;
+    }
 
     const engine = getSpeechEngine();
     if (!engine.isSupported()) return false;
@@ -339,6 +355,10 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
   },
 
   stop: () => {
+    if (activeAudio) {
+      activeAudio.pause();
+      activeAudio = null;
+    }
     const engine = getSpeechEngine();
     engine.stop();
     set({ isSpeaking: false, speakingItemId: null });

@@ -17,6 +17,7 @@ import {
   useSpeechPlaybackStore,
 } from "@/lib/speechPlayback";
 import { writeSpokenSummaryPlayback } from "@/lib/spokenSummaryPlaybackPreferences";
+import { useChatStore } from "@/store/chatStore";
 import { SpokenSummaryPlaybackControl } from "@/components/chat/SpokenSummaryPlaybackControl";
 import { isToolStreaming, useSpokenSummaryPlayback } from "./useSpokenSummaryPlayback";
 
@@ -39,7 +40,7 @@ class MockSpeechEngine implements SpeechEngine {
 function makeAssistantBubble(
   responseId: string,
   itemId: string | null = null,
-  spokenSummary?: { text: string; lang: string },
+  spokenSummary?: { text: string; lang: string; audioFileId?: string },
   final = true,
   lifecycle: ActiveResponse["state"] = "completed",
 ): Bubble {
@@ -1101,5 +1102,61 @@ describe("BrowserSpeechEngine", () => {
     expect(engine.isSpeaking()).toBe(false);
     expect(() => engine.speak("Test text", "en-US")).not.toThrow();
     expect(() => engine.stop()).not.toThrow();
+  });
+});
+
+describe("useSpokenSummaryPlayback — server audio", () => {
+  let engine: MockSpeechEngine;
+
+  beforeEach(() => {
+    engine = new MockSpeechEngine();
+    setSpeechEngine(engine);
+    resetSpokenMessageTracking();
+    clearInMemorySpokenTracking();
+    sessionStorage.clear();
+  });
+
+  afterEach(() => {
+    resetSpeechEngine();
+  });
+
+  it("autoplays the synthesized audio instead of the host speech engine", () => {
+    // The button was fixed first; autoplay kept using the browser engine, so a
+    // summary still read aloud in the host voice the moment it arrived.
+    writeSpokenSummaryPlayback(true);
+    useChatStore.setState({ conversationId: "conv_1" } as never);
+    const play = vi.spyOn(window.HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+
+    const { rerender } = renderHook(
+      ({ bubbles, activeResponse }) => useSpokenSummaryPlayback(bubbles, activeResponse),
+      {
+        initialProps: {
+          bubbles: [] as Bubble[],
+          activeResponse: streamingResponse("resp_audio") as ActiveResponse | null,
+        },
+      },
+    );
+
+    rerender({
+      bubbles: [makeAssistantBubble("resp_audio", null, undefined, false, "streaming")],
+      activeResponse: streamingResponse("resp_audio"),
+    });
+    rerender({
+      bubbles: [
+        makeAssistantBubble(
+          "resp_audio",
+          "item_1",
+          { text: "resumo falado", lang: "pt-BR", audioFileId: "f_a1" },
+          true,
+          "completed",
+        ),
+      ],
+      activeResponse: completedResponse("resp_audio", 1_000),
+    });
+
+    expect(play).toHaveBeenCalled();
+    // The host engine must stay silent when real audio exists.
+    expect(engine.speak).not.toHaveBeenCalled();
+    play.mockRestore();
   });
 });
