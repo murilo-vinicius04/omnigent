@@ -1913,22 +1913,17 @@ def test_inbound_translation_only_runs_for_non_english_readers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_inbound_translation_skips_short_messages_without_calling_agy() -> None:
-    """Short inputs ("ok", "vai") are not worth seconds of latency."""
+async def test_inbound_translation_runs_for_short_messages_too() -> None:
+    """Short Portuguese is still Portuguese — it must not reach the model untranslated."""
     from omnigent.server import inbound_translation as it
 
-    called = False
-
     async def _fake(prompt: str, **kwargs: Any) -> str:
-        nonlocal called
-        called = True
-        return "never"
+        return "go ahead"
 
     with patch("omnigent.server.spoken_summary.run_agy_prompt", _fake):
-        out = await it.translate_inbound_message("ok vai", source_language="pt-BR")
+        out = await it.translate_inbound_message("vai la", source_language="pt-BR")
 
-    assert out is None
-    assert called is False
+    assert out == "go ahead"
 
 
 @pytest.mark.asyncio

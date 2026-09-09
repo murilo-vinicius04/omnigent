@@ -34,9 +34,29 @@ _logger = logging.getLogger("omnigent.server.inbound_translation")
 #: original is forwarded untranslated rather than making the reader wait.
 INBOUND_TRANSLATION_TIMEOUT_S: float = 20.0
 
-#: Below this length a message is forwarded as-is. Short inputs ("yes", "go
-#: ahead", a pasted path) gain nothing from a round trip that costs seconds.
-INBOUND_TRANSLATION_MIN_CHARS: int = 24
+#: Framework instruction appended to the answering model's prompt while the
+#: language layer is on. Without it the model mirrors whatever language the
+#: reader writes in, which defeats the layer entirely: the stored original
+#: stops being English, the rewrite becomes a no-op, and the token premium the
+#: layer exists to avoid is paid on every turn.
+ANSWER_IN_ENGLISH_INSTRUCTION: str = (
+    "Always write your replies in English, whatever language the user writes in. "
+    "Their message is translated to English before it reaches you, and your reply "
+    "is translated back into their language after you send it, so they read their "
+    "own language either way and your English is what gets stored. Matching their "
+    "language yourself breaks that, so never do it -- not even when they switch "
+    "language mid-conversation, and not to be polite. Quoted text, identifiers, "
+    "and code stay exactly as they are."
+)
+
+
+def answer_language_instruction(language: str | None) -> str | None:
+    """Return the framework instruction pinning replies to English, when it applies.
+
+    :param language: The session's configured language, e.g. ``"pt-BR"``.
+    :returns: The instruction, or ``None`` when the layer is off for this session.
+    """
+    return ANSWER_IN_ENGLISH_INSTRUCTION if inbound_translation_enabled(language) else None
 
 
 def get_inbound_translation_timeout_s() -> float:
@@ -139,7 +159,7 @@ async def translate_inbound_message(text: str, *, source_language: str) -> str |
     import secrets
 
     source = text.strip()
-    if len(source) < INBOUND_TRANSLATION_MIN_CHARS:
+    if not source:
         return None
     delimiter = f"UNTRUSTED_MESSAGE_{secrets.token_hex(8)}"
     prompt = build_inbound_translation_prompt(source, source_language, delimiter)
