@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronRightIcon, SquareIcon, Volume2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSpeechPlaybackStore } from "@/lib/speechPlayback";
+import { useChatStore } from "@/store/chatStore";
 
 export interface FriendlyResponseProps {
   /** The rewritten, reader-facing version of the reply. */
-  summary: { text: string; lang: string };
+  summary: { text: string; lang: string; audioFileId?: string };
   /** Stable identifier for playback tracking (the turn's responseId). */
   id?: string;
   /** The model's original reply, one click away. */
@@ -23,12 +24,53 @@ export interface FriendlyResponseProps {
  */
 export function FriendlyResponse({ summary, id, children }: FriendlyResponseProps) {
   const [showOriginal, setShowOriginal] = useState(false);
+  const [audioPlaying, setAudioPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const speakingItemId = useSpeechPlaybackStore((s) => s.speakingItemId);
   const playManual = useSpeechPlaybackStore((s) => s.playManual);
   const stop = useSpeechPlaybackStore((s) => s.stop);
+  const sessionId = useChatStore((s) => s.conversationId);
 
   const effectiveId = id || "";
-  const isSpeaking = Boolean(effectiveId && speakingItemId === effectiveId);
+  // Server-synthesized audio when this summary has it; otherwise the control
+  // falls back to the browser's own speech engine.
+  const audioUrl =
+    summary.audioFileId && sessionId
+      ? `/v1/sessions/${encodeURIComponent(sessionId)}/resources/files/${encodeURIComponent(summary.audioFileId)}/content`
+      : undefined;
+  const isSpeaking = audioUrl
+    ? audioPlaying
+    : Boolean(effectiveId && speakingItemId === effectiveId);
+
+  // Stop the audio if this bubble goes away mid-playback.
+  useEffect(() => {
+    const el = audioRef.current;
+    return () => {
+      el?.pause();
+    };
+  }, []);
+
+  const toggleSpeech = () => {
+    if (audioUrl) {
+      const el = audioRef.current;
+      if (!el) return;
+      if (audioPlaying) {
+        el.pause();
+        el.currentTime = 0;
+        setAudioPlaying(false);
+        return;
+      }
+      // Silence the browser engine before taking over the channel.
+      stop();
+      void el.play().then(
+        () => setAudioPlaying(true),
+        () => setAudioPlaying(false),
+      );
+      return;
+    }
+    if (isSpeaking) stop();
+    else playManual(effectiveId, summary.text, summary.lang);
+  };
 
   return (
     <div data-testid="friendly-response" className="min-w-0">
@@ -51,13 +93,10 @@ export function FriendlyResponse({ summary, id, children }: FriendlyResponseProp
           {showOriginal ? "Hide original" : "Show original"}
         </button>
 
-        {effectiveId && (
+        {(effectiveId || audioUrl) && (
           <button
             type="button"
-            onClick={() => {
-              if (isSpeaking) stop();
-              else playManual(effectiveId, summary.text, summary.lang);
-            }}
+            onClick={toggleSpeech}
             data-testid={isSpeaking ? "friendly-response-stop" : "friendly-response-play"}
             aria-label={isSpeaking ? "Stop reading aloud" : "Read aloud"}
             className="inline-flex items-center gap-1 rounded hover:text-foreground focus-visible:outline-none"
@@ -73,6 +112,17 @@ export function FriendlyResponse({ summary, id, children }: FriendlyResponseProp
           </button>
         )}
       </div>
+
+      {audioUrl && (
+        <audio
+          ref={audioRef}
+          src={audioUrl}
+          preload="none"
+          data-testid="friendly-response-audio"
+          onEnded={() => setAudioPlaying(false)}
+          onError={() => setAudioPlaying(false)}
+        />
+      )}
 
       {showOriginal && (
         <div

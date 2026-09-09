@@ -68,8 +68,8 @@ async def test_synthesis_failure_returns_none_rather_than_raising() -> None:
 
 
 @pytest.mark.asyncio
-async def test_summary_audio_block_is_none_without_stores() -> None:
+async def test_summary_audio_file_id_is_none_without_stores() -> None:
     """No file store means no audio, not a crash."""
-    from omnigent.server.routes._sessions.helpers import _summary_audio_block
+    from omnigent.server.routes._sessions.helpers import _summary_audio_file_id
 
-    assert await _summary_audio_block(None, None, "conv_1", "texto", "pt-BR") is None
+    assert await _summary_audio_file_id(None, None, "conv_1", "texto", "pt-BR") is None

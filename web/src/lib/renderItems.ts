@@ -58,7 +58,7 @@ export type RenderItem =
       itemId: string | null;
       text: string;
       final: boolean;
-      spokenSummary?: { text: string; lang: string };
+      spokenSummary?: { text: string; lang: string; audioFileId?: string };
       /** Files this turn attached, lifted from its message blocks. */
       files?: AttachedFile[];
     }

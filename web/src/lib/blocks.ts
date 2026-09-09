@@ -274,7 +274,7 @@ export interface TextDone {
   /** True when this persisted assistant text came from an interrupted turn. */
   interrupted?: boolean;
   /** Optional server-side spoken summary. */
-  spokenSummary?: { text: string; lang: string };
+  spokenSummary?: { text: string; lang: string; audioFileId?: string };
   /** Files this assistant message attached. */
   files?: AttachedFile[];
 }

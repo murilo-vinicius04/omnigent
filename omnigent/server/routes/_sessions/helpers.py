@@ -7776,14 +7776,14 @@ async def _refresh_voice_observations_if_due(
         )
 
 
-async def _summary_audio_block(
+async def _summary_audio_file_id(
     file_store: Any | None,
     artifact_store: Any | None,
     session_id: str,
     text: str,
     language: str,
-) -> dict[str, Any] | None:
-    """Synthesize a summary and store it, returning the block that plays it.
+) -> str | None:
+    """Synthesize a summary and store it, returning the stored audio's id.
 
     Never raises: without the tts extra, or on any failure, the summary ships
     silently and the client keeps its own speech engine.
@@ -7793,7 +7793,7 @@ async def _summary_audio_block(
     :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
     :param text: Summary text to speak.
     :param language: Target language tag, e.g. ``"pt-BR"``.
-    :returns: An ``output_file`` block, or ``None``.
+    :returns: The stored file id, or ``None``.
     """
     if file_store is None or artifact_store is None or not text.strip():
         return None
@@ -7817,12 +7817,7 @@ async def _summary_audio_block(
             exc_info=True,
         )
         return None
-    return {
-        "type": "output_file",
-        "file_id": stored.id,
-        "filename": "resumo.wav",
-        "mime_type": "audio/wav",
-    }
+    return str(stored.id)
 
 
 async def _attach_native_spoken_summary(
@@ -7900,18 +7895,19 @@ async def _attach_native_spoken_summary(
     if spoken_summary_part is None:
         return
 
-    content: list[dict[str, Any]] = [spoken_summary_part]
-    # Speak it in the configured voice and ship the audio with the summary, so
-    # playback does not fall back to the host's own speech engine.
-    audio_block = await _summary_audio_block(
+    # Speak it in the configured voice and hang the audio off the summary
+    # itself, so the existing read-aloud control plays it instead of the
+    # host's speech engine. Not a separate attachment: it is this summary.
+    audio_file_id = await _summary_audio_file_id(
         file_store,
         artifact_store,
         session_id,
         str(spoken_summary_part.get("text") or ""),
         str(spoken_summary_part.get("lang") or "pt-BR"),
     )
-    if audio_block is not None:
-        content.append(audio_block)
+    if audio_file_id is not None:
+        spoken_summary_part = {**spoken_summary_part, "audio_file_id": audio_file_id}
+    content: list[dict[str, Any]] = [spoken_summary_part]
 
     item = NewConversationItem(
         type="message",

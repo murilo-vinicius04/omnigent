@@ -1,6 +1,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FriendlyResponse } from "./FriendlyResponse";
+import { useSpeechPlaybackStore } from "@/lib/speechPlayback";
+import { useChatStore } from "@/store/chatStore";
 
 afterEach(cleanup);
 
@@ -37,5 +39,48 @@ describe("FriendlyResponse", () => {
 
     fireEvent.click(toggle);
     expect(screen.queryByTestId("friendly-response-original")).toBeNull();
+  });
+});
+
+describe("FriendlyResponse — server-synthesized audio", () => {
+  const withAudio = { text: "Consertei o vazamento.", lang: "pt-BR", audioFileId: "f_audio_1" };
+
+  it("plays the generated audio from the read-aloud control, not the browser engine", () => {
+    const play = vi
+      .spyOn(window.HTMLMediaElement.prototype, "play")
+      .mockResolvedValue(undefined);
+    const speak = vi.spyOn(useSpeechPlaybackStore.getState(), "playManual");
+    useChatStore.setState({ conversationId: "conv_1" } as never);
+
+    render(
+      <FriendlyResponse summary={withAudio} id="resp_1">
+        <div>original</div>
+      </FriendlyResponse>,
+    );
+
+    const audio = screen.getByTestId("friendly-response-audio");
+    expect(audio.getAttribute("src")).toContain("/resources/files/f_audio_1/content");
+
+    fireEvent.click(screen.getByTestId("friendly-response-play"));
+    expect(play).toHaveBeenCalled();
+    // The browser speech engine must not also fire — that was the old voice.
+    expect(speak).not.toHaveBeenCalled();
+    play.mockRestore();
+  });
+
+  it("keeps the browser engine when the summary carries no audio", () => {
+    const play = vi
+      .spyOn(window.HTMLMediaElement.prototype, "play")
+      .mockResolvedValue(undefined);
+    render(
+      <FriendlyResponse summary={{ text: "sem audio", lang: "pt-BR" }} id="resp_2">
+        <div>original</div>
+      </FriendlyResponse>,
+    );
+
+    expect(screen.queryByTestId("friendly-response-audio")).toBeNull();
+    fireEvent.click(screen.getByTestId("friendly-response-play"));
+    expect(play).not.toHaveBeenCalled();
+    play.mockRestore();
   });
 });
