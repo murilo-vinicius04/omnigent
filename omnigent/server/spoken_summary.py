@@ -351,10 +351,54 @@ def clamp_sentences(
 # decisions, or state mutations.
 
 
+def describe_answer_artifacts(text: str) -> str | None:
+    """List what the answer holds that the rewriter is never shown.
+
+    :func:`strip_markdown_for_speech` removes tables, code, images and links
+    before the rewrite, so a reply whose point IS the table gets summarized as
+    if the table did not exist and the reader never learns it is there. This
+    inventory is the rewriter's only evidence of them: counts and labels, never
+    contents, so it can point at them without inventing what they say.
+
+    :param text: The raw assistant text, before stripping.
+    :returns: A one-line inventory, or ``None`` when the answer is plain prose.
+    """
+    if not text:
+        return None
+    parts: list[str] = []
+
+    tables = re.findall(r"^[ \t]*\|.+\|[ \t]*$\n[ \t]*\|[ \t:|-]+\|[ \t]*$", text, re.M)
+    if tables:
+        header = tables[0].splitlines()[0]
+        columns = [c.strip() for c in header.strip().strip("|").split("|") if c.strip()][:6]
+        label = f"{len(tables)} table{'s' if len(tables) > 1 else ''}"
+        parts.append(f"{label} (first one's columns: {', '.join(columns)})" if columns else label)
+
+    fences = re.findall(r"^[ \t]*```([A-Za-z0-9_+-]*)", text, re.M)
+    blocks = [f for i, f in enumerate(fences) if i % 2 == 0]  # opening fences only
+    if blocks:
+        langs = sorted({f for f in blocks if f})
+        label = f"{len(blocks)} code block{'s' if len(blocks) > 1 else ''}"
+        parts.append(f"{label} ({', '.join(langs)})" if langs else label)
+
+    images = re.findall(r"!\[[^\]]*\]\([^)]*\)", text)
+    if images:
+        parts.append(f"{len(images)} image{'s' if len(images) > 1 else ''}")
+
+    links = re.findall(r"(?<!!)\[([^\]]+)\]\(([^)]*)\)", text)
+    if links:
+        titles = [t.strip() for t, _ in links[:3] if t.strip()]
+        label = f"{len(links)} link{'s' if len(links) > 1 else ''}"
+        parts.append(f"{label} ({', '.join(titles)})" if titles else label)
+
+    return "; ".join(parts) or None
+
+
 def build_spoken_summary_instructions(
     language: str = "auto",
     *,
     pending_work: Sequence[str] = (),
+    artifacts: str | None = None,
 ) -> str:
     """Construct the system instructions for the friendly rewrite.
 
@@ -413,15 +457,32 @@ def build_spoken_summary_instructions(
         "that question, in their own terms and still phrased as a question. This is the "
         "only version most readers see, so a question flattened into a recommendation is "
         "a decision quietly taken away from them. "
-        "Plain spoken prose, a short paragraph at most. "
-        "Leave out code blocks, file paths, commands, tables, and long numbers -- "
-        "the reader has the original one click away for those. "
+        "Cover the whole answer, including the last thing it says -- the closing "
+        "list, the decision, the caveat. Stopping early reads as a dropped "
+        "connection, and the ending is usually what the reader was waiting for. "
+        "Let the length follow the answer: one sentence for a one-line reply, "
+        "several for a long one that found several things. Never pad to fill "
+        "space, and never flatten separate findings into one blur -- when the "
+        "answer has distinct parts, give each its own sentence or short "
+        "paragraph, in the order they happened. "
+        'Say numbers and names that carry the point ("eight of thirteen terms", '
+        '"forty-five seconds"); leave out code, commands and long paths, which '
+        "are unreadable aloud and one click away in the original. "
         "Everyday words over jargon, short sentences over long ones. Contractions are "
         "good. Do not open with a summary of the question, do not sign off, and do not "
         "say you are rewriting anything. "
         "Never add information, never speculate, never comment on the answer's quality. "
         "Reply with the rewritten text only."
     )
+    if artifacts:
+        base += (
+            "\n\nThe answer also contains, where you cannot see them: "
+            f"{artifacts}. "
+            "Say that each exists and what it is for, in one short clause, when it "
+            "changes what the reader does next -- a table of results, an image they "
+            "asked for, a link to open. You were given labels only, so never "
+            "describe what any of them says. Skip the ones that are incidental."
+        )
     profile = load_voice_profile()
     if not profile:
         return base
@@ -463,9 +524,12 @@ def build_spoken_summary_prompt(
     language: str = "auto",
     *,
     pending_work: Sequence[str] = (),
+    artifacts: str | None = None,
 ) -> str:
     """Backward-compatible helper returning a combined prompt string."""
-    instructions = build_spoken_summary_instructions(language, pending_work=pending_work)
+    instructions = build_spoken_summary_instructions(
+        language, pending_work=pending_work, artifacts=artifacts
+    )
     user_content, _ = build_spoken_summary_user_content(cleaned_text)
     return f"{instructions}\n\n---\n{user_content}"
 
@@ -888,16 +952,20 @@ async def _generate_via_agy(
     language: str,
     timeout_s: float,
     pending_work: Sequence[str] = (),
+    artifacts: str | None = None,
 ) -> str | None:
     """Rewrite an assistant reply into friendly prose through the agy CLI.
 
     :param cleaned_text: Sanitized assistant output prose.
     :param language: Target language ("auto" or a BCP-47 tag).
     :param timeout_s: Hard timeout for the CLI call.
+    :param artifacts: Inventory of parts stripped from *cleaned_text*.
     :returns: The raw rewritten text, or ``None`` on any failure.
     """
     return await run_agy_prompt(
-        build_spoken_summary_prompt(cleaned_text, language, pending_work=pending_work),
+        build_spoken_summary_prompt(
+            cleaned_text, language, pending_work=pending_work, artifacts=artifacts
+        ),
         timeout_s=timeout_s,
     )
 
@@ -928,6 +996,9 @@ async def generate_spoken_summary(
     cleaned_text = strip_markdown_for_speech(text)
     if not cleaned_text:
         return None, None
+    # Taken from the raw text: stripping removes the tables, code, images and
+    # links, and a rewrite that cannot see them drops them silently.
+    artifacts = describe_answer_artifacts(text)
 
     # An explicitly supplied client forces the API path, so the backend decision
     # and the timeout budget must agree — otherwise an API call inherits agy's
@@ -947,6 +1018,7 @@ async def generate_spoken_summary(
                 language=language,
                 timeout_s=effective_timeout,
                 pending_work=pending_work,
+                artifacts=artifacts,
             )
             if not raw:
                 return None, None
@@ -985,7 +1057,7 @@ async def generate_spoken_summary(
             client = llm_client
 
         instructions = build_spoken_summary_instructions(
-            language=language, pending_work=pending_work
+            language=language, pending_work=pending_work, artifacts=artifacts
         )
         user_content, _ = build_spoken_summary_user_content(cleaned_text)
 

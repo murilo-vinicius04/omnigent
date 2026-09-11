@@ -219,6 +219,52 @@ def test_strip_markdown_for_speech() -> None:
     assert "def test" not in cleaned
 
 
+def test_the_rewriter_is_told_what_it_cannot_see() -> None:
+    """Tables, code, images and links are stripped before the rewrite, so a
+    reply whose point IS the table was summarized as if it had none and the
+    reader never learned it was there."""
+    from omnigent.server.spoken_summary import describe_answer_artifacts
+
+    answer = (
+        "Here are the results:\n\n"
+        "| engine | WER | latency |\n|---|---|---|\n| whisper | 3.9% | 0.15s |\n\n"
+        "```python\nprint(1)\n```\n"
+        "See [the report](https://example.test/r) and ![chart](chart.png).\n"
+    )
+    inventory = describe_answer_artifacts(answer)
+    assert inventory is not None
+    assert "1 table" in inventory and "engine, WER, latency" in inventory
+    assert "1 code block (python)" in inventory
+    assert "1 image" in inventory
+    assert "1 link (the report)" in inventory
+
+
+def test_plain_prose_has_no_inventory() -> None:
+    """Nothing to point at means nothing added to the prompt."""
+    from omnigent.server.spoken_summary import describe_answer_artifacts
+
+    assert describe_answer_artifacts("Just words, no markup at all.") is None
+    assert describe_answer_artifacts("") is None
+
+
+def test_the_brief_asks_for_the_whole_answer_and_names_what_is_hidden() -> None:
+    from omnigent.server.spoken_summary import build_spoken_summary_instructions
+
+    with patch("omnigent.server.spoken_summary.load_voice_profile", return_value=None):
+        plain = build_spoken_summary_instructions("en-US")
+        with_table = build_spoken_summary_instructions(
+            "en-US", artifacts="1 table (columns: a, b)"
+        )
+
+    # The old brief capped every summary at "a short paragraph at most", which
+    # is why endings went missing.
+    assert "a short paragraph at most" not in plain
+    assert "including the last thing it says" in plain
+    assert "1 table (columns: a, b)" in with_table
+    # Labels only: it must not describe contents it was never shown.
+    assert "never describe what any of them says" in with_table
+
+
 def test_clamp_sentences() -> None:
     """Sentence clamping restricts text to at most max_sentences."""
     four_sentences = "First sentence. Second sentence! Third sentence? Fourth sentence."
