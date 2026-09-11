@@ -7776,9 +7776,11 @@ async def _refresh_voice_observations_if_due(
         )
 
 
-#: Filename every summary audio is stored under, and the marker that picks
-#: them out of a session's other files when pruning.
-SUMMARY_AUDIO_FILENAME = "resumo.wav"
+#: Filenames summary audio is stored under, and the markers that pick them out
+#: of a session's other files when pruning. Both formats are listed so a
+#: recording made before the switch to MP3 is still pruned.
+SUMMARY_AUDIO_FILENAME = "resumo.mp3"
+SUMMARY_AUDIO_FILENAMES = frozenset({"resumo.mp3", "resumo.wav"})
 
 #: How many summary recordings a session keeps. Each is an uncompressed WAV of
 #: a summary the reader hears once, so they are a cache, not a record: past this
@@ -7814,7 +7816,7 @@ async def _prune_summary_audio(
         page = await asyncio.to_thread(
             file_store.list, session_id, _SUMMARY_AUDIO_SCAN_LIMIT, None, None, "desc", False
         )
-        recordings = [f for f in page.data if f.filename == SUMMARY_AUDIO_FILENAME]
+        recordings = [f for f in page.data if f.filename in SUMMARY_AUDIO_FILENAMES]
         for stale in recordings[keep:]:
             # Metadata first: a row without bytes reads as a missing file, while
             # bytes without a row would leak with nothing left pointing at them.
@@ -7866,9 +7868,9 @@ async def _summary_audio_file_id(
         if not audio:
             return None
         stored = await asyncio.to_thread(
-            file_store.create, SUMMARY_AUDIO_FILENAME, len(audio), "audio/wav", session_id
+            file_store.create, audio.filename, len(audio.data), audio.mime, session_id
         )
-        await asyncio.to_thread(artifact_store.put, stored.id, audio)
+        await asyncio.to_thread(artifact_store.put, stored.id, audio.data)
         # Keep the session's recordings to a fixed window now that a new one
         # exists, so the store holds a rolling cache rather than every summary
         # ever spoken.
@@ -7919,6 +7921,238 @@ def _claim_summary_turn(session_id: str, response_id: str) -> bool:
     return True
 
 
+#: Upper bound on items scanned when rebuilding a turn's text, so a very long
+#: conversation cannot turn one summary into an unbounded read.
+_TURN_TEXT_SCAN_LIMIT = 400
+
+
+async def _native_turn_text(
+    conversation_store: Any,
+    session_id: str,
+    response_id: str,
+    fallback: str | None,
+) -> str | None:
+    """Return everything the assistant said this turn, not just its last message.
+
+    A native turn is persisted as one item per assistant message, and the idle
+    edge carries only the final one. Summarizing that alone silently drops
+    whatever came before it -- on a long turn that is usually the answer to the
+    question and the findings, leaving a summary of nothing but the closing
+    status note.
+
+    Falls back to the edge's own text whenever the store cannot be read, so a
+    failure here costs detail rather than the summary.
+
+    :param conversation_store: Store holding the turn's items.
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :param response_id: Response id of the turn being summarized.
+    :param fallback: The idle edge's own output text.
+    :returns: The turn's assistant prose, or *fallback*.
+    """
+    if conversation_store is None:
+        return fallback
+    try:
+        page = await asyncio.to_thread(
+            conversation_store.list_items,
+            session_id,
+            _TURN_TEXT_SCAN_LIMIT,
+            None,
+            None,
+            "desc",
+            "message",
+        )
+    except Exception:  # noqa: BLE001 - detail is optional, the summary is not
+        _logger.warning(
+            "Could not rebuild turn text for session=%s; summarizing the last message only",
+            session_id,
+            extra={"session_id": session_id},
+            exc_info=True,
+        )
+        return fallback
+
+    said: list[str] = []
+    for item in page.data:
+        if item.response_id != response_id:
+            continue
+        data = item.data
+        if getattr(data, "role", None) != "assistant":
+            continue
+        # The summary carrier is itself an assistant message on this turn.
+        if getattr(data, "agent", None) == "spoken_summary":
+            continue
+        for block in getattr(data, "content", None) or []:
+            text = block.get("text") if isinstance(block, dict) else None
+            if isinstance(text, str) and text.strip():
+                said.append(text.strip())
+    if not said:
+        return fallback
+    said.reverse()  # listed newest-first; the turn reads oldest-first
+    return "\n\n".join(said)
+
+
+def _is_passive_watch(task: Any) -> bool:
+    """Whether a background task is a watch that waits, not work that runs.
+
+    Claude Code lists a live-update subscription as a running ``monitor`` the
+    moment an artifact is published, and it stays "running" until the session
+    ends. It produces nothing and is not the turn's work, but counted as pending
+    work it tells the rewriter something is still running -- which then opens a
+    finished answer with "still running in the background".
+
+    Matched on the description Claude Code gives these watches. If that wording
+    ever changes, the watch is counted as work again: the old behaviour, not a
+    new failure.
+
+    :param task: One parsed ``background_tasks`` entry.
+    :returns: True for an artifact live-update watch.
+    """
+    description = (getattr(task, "description", None) or "").strip().lower()
+    return getattr(task, "type", None) == "monitor" and description.startswith(
+        "live updates for artifact"
+    )
+
+
+def _pending_work_count(count: int | None, tasks: list[Any] | None) -> int:
+    """How many background tasks are actually work still in flight.
+
+    :param count: The harness's running-task tally, or ``None`` when unknown.
+    :param tasks: Detail behind that tally, which may be shorter than it.
+    :returns: The tally less any passive watches named in the detail.
+    """
+    if not count:
+        return 0
+    passive = sum(1 for task in tasks or [] if _is_passive_watch(task))
+    return max(0, count - passive)
+
+
+#: Longest label passed to the rewriter per task, and how many are named. A
+#: command line can be arbitrarily long; the rewriter needs the gist.
+_PENDING_LABEL_MAX_CHARS = 160
+_PENDING_LABELS_MAX = 5
+
+
+def _pending_work_labels(count: int | None, tasks: list[Any] | None) -> list[str]:
+    """Name what is still running, so the summary can say exactly that.
+
+    A description is preferred to a command: Claude Code's descriptions are
+    written for people ("run the full test suite"), commands are not. Tasks the
+    tally counts but the detail cannot name are reported as a number, so the
+    rewriter never hears of fewer jobs than are actually running.
+
+    :param count: The harness's running-task tally, or ``None`` when unknown.
+    :param tasks: Detail behind that tally, which may be shorter than it.
+    :returns: One label per running job, empty when nothing is running.
+    """
+    pending = _pending_work_count(count, tasks)
+    if not pending:
+        return []
+    labels: list[str] = []
+    for task in tasks or []:
+        if _is_passive_watch(task):
+            continue
+        label = next(
+            (
+                v.strip()
+                for v in (
+                    getattr(task, "description", None),
+                    getattr(task, "command", None),
+                    getattr(task, "type", None),
+                )
+                if isinstance(v, str) and v.strip()
+            ),
+            None,
+        )
+        if label:
+            labels.append(" ".join(label.split())[:_PENDING_LABEL_MAX_CHARS])
+    labels = labels[: min(pending, _PENDING_LABELS_MAX)]
+    unnamed = pending - len(labels)
+    if unnamed > 0:
+        labels.append(
+            f"{unnamed} more background job{'s' if unnamed > 1 else ''} with no description"
+        )
+    return labels
+
+
+#: Detached synthesis tasks, held so the event loop cannot drop them mid-run.
+_detached_summary_audio: set[asyncio.Task[None]] = set()
+
+
+def _spawn_summary_audio(
+    conversation_store: ConversationStore,
+    file_store: Any,
+    artifact_store: Any,
+    session_id: str,
+    response_id: str,
+    text: str,
+    language: str,
+) -> None:
+    """Synthesize a summary in the background and append its audio when ready.
+
+    Items are append-only, so the recording arrives as a second summary item
+    for the same turn: same text, plus the stored file's id. The reader has
+    had the written summary since the moment it existed.
+
+    Never raises: a failed synthesis leaves the written summary alone.
+
+    :param conversation_store: Store used to append the audio item.
+    :param file_store: Store that mints the file id.
+    :param artifact_store: Store that holds the audio bytes.
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :param response_id: Response id of the turn being summarized.
+    :param text: The summary text to speak.
+    :param language: Target language tag, e.g. ``"pt-BR"``.
+    """
+
+    async def _synthesize_and_append() -> None:
+        try:
+            audio_file_id = await _summary_audio_file_id(
+                file_store, artifact_store, session_id, text, language
+            )
+            if audio_file_id is None:
+                return
+            item = NewConversationItem(
+                type="message",
+                response_id=response_id,
+                data=parse_item_data(
+                    "message",
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "agent": "spoken_summary",
+                        "content": [
+                            {
+                                "type": "spoken_summary",
+                                "text": text,
+                                "lang": language,
+                                "audio_file_id": audio_file_id,
+                            }
+                        ],
+                    },
+                ),
+            )
+            persisted = await asyncio.to_thread(conversation_store.append, session_id, [item])
+            session_stream.publish(
+                session_id,
+                OutputItemDoneEvent(
+                    type="response.output_item.done",
+                    item=persisted[0].to_api_dict(),
+                ).model_dump(),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the written summary already landed
+            _logger.warning(
+                "Summary audio never arrived for session=%s",
+                session_id,
+                extra={"session_id": session_id},
+                exc_info=True,
+            )
+
+    task = asyncio.create_task(_synthesize_and_append())
+    _detached_summary_audio.add(task)
+    task.add_done_callback(_detached_summary_audio.discard)
+
+
 async def _attach_native_spoken_summary(
     conversation_store: ConversationStore | None,
     session_id: str,
@@ -7927,6 +8161,8 @@ async def _attach_native_spoken_summary(
     *,
     file_store: Any | None = None,
     artifact_store: Any | None = None,
+    background_task_count: int | None = None,
+    background_tasks: list[Any] | None = None,
 ) -> None:
     """
     Generate a spoken summary for a native-harness turn and persist it.
@@ -7950,10 +8186,19 @@ async def _attach_native_spoken_summary(
     :param text: The turn's final assistant text.
     :param file_store: Store used for summary audio; audio is skipped without it.
     :param artifact_store: Store used for summary audio bytes.
+    :param background_task_count: Shells still running as the turn ends. A turn
+        that hands back a holding reply while its real work runs on reads as an
+        answer to the rewriter, which sees only the text -- so what is still
+        running is named for it to mention.
+    :param background_tasks: Detail behind that tally, used to name each running
+        job in the summary and to leave passive watches (an artifact's
+        live-update monitor) out of it.
     :returns: None.
     """
     if conversation_store is None or not text or not response_id:
         return
+    # The idle edge carries only the turn's last message; summarize the whole turn.
+    text = await _native_turn_text(conversation_store, session_id, response_id, text) or text
     try:
         from omnigent.server.spoken_summary import (
             SPOKEN_SUMMARY_THRESHOLD_CHARS,
@@ -7961,6 +8206,7 @@ async def _attach_native_spoken_summary(
             resolve_spoken_summary_settings_async,
             should_generate_spoken_summary,
         )
+        from omnigent.server.tts import tts_enabled
 
         if len(text.strip()) <= SPOKEN_SUMMARY_THRESHOLD_CHARS:
             return
@@ -7986,6 +8232,7 @@ async def _attach_native_spoken_summary(
         spoken_summary_part, spoken_summary_usage = await generate_spoken_summary(
             text,
             language=language,
+            pending_work=_pending_work_labels(background_task_count, background_tasks),
         )
     except asyncio.CancelledError:
         raise
@@ -8001,18 +8248,14 @@ async def _attach_native_spoken_summary(
     if spoken_summary_part is None:
         return
 
-    # Speak it in the configured voice and hang the audio off the summary
-    # itself, so the existing read-aloud control plays it instead of the
-    # host's speech engine. Not a separate attachment: it is this summary.
-    audio_file_id = await _summary_audio_file_id(
-        file_store,
-        artifact_store,
-        session_id,
-        str(spoken_summary_part.get("text") or ""),
-        str(spoken_summary_part.get("lang") or "pt-BR"),
-    )
-    if audio_file_id is not None:
-        spoken_summary_part = {**spoken_summary_part, "audio_file_id": audio_file_id}
+    # The summary goes out now and the voice follows it. Synthesis takes tens
+    # of seconds, and holding the text back for it means staring at nothing
+    # while a finished answer waits to be read. ``audio_pending`` tells the
+    # reader's play control that a recording is on its way, so it can say so
+    # rather than falling back to the robotic host voice.
+    speak_it = tts_enabled() and file_store is not None and artifact_store is not None
+    if speak_it:
+        spoken_summary_part = {**spoken_summary_part, "audio_pending": True}
     content: list[dict[str, Any]] = [spoken_summary_part]
 
     item = NewConversationItem(
@@ -8045,6 +8288,17 @@ async def _attach_native_spoken_summary(
             item=persisted[0].to_api_dict(),
         ).model_dump(),
     )
+
+    if speak_it:
+        _spawn_summary_audio(
+            conversation_store,
+            file_store,
+            artifact_store,
+            session_id,
+            response_id,
+            str(spoken_summary_part.get("text") or ""),
+            str(spoken_summary_part.get("lang") or "pt-BR"),
+        )
 
     if spoken_summary_usage:
         try:

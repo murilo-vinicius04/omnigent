@@ -1328,6 +1328,8 @@ def register_events_routes(
                     data.get("output") if isinstance(data.get("output"), str) else None,
                     file_store=file_store,
                     artifact_store=artifact_store,
+                    background_task_count=bg_count,
+                    background_tasks=bg_tasks,
                 )
                 # Keep the rewriter's notes on this reader current, so the voice
                 # goes on adapting rather than being seeded once.

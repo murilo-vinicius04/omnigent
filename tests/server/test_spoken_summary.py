@@ -229,6 +229,48 @@ def test_clamp_sentences() -> None:
     assert clamp_sentences(one_sentence, max_sentences=3) == "Just one sentence."
 
 
+def test_overlong_rewrite_ends_on_a_whole_sentence() -> None:
+    """A rewrite is the answer the reader sees, so it must never stop mid-clause.
+
+    The 900-char cap was cutting ordinary technical answers in the middle of a
+    clause and appending an ellipsis, which reads as a dropped connection rather
+    than an answer.
+    """
+    text = "Uma frase razoavelmente longa que ocupa espaco no orcamento. " * 12
+    clamped = clamp_sentences(text, max_sentences=10, max_chars=600)
+    assert clamped is not None
+    assert len(clamped) <= 600
+    assert not clamped.endswith("...")
+    assert clamped.endswith(".")
+
+
+def test_text_without_sentence_terminals_still_falls_back_to_a_word_cut() -> None:
+    """No usable boundary is the one case where the ellipsis is still right."""
+    clamped = clamp_sentences("palavra " * 200, max_sentences=10, max_chars=600)
+    assert clamped is not None
+    assert len(clamped) <= 600
+    assert clamped.endswith("...")
+
+
+def test_an_early_full_stop_does_not_swallow_the_whole_answer() -> None:
+    """One short opening sentence must not collapse the budget to nothing."""
+    text = "Ok. " + "palavra " * 200
+    clamped = clamp_sentences(text, max_sentences=10, max_chars=600)
+    assert clamped is not None
+    assert len(clamped) > 100
+
+
+def test_the_rewrite_budget_covers_a_real_technical_answer() -> None:
+    """The reported cutoff was a ~1050-character answer guillotined at 900."""
+    from omnigent.server.spoken_summary import REWRITE_MAX_CHARS
+    from omnigent.server.tts import TTS_MAX_CHARS
+
+    assert REWRITE_MAX_CHARS >= 1400
+    # A rewrite that renders must also be short enough to be spoken, or it
+    # arrives on screen with no voice at all.
+    assert TTS_MAX_CHARS >= REWRITE_MAX_CHARS
+
+
 def test_clamp_sentences_bounds_and_implausible_output() -> None:
     """Clamp sentences enforces ~600 char cap, word cut, and rejects implausible output."""
     # 1. Empty and whitespace-only
