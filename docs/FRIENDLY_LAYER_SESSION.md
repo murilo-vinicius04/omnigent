@@ -4,8 +4,13 @@ Everything done in this session, everything still queued, and the environment
 facts that are easy to get wrong. Written so a fresh context can pick up
 without re-deriving any of it.
 
-Branch: `feat/friendly-layer`. Ten commits, `518ce2900..03a13968e`, 56 files,
-+4470/−737. **Nothing is pushed** — the branch has no upstream, deliberately.
+Branch: `feat/friendly-layer`. Twelve commits, `518ce2900..2a8a55ba2`.
+**Nothing is pushed** — the branch has no upstream, deliberately.
+
+**Restore point:** tag `friendly-layer-known-good` and branch
+`backup/friendly-layer-known-good`, both at `dc02017b1` — everything through the
+summary/narration work, before live voice. `git reset --hard
+friendly-layer-known-good` puts it all back.
 
 ---
 
@@ -145,22 +150,121 @@ English → repair in place (a separate, deliberately minimal prompt). Costs
 
 ---
 
+## 2b. Live voice (gpt-live-1) — stage one, working
+
+A second channel, separate from narration: a conversation you open on purpose.
+Narration reads a finished turn; this is for talking. **Confirmed working by the
+reader on 2026-09-11.**
+
+| | |
+|---|---|
+| probe page | `http://localhost:6767/v1/live/test` (not in the chat UI) |
+| handshake | `POST /v1/live/offer` — server attaches the key, browser never sees it |
+| modules | `omnigent/server/live_voice.py`, `routes/live_voice.py`, `routes/live_voice_page.py` |
+| key | `~/.omnigent/openai-key` (0600) or `OPENAI_API_KEY` |
+| credits | $5 added 2026-09-11 = ~100 minutes; spent so far < $0.05 |
+
+**API facts, all confirmed against the live endpoint, not guessed:**
+
+- Request shape: `{"transport": {"type": "webrtc", "sdp": ...}, "session": {...}}`.
+  `session.model` is **required**; `instructions` accepted; voice goes at
+  `session.audio.output.voice` — a top-level `session.voice` is **rejected**.
+  Unknown keys are rejected outright, so probing is cheap.
+- **WebRTC only.** `"Only the webrtc transport is supported."`
+- **No ephemeral-token dance needed** — the server forwards the offer directly.
+- **There is no way to list or terminate a session.** `DELETE` and `/close` both
+  404. Only the peer connection dropping ends one. Session lifetime is therefore
+  entirely the client's job: the page closes on `pagehide`/`beforeunload`, and
+  `MAX_SESSION_S` (30 min) is a runaway guard, not a UX timeout.
+- **Billing is wall-clock**: silence costs the same as speech. $0.05/min.
+- **Spend cannot be monitored programmatically** — the org usage endpoints need
+  `api.usage.read` and this project key lacks the scope. The page estimates from
+  elapsed time; the real number is on the dashboard.
+- Measured handshake: HTTP 201 in 877 ms, ICE connected, `session.started`
+  received, clean close.
+
+The probe page is deliberately built around the failure that sank an earlier
+Gemini Live attempt — a session that stops listening without saying so. Hence
+the always-visible state badge, a **local mic meter** (bar moves but no reply =
+the far end died, not your mic), and a watchdog that calls a silent session dead.
+
+Served from a route, not `static/web-ui`, because `vite build --emptyOutDir`
+erases that directory.
+
+**⚠ The API key in `~/.omnigent/openai-key` is compromised** — it was pasted in
+chat, so it is in the transcript, in `chat.db`, and went through the inbound
+repair pass to Google. Rotate it when testing is done.
+
+---
+
+## 2c. Warm agy — measured, and it unblocks stage two
+
+The blocker for a Gemini backend was that `run_agy_prompt` spawns a fresh
+`--print` process per call (`spoken_summary.py:878`), costing 4–5s regardless of
+prompt size. In a live session that is 4–5s of paid dead air per exchange.
+
+**A warm process fixes it.** Measured 2026-09-11:
+
+```
+turn 1:  3.1s  (startup)   'ok'
+turn 2:  1.0s              '42'    <- context retained
+turn 3:  1.0s              'done'
+```
+
+Invocation:
+
+```bash
+agy --print= --input-format stream-json --output-format stream-json \
+    --model gemini-3.8-flash-low --disable-slash-commands
+```
+
+**Input shape is load-bearing** — one line of NDJSON per turn:
+
+```json
+{"event": "user", "message": {"role": "user", "content": "..."}}
+```
+
+`{"type": "user", ...}` fails with *`stream input message is missing the "event"
+field`*. A `user` event without a `message` key fails too. Output arrives as
+`{"event": "result", "result": {"status": ..., "response": ...}}`.
+
+Bonus nobody has cashed yet: the **inbound repair pass pays that same 4–5s cold
+start on every message the reader types**. Warm, it would be ~1s.
+
+---
+
 ## 3. The queue, in the reader's priority order
 
-1. **Progress updates while Claude works** — "Claude is doing X now", so the
+1. **A persistent Gemini discussion agent — NEXT, and specified.** The reader
+   settled the design on 2026-09-11:
+   - **One warm agy process per Omnigent session**, not one per message. It
+     lives as long as the session does and carries its own conversation history
+     (`--input-format stream-json`; see §2c for the exact invocation and the
+     NDJSON shape).
+   - **What it knows: what Claude is doing, and the spoken summaries.**
+     Deliberately *not* the full transcript — "nothing really deep". The
+     summaries are already written, already compressed, and are the same story
+     the reader heard narrated.
+   - **Its context must be visible in the UI.** The reader wants to see what
+     the discussion agent knows, not guess at it.
+   - This is the backend for the live voice channel (§2b) and, later, for
+     "Gemini answers directly when Claude is not needed" (item 3).
+   - Build order: the warm session manager first — self-contained and testable
+     on its own — then wire it to live voice.
+2. **Progress updates while Claude works** — "Claude is doing X now", so the
    reader can follow a long turn instead of waiting blind. Needs a live path;
-   everything today is end-of-turn.
-2. **Auto-compact at a threshold** (~60%), with a prompt to Claude *before*
+   everything today is end-of-turn. Natural fit for the same warm session.
+3. **Auto-compact at a threshold** (~60%), with a prompt to Claude *before*
    compaction telling it to document its context so nothing is lost, plus a
    configurable percentage in the Omnigent UI. Motivation: cost, and not
    wanting to think about compaction.
-3. **Gemini answering directly when Claude is not needed** — a minor question,
+4. **Gemini answering directly when Claude is not needed** — a minor question,
    a clarification, a word. Discussed: must be biased toward forwarding, show
    who answered, and offer one-click "ask Claude anyway", because a confident
    wrong answer without the repo context is the failure mode.
-4. **Permanent systemd unit + linger**, and the `voice-agent` memory line that
+5. **Permanent systemd unit + linger**, and the `voice-agent` memory line that
    still points the console at `omnigent-fork` (needs the reader's OK).
-5. **`answer_language_instruction` is dead code** (`inbound_translation.py:53`).
+6. **`answer_language_instruction` is dead code** (`inbound_translation.py:53`).
    `ANSWER_IN_ENGLISH_INSTRUCTION` never reaches a prompt, so "always answer in
    English" is convention, not enforcement. Wiring it needs both the runtime
    path (`runner/app.py`) and the native launch prompt, which lives in the
@@ -175,15 +279,18 @@ worker. The reader said forget it unless it is trivial. It is not.
 
 ## 4. Measurements worth not repeating
 
-- **agy startup is ~4–5s regardless of prompt size** ("reply ok" costs the same
-  as a real rewrite). So streaming Gemini's tokens saves nothing; the win would
-  be a warm process (`--input-format stream-json` runs a turn per NDJSON line).
+- **agy cold start is ~4–5s regardless of prompt size** ("reply ok" costs the
+  same as a real rewrite), so streaming its tokens saves nothing. **Warm is
+  ~1.0s per turn with context retained** — measured, see §2c. Every cold
+  `run_agy_prompt` call in the codebase is paying that 4–5s.
 - **End-to-end wait before audio** was ~45s median (rewrite ~5–10s, synthesis
   the rest). Decoupling removed it from the *text*; the voice still takes ~45s.
 - **Narration pace**: ~15 chars/s. 1200 chars ≈ 80s.
 - **Summaries never hit the old caps**: across 224 historical summaries the
   longest was 1100 chars against a 2000 cap. The limiter was always the brief,
   never the clamp.
+- **gpt-live-1 handshake**: HTTP 201 in 877 ms. Billing is wall-clock, so
+  silence costs the same as speech; $5 ≈ 100 minutes of session time.
 
 ---
 
@@ -193,12 +300,12 @@ worker. The reader said forget it unless it is trivial. It is not.
 cd /home/nexus/wt/friendly-layer
 .venv/bin/python -m pytest tests/server/test_spoken_summary.py \
     tests/server/test_summary_tts.py tests/server/test_dictation_whisper.py \
-    tests/server/test_inbound_repair.py tests/server/routes/test_dictation.py -q
+    tests/server/test_inbound_repair.py tests/server/routes/test_dictation.py \
+    tests/server/test_live_voice.py -q
 cd web && npx vitest run src/ && node_modules/.bin/tsc -b && npx vite build
 ```
 
-Current: 97 server tests in the summary/voice set, 6916 web tests, 0 type
-errors. `pre-commit run --all-files` fails only on pre-existing
+Current: 146 server tests in that set, 6916 web tests, 0 type errors. `pre-commit run --all-files` fails only on pre-existing
 `omnigent/runtime/telemetry.py` opentelemetry imports — not from this work.
 
 Inspect what a summary actually stored (the fastest way to tell selection from
