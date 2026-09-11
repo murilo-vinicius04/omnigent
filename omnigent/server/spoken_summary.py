@@ -41,13 +41,13 @@ SPOKEN_SUMMARY_THRESHOLD_CHARS: int = 120
 #: Maximum character limit for a spoken summary (~600 chars, cut at word boundary).
 SPOKEN_SUMMARY_MAX_CHARS: int = 600
 
-#: Bounds for the friendly rewrite, which is shown as the answer rather than
-#: read as a summary. It is the reader's primary view of the turn, so the cap is
-#: a runaway guard and not an editorial limit: at 900 it was cutting ordinary
-#: technical answers off mid-sentence. Kept in step with ``TTS_MAX_CHARS`` so a
-#: rewrite that renders always has a voice to go with it.
-REWRITE_MAX_CHARS: int = 2000
-REWRITE_MAX_SENTENCES: int = 14
+#: Bounds for the friendly rewrite, which is shown as the answer and read
+#: aloud. Length is heard, not skimmed: at ~15 characters per second, 1200 is
+#: eighty seconds of narration, and past that the reader is waiting rather than
+#: listening. A runaway guard -- the brief asks for about a minute -- kept under
+#: ``TTS_MAX_CHARS`` so a rewrite that renders always has a voice to go with it.
+REWRITE_MAX_CHARS: int = 1200
+REWRITE_MAX_SENTENCES: int = 9
 
 #: Default timeout (seconds) for spoken summary generation.
 SPOKEN_SUMMARY_DEFAULT_TIMEOUT_S: float = 4.0
@@ -354,11 +354,13 @@ def clamp_sentences(
 def describe_answer_artifacts(text: str) -> str | None:
     """List what the answer holds that the rewriter is never shown.
 
-    :func:`strip_markdown_for_speech` removes tables, code, images and links
-    before the rewrite, so a reply whose point IS the table gets summarized as
-    if the table did not exist and the reader never learns it is there. This
-    inventory is the rewriter's only evidence of them: counts and labels, never
-    contents, so it can point at them without inventing what they say.
+    :func:`strip_markdown_for_speech` removes tables, images and links before
+    the rewrite, so a reply whose point IS the table gets summarized as if the
+    table did not exist and the reader never learns it is there. This inventory
+    is the rewriter's only evidence of them: counts and labels, never contents,
+    so it can point at them without inventing what they say. Code blocks are
+    left out on purpose -- naming them costs a clause and tells the reader
+    nothing they would act on.
 
     :param text: The raw assistant text, before stripping.
     :returns: A one-line inventory, or ``None`` when the answer is plain prose.
@@ -373,13 +375,6 @@ def describe_answer_artifacts(text: str) -> str | None:
         columns = [c.strip() for c in header.strip().strip("|").split("|") if c.strip()][:6]
         label = f"{len(tables)} table{'s' if len(tables) > 1 else ''}"
         parts.append(f"{label} (first one's columns: {', '.join(columns)})" if columns else label)
-
-    fences = re.findall(r"^[ \t]*```([A-Za-z0-9_+-]*)", text, re.M)
-    blocks = [f for i, f in enumerate(fences) if i % 2 == 0]  # opening fences only
-    if blocks:
-        langs = sorted({f for f in blocks if f})
-        label = f"{len(blocks)} code block{'s' if len(blocks) > 1 else ''}"
-        parts.append(f"{label} ({', '.join(langs)})" if langs else label)
 
     images = re.findall(r"!\[[^\]]*\]\([^)]*\)", text)
     if images:
@@ -457,14 +452,17 @@ def build_spoken_summary_instructions(
         "that question, in their own terms and still phrased as a question. This is the "
         "only version most readers see, so a question flattened into a recommendation is "
         "a decision quietly taken away from them. "
+        "This is heard, not skimmed: aim for about a minute spoken, five or six "
+        "sentences, and stop as soon as it is said. A one-line reply gets one "
+        "sentence. "
         "Cover the whole answer, including the last thing it says -- the closing "
-        "list, the decision, the caveat. Stopping early reads as a dropped "
-        "connection, and the ending is usually what the reader was waiting for. "
-        "Let the length follow the answer: one sentence for a one-line reply, "
-        "several for a long one that found several things. Never pad to fill "
-        "space, and never flatten separate findings into one blur -- when the "
-        "answer has distinct parts, give each its own sentence or short "
-        "paragraph, in the order they happened. "
+        "list, the decision, the caveat -- because the ending is usually what "
+        "the reader was waiting for. Fit it in that minute by cutting detail, "
+        "never by dropping the ending: keep what changes what they do next, and "
+        "leave the supporting evidence, the alternatives considered and the "
+        "step-by-step to the original. "
+        "Keep separate findings separate, one sentence each, in the order they "
+        "happened. Never pad. "
         'Say numbers and names that carry the point ("eight of thirteen terms", '
         '"forty-five seconds"); leave out code, commands and long paths, which '
         "are unreadable aloud and one click away in the original. "

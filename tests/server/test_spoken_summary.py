@@ -234,7 +234,9 @@ def test_the_rewriter_is_told_what_it_cannot_see() -> None:
     inventory = describe_answer_artifacts(answer)
     assert inventory is not None
     assert "1 table" in inventory and "engine, WER, latency" in inventory
-    assert "1 code block (python)" in inventory
+    # Code blocks are deliberately absent: naming one costs a clause and tells
+    # the reader nothing they would act on.
+    assert "code block" not in inventory
     assert "1 image" in inventory
     assert "1 link (the report)" in inventory
 
@@ -306,12 +308,16 @@ def test_an_early_full_stop_does_not_swallow_the_whole_answer() -> None:
     assert len(clamped) > 100
 
 
-def test_the_rewrite_budget_covers_a_real_technical_answer() -> None:
-    """The reported cutoff was a ~1050-character answer guillotined at 900."""
+def test_the_rewrite_budget_is_a_minute_of_listening() -> None:
+    """The summary is heard, not skimmed: at ~15 characters per second the cap
+    is how long the reader waits. Wide enough for the ~1050-character answer
+    that was once guillotined at 900, short enough not to license ninety
+    seconds of narration for one turn."""
     from omnigent.server.spoken_summary import REWRITE_MAX_CHARS
     from omnigent.server.tts import TTS_MAX_CHARS
 
-    assert REWRITE_MAX_CHARS >= 1400
+    assert 1100 <= REWRITE_MAX_CHARS <= 1400
+    assert REWRITE_MAX_CHARS / 15 <= 90  # seconds of narration
     # A rewrite that renders must also be short enough to be spoken, or it
     # arrives on screen with no voice at all.
     assert TTS_MAX_CHARS >= REWRITE_MAX_CHARS
