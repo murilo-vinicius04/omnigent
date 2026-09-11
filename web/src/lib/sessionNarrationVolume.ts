@@ -1,10 +1,10 @@
-// Per-session narration volume.
+// Per-session narration volume — and, at zero, whether narration happens.
 //
-// Like the narrate toggle and unlike the summary language, this is purely a
-// playback property: it never reaches the server, because how loud you want to
-// be read to is about the room you are in, not about the conversation. Stored
-// per session for the same reason narration is — headphones now, speakers next
-// window.
+// One control rather than two: a device-wide "speak responses" switch plus a
+// per-session toggle plus a level meant three places could silence the same
+// summary, and a reader who muted a conversation still expected quiet. Muting
+// IS turning narration off for that session, and the level is how loud it is
+// when it is on. Purely a playback property, so it stays in browser storage.
 
 import { create } from "zustand";
 
@@ -12,6 +12,9 @@ const KEY_PREFIX = "omnigent:narrate-volume:";
 
 /** Full volume, used when a session has no stored choice. */
 export const DEFAULT_VOLUME = 1;
+
+/** Restored when a muted session is unmuted and had no earlier level. */
+export const UNMUTE_VOLUME = 1;
 
 function storageKey(sessionId: string): string {
   return `${KEY_PREFIX}${sessionId}`;
@@ -79,4 +82,14 @@ export const useVolumeStore = create<VolumeStoreState>((set, get) => ({
 /** The level to apply to audio starting now, for the session being viewed. */
 export function currentNarrationVolume(sessionId: string | null): number {
   return useVolumeStore.getState().get(sessionId);
+}
+
+/**
+ * Whether this session should be read aloud.
+ *
+ * Muted is off: the reader turned the volume down to be left alone, and a
+ * summary that still spoke at zero volume would only look like a bug.
+ */
+export function isNarrationEnabled(sessionId: string | null): boolean {
+  return currentNarrationVolume(sessionId) > 0;
 }

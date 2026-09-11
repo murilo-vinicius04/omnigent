@@ -1,6 +1,5 @@
 import { create } from "zustand";
-import { isNarrationEnabled } from "./sessionNarrationPreferences";
-import { currentNarrationVolume } from "./sessionNarrationVolume";
+import { currentNarrationVolume, isNarrationEnabled } from "./sessionNarrationVolume";
 
 /**
  * Engine interface for text-to-speech playback.
@@ -456,9 +455,8 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
     audioUrl?: string,
     sessionId?: string | null,
   ) => {
-    // Hard requirement: do NOT autoplay anything when narration is OFF. The
-    // session's own switch decides; the device default only fills in for a
-    // session the reader has not set either way.
+    // Hard requirement: do NOT autoplay anything into a muted session. The
+    // volume control is the switch: zero means the reader wants quiet here.
     if (!isNarrationEnabled(sessionId ?? null)) return false;
     // Never treat empty/falsy ID as a valid speaking identity
     if (!itemId) return false;

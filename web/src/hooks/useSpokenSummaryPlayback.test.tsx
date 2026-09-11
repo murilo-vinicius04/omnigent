@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
+import { cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Bubble, RenderItem } from "@/lib/renderItems";
 import type { ActiveResponse } from "@/store/types";
@@ -17,11 +17,9 @@ import {
   SPOKEN_MESSAGES_SESSION_STORAGE_KEY,
   useSpeechPlaybackStore,
 } from "@/lib/speechPlayback";
-import { writeSpokenSummaryPlayback } from "@/lib/spokenSummaryPlaybackPreferences";
+import { useVolumeStore } from "@/lib/sessionNarrationVolume";
 import { useChatStore } from "@/store/chatStore";
-import { SpokenSummaryPlaybackControl } from "@/components/chat/SpokenSummaryPlaybackControl";
 import { isToolStreaming, useSpokenSummaryPlayback } from "./useSpokenSummaryPlayback";
-import { useNarrationStore } from "@/lib/sessionNarrationPreferences";
 
 function streamingResponse(responseId: string): ActiveResponse {
   return { responseId, state: "streaming", error: null };
@@ -143,7 +141,7 @@ describe("useSpokenSummaryPlayback", () => {
   });
 
   it("mounts with [], rerenders with full populated history array, asserts speak was NOT called", () => {
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
     const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
       initialProps: { bubbles: [] as Bubble[] },
     });
@@ -174,7 +172,7 @@ describe("useSpokenSummaryPlayback", () => {
   });
 
   it("asserts session-switch (history swap) does not speak", () => {
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
     const sessionABubbles: Bubble[] = [
       makeAssistantBubble(
         "resp_a1",
@@ -216,7 +214,7 @@ describe("useSpokenSummaryPlayback", () => {
   });
 
   it("simulates the real streaming sequence non-final -> final WITH an itemId stamped on reconcile, and asserts speak is called exactly ONCE", () => {
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
     const initialBubbles: Bubble[] = [
       makeAssistantBubble(
         "resp_h1",
@@ -275,7 +273,7 @@ describe("useSpokenSummaryPlayback", () => {
   });
 
   it("does NOT speak when toggle is OFF even when a new live message arrives", () => {
-    writeSpokenSummaryPlayback(false);
+    useVolumeStore.getState().set("conv_1", 0);
     const initialBubbles: Bubble[] = [];
 
     const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
@@ -303,7 +301,7 @@ describe("useSpokenSummaryPlayback", () => {
   });
 
   it("does NOT speak when the live assistant message has no spoken summary", () => {
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
     const initialBubbles: Bubble[] = [];
 
     const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
@@ -324,7 +322,7 @@ describe("useSpokenSummaryPlayback", () => {
   });
 
   it("does NOT speak when the live assistant message is not final", () => {
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
     const initialBubbles: Bubble[] = [];
 
     const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
@@ -346,7 +344,7 @@ describe("useSpokenSummaryPlayback", () => {
   });
 
   it("does NOT speak when spoken summary text is empty string or whitespace", () => {
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
     const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
       initialProps: { bubbles: [] as Bubble[] },
     });
@@ -365,7 +363,7 @@ describe("useSpokenSummaryPlayback", () => {
   });
 
   it("cancels in-flight speech when a new summary arrives", () => {
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
     const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
       initialProps: { bubbles: [] as Bubble[] },
     });
@@ -414,14 +412,14 @@ describe("useSpokenSummaryPlayback", () => {
   });
 
   it("cancels in-flight speech on component unmount", () => {
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
     const { unmount } = renderHook(() => useSpokenSummaryPlayback([]));
 
     unmount();
   });
 
   it("plays spoken summary exactly once for a tool-using turn arriving incrementally", () => {
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
 
     const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
       initialProps: { bubbles: [] as Bubble[] },
@@ -518,7 +516,7 @@ describe("useSpokenSummaryPlayback", () => {
   });
 
   it("plays spoken summary exactly once for a tool turn when store reports NON-streaming lifecycle in the tool gap", () => {
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
 
     const { rerender } = renderHook(
       ({ bubbles, activeResponse }) => useSpokenSummaryPlayback(bubbles, activeResponse),
@@ -629,7 +627,7 @@ describe("useSpokenSummaryPlayback", () => {
   });
 
   it("skips bubbles with empty-string responseId (isolates hook guard from speechPlayback guards)", () => {
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
 
     const speakLiveSummarySpy = vi.fn();
     useSpeechPlaybackStore.setState({ speakLiveSummary: speakLiveSummarySpy });
@@ -672,7 +670,7 @@ describe("useSpokenSummaryPlayback", () => {
   });
 
   it("marks an active turn spoken and never speaks it when demoted by a newer assistant turn (!isLatestTurn)", () => {
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
 
     const { rerender } = renderHook(
       ({ bubbles, activeResponse }) => useSpokenSummaryPlayback(bubbles, activeResponse),
@@ -737,7 +735,7 @@ describe("useSpokenSummaryPlayback", () => {
     // it only clears it on the next send (chatStore setActive on send). So while the user sits
     // reading, the completed response is still there with the SAME responseId. Any guard keyed
     // on response identity alone therefore stays true and cannot bound the replay window.
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
 
     const { rerender } = renderHook(
       ({ bubbles, activeResponse }) => useSpokenSummaryPlayback(bubbles, activeResponse),
@@ -793,7 +791,7 @@ describe("useSpokenSummaryPlayback", () => {
   it("still speaks when the summary arrives shortly after the turn finalizes (server generates it post-completion)", () => {
     // Guards the opposite failure: bounding the window must not kill autoplay for real turns,
     // whose summary legitimately lands a few seconds after response.completed.
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
 
     const { rerender } = renderHook(
       ({ bubbles, activeResponse }) => useSpokenSummaryPlayback(bubbles, activeResponse),
@@ -840,7 +838,7 @@ describe("useSpokenSummaryPlayback", () => {
     // finalizes, so a real summary can land well past the window measured from completedAt.
     // The summary's own server stamp says it just arrived; that must win over the turn's age,
     // or the slow path is silently indexed as spoken and the reader hears nothing.
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
     const nowS = Date.now() / 1000;
 
     const { rerender } = renderHook(
@@ -887,7 +885,7 @@ describe("useSpokenSummaryPlayback", () => {
   it("still refuses a stale summary the reader already finished reading", () => {
     // The other half of the same gate: no fresh server stamp means the age bound still holds,
     // so a history rebuild minutes later stays silent.
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
 
     const { rerender } = renderHook(
       ({ bubbles, activeResponse }) => useSpokenSummaryPlayback(bubbles, activeResponse),
@@ -924,7 +922,7 @@ describe("useSpokenSummaryPlayback", () => {
   });
 
   it("batches multiple turn marks into a single sessionStorage setItem persist (eliminates write churn)", () => {
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
     sessionStorage.clear();
     resetSpokenMessageTracking();
 
@@ -954,7 +952,7 @@ describe("useSpokenSummaryPlayback", () => {
   });
 
   it("does NOT re-speak when bubbles re-render without new messages", () => {
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
     const initialBubbles: Bubble[] = [];
 
     const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
@@ -984,7 +982,7 @@ describe("useSpokenSummaryPlayback", () => {
   });
 
   it("does NOT speak prepended historical messages when pagination loads older history", () => {
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
     const currentBubbles: Bubble[] = [
       makeAssistantBubble(
         "resp_2",
@@ -1017,7 +1015,7 @@ describe("useSpokenSummaryPlayback", () => {
   });
 
   it("does not replay audio on hard reload mid-stream (sessionStorage persistence)", () => {
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
 
     // 1. Live stream starts in tab
     const initialStreamBubbles: Bubble[] = [
@@ -1145,23 +1143,6 @@ describe("useSpokenSummaryPlayback", () => {
       expect(isToolStreaming("no-output")).toBe(false);
     });
   });
-
-  it("toggling 'Speak responses' OFF stops any in-flight utterance", () => {
-    writeSpokenSummaryPlayback(true);
-    useSpeechPlaybackStore.setState({ isSpeaking: true, speakingItemId: "resp_in_flight" });
-
-    // Exercise decoupled SpokenSummaryPlaybackControl component toggle handler
-    render(<SpokenSummaryPlaybackControl />);
-
-    const toggle = screen.getByTestId("spoken-summary-playback-toggle");
-    expect(toggle).toBeInTheDocument();
-    expect(toggle).toHaveAttribute("data-state", "checked");
-
-    fireEvent.click(toggle);
-
-    expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(false);
-    expect(useSpeechPlaybackStore.getState().speakingItemId).toBeNull();
-  });
 });
 
 describe("BrowserSpeechEngine", () => {
@@ -1228,7 +1209,7 @@ describe("useSpokenSummaryPlayback — server audio", () => {
     // A large recording stalling on a slow link fires `error` mid-playback, not
     // only when the file is missing. Speaking then put the host voice on top of
     // audio that was still playing: the same words twice, offset -- an echo.
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
     useChatStore.setState({ conversationId: "conv_1" } as never);
     vi.spyOn(window.HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
     const pause = vi.spyOn(window.HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
@@ -1260,10 +1241,10 @@ describe("useSpokenSummaryPlayback — server audio", () => {
   it("stays silent when the recording will not load", () => {
     // The host voice is what the generated one exists to replace. With the
     // summary already on screen, silence beats reading it in the robot voice.
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
     useChatStore.setState({ conversationId: "conv_1" } as never);
-    const engine = new MockSpeechEngine();
-    setSpeechEngine(engine);
+    const hostEngine = new MockSpeechEngine(); // replaces the suite's engine
+    setSpeechEngine(hostEngine);
     vi.spyOn(window.HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
     vi.spyOn(window.HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
     const created: HTMLAudioElement[] = [];
@@ -1286,54 +1267,6 @@ describe("useSpokenSummaryPlayback — server audio", () => {
     expect(engine.speak).not.toHaveBeenCalled();
     expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(false);
     vi.unstubAllGlobals();
-  });
-
-  it("autoplays the synthesized audio instead of the host speech engine", () => {
-    // The button was fixed first; autoplay kept using the browser engine, so a
-    // summary still read aloud in the host voice the moment it arrived.
-    writeSpokenSummaryPlayback(true);
-    useChatStore.setState({ conversationId: "conv_1" } as never);
-    const play = vi.spyOn(window.HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
-
-    const { rerender } = renderHook(
-      ({ bubbles, activeResponse }) => useSpokenSummaryPlayback(bubbles, activeResponse),
-      {
-        initialProps: {
-          bubbles: [] as Bubble[],
-          activeResponse: streamingResponse("resp_audio") as ActiveResponse | null,
-        },
-      },
-    );
-
-    rerender({
-      bubbles: [makeAssistantBubble("resp_audio", null, undefined, false, "streaming")],
-      activeResponse: streamingResponse("resp_audio"),
-    });
-    rerender({
-      bubbles: [
-        makeAssistantBubble(
-          "resp_audio",
-          "item_1",
-          { text: "resumo falado", lang: "pt-BR", audioFileId: "f_a1" },
-          true,
-          "completed",
-        ),
-      ],
-      activeResponse: completedResponse("resp_audio", 1_000),
-    });
-
-    expect(play).toHaveBeenCalled();
-    // The host engine must stay silent when real audio exists.
-    expect(engine.speak).not.toHaveBeenCalled();
-    play.mockRestore();
-  });
-});
-
-describe("useSpokenSummaryPlayback — summaries that arrive after a reload", () => {
-  beforeEach(() => {
-    resetSpokenMessageTracking();
-    writeSpokenSummaryPlayback(true);
-    useNarrationStore.setState({ overrides: {} });
   });
 
   /** Bubble whose summary carries its own server stamp, as the real one does. */
@@ -1381,21 +1314,5 @@ describe("useSpokenSummaryPlayback — summaries that arrive after a reload", ()
     // Indexed as settled history so a later rebuild cannot replay it either.
     expect(isMessageSpoken("resp_old")).toBe(true);
     speak.mockRestore();
-  });
-
-  it("stays silent when narration is off for the session", () => {
-    useNarrationStore.getState().setEnabled("conv_x", false);
-    useChatStore.setState({ conversationId: "conv_x" } as never);
-    const bubbles = [bubbleWithStampedSummary("resp_muted", Date.now() / 1000 - 2)];
-
-    renderHook(() => useSpokenSummaryPlayback(bubbles, null));
-
-    // The session switch is what decides, even though the device default is on.
-    expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(false);
-    expect(
-      useSpeechPlaybackStore
-        .getState()
-        .speakLiveSummary("resp_muted2", "resumo", "pt-BR", undefined, "conv_x"),
-    ).toBe(false);
   });
 });

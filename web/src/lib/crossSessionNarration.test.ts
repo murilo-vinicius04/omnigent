@@ -5,6 +5,7 @@ import {
   resetCrossSessionNarration,
   startCrossSessionNarration,
 } from "./crossSessionNarration";
+import { useVolumeStore } from "./sessionNarrationVolume";
 import {
   clearInMemorySpokenTracking,
   clearSpeechQueue,
@@ -12,7 +13,6 @@ import {
   resetSpokenMessageTracking,
   useSpeechPlaybackStore,
 } from "./speechPlayback";
-import { writeSpokenSummaryPlayback } from "./spokenSummaryPlaybackPreferences";
 
 const fetchSessionItemsPage = vi.fn();
 vi.mock("@/lib/sessionsApi", () => ({
@@ -60,7 +60,7 @@ describe("crossSessionNarration", () => {
     vi.clearAllMocks();
     clearSpeechQueue();
     useSpeechPlaybackStore.setState({ isSpeaking: false, speakingItemId: null });
-    writeSpokenSummaryPlayback(true); // narration on for sessions with no choice
+    useVolumeStore.getState().set("conv_1", 1); // narration on for sessions with no choice
   });
 
   it("speaks a summary from a session the reader is not looking at", async () => {
@@ -157,7 +157,7 @@ describe("speech queue", () => {
     sessionStorage.clear();
     vi.clearAllMocks();
     clearSpeechQueue();
-    writeSpokenSummaryPlayback(true);
+    useVolumeStore.getState().set("conv_1", 1);
     useSpeechPlaybackStore.setState({ isSpeaking: false, speakingItemId: null });
   });
 
