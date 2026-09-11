@@ -1582,9 +1582,23 @@ function buildAssistantItems(
     (b): b is Extract<AnyBlock, { type: "text_done" }> =>
       b.type === "text_done" && b.fullText.length === 0 && Boolean(b.spokenSummary),
   );
-  const carriedSummary =
-    carriers.filter((b) => b.spokenSummary?.audioFileId).at(-1)?.spokenSummary ??
-    carriers.at(-1)?.spokenSummary;
+  // Merge rather than pick: the audio carrier has the recording, the first has
+  // the blocks to show, and taking one whole loses the other's half.
+  const carriedSummary = carriers.length
+    ? carriers.reduce<NonNullable<(typeof carriers)[number]["spokenSummary"]>>(
+        (merged, carrier) => ({
+          ...merged,
+          ...carrier.spokenSummary,
+          ...(carrier.spokenSummary?.audioFileId || !merged.audioFileId
+            ? {}
+            : { audioFileId: merged.audioFileId }),
+          ...(carrier.spokenSummary?.show?.length || !merged.show?.length
+            ? {}
+            : { show: merged.show }),
+        }),
+        carriers[0]!.spokenSummary!,
+      )
+    : undefined;
   const carriedFiles = blocks
     .filter(
       (b): b is Extract<AnyBlock, { type: "text_done" }> =>
@@ -1607,7 +1621,13 @@ function buildAssistantItems(
         // Take the carrier when there is nothing yet, and upgrade a summary
         // still waiting on its recording once one arrives.
         const waitingForAudio = item.spokenSummary && !item.spokenSummary.audioFileId;
-        if (!item.spokenSummary || (waitingForAudio && carriedSummary.audioFileId)) {
+        const gainedBlocks =
+          item.spokenSummary && !item.spokenSummary.show?.length && carriedSummary.show?.length;
+        if (
+          !item.spokenSummary ||
+          (waitingForAudio && carriedSummary.audioFileId) ||
+          gainedBlocks
+        ) {
           items[k] = { ...item, spokenSummary: carriedSummary };
         }
         break;

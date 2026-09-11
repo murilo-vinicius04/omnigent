@@ -8112,6 +8112,7 @@ def _spawn_summary_audio(
     response_id: str,
     text: str,
     language: str,
+    show: list[dict[str, Any]] | None = None,
 ) -> None:
     """Synthesize a summary in the background and append its audio when ready.
 
@@ -8128,6 +8129,8 @@ def _spawn_summary_audio(
     :param response_id: Response id of the turn being summarized.
     :param text: The summary text to speak.
     :param language: Target language tag, e.g. ``"pt-BR"``.
+    :param show: Blocks the summary displays, repeated so this item carries the
+        whole summary: a reader merging the two keeps whichever arrives last.
     """
 
     async def _synthesize_and_append() -> None:
@@ -8152,6 +8155,7 @@ def _spawn_summary_audio(
                                 "text": text,
                                 "lang": language,
                                 "audio_file_id": audio_file_id,
+                                **({"show": show} if show else {}),
                             }
                         ],
                     },
@@ -8337,6 +8341,7 @@ async def _attach_native_spoken_summary(
             response_id,
             str(spoken_summary_part.get("text") or ""),
             str(spoken_summary_part.get("lang") or "pt-BR"),
+            show=list(spoken_summary_part.get("show") or []) or None,
         )
 
     if spoken_summary_usage:
