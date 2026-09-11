@@ -1,6 +1,5 @@
 """Companion routes: feed it, ask it, and see what it knows.
 
-- ``GET  /v1/discussion/test`` — a standalone probe page.
 - ``GET  /v1/discussion/{session_id}`` — the ledger, for the UI panel.
 - ``POST /v1/discussion/{session_id}/note`` — record context. Cheap: it
   never reaches the model until the next question.
@@ -21,7 +20,6 @@ from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from omnigent.server.auth import AuthProvider
@@ -31,7 +29,6 @@ from omnigent.server.discussion import (
     EntryKind,
     registry,
 )
-from omnigent.server.routes.discussion_page import render_test_page
 
 _logger = logging.getLogger(__name__)
 
@@ -68,7 +65,7 @@ def create_discussion_router(
         ``None`` preserves single-user/dev behavior (open).
     :param registry_provider: Registry factory override for tests.
         Defaults to the process-wide :func:`registry`.
-    :returns: An :class:`APIRouter` carrying the probe page and the API.
+    :returns: An :class:`APIRouter` carrying the companion API.
     """
     router = APIRouter()
     companions = registry_provider or registry
@@ -76,13 +73,6 @@ def create_discussion_router(
     def _require_user(request: Request) -> None:
         if auth_provider is not None and auth_provider.get_user_id(request) is None:
             raise HTTPException(status_code=401, detail="authentication required")
-
-    # Declared before the ``{session_id}`` route so the literal wins.
-    @router.get("/discussion/test", response_class=HTMLResponse)
-    async def discussion_test(request: Request) -> HTMLResponse:
-        """Serve the standalone companion probe page."""
-        _require_user(request)
-        return HTMLResponse(render_test_page())
 
     @router.get("/discussion/{session_id}")
     async def discussion_state(request: Request, session_id: str) -> dict[str, Any]:

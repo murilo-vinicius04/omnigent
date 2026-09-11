@@ -179,6 +179,7 @@ async def test_as_dict_is_what_the_ui_renders(session):
     assert state["pending_notes"] == 1
     assert state["context"] == [
         {
+            "id": 1,
             "kind": "activity",
             "text": "running the tests",
             "at": pytest.approx(state["context"][0]["at"]),
@@ -335,13 +336,6 @@ def test_route_prewarm_then_state(client):
     assert state["warm_since"] is not None
 
 
-def test_the_probe_page_is_served_ahead_of_the_session_route(client):
-    # "/discussion/test" must reach the page, not be read as a session id.
-    body = client.get("/v1/discussion/test").text
-    assert "Companion probe" in body
-    assert "What it knows" in body
-
-
 def test_routes_require_auth_when_a_provider_is_configured(fake_agy):
     from fastapi.testclient import TestClient
 
@@ -351,6 +345,49 @@ def test_routes_require_auth_when_a_provider_is_configured(fake_agy):
 
     app = _app_with_companions(fake_agy, auth_provider=Anonymous())
     with TestClient(app) as guarded:
-        assert guarded.get("/v1/discussion/test").status_code == 401
         assert guarded.get("/v1/discussion/x").status_code == 401
         assert guarded.post("/v1/discussion/x/ask", json={"text": "hi"}).status_code == 401
+
+
+async def test_the_module_note_creates_the_companion_on_first_use():
+    # The turn path must not have to know whether a companion exists yet.
+    discussion.note("fresh-session", "summary", "I fixed the parser bug")
+    session = discussion.registry().peek("fresh-session")
+    assert session is not None
+    assert session.context[0].kind == "summary"
+    await discussion.registry().close("fresh-session")
+
+
+async def test_the_module_note_never_raises(monkeypatch):
+    # A companion hangs off the side of a session; a failure here must be
+    # invisible to the turn being served.
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(discussion.DiscussionRegistry, "note", explode)
+    discussion.note("s", "summary", "text")
+
+
+async def test_tell_companion_feeds_the_summary_and_what_is_still_running():
+    from omnigent.server.routes._sessions.helpers import _tell_companion
+
+    _tell_companion(
+        "conv_x",
+        {"type": "spoken_summary", "text": "I fixed the parser bug.", "lang": "en"},
+        pending_work=["the test suite"],
+    )
+    session = discussion.registry().peek("conv_x")
+    assert session is not None
+    assert [(e.kind, e.text) for e in session.context] == [
+        ("summary", "I fixed the parser bug."),
+        ("activity", "still running: the test suite"),
+    ]
+    await discussion.registry().close("conv_x")
+
+
+async def test_tell_companion_ignores_a_turn_with_no_summary():
+    from omnigent.server.routes._sessions.helpers import _tell_companion
+
+    _tell_companion("conv_y", None)
+    _tell_companion("conv_y", {"type": "spoken_summary", "text": "  "})
+    assert discussion.registry().peek("conv_y") is None

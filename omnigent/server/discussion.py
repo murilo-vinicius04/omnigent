@@ -105,15 +105,19 @@ class ContextEntry:
     :param kind: What sort of knowledge this is; drives the UI's label.
     :param text: The text itself, already trimmed to size.
     :param at: Unix timestamp when it was recorded.
+    :param id: Position in the session's ledger, from 1. A question and
+        its answer are recorded in the same instant, so ``at`` does not
+        identify an entry and the UI needs something that does.
     """
 
     kind: EntryKind
     text: str
     at: float
+    id: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         """Return the JSON shape the UI consumes."""
-        return {"kind": self.kind, "text": self.text, "at": self.at}
+        return {"id": self.id, "kind": self.kind, "text": self.text, "at": self.at}
 
 
 class DiscussionUnavailable(RuntimeError):
@@ -161,6 +165,7 @@ class DiscussionSession:
         self._model = model or _model()
         self._binary = binary or _binary()
         self._entries: deque[ContextEntry] = deque(maxlen=MAX_ENTRIES)
+        self._next_id = 1
         self._undelivered: list[ContextEntry] = []
         self._process: asyncio.subprocess.Process | None = None
         self._stderr: deque[str] = deque(maxlen=_STDERR_LINES)
@@ -218,9 +223,19 @@ class DiscussionSession:
         cleaned = text.strip()
         if not cleaned:
             return
-        entry = ContextEntry(kind=kind, text=cleaned[:2000], at=time.time())
+        self._undelivered.append(self._record(kind, cleaned[:2000]))
+
+    def _record(self, kind: EntryKind, text: str) -> ContextEntry:
+        """Append one entry to the ledger and return it.
+
+        :param kind: The entry's kind.
+        :param text: Already-trimmed text.
+        :returns: The stored entry, carrying its ledger id.
+        """
+        entry = ContextEntry(kind=kind, text=text, at=time.time(), id=self._next_id)
+        self._next_id += 1
         self._entries.append(entry)
-        self._undelivered.append(entry)
+        return entry
 
     # -- process lifecycle --------------------------------------------
 
@@ -401,14 +416,13 @@ class DiscussionSession:
                 # The process is the only thing in doubt, so drop it and
                 # let the next question rebuild from the ledger.
                 await self._kill()
-                self._entries.append(ContextEntry("question", question, time.time()))
+                self._record("question", question)
                 raise
             self._briefed = True
             self._undelivered.clear()
-            now = time.time()
-            self._entries.append(ContextEntry("question", question, now))
-            self._entries.append(ContextEntry("answer", answer, now))
-            self._last_used = now
+            self._record("question", question)
+            self._record("answer", answer)
+            self._last_used = time.time()
             return answer
 
     async def _turn(self, message: str, *, timeout_s: float) -> str:
@@ -511,6 +525,24 @@ class DiscussionRegistry:
         """Return an existing companion without creating one."""
         return self._sessions.get(session_id)
 
+    def note(self, session_id: str, kind: EntryKind, text: str) -> None:
+        """Record context for a session, creating its companion if needed.
+
+        Synchronous on purpose: the callers are turn hot paths that must
+        not await on the companion's account. Safe without the lock —
+        creation neither awaits nor blocks, so no other coroutine can
+        interleave between the lookup and the insert.
+
+        :param session_id: Omnigent session id.
+        :param kind: See :meth:`DiscussionSession.note`.
+        :param text: The note.
+        """
+        session = self._sessions.get(session_id)
+        if session is None:
+            session = DiscussionSession(session_id)
+            self._sessions[session_id] = session
+        session.note(kind, text)
+
     async def close(self, session_id: str) -> None:
         """Close and forget one session's companion."""
         async with self._lock:
@@ -550,6 +582,24 @@ _REGISTRY: Final[DiscussionRegistry] = DiscussionRegistry()
 def registry() -> DiscussionRegistry:
     """Return the process-wide companion registry."""
     return _REGISTRY
+
+
+def note(session_id: str, kind: EntryKind, text: str) -> None:
+    """Tell the session's companion something, and never raise.
+
+    This is what the turn hot paths call. The companion is a convenience
+    hanging off the side of a session: a failure here must be invisible
+    to the turn that was being served, so everything is swallowed.
+
+    :param session_id: Omnigent session id.
+    :param kind: ``"activity"`` for what is happening, ``"summary"`` for
+        what Claude said.
+    :param text: The note.
+    """
+    try:
+        _REGISTRY.note(session_id, kind, text)
+    except Exception:  # noqa: BLE001 - a companion must never break a turn
+        _logger.debug("companion note dropped for %s", session_id, exc_info=True)
 
 
 async def sweep_idle_companions(*, interval_s: float = 60.0) -> None:

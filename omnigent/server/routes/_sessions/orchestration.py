@@ -5842,6 +5842,16 @@ async def _dispatch_session_event_to_runner_impl(
             if isinstance(pending_content, list) and pending_content
             else None
         )
+        # Tell the companion what was just asked. Without this it would
+        # only ever hear Claude's side, which reads like listening to one
+        # half of a phone call. Recording a note does not talk to the
+        # model, so this costs nothing on the dispatch path.
+        if isinstance(content, list) and content:
+            from omnigent.server import discussion
+
+            asked = _message_text([b for b in content if isinstance(b, dict)])
+            if asked:
+                discussion.note(session_id, "activity", f"they asked Claude: {asked}")
         if translated_en:
             body.data["content"] = dispatch_content
         # ── Server-side routing for native terminal sessions ────────

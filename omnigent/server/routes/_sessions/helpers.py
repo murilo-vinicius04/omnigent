@@ -7505,6 +7505,7 @@ async def _flush_relay_text(
                         model_override=spoken_summary_model,
                         llm_client=llm_client,
                     )
+                    _tell_companion(session_id, spoken_summary_part)
         except asyncio.CancelledError as exc:
             _logger.warning(
                 "Spoken summary cancelled for session=%s; continuing without summary",
@@ -8058,6 +8059,38 @@ _PENDING_LABEL_MAX_CHARS = 160
 _PENDING_LABELS_MAX = 5
 
 
+def _tell_companion(
+    session_id: str,
+    summary_part: dict[str, Any] | None,
+    *,
+    pending_work: Sequence[str] = (),
+) -> None:
+    """Pass a finished spoken summary to the session's companion.
+
+    The companion is the warm ``agy`` the reader talks to alongside the
+    session (:mod:`omnigent.server.discussion`). This is where it learns
+    what Claude said: the same summary the reader hears narrated, which
+    is already written and already compressed. It never sees the
+    transcript, so this call is the whole of its knowledge of the turn.
+
+    Recording a note does not talk to the model -- it appends to the
+    companion's ledger and returns -- so this is safe on the turn path.
+
+    :param session_id: Session/conversation id.
+    :param summary_part: The generated ``spoken_summary`` content part.
+    :param pending_work: Labels for work still running as the turn ends.
+    """
+    if not summary_part:
+        return
+    from omnigent.server import discussion
+
+    text = str(summary_part.get("text") or "").strip()
+    if text:
+        discussion.note(session_id, "summary", text)
+    if pending_work:
+        discussion.note(session_id, "activity", "still running: " + ", ".join(pending_work))
+
+
 def _pending_work_labels(count: int | None, tasks: list[Any] | None) -> list[str]:
     """Name what is still running, so the summary can say exactly that.
 
@@ -8260,11 +8293,13 @@ async def _attach_native_spoken_summary(
         # synchronous, so despite the awaits above only one edge can win it.
         if not _claim_summary_turn(session_id, response_id):
             return
+        pending = _pending_work_labels(background_task_count, background_tasks)
         spoken_summary_part, spoken_summary_usage = await generate_spoken_summary(
             text,
             language=language,
-            pending_work=_pending_work_labels(background_task_count, background_tasks),
+            pending_work=pending,
         )
+        _tell_companion(session_id, spoken_summary_part, pending_work=pending)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001

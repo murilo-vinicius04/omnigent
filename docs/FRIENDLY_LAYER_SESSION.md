@@ -233,76 +233,72 @@ start on every message the reader types**. Warm, it would be ~1s.
 
 ---
 
-## 2d. The companion — stage one, built and openable
+## 2d. The companion — wired into the session, not beside it
 
-One warm `agy` per Omnigent session, per the design the reader settled on
-2026-09-11. Open it at:
-
-```
-http://localhost:6767/v1/discussion/test
-```
+One warm `agy` per Omnigent session. **It lives in the composer**: the
+speech-bubble button next to the narrate controls opens a panel showing what it
+knows and a box to talk to it, without interrupting Claude.
 
 | thing | where |
 | --- | --- |
 | session manager | `omnigent/server/discussion.py` |
-| routes | `omnigent/server/routes/discussion.py` |
-| probe page | `omnigent/server/routes/discussion_page.py` |
-| tests | `tests/server/test_discussion.py` (28) |
+| routes | `omnigent/server/routes/discussion.py` (`/v1/discussion/{session_id}`) |
+| fed from | `routes/_sessions/helpers.py` `_tell_companion` (summaries), `routes/_sessions/orchestration.py` (the reader's message) |
+| panel | `web/src/components/ComposerCompanionButton.tsx`, `web/src/lib/companionApi.ts` |
+| tests | `tests/server/test_discussion.py` (31), `ComposerCompanionButton.test.tsx` (6) |
 
-**The one idea that makes the rest fall out: the ledger is the memory, the
-process is a cache.** Every note, question and answer lands in a
-`ContextEntry` list on the session — *that* is the conversation. The
-subprocess holds the same history only as a warm copy. So any process death
-is recoverable: a crash, a timeout, an idle reap, a server restart. The next
-question spawns a new process and replays the ledger into it. This is why the
-code is free to kill the process whenever its state is in doubt (notably after
-a timeout, where a late answer would otherwise pair with the *next* question).
+**What feeds it, in the real turn path:**
 
-The ledger is also exactly what the UI shows, so "what does it know?" has one
-answer rather than one per surface.
+- The reader's message, at dispatch (`"they asked Claude: …"`).
+- Each spoken summary, as it is generated — the same text the reader hears
+  narrated, already written and already compressed.
+- What is still running when a turn ends (`_pending_work_labels`).
 
-**Notes cost nothing until they are needed.** `session.note(...)` does not
-touch the process — it appends to the ledger and returns. Undelivered notes
-are folded into the next question as a briefing block. So narrating "Claude is
-running the tests" is free, and the context arrives exactly when it becomes
-relevant. The probe page shows undelivered entries dashed and dimmed.
+It never sees the transcript or the code. Asked about a detail it was not told,
+it says so and suggests asking Claude — confirmed in testing, not assumed.
+
+**The one idea the rest falls out of: the ledger is the memory, the process is
+a cache.** Every note, question and answer lands in a `ContextEntry` list on
+the session — *that* is the conversation. The subprocess holds the same history
+only as a warm copy, so any process death is recoverable: crash, timeout, idle
+reap, server restart. The next question spawns a new process and replays the
+ledger. This is why the code is free to kill the process whenever its state is
+in doubt — notably after a timeout, where a late answer would otherwise pair
+with the *next* question and silently desync the conversation.
+
+**Notes cost nothing until they are needed.** `discussion.note(...)` never
+touches the process; it appends to the ledger and returns, which is what makes
+it safe on the turn hot path. Undelivered notes are folded into the next
+question as a briefing block, so the context arrives when it becomes relevant.
+The panel dims entries the process has not been told yet. `note()` swallows
+every exception: a companion failure must be invisible to the turn being served.
 
 **Cold start is one turn, not three.** The first version sent the role, then
 the ledger replay, then the question — three turns, **8.3s**, *worse* than the
-4–5s one-shot this replaces. Folding all three into one message brought it to
-**3.5s**. `prewarm()` exists to pay even that ahead of time: call it when a
-voice channel opens and the reader's first question is a warm ~1.1s.
+4–5s one-shot this replaces. Folding all three into one message: **3.5s**.
+Opening the panel calls `prewarm()`, so the reader's first question is ~1.1s
+while they are still reading the ledger.
 
-API, all under `/v1/discussion/{session_id}` and all returning the whole ledger
-so a UI panel cannot drift: `GET` (state), `POST /note`, `POST /ask`,
-`POST /prewarm`, `POST /close`.
+Lifecycle is in the server lifespan (`app.py`): a 60s sweep reaps processes
+idle past `OMNIGENT_DISCUSSION_IDLE_S` (default 15 min), and `close_all()` on
+shutdown means a restart never orphans an `agy`. Other env overrides:
+`OMNIGENT_DISCUSSION_AGY_BIN`, `OMNIGENT_DISCUSSION_MODEL`.
 
-Lifecycle is wired into the server lifespan (`app.py`): a 60s sweep reaps
-processes idle past `OMNIGENT_DISCUSSION_IDLE_S` (default 15 min), and
-`close_all()` on shutdown means a restart never orphans an `agy`. Env
-overrides: `OMNIGENT_DISCUSSION_AGY_BIN`, `OMNIGENT_DISCUSSION_MODEL`,
-`OMNIGENT_DISCUSSION_IDLE_S`.
-
-**Not done:** nothing feeds it from a real session yet — the probe page is the
-only thing calling `/note`. Wiring the summaries and Claude's activity in, and
-connecting it to the live voice channel, is the next step.
+**Not done:** it is text-only — not yet connected to the live voice channel
+(§2b), and there are still no progress notes *during* a turn (queue item 2),
+only at the end.
 
 ---
 
 ## 3. The queue, in the reader's priority order
 
-1. **The companion — stage one is built (§2d); wiring it up is NEXT.** The
-   warm session manager, its routes and its probe page exist and are tested.
-   What remains is the part that makes it real:
-   - **Feed it from an actual session**: call `note("summary", ...)` when a
-     spoken summary is generated, and `note("activity", ...)` as Claude works
-     (which is item 2 — the same hook serves both).
-   - **Show the ledger in the Omnigent UI**, not only on the probe page. The
-     reader asked for its context to be visible; `GET /v1/discussion/{id}`
-     already returns exactly what the panel needs.
+1. **The companion is wired into the composer and fed by real turns (§2d).**
+   What remains:
    - **Wire it to live voice (§2b)**: `prewarm()` when the channel opens, then
-     `ask()` per utterance. Latency budget is the thing to watch — ~1.1s warm
-     plus the live model's own turnaround.
+     `ask()` per utterance. Latency to watch — ~1.1s warm plus the live
+     model's own turnaround.
+   - **Notes during a turn**, not only at the end. That is item 2, and the
+     `discussion.note(session_id, "activity", …)` call it needs already exists.
 2. **Progress updates while Claude works** — "Claude is doing X now", so the
    reader can follow a long turn instead of waiting blind. Needs a live path;
    everything today is end-of-turn. Natural fit for the same warm session.
@@ -371,9 +367,11 @@ cd /home/nexus/wt/friendly-layer
 cd web && npx vitest run src/ && node_modules/.bin/tsc -b && npx vite build
 ```
 
-Current: 174 server tests in that set, 6916 web tests, 0 type errors
+Current: 177 server tests in that set, 6922 web tests, 0 type errors
 (`.venv/bin/python -m pyrefly check <files>`). `pre-commit run --all-files` fails only on pre-existing
 `omnigent/runtime/telemetry.py` opentelemetry imports — not from this work.
+`pyrefly` reports one pre-existing error in `_sessions/helpers.py:8379`
+(`spoken_summary_part.get("show")`), present on `HEAD` before this work too.
 
 Inspect what a summary actually stored (the fastest way to tell selection from
 rendering):
