@@ -14,11 +14,12 @@ describe("session narration preference", () => {
   });
 
   it("falls back to the device default until the session decides", () => {
+    // The device default is on, so a session nobody has touched narrates.
     expect(readSessionNarration("conv_1")).toBeNull();
-    expect(isNarrationEnabled("conv_1")).toBe(false);
-
-    window.localStorage.setItem(SPOKEN_SUMMARY_PLAYBACK_STORAGE_KEY, "true");
     expect(isNarrationEnabled("conv_1")).toBe(true);
+
+    window.localStorage.setItem(SPOKEN_SUMMARY_PLAYBACK_STORAGE_KEY, "false");
+    expect(isNarrationEnabled("conv_1")).toBe(false);
   });
 
   it("lets a session override the device default in both directions", () => {

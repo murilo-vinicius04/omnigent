@@ -12,9 +12,11 @@ afterEach(() => {
 });
 
 describe("spokenSummaryPlaybackPreferences", () => {
-  it("defaults to off when nothing is stored", () => {
-    expect(DEFAULT_SPOKEN_SUMMARY_PLAYBACK).toBe(false);
-    expect(readSpokenSummaryPlayback()).toBe(false);
+  it("defaults to on when nothing is stored", () => {
+    // Browser storage is per address, so a reader who reached the same server
+    // by another URL used to lose narration silently. Off must be a choice.
+    expect(DEFAULT_SPOKEN_SUMMARY_PLAYBACK).toBe(true);
+    expect(readSpokenSummaryPlayback()).toBe(true);
   });
 
   it("round-trips both boolean values", () => {
@@ -44,6 +46,7 @@ describe("spokenSummaryPlaybackPreferences", () => {
       throw new Error("access denied");
     });
     expect(() => writeSpokenSummaryPlayback(true)).not.toThrow();
-    expect(readSpokenSummaryPlayback()).toBe(false);
+    // Unreadable storage means "no choice recorded", which is the default.
+    expect(readSpokenSummaryPlayback()).toBe(true);
   });
 });

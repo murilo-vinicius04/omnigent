@@ -9,7 +9,16 @@
 
 export const SPOKEN_SUMMARY_PLAYBACK_STORAGE_KEY = "omnigent:spoken-summary-playback";
 
-export const DEFAULT_SPOKEN_SUMMARY_PLAYBACK = false;
+/**
+ * Narration is on until the reader turns it off.
+ *
+ * This preference lives in browser storage, which is per address: a reader who
+ * turned narration on at one URL and then reached the same server by another
+ * (a tunnel, the tailnet, localhost) silently lost it and heard nothing, in
+ * every session, with no indication why. Defaulting to on makes the switch
+ * mean "be quiet" rather than "start working".
+ */
+export const DEFAULT_SPOKEN_SUMMARY_PLAYBACK = true;
 
 /**
  * Read the persisted "speak responses" preference. Returns the default (off)

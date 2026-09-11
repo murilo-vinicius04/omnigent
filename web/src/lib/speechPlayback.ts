@@ -226,6 +226,30 @@ export function markMessageSpoken(id: string): void {
 }
 
 /**
+ * Forget that *id* was spoken, so it can be played later.
+ *
+ * Marking happens before playback starts, which is right for "already read"
+ * but wrong when playback never happened: the browser's autoplay policy can
+ * reject `play()` outright, and a summary burned that way would stay silent
+ * for good.
+ */
+export function unmarkMessageSpoken(id: string): void {
+  if (!id) return;
+  spokenMessageIds.delete(id);
+  const { ids } = loadSessionStorageCache();
+  const kept = ids.filter((stored) => stored !== id);
+  persistedIdsCache = kept;
+  persistedIdsSetCache = new Set(kept);
+  const storage = getSessionStorage();
+  if (!storage) return;
+  try {
+    storage.setItem(SPOKEN_MESSAGES_SESSION_STORAGE_KEY, JSON.stringify(kept));
+  } catch {
+    // Degrade gracefully
+  }
+}
+
+/**
  * Batch mark multiple messages/turns as spoken or settled history.
  * Performs a single sessionStorage persist across all marked IDs to prevent write churn and array thrashing.
  */
@@ -396,10 +420,12 @@ function startSummaryPlayback(
     el.addEventListener("error", giveUp);
     claimSpeechChannel(el, sessionId);
     // A rejected play() here is usually the browser's autoplay policy, not a
-    // broken file. Falling back would answer a blocked good recording with
-    // the robotic voice the generated one exists to replace, so stay silent
-    // and let the reader press play.
-    void el.play().catch(clear);
+    // broken file. Forget it was spoken so pressing play still works, and so a
+    // later summary is not silenced by a queue entry that never ran.
+    void el.play().catch(() => {
+      unmarkMessageSpoken(itemId);
+      clear();
+    });
     return true;
   }
 

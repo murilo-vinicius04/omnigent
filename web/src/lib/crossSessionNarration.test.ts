@@ -8,6 +8,7 @@ import {
 import {
   clearInMemorySpokenTracking,
   clearSpeechQueue,
+  isMessageSpoken,
   resetSpokenMessageTracking,
   useSpeechPlaybackStore,
 } from "./speechPlayback";
@@ -241,5 +242,34 @@ describe("speech queue", () => {
     expect(played).toEqual(["/a.mp3"]);
 
     vi.unstubAllGlobals();
+  });
+});
+
+describe("autoplay blocked by the browser", () => {
+  beforeEach(() => {
+    resetSpokenMessageTracking();
+    clearInMemorySpokenTracking();
+    localStorage.clear();
+    sessionStorage.clear();
+    vi.clearAllMocks();
+    clearSpeechQueue();
+    useSpeechPlaybackStore.setState({ isSpeaking: false, speakingItemId: null });
+  });
+
+  it("does not burn the summary when play() is refused", async () => {
+    // Chrome refuses programmatic playback until the page has been interacted
+    // with. Marking happens before playback starts, so a refusal used to leave
+    // the summary "already spoken" and permanently silent.
+    vi.spyOn(window.HTMLMediaElement.prototype, "play").mockRejectedValue(
+      new DOMException("blocked", "NotAllowedError"),
+    );
+    vi.spyOn(window.HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+
+    useSpeechPlaybackStore
+      .getState()
+      .speakLiveSummary("resp_blocked", "resumo", "pt-BR", "/a.mp3", "conv_1");
+
+    await vi.waitFor(() => expect(isMessageSpoken("resp_blocked")).toBe(false));
+    expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(false);
   });
 });
