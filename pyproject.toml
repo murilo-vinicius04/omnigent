@@ -255,6 +255,14 @@ dictation = [
     # rather than riding whichever extra happens to pull it in.
     "numpy>=1.24,<3",
 ]
+# Whisper dictation (OMNIGENT_DICTATION_ENGINE=whisper): sherpa-onnx for the
+# voice-activity detector, faster-whisper for recognition. Runs on the GPU when
+# the CUDA libraries PyTorch ships are present (the ``tts`` extra brings them).
+dictation-whisper = [
+    "faster-whisper>=1.1,<2",
+    "sherpa-onnx>=1.13,<2",
+    "numpy>=1.24,<3",
+]
 # Cursor SDK harness (`harness: cursor`). Optional like antigravity: the
 # harness imports the cursor-sdk lazily on first turn, so only `--harness
 # cursor` users need this extra (`omnigent[cursor]`). Was a baseline dependency;

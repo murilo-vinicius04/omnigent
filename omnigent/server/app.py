@@ -160,6 +160,10 @@ class ServerInfoResponse(BaseModel):
     harness_install_enabled: bool
     installable_harnesses: list[str]
     dictation_available: bool
+    #: The operator wants the composer mic to use this server's engine even in
+    #: browsers whose own recognizer works. Only ever true when
+    #: ``dictation_available`` is.
+    dictation_prefer_server: bool = False
     branding: BrandingInfo
 
 
@@ -2440,6 +2444,12 @@ def create_app(
         from omnigent.server.dictation import engine_availability
 
         dictation_available, _ = engine_availability()
+        # Chrome's recognizer is the default where it works; an operator who
+        # runs a better engine here opts the mic into it (e.g. Whisper with the
+        # reader's own vocabulary). Meaningless without an engine to prefer.
+        dictation_prefer_server = dictation_available and os.environ.get(
+            "OMNIGENT_DICTATION_PREFER_SERVER", ""
+        ).strip().lower() in ("1", "true", "yes", "on")
         return ServerInfoResponse.model_validate(
             {
                 "accounts_enabled": accounts_enabled,
@@ -2460,6 +2470,7 @@ def create_app(
                 "harness_install_enabled": harness_install_enabled,
                 "installable_harnesses": installable_harnesses,
                 "dictation_available": dictation_available,
+                "dictation_prefer_server": dictation_prefer_server,
                 "branding": branding_snapshot.config(),
             }
         )

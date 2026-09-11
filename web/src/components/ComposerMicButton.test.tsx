@@ -327,6 +327,11 @@ const NO_DICTATION_INFO: ServerInfo = {
   dictation_available: false,
 };
 
+const PREFER_SERVER_INFO: ServerInfo = {
+  ...DICTATION_INFO,
+  dictation_prefer_server: true,
+};
+
 function renderServerMode(
   props: Partial<React.ComponentProps<typeof ComposerMicButton>> = {},
   info: ServerInfo = DICTATION_INFO,
@@ -540,6 +545,33 @@ describe("ComposerMicButton (server dictation)", () => {
     } finally {
       delete (window as unknown as Record<string, unknown>).omnigentDesktop;
     }
+  });
+
+  it("goes straight to the server when the operator prefers its engine", async () => {
+    // Real Chrome has a working recognizer, so by default it stays first. An
+    // operator running a better engine here (Whisper with the reader's own
+    // vocabulary) opts every take into it instead.
+    render(
+      <CapabilitiesContext.Provider value={PREFER_SERVER_INFO}>
+        <ComposerMicButton onTranscript={vi.fn()} />
+      </CapabilitiesContext.Provider>,
+    );
+    await clickMic();
+
+    expect(sessionStartMock).toHaveBeenCalledTimes(1);
+    expect(startSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps the browser recognizer first when the server engine is not preferred", async () => {
+    render(
+      <CapabilitiesContext.Provider value={DICTATION_INFO}>
+        <ComposerMicButton onTranscript={vi.fn()} />
+      </CapabilitiesContext.Provider>,
+    );
+    await clickMic();
+
+    expect(startSpy).toHaveBeenCalledTimes(1);
+    expect(sessionStartMock).not.toHaveBeenCalled();
   });
 
   it("Enter while listening ends the server take via stop (keeps the tail)", async () => {

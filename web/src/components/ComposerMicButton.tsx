@@ -115,6 +115,9 @@ export const ComposerMicButton = ({
   const [Ctor] = useState(getRecognitionCtor);
   const serverInfo = useServerInfo();
   const serverAvailable = serverInfo !== "loading" && serverInfo.dictation_available;
+  // The operator runs an engine they trust over the browser's (see
+  // `dictation_prefer_server`), so every take goes to it directly.
+  const serverPreferred = serverAvailable && serverInfo.dictation_prefer_server === true;
   // Mirrored into a ref so the mount-time recognition handlers (closed
   // over [Ctor, lang]) see the current probe result.
   const serverAvailableRef = useRef(serverAvailable);
@@ -408,7 +411,8 @@ export const ComposerMicButton = ({
     // to the server — a visible ~1s "fail then recover" on every first take.
     // When the server can serve, go straight to it and skip the doomed attempt.
     // (Real browsers keep Web Speech primary; it genuinely works there.)
-    if (!Ctor || (serverAvailable && isElectronShell())) {
+    // An operator who prefers the server's engine gets it the same way.
+    if (!Ctor || (serverAvailable && (isElectronShell() || serverPreferred))) {
       if (serverAvailable) void toggleServer();
       return;
     }
@@ -425,7 +429,7 @@ export const ComposerMicButton = ({
       // user can try again, and let the next event reconcile state.
       transitionRef.current = false;
     }
-  }, [isListening, Ctor, serverAvailable, toggleServer]);
+  }, [isListening, Ctor, serverAvailable, serverPreferred, toggleServer]);
 
   // ⌘⌥V toggles dictation from anywhere — same as clicking the button. Enabled
   // whenever dictation could run (Web Speech OR the server path) and the

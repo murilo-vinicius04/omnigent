@@ -722,3 +722,7 @@ register_engine(
 )
 register_engine(ENGINE_REMOTE, _build_remote_engine, available=_remote_available)
 register_engine(ENGINE_FAKE, FakeDictationEngine)
+
+# Engines in their own modules register on import. Imported last because they
+# build on the names above.
+from omnigent.server import dictation_whisper  # noqa: E402,F401

@@ -68,6 +68,28 @@ async def test_info_reports_dictation_unavailable(
     assert resp.json()["dictation_available"] is False
 
 
+async def test_info_prefers_the_server_only_when_asked_and_able(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
+) -> None:
+    """The mic stays on the browser's recognizer unless the operator opts in,
+    and an opt-in with no working engine must not strand the mic."""
+    monkeypatch.setenv(dictation_engine.ENGINE_ENV, dictation_engine.ENGINE_FAKE)
+    monkeypatch.delenv("OMNIGENT_DICTATION_PREFER_SERVER", raising=False)
+    assert (await client.get("/v1/info")).json()["dictation_prefer_server"] is False
+
+    monkeypatch.setenv("OMNIGENT_DICTATION_PREFER_SERVER", "1")
+    assert (await client.get("/v1/info")).json()["dictation_prefer_server"] is True
+
+    # Opted in, but no engine can serve: the browser keeps the mic.
+    monkeypatch.setenv(dictation_engine.MODEL_DIR_ENV, str(tmp_path))
+    monkeypatch.delenv(dictation_engine.ENGINE_ENV, raising=False)
+    body = (await client.get("/v1/info")).json()
+    assert body["dictation_available"] is False
+    assert body["dictation_prefer_server"] is False
+
+
 def test_stream_partial_final_stop_flow() -> None:
     """Audio in → ready, partial, final, stopped events out."""
     with TestClient(_fake_app()) as tc, tc.websocket_connect("/v1/dictation/stream") as ws:

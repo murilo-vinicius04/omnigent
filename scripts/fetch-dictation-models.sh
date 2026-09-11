@@ -3,6 +3,8 @@
 # (designs/server-dictation.md) into ~/.omnigent/models/dictation/:
 #   asr/    streaming Nemotron transducer (int8, ~650 MB) — the recognizer
 #   punct/  online CNN-BiLSTM punctuation (int8, ~38 MB) — live re-punctuation
+#   vad/    Silero voice-activity detector (~0.6 MB) — the Whisper engine's
+#           utterance segmenter; Whisper's own weights download on first use
 #
 # Both are Apache-2.0 upstream releases packaged by k2-fsa. If these exact
 # URLs move, the catalogs are:
@@ -43,6 +45,14 @@ fetch() { # fetch <tarball-stem> <base-url> <dest-subdir> <label>
 
 fetch "$ASR_TARBALL" "$ASR_GH" "asr" "streaming ASR model (~650 MB)"
 fetch "$PUNCT_TARBALL" "$PUNCT_GH" "punct" "punctuation model (~38 MB)"
+
+if [ -f "$DEST/vad/silero_vad.onnx" ]; then
+  echo ">> vad/ already populated, skipping voice-activity detector"
+else
+  echo ">> downloading voice-activity detector (silero_vad.onnx)"
+  mkdir -p "$DEST/vad"
+  dl "$ASR_GH/silero_vad.onnx" "$DEST/vad/silero_vad.onnx"
+fi
 
 echo ">> dictation models ready under $DEST"
 ls -d "$DEST"/*/

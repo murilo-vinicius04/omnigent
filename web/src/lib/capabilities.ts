@@ -186,6 +186,13 @@ export interface ServerInfo {
    * backend (Electron, Firefox/Chromium).
    */
   dictation_available: boolean;
+  /**
+   * The operator wants the mic to use the server's engine even where the
+   * browser's own recognizer works -- e.g. Whisper primed with the reader's
+   * vocabulary. Only ever true alongside `dictation_available`; optional so an
+   * older server that omits it reads as "browser first", as before.
+   */
+  dictation_prefer_server?: boolean;
   /** Operator branding, or null when the built-in identity should be used. */
   branding?: Branding | null;
 }
@@ -336,6 +343,8 @@ export async function resolveServerInfo(): Promise<ServerInfo> {
             ? data.installable_harnesses.filter((h): h is string => typeof h === "string")
             : [],
           dictation_available: data.dictation_available === true,
+          dictation_prefer_server:
+            data.dictation_available === true && data.dictation_prefer_server === true,
           branding: parseBranding(data.branding),
         };
         return cachedServerInfo;
