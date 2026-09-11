@@ -5648,7 +5648,7 @@ async def _translate_inbound_content(
     """
     try:
         from omnigent.server.inbound_translation import (
-            inbound_translation_enabled,
+            inbound_pass_enabled,
             translate_inbound_message,
         )
         from omnigent.server.spoken_summary import resolve_spoken_summary_settings_async
@@ -5656,7 +5656,7 @@ async def _translate_inbound_content(
         _enabled, language, _conv = await resolve_spoken_summary_settings_async(
             session_id, conversation_store
         )
-        if not inbound_translation_enabled(language):
+        if not inbound_pass_enabled(language):
             return content, None
         text = _message_text([b for b in content if isinstance(b, dict)])
         if not text:
