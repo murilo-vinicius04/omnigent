@@ -82,6 +82,7 @@ from omnigent.server.routes.builtin_agents import create_builtin_agents_router
 from omnigent.server.routes.comments import create_comments_router
 from omnigent.server.routes.default_policies import create_default_policies_router
 from omnigent.server.routes.dictation import create_dictation_router
+from omnigent.server.routes.live_voice import create_live_voice_router
 from omnigent.server.routes.extension_assets import create_extension_assets_router
 from omnigent.server.routes.extensions import create_extensions_router
 from omnigent.server.routes.harnesses import create_harnesses_router
@@ -2659,6 +2660,13 @@ def create_app(
         create_dictation_router(auth_provider=auth_provider),
         prefix="/v1",
         tags=["dictation"],
+    )
+    # Live voice: the WebRTC handshake broker plus its probe page. Keyless
+    # servers register it anyway; the routes report 503 rather than 404.
+    app.include_router(
+        create_live_voice_router(auth_provider=auth_provider),
+        prefix="/v1",
+        tags=["live-voice"],
     )
     app.include_router(
         create_terminal_attach_router(
