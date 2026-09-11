@@ -233,24 +233,76 @@ start on every message the reader types**. Warm, it would be ~1s.
 
 ---
 
+## 2d. The companion — stage one, built and openable
+
+One warm `agy` per Omnigent session, per the design the reader settled on
+2026-09-11. Open it at:
+
+```
+http://localhost:6767/v1/discussion/test
+```
+
+| thing | where |
+| --- | --- |
+| session manager | `omnigent/server/discussion.py` |
+| routes | `omnigent/server/routes/discussion.py` |
+| probe page | `omnigent/server/routes/discussion_page.py` |
+| tests | `tests/server/test_discussion.py` (28) |
+
+**The one idea that makes the rest fall out: the ledger is the memory, the
+process is a cache.** Every note, question and answer lands in a
+`ContextEntry` list on the session — *that* is the conversation. The
+subprocess holds the same history only as a warm copy. So any process death
+is recoverable: a crash, a timeout, an idle reap, a server restart. The next
+question spawns a new process and replays the ledger into it. This is why the
+code is free to kill the process whenever its state is in doubt (notably after
+a timeout, where a late answer would otherwise pair with the *next* question).
+
+The ledger is also exactly what the UI shows, so "what does it know?" has one
+answer rather than one per surface.
+
+**Notes cost nothing until they are needed.** `session.note(...)` does not
+touch the process — it appends to the ledger and returns. Undelivered notes
+are folded into the next question as a briefing block. So narrating "Claude is
+running the tests" is free, and the context arrives exactly when it becomes
+relevant. The probe page shows undelivered entries dashed and dimmed.
+
+**Cold start is one turn, not three.** The first version sent the role, then
+the ledger replay, then the question — three turns, **8.3s**, *worse* than the
+4–5s one-shot this replaces. Folding all three into one message brought it to
+**3.5s**. `prewarm()` exists to pay even that ahead of time: call it when a
+voice channel opens and the reader's first question is a warm ~1.1s.
+
+API, all under `/v1/discussion/{session_id}` and all returning the whole ledger
+so a UI panel cannot drift: `GET` (state), `POST /note`, `POST /ask`,
+`POST /prewarm`, `POST /close`.
+
+Lifecycle is wired into the server lifespan (`app.py`): a 60s sweep reaps
+processes idle past `OMNIGENT_DISCUSSION_IDLE_S` (default 15 min), and
+`close_all()` on shutdown means a restart never orphans an `agy`. Env
+overrides: `OMNIGENT_DISCUSSION_AGY_BIN`, `OMNIGENT_DISCUSSION_MODEL`,
+`OMNIGENT_DISCUSSION_IDLE_S`.
+
+**Not done:** nothing feeds it from a real session yet — the probe page is the
+only thing calling `/note`. Wiring the summaries and Claude's activity in, and
+connecting it to the live voice channel, is the next step.
+
+---
+
 ## 3. The queue, in the reader's priority order
 
-1. **A persistent Gemini discussion agent — NEXT, and specified.** The reader
-   settled the design on 2026-09-11:
-   - **One warm agy process per Omnigent session**, not one per message. It
-     lives as long as the session does and carries its own conversation history
-     (`--input-format stream-json`; see §2c for the exact invocation and the
-     NDJSON shape).
-   - **What it knows: what Claude is doing, and the spoken summaries.**
-     Deliberately *not* the full transcript — "nothing really deep". The
-     summaries are already written, already compressed, and are the same story
-     the reader heard narrated.
-   - **Its context must be visible in the UI.** The reader wants to see what
-     the discussion agent knows, not guess at it.
-   - This is the backend for the live voice channel (§2b) and, later, for
-     "Gemini answers directly when Claude is not needed" (item 3).
-   - Build order: the warm session manager first — self-contained and testable
-     on its own — then wire it to live voice.
+1. **The companion — stage one is built (§2d); wiring it up is NEXT.** The
+   warm session manager, its routes and its probe page exist and are tested.
+   What remains is the part that makes it real:
+   - **Feed it from an actual session**: call `note("summary", ...)` when a
+     spoken summary is generated, and `note("activity", ...)` as Claude works
+     (which is item 2 — the same hook serves both).
+   - **Show the ledger in the Omnigent UI**, not only on the probe page. The
+     reader asked for its context to be visible; `GET /v1/discussion/{id}`
+     already returns exactly what the panel needs.
+   - **Wire it to live voice (§2b)**: `prewarm()` when the channel opens, then
+     `ask()` per utterance. Latency budget is the thing to watch — ~1.1s warm
+     plus the live model's own turnaround.
 2. **Progress updates while Claude works** — "Claude is doing X now", so the
    reader can follow a long turn instead of waiting blind. Needs a live path;
    everything today is end-of-turn. Natural fit for the same warm session.
@@ -291,6 +343,20 @@ worker. The reader said forget it unless it is trivial. It is not.
   never the clamp.
 - **gpt-live-1 handshake**: HTTP 201 in 877 ms. Billing is wall-clock, so
   silence costs the same as speech; $5 ≈ 100 minutes of session time.
+- **Companion turns** (2026-09-11, `gemini-3.8-flash-low`, real CLI):
+
+  | path | cost |
+  | --- | --- |
+  | `note()` — record context | 0.000s, no process |
+  | cold `ask()`, role + replay + question as one turn | **3.5s** |
+  | the same as three separate turns (rejected) | 8.3s |
+  | `prewarm()`, with nobody waiting | 6.2s |
+  | first question after a prewarm | **1.1s** |
+  | warm question | 1.0–1.5s |
+
+  Restarting after a kill and replaying a 9-entry ledger: 6.4s, and the
+  answer correctly said it remembered the parser bug being mentioned but
+  did not know the details — "nothing really deep" behaving as designed.
 
 ---
 
@@ -301,11 +367,12 @@ cd /home/nexus/wt/friendly-layer
 .venv/bin/python -m pytest tests/server/test_spoken_summary.py \
     tests/server/test_summary_tts.py tests/server/test_dictation_whisper.py \
     tests/server/test_inbound_repair.py tests/server/routes/test_dictation.py \
-    tests/server/test_live_voice.py -q
+    tests/server/test_live_voice.py tests/server/test_discussion.py -q
 cd web && npx vitest run src/ && node_modules/.bin/tsc -b && npx vite build
 ```
 
-Current: 146 server tests in that set, 6916 web tests, 0 type errors. `pre-commit run --all-files` fails only on pre-existing
+Current: 174 server tests in that set, 6916 web tests, 0 type errors
+(`.venv/bin/python -m pyrefly check <files>`). `pre-commit run --all-files` fails only on pre-existing
 `omnigent/runtime/telemetry.py` opentelemetry imports — not from this work.
 
 Inspect what a summary actually stored (the fastest way to tell selection from

@@ -1,0 +1,572 @@
+"""A warm ``agy`` process per session: the companion you can talk to.
+
+The spoken summary spawns a fresh ``agy --print`` for every rewrite and
+pays 4-5s of process startup each time. That is tolerable after a turn
+has already ended; it is not tolerable in a *conversation*, where the
+same 4-5s is dead air on a wall-clock-billed live voice session. One
+warm process answers in ~1.0s with its history intact, so this module
+keeps one alive per Omnigent session instead of one per message.
+
+What the companion knows
+------------------------
+
+Deliberately not much. It sees short notes about what Claude is doing
+and the spoken summaries of what Claude said — never the transcript,
+never the code. It is the person sitting next to you who has been
+half-listening, not a second engineer with the repo open. That is a
+product decision, and it is also what keeps replay cheap.
+
+The ledger is the memory; the process is a cache
+------------------------------------------------
+
+Every note, question and answer lands in :class:`ContextEntry` rows on
+the session — and *that* is the conversation's memory. The subprocess
+holds the same history, but only as a warm cache of it. So any process
+death is recoverable: a crash, a timeout, or an idle reap simply drops
+the cache, and the next question restarts ``agy`` and replays the ledger
+into it. Nothing the reader said is lost by killing the process, which
+is why this module is free to kill it whenever the state is in doubt.
+
+The ledger is also exactly what the UI shows, so "what does it know?"
+has one answer rather than one per surface.
+
+Notes cost nothing until they are needed
+----------------------------------------
+
+:meth:`DiscussionSession.note` does not talk to the process. It appends
+to the ledger and returns. Undelivered notes are folded into the next
+question as a briefing block, so telling the companion what Claude is
+doing never burns a round trip of its own — the context arrives at the
+moment it becomes relevant.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import os
+import time
+from collections import deque
+from dataclasses import dataclass
+from typing import Any, Final, Literal
+
+from omnigent.model_fallbacks import SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
+
+_logger = logging.getLogger(__name__)
+
+#: The CLI. Overridable for tests and non-PATH installs.
+DISCUSSION_AGY_BIN: Final[str] = "agy"
+
+#: How long a question may take before the process is assumed wedged.
+#: Warm turns measure ~1.0s and a cold first turn ~3.1s, so this is
+#: loose enough to absorb a restart-and-replay and still bound the wait.
+DEFAULT_TIMEOUT_S: Final[float] = 30.0
+
+#: Idle time after which the process is reaped. The ledger survives, so
+#: the only cost of reaping early is one cold start later.
+DEFAULT_IDLE_S: Final[float] = 15 * 60.0
+
+#: Ledger entries kept. Caps what a replay has to re-send, and enforces
+#: "nothing really deep" by construction.
+MAX_ENTRIES: Final[int] = 60
+
+#: stderr lines retained for diagnostics when a process misbehaves.
+_STDERR_LINES: Final[int] = 20
+
+#: What the companion is told it is. There is no ``--system-prompt``
+#: flag on the CLI, so the role rides as the head of the first message —
+#: folded into a real question when nobody prewarmed, which is why it
+#: carries no "reply with" instruction of its own.
+ROLE_INSTRUCTIONS: Final[str] = (
+    "You are a companion talking with someone who is working alongside Claude Code, "
+    "an AI that is writing and running code for them. You are not that AI and you "
+    "cannot see the code, the files, or the full conversation. What you get is short "
+    "notes about what Claude is doing and short summaries of what it said.\n\n"
+    "Talk like a colleague leaning over from the next desk: two or three sentences, "
+    "plain words, no lists and no code. If you do not know something, say so and "
+    "suggest asking Claude — do not invent what the code does. When the person is "
+    "just thinking out loud, react like a person would rather than answering like a "
+    "manual."
+)
+
+#: Appended when the role is sent on its own, ahead of any question, so
+#: the turn has something to answer.
+_PREWARM_SUFFIX: Final[str] = "\n\nReply to this message with just: ready"
+
+EntryKind = Literal["activity", "summary", "question", "answer", "note"]
+
+
+@dataclass(frozen=True, slots=True)
+class ContextEntry:
+    """One thing the companion knows, and when it learned it.
+
+    :param kind: What sort of knowledge this is; drives the UI's label.
+    :param text: The text itself, already trimmed to size.
+    :param at: Unix timestamp when it was recorded.
+    """
+
+    kind: EntryKind
+    text: str
+    at: float
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the JSON shape the UI consumes."""
+        return {"kind": self.kind, "text": self.text, "at": self.at}
+
+
+class DiscussionUnavailable(RuntimeError):
+    """The companion cannot be reached, so the caller should degrade."""
+
+
+def _model() -> str:
+    """Return the configured companion model."""
+    return (
+        os.environ.get("OMNIGENT_DISCUSSION_MODEL", "").strip() or SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
+    )
+
+
+def _binary() -> str:
+    """Return the configured ``agy`` binary."""
+    return os.environ.get("OMNIGENT_DISCUSSION_AGY_BIN", "").strip() or DISCUSSION_AGY_BIN
+
+
+def idle_timeout_s() -> float:
+    """Return the configured idle reap threshold, in seconds."""
+    raw = os.environ.get("OMNIGENT_DISCUSSION_IDLE_S", "").strip()
+    if raw:
+        with contextlib.suppress(ValueError):
+            parsed = float(raw)
+            if parsed > 0:
+                return parsed
+    return DEFAULT_IDLE_S
+
+
+class DiscussionSession:
+    """One warm ``agy`` process, plus the ledger of what it was told.
+
+    Not thread-safe and not re-entrant: an internal lock serializes
+    start, ask and close, so concurrent questions queue rather than
+    interleaving on the one stdin pipe.
+    """
+
+    def __init__(self, session_id: str, *, model: str | None = None, binary: str | None = None):
+        """
+        :param session_id: Omnigent session this companion belongs to.
+        :param model: Model override; defaults to the configured one.
+        :param binary: CLI override; defaults to the configured one.
+        """
+        self.session_id = session_id
+        self._model = model or _model()
+        self._binary = binary or _binary()
+        self._entries: deque[ContextEntry] = deque(maxlen=MAX_ENTRIES)
+        self._undelivered: list[ContextEntry] = []
+        self._process: asyncio.subprocess.Process | None = None
+        self._stderr: deque[str] = deque(maxlen=_STDERR_LINES)
+        self._stderr_task: asyncio.Task[None] | None = None
+        self._lock = asyncio.Lock()
+        self._last_used = time.time()
+        self._started_at: float | None = None
+        # Whether the process now held has been given the role and the
+        # ledger. False after any respawn, which is what makes a replay
+        # get folded into the next message.
+        self._briefed = False
+
+    # -- state the UI asks about ------------------------------------
+
+    @property
+    def context(self) -> list[ContextEntry]:
+        """Everything the companion knows, oldest first."""
+        return list(self._entries)
+
+    @property
+    def running(self) -> bool:
+        """Whether a warm process is currently held."""
+        return self._process is not None and self._process.returncode is None
+
+    @property
+    def idle_s(self) -> float:
+        """Seconds since this session was last used."""
+        return time.time() - self._last_used
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the session's state for the UI's context panel."""
+        return {
+            "session_id": self.session_id,
+            "model": self._model,
+            "running": self.running,
+            "idle_s": round(self.idle_s, 1),
+            "warm_since": self._started_at if self._briefed else None,
+            "pending_notes": len(self._undelivered),
+            "context": [entry.as_dict() for entry in self._entries],
+        }
+
+    # -- feeding it ---------------------------------------------------
+
+    def note(self, kind: EntryKind, text: str) -> None:
+        """Record something the companion should know, without asking it.
+
+        Cheap by design: this never touches the process. The note is
+        folded into the next question's briefing instead, so a busy
+        session can narrate freely without paying a turn per note.
+
+        :param kind: ``"activity"`` for what Claude is doing,
+            ``"summary"`` for what it said, ``"note"`` for anything else.
+        :param text: The note; blank text is ignored.
+        """
+        cleaned = text.strip()
+        if not cleaned:
+            return
+        entry = ContextEntry(kind=kind, text=cleaned[:2000], at=time.time())
+        self._entries.append(entry)
+        self._undelivered.append(entry)
+
+    # -- process lifecycle --------------------------------------------
+
+    async def _spawn(self) -> asyncio.subprocess.Process:
+        """Start one ``agy`` process in warm streaming mode.
+
+        :raises DiscussionUnavailable: When the binary is not on PATH.
+        """
+        args = [
+            # An empty --print is what puts the CLI in print mode without
+            # supplying the prompt inline; the turns arrive on stdin.
+            "--print=",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--model",
+            self._model,
+            # The reader's speech is untrusted text. No slash-command or
+            # skill expansion, ever.
+            "--disable-slash-commands",
+        ]
+        try:
+            process = await asyncio.create_subprocess_exec(
+                self._binary,
+                *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            raise DiscussionUnavailable(f"{self._binary!r} not found on PATH") from exc
+        self._process = process
+        self._started_at = time.time()
+        self._stderr_task = asyncio.create_task(self._drain_stderr(process))
+        return process
+
+    async def _drain_stderr(self, process: asyncio.subprocess.Process) -> None:
+        """Keep stderr flowing so a chatty CLI cannot block on a full pipe."""
+        stream = process.stderr
+        if stream is None:
+            return
+        with contextlib.suppress(Exception):
+            while True:
+                line = await stream.readline()
+                if not line:
+                    return
+                self._stderr.append(line.decode(errors="replace").rstrip())
+
+    async def _ensure_process(self) -> None:
+        """Spawn the process if it is not running. Sends nothing.
+
+        Deliberately silent: a fresh process needs the role and a ledger
+        replay, and paying for those as separate turns would make the
+        first question slower (measured 8.3s) than the cold one-shot
+        this module exists to replace. :meth:`_preamble` folds them into
+        the question instead, so a cold ask costs one turn.
+        """
+        if self.running:
+            return
+        await self._spawn()
+        self._briefed = False
+
+    def _preamble(self) -> list[str]:
+        """Return the blocks that must ride ahead of the next message.
+
+        A fresh process gets the role plus the whole ledger. A warm one
+        gets only the notes recorded since its last turn.
+        """
+        if not self._briefed:
+            blocks = [ROLE_INSTRUCTIONS]
+            replay = self._replay_block()
+            if replay:
+                blocks.append(replay)
+            return blocks
+        if self._undelivered:
+            return [
+                "[Since we last spoke, this happened. Background only — "
+                "do not summarize it back to me.]\n"
+                + "\n".join(_render(entry) for entry in self._undelivered)
+            ]
+        return []
+
+    def _replay_block(self) -> str:
+        """Render the whole ledger as a catch-up block, or ``""``.
+
+        Used when a process starts fresh and has to be told everything
+        the ledger already holds.
+        """
+        if not self._entries:
+            return ""
+        return (
+            "[What has happened so far, for your memory. Background only — "
+            "do not summarize it back to me.]\n"
+            + "\n".join(_render(entry) for entry in self._entries)
+        )
+
+    async def prewarm(self, *, timeout_s: float | None = None) -> None:
+        """Pay the cold start now so the first question does not.
+
+        Call this when a voice channel opens: the process starts and
+        swallows the role and the ledger while nobody is waiting, which
+        turns the reader's first question into a warm ~1s turn.
+
+        :param timeout_s: Budget for the warm-up turn.
+        :raises DiscussionUnavailable: When the CLI is missing or dies.
+        """
+        budget = timeout_s if timeout_s is not None else DEFAULT_TIMEOUT_S
+        async with self._lock:
+            if self.running and self._briefed:
+                return
+            try:
+                await self._ensure_process()
+                blocks = self._preamble()
+                await self._turn("\n\n".join(blocks) + _PREWARM_SUFFIX, timeout_s=budget)
+            except DiscussionUnavailable:
+                await self._kill()
+                raise
+            self._briefed = True
+            self._undelivered.clear()
+            self._last_used = time.time()
+
+    async def close(self) -> None:
+        """Stop the process. The ledger survives and can be replayed."""
+        async with self._lock:
+            await self._kill()
+
+    async def _kill(self) -> None:
+        """Terminate the process and drop the stderr drain. Lock held."""
+        process, self._process = self._process, None
+        task, self._stderr_task = self._stderr_task, None
+        self._started_at = None
+        self._briefed = False
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        if process is None or process.returncode is not None:
+            return
+        with contextlib.suppress(Exception):
+            if process.stdin is not None:
+                process.stdin.close()
+        with contextlib.suppress(Exception):
+            process.kill()
+        with contextlib.suppress(Exception):
+            await process.wait()
+
+    # -- asking it ----------------------------------------------------
+
+    async def ask(self, text: str, *, timeout_s: float | None = None) -> str:
+        """Put a question to the companion and wait for its answer.
+
+        Everything the companion still needs — its role if the process
+        is fresh, a ledger replay, and any notes recorded since the last
+        question — rides on this same turn, so even a cold ask is one
+        round trip rather than three.
+
+        :param text: What the reader said.
+        :param timeout_s: Per-question budget; covers a cold start.
+        :returns: The companion's reply.
+        :raises DiscussionUnavailable: When the CLI is missing, dies, or
+            fails to answer in time. The ledger is intact either way.
+        """
+        question = text.strip()
+        if not question:
+            raise DiscussionUnavailable("nothing to ask")
+        budget = timeout_s if timeout_s is not None else DEFAULT_TIMEOUT_S
+        async with self._lock:
+            self._last_used = time.time()
+            try:
+                await self._ensure_process()
+                blocks = self._preamble()
+                message = (
+                    "\n\n".join([*blocks, f"[They said]\n{question}"]) if blocks else question
+                )
+                answer = await self._turn(message, timeout_s=budget)
+            except DiscussionUnavailable:
+                # The process is the only thing in doubt, so drop it and
+                # let the next question rebuild from the ledger.
+                await self._kill()
+                self._entries.append(ContextEntry("question", question, time.time()))
+                raise
+            self._briefed = True
+            self._undelivered.clear()
+            now = time.time()
+            self._entries.append(ContextEntry("question", question, now))
+            self._entries.append(ContextEntry("answer", answer, now))
+            self._last_used = now
+            return answer
+
+    async def _turn(self, message: str, *, timeout_s: float) -> str:
+        """Run exactly one NDJSON turn against the warm process. Lock held.
+
+        :param message: The user message to send.
+        :param timeout_s: Budget for writing and reading the reply.
+        :returns: The reply text.
+        :raises DiscussionUnavailable: On a dead process or a timeout.
+        """
+        process = self._process
+        if process is None or process.stdin is None or process.stdout is None:
+            raise DiscussionUnavailable("companion process is not running")
+        # The "event" key is load-bearing: a "type" key is rejected with
+        # `stream input message is missing the "event" field`.
+        line = json.dumps({"event": "user", "message": {"role": "user", "content": message}})
+        try:
+            process.stdin.write(line.encode() + b"\n")
+            await process.stdin.drain()
+            return await asyncio.wait_for(self._read_result(process), timeout=timeout_s)
+        except (TimeoutError, asyncio.TimeoutError) as exc:
+            raise DiscussionUnavailable(f"no answer within {timeout_s:g}s") from exc
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            raise DiscussionUnavailable(f"companion process died: {self._stderr_tail()}") from exc
+
+    async def _read_result(self, process: asyncio.subprocess.Process) -> str:
+        """Read NDJSON until this turn's ``result`` event.
+
+        Non-result events (progress, warnings) are skipped; the CLI emits
+        exactly one result per input message, so reading to the next one
+        is what pairs an answer with its question.
+        """
+        stdout = process.stdout
+        assert stdout is not None
+        while True:
+            raw = await stdout.readline()
+            if not raw:
+                raise DiscussionUnavailable(f"companion process ended: {self._stderr_tail()}")
+            text = raw.decode(errors="replace").strip()
+            if not text:
+                continue
+            try:
+                event = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict) or event.get("event") != "result":
+                continue
+            result = event.get("result")
+            if not isinstance(result, dict):
+                raise DiscussionUnavailable(f"unreadable result: {text[:200]}")
+            answer = str(result.get("response") or "").strip()
+            if not answer:
+                raise DiscussionUnavailable(f"empty answer: {text[:200]}")
+            return answer
+
+    def _stderr_tail(self) -> str:
+        """Return the last stderr lines, for an error message."""
+        return " | ".join(self._stderr) or "no stderr"
+
+
+def _render(entry: ContextEntry) -> str:
+    """Render one ledger entry for the model's eyes.
+
+    :param entry: The entry to render.
+    :returns: A single labelled line.
+    """
+    label = {
+        "activity": "Claude is",
+        "summary": "Claude said",
+        "question": "They asked",
+        "answer": "You said",
+        "note": "Note",
+    }.get(entry.kind, "Note")
+    return f"- {label}: {entry.text}"
+
+
+class DiscussionRegistry:
+    """The live companions, one per Omnigent session."""
+
+    def __init__(self) -> None:
+        self._sessions: dict[str, DiscussionSession] = {}
+        self._lock = asyncio.Lock()
+
+    async def get(self, session_id: str) -> DiscussionSession:
+        """Return the companion for a session, creating it if needed.
+
+        Creation does not spawn a process: that waits for the first
+        question, so a session nobody talks to costs nothing.
+
+        :param session_id: Omnigent session id.
+        """
+        async with self._lock:
+            existing = self._sessions.get(session_id)
+            if existing is None:
+                existing = DiscussionSession(session_id)
+                self._sessions[session_id] = existing
+            return existing
+
+    def peek(self, session_id: str) -> DiscussionSession | None:
+        """Return an existing companion without creating one."""
+        return self._sessions.get(session_id)
+
+    async def close(self, session_id: str) -> None:
+        """Close and forget one session's companion."""
+        async with self._lock:
+            session = self._sessions.pop(session_id, None)
+        if session is not None:
+            await session.close()
+
+    async def close_all(self) -> None:
+        """Close every companion. Called on server shutdown."""
+        async with self._lock:
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+        for session in sessions:
+            await session.close()
+
+    async def sweep(self, *, idle_s: float | None = None) -> int:
+        """Reap processes idle beyond the threshold.
+
+        The ledger is kept, so a reaped session still knows everything
+        it knew; it just pays a cold start on the next question.
+
+        :param idle_s: Threshold override, in seconds.
+        :returns: How many processes were stopped.
+        """
+        threshold = idle_s if idle_s is not None else idle_timeout_s()
+        async with self._lock:
+            candidates = [s for s in self._sessions.values() if s.running and s.idle_s > threshold]
+        for session in candidates:
+            _logger.info("reaping idle companion for session %s", session.session_id)
+            await session.close()
+        return len(candidates)
+
+
+_REGISTRY: Final[DiscussionRegistry] = DiscussionRegistry()
+
+
+def registry() -> DiscussionRegistry:
+    """Return the process-wide companion registry."""
+    return _REGISTRY
+
+
+async def sweep_idle_companions(*, interval_s: float = 60.0) -> None:
+    """Reap idle companion processes forever. Started by the server lifespan.
+
+    A warm process costs nothing to bill but does hold a subprocess, and
+    a session the reader wandered away from should not keep one alive
+    until the server restarts. Reaping is cheap precisely because the
+    ledger is the memory: the session keeps everything it knew.
+
+    :param interval_s: How often to check.
+    """
+    while True:
+        try:
+            await asyncio.sleep(interval_s)
+            await _REGISTRY.sweep()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - a sweep must never kill the loop
+            _logger.exception("companion sweep failed")

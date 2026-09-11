@@ -59,12 +59,18 @@ from omnigent.runtime import (
 )
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.runtime.harnesses.process_manager import HarnessProcessManager
-from omnigent.server import managed_host_keepalive, session_live_state, shutdown_state
+from omnigent.server import (
+    discussion,
+    managed_host_keepalive,
+    session_live_state,
+    shutdown_state,
+)
 from omnigent.server.auth import AuthProvider, SharingMode
 from omnigent.server.background_session_titles import (
     BackgroundSessionTitleCoordinator,
     RunnerBackgroundTitleGenerator,
 )
+from omnigent.server.discussion import sweep_idle_companions
 from omnigent.server.feature_flags import Feature, FeatureFlags, resolve_feature_flags
 from omnigent.server.managed_hosts import ManagedSandboxDeployment
 from omnigent.server.managed_sandbox_reaper import ManagedSandboxReaper
@@ -82,11 +88,12 @@ from omnigent.server.routes.builtin_agents import create_builtin_agents_router
 from omnigent.server.routes.comments import create_comments_router
 from omnigent.server.routes.default_policies import create_default_policies_router
 from omnigent.server.routes.dictation import create_dictation_router
-from omnigent.server.routes.live_voice import create_live_voice_router
+from omnigent.server.routes.discussion import create_discussion_router
 from omnigent.server.routes.extension_assets import create_extension_assets_router
 from omnigent.server.routes.extensions import create_extensions_router
 from omnigent.server.routes.harnesses import create_harnesses_router
 from omnigent.server.routes.imports import create_imports_router
+from omnigent.server.routes.live_voice import create_live_voice_router
 from omnigent.server.routes.plan_limits import create_plan_limits_router
 from omnigent.server.routes.policy_registry import create_policy_registry_router
 from omnigent.server.routes.projects import create_projects_router
@@ -1515,9 +1522,19 @@ def create_app(
                 app_inst.state.managed_sandbox_reaper = managed_sandbox_reaper
                 await managed_sandbox_reaper.start()
 
+        # Reap companion processes nobody has talked to in a while. Their
+        # ledgers survive the reap, so the only cost is one cold start if
+        # the reader comes back.
+        companion_sweep_task = asyncio.create_task(sweep_idle_companions())
+
         try:
             yield
         finally:
+            companion_sweep_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await companion_sweep_task
+            # Never leave an agy subprocess behind a server restart.
+            await discussion.registry().close_all()
             if managed_sandbox_reaper is not None:
                 await managed_sandbox_reaper.shutdown()
             # Run completion is event-driven (the _publish_status hook) plus a
@@ -2667,6 +2684,13 @@ def create_app(
         create_live_voice_router(auth_provider=auth_provider),
         prefix="/v1",
         tags=["live-voice"],
+    )
+    # The warm companion: one agy process per session, plus its probe
+    # page. Registered unconditionally; a missing CLI reports 503.
+    app.include_router(
+        create_discussion_router(auth_provider=auth_provider),
+        prefix="/v1",
+        tags=["discussion"],
     )
     app.include_router(
         create_terminal_attach_router(
