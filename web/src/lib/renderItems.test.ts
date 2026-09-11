@@ -115,6 +115,40 @@ describe("buildBubbles — bubble grouping", () => {
     expect(item.spokenSummary).toEqual({ text: "Consertei o vazamento.", lang: "pt-BR" });
   });
 
+  it("upgrades a summary already shown when its recording lands later", () => {
+    // The written summary ships the moment it exists and its audio follows as
+    // a second item, so the turn briefly carries both. The reader must end up
+    // with the one that can actually be played.
+    const blocks: AnyBlock[] = [
+      {
+        type: "text_done",
+        ctx: ctx({ itemId: "a1", responseId: "resp_1" }),
+        fullText: "I fixed the connection pool leak and all tests pass.",
+        hasCodeBlocks: false,
+      },
+      {
+        type: "text_done",
+        ctx: ctx({ itemId: "a2", responseId: "resp_1" }),
+        fullText: "",
+        hasCodeBlocks: false,
+        spokenSummary: { text: "Consertei o vazamento.", lang: "pt-BR", audioPending: true },
+      },
+      {
+        type: "text_done",
+        ctx: ctx({ itemId: "a3", responseId: "resp_1" }),
+        fullText: "",
+        hasCodeBlocks: false,
+        spokenSummary: { text: "Consertei o vazamento.", lang: "pt-BR", audioFileId: "f_1" },
+      },
+    ];
+    const bubbles = buildBubbles(blocks, null);
+    const asst = bubbles[bubbles.length - 1] as Extract<Bubble, { kind: "assistant" }>;
+    expect(asst.items.length).toBe(1);
+    const item = asst.items[0] as Extract<RenderItem, { kind: "text" }>;
+    expect(item.text).toBe("I fixed the connection pool leak and all tests pass.");
+    expect(item.spokenSummary?.audioFileId).toBe("f_1");
+  });
+
   it("propagates ctx.createdBy onto the user bubble", () => {
     const blocks: AnyBlock[] = [
       {

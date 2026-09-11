@@ -33,6 +33,7 @@ import {
   removeIdsFromPages,
 } from "@/lib/sessionListCache";
 import { isModalHostResolved, resolveModalHost } from "@/lib/sessionHost";
+import { startCrossSessionNarration } from "@/lib/crossSessionNarration";
 import { type SessionUpdatesFrame, sessionUpdatesSocket } from "@/lib/sessionUpdatesSocket";
 
 // Coalesce bursts of structural changes / watch-set recomputes into one
@@ -176,6 +177,11 @@ export function SessionUpdatesProvider({ children }: { children: ReactNode }) {
   // the active route changes over the socket's lifetime. Keep the current
   // active id in a ref so the handler always reads the latest without
   // re-subscribing the socket on every navigation.
+  // Narration follows the reader, not the open conversation: a turn that
+  // finishes elsewhere is spoken here. Mounted beside the socket because this
+  // provider is the one place that lives for the whole session.
+  useEffect(() => startCrossSessionNarration(), []);
+
   const activeId = useActiveConversationId();
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;

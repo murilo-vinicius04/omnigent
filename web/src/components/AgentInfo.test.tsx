@@ -534,6 +534,7 @@ describe("AgentInfoButton per-model usage breakdown", () => {
     useChatStore.setState({
       sessionUsageByModel: {
         "claude-sonnet-4-6": {
+          calls: null,
           inputTokens: 12000,
           outputTokens: 3000,
           totalTokens: 15000,
@@ -542,6 +543,7 @@ describe("AgentInfoButton per-model usage breakdown", () => {
           totalCostUsd: 0.42,
         },
         "databricks-gpt-5-5": {
+          calls: null,
           inputTokens: 800,
           outputTokens: 200,
           totalTokens: 1000,
@@ -571,6 +573,7 @@ describe("AgentInfoButton per-model usage breakdown", () => {
     useChatStore.setState({
       sessionUsageByModel: {
         "claude-sonnet-4-6": {
+          calls: null,
           inputTokens: 12400,
           outputTokens: 250,
           totalTokens: 1530000,
@@ -601,6 +604,7 @@ describe("AgentInfoButton per-model usage breakdown", () => {
     useChatStore.setState({
       sessionUsageByModel: {
         "claude-sonnet-4-6": {
+          calls: null,
           inputTokens: 1000,
           outputTokens: 500,
           totalTokens: 1500,

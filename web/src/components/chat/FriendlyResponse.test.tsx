@@ -45,36 +45,30 @@ describe("FriendlyResponse", () => {
 describe("FriendlyResponse — server-synthesized audio", () => {
   const withAudio = { text: "Consertei o vazamento.", lang: "pt-BR", audioFileId: "f_audio_1" };
 
-  it("falls back to the browser engine when the recording has been pruned", async () => {
-    // A session keeps only its newest recordings, so an older summary still
-    // names an audio file whose bytes are gone. The control must speak, not
-    // sit silent.
-    const play = vi
-      .spyOn(window.HTMLMediaElement.prototype, "play")
-      .mockRejectedValue(new Error("404"));
-    const speak = vi
-      .spyOn(useSpeechPlaybackStore.getState(), "playManual")
-      .mockImplementation(() => {});
+  it("stays silent when the recording has been pruned", () => {
+    // A session keeps only its newest recordings, so an older summary can name
+    // one that is gone. The host's robotic voice is what the generated one
+    // exists to replace, and the summary is already on screen: say nothing.
+    const speak = vi.fn();
     useChatStore.setState({ conversationId: "conv_1" } as never);
+    useSpeechPlaybackStore.setState({ playManual: speak } as never);
+    vi.spyOn(window.HTMLMediaElement.prototype, "play").mockRejectedValue(new Error("gone"));
 
     render(
       <FriendlyResponse summary={withAudio} id="resp_gone">
         <div>original</div>
       </FriendlyResponse>,
     );
-
     fireEvent.click(screen.getByTestId("friendly-response-play"));
-    await vi.waitFor(() => expect(speak).toHaveBeenCalled());
-    expect(speak).toHaveBeenCalledWith("resp_gone", withAudio.text, withAudio.lang);
 
-    play.mockRestore();
-    speak.mockRestore();
+    return Promise.resolve().then(() => {
+      expect(speak).not.toHaveBeenCalled();
+      vi.restoreAllMocks();
+    });
   });
 
   it("plays the generated audio from the read-aloud control, not the browser engine", () => {
-    const play = vi
-      .spyOn(window.HTMLMediaElement.prototype, "play")
-      .mockResolvedValue(undefined);
+    const play = vi.spyOn(window.HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
     const speak = vi.spyOn(useSpeechPlaybackStore.getState(), "playManual");
     useChatStore.setState({ conversationId: "conv_1" } as never);
 
@@ -94,19 +88,106 @@ describe("FriendlyResponse — server-synthesized audio", () => {
     play.mockRestore();
   });
 
-  it("keeps the browser engine when the summary carries no audio", () => {
-    const play = vi
-      .spyOn(window.HTMLMediaElement.prototype, "play")
-      .mockResolvedValue(undefined);
+  it("does not layer the engine over a recording that starts late", () => {
+    // A large recording on a slow link can reject play() and then start anyway
+    // once data arrives. Speaking on rejection without pausing puts the engine
+    // on top of it -- the same words twice, heard as an echo.
+    const pause = vi.spyOn(window.HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(window.HTMLMediaElement.prototype, "play").mockRejectedValue(new Error("stalled"));
+
+    render(
+      <FriendlyResponse summary={withAudio} id="resp_slow">
+        <div>original</div>
+      </FriendlyResponse>,
+    );
+    fireEvent.click(screen.getByTestId("friendly-response-play"));
+
+    return Promise.resolve().then(() => {
+      expect(pause).toHaveBeenCalled();
+      vi.restoreAllMocks();
+    });
+  });
+
+  it("silences any other summary player before starting this one", async () => {
+    // Two streams of the same words, offset, is what an echo actually is. The
+    // channel claim is the single place that guarantees only one can be live,
+    // whichever path started the other.
+    const other = document.createElement("audio");
+    other.setAttribute("data-summary-audio", "");
+    Object.defineProperty(other, "paused", { value: false, configurable: true });
+    const otherPause = vi.fn();
+    other.pause = otherPause;
+    document.body.appendChild(other);
+
+    vi.spyOn(window.HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+
+    render(
+      <FriendlyResponse summary={withAudio} id="resp_claim">
+        <div>original</div>
+      </FriendlyResponse>,
+    );
+    fireEvent.click(screen.getByTestId("friendly-response-play"));
+
+    expect(otherPause).toHaveBeenCalled();
+    document.body.removeChild(other);
+    vi.restoreAllMocks();
+  });
+
+  it("says the recording is coming instead of reading it in the host voice", () => {
+    // The written summary ships the moment it exists; synthesis takes tens of
+    // seconds. Asking for the voice early must not answer with the robotic one.
+    const speak = vi.fn();
+    useSpeechPlaybackStore.setState({ playManual: speak } as never);
+
+    render(
+      <FriendlyResponse
+        summary={{ text: "resumo", lang: "pt-BR", audioPending: true }}
+        id="resp_pending"
+      >
+        <div>original</div>
+      </FriendlyResponse>,
+    );
+    fireEvent.click(screen.getByTestId("friendly-response-play"));
+
+    expect(screen.getByTestId("friendly-response-audio-pending")).toBeTruthy();
+    expect(speak).not.toHaveBeenCalled();
+  });
+
+  it("plays the recording once it lands, and drops the waiting notice", () => {
+    const { rerender } = render(
+      <FriendlyResponse
+        summary={{ text: "resumo", lang: "pt-BR", audioPending: true }}
+        id="resp_late"
+      >
+        <div>original</div>
+      </FriendlyResponse>,
+    );
+    fireEvent.click(screen.getByTestId("friendly-response-play"));
+    expect(screen.getByTestId("friendly-response-audio-pending")).toBeTruthy();
+
+    rerender(
+      <FriendlyResponse
+        summary={{ text: "resumo", lang: "pt-BR", audioFileId: "f_late" }}
+        id="resp_late"
+      >
+        <div>original</div>
+      </FriendlyResponse>,
+    );
+
+    expect(screen.queryByTestId("friendly-response-audio-pending")).toBeNull();
+    expect(screen.getByTestId("friendly-response-audio").getAttribute("src")).toContain("f_late");
+  });
+
+  it("offers no read-aloud control when there is no recording and none coming", () => {
+    // Nothing to play and nothing on its way: the control would only ever be
+    // able to produce the robotic voice, so it is not shown at all.
     render(
       <FriendlyResponse summary={{ text: "sem audio", lang: "pt-BR" }} id="resp_2">
         <div>original</div>
       </FriendlyResponse>,
     );
 
+    expect(screen.queryByTestId("friendly-response-play")).toBeNull();
     expect(screen.queryByTestId("friendly-response-audio")).toBeNull();
-    fireEvent.click(screen.getByTestId("friendly-response-play"));
-    expect(play).not.toHaveBeenCalled();
-    play.mockRestore();
   });
 });

@@ -283,6 +283,7 @@ export function* parseEventLines(lines: Iterable<string>): Iterable<StreamEvent>
 
 /** Token/cost bucket keys on a `ModelUsage`, mapping wire (snake) to camel. */
 const MODEL_USAGE_FIELDS: readonly { wire: string; camel: keyof ModelUsage }[] = [
+  { wire: "calls", camel: "calls" },
   { wire: "input_tokens", camel: "inputTokens" },
   { wire: "output_tokens", camel: "outputTokens" },
   { wire: "total_tokens", camel: "totalTokens" },
@@ -312,6 +313,7 @@ function parseUsageByModel(raw: unknown): Record<string, ModelUsage> | undefined
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return null;
     const src = entry as Record<string, unknown>;
     const usage: ModelUsage = {
+      calls: null,
       inputTokens: null,
       outputTokens: null,
       totalTokens: null,

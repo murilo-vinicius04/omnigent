@@ -7,7 +7,10 @@
 // device default only decides how a session starts.
 
 import { create } from "zustand";
-import { readSpokenSummaryPlayback } from "./spokenSummaryPlaybackPreferences";
+import {
+  readSpokenSummaryPlayback,
+  writeSpokenSummaryPlayback,
+} from "./spokenSummaryPlaybackPreferences";
 
 const KEY_PREFIX = "omnigent:narrate-session:";
 
@@ -65,6 +68,11 @@ export const useNarrationStore = create<NarrationStoreState>((set, get) => ({
 
   setEnabled: (sessionId: string, value: boolean) => {
     writeSessionNarration(sessionId, value);
+    // Turning it on means "read to me", not "read to me only here": every
+    // session the reader has not decided about follows. Turning it off stays
+    // local, so one noisy conversation can be silenced without ending
+    // narration everywhere (Settings still owns the device-wide switch).
+    if (value) writeSpokenSummaryPlayback(true);
     set({ overrides: { ...get().overrides, [sessionId]: value } });
   },
 

@@ -20,7 +20,6 @@ export interface SpokenSummarySkimLineProps {
  */
 export function SpokenSummarySkimLine({ summary, id, itemId }: SpokenSummarySkimLineProps) {
   const speakingItemId = useSpeechPlaybackStore((s) => s.speakingItemId);
-  const playManual = useSpeechPlaybackStore((s) => s.playManual);
   const stop = useSpeechPlaybackStore((s) => s.stop);
 
   const effectiveId = id || itemId || "";
@@ -30,13 +29,11 @@ export function SpokenSummarySkimLine({ summary, id, itemId }: SpokenSummarySkim
     (e: React.MouseEvent) => {
       e.stopPropagation();
       if (!effectiveId) return;
-      if (isSpeaking) {
-        stop();
-      } else {
-        playManual(effectiveId, summary.text, summary.lang);
-      }
+      // Summaries are spoken only from their own recording now, so this
+      // control stops playback and never starts the host voice.
+      if (isSpeaking) stop();
     },
-    [isSpeaking, stop, playManual, effectiveId, summary.text, summary.lang],
+    [isSpeaking, stop, effectiveId],
   );
 
   return (

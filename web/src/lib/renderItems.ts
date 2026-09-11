@@ -66,7 +66,7 @@ export type RenderItem =
        * it just arrived or is being replayed from history.
        */
       createdAtS?: number;
-      spokenSummary?: { text: string; lang: string; audioFileId?: string };
+      spokenSummary?: { text: string; lang: string; audioFileId?: string; audioPending?: boolean };
       /** Files this turn attached, lifted from its message blocks. */
       files?: AttachedFile[];
     }
@@ -1567,10 +1567,17 @@ function buildAssistantItems(
   // message it describes is already durable and items are append-only. That
   // item has no text of its own, so it is dropped above as an empty trailing
   // message — lift its summary onto the turn's text before it goes.
-  const carriedSummary = blocks.find(
+  // A turn can carry two summary items: the text as soon as it is written, and
+  // the same text again with its recording once synthesis finishes. Prefer the
+  // one that has audio; without it the reader would keep the silent first copy
+  // and never get the voice.
+  const carriers = blocks.filter(
     (b): b is Extract<AnyBlock, { type: "text_done" }> =>
       b.type === "text_done" && b.fullText.length === 0 && Boolean(b.spokenSummary),
-  )?.spokenSummary;
+  );
+  const carriedSummary =
+    carriers.filter((b) => b.spokenSummary?.audioFileId).at(-1)?.spokenSummary ??
+    carriers.at(-1)?.spokenSummary;
   const carriedFiles = blocks
     .filter(
       (b): b is Extract<AnyBlock, { type: "text_done" }> =>
@@ -1590,7 +1597,12 @@ function buildAssistantItems(
     for (let k = items.length - 1; k >= 0; k -= 1) {
       const item = items[k]!;
       if (item.kind === "text" && item.text.length > 0) {
-        if (!item.spokenSummary) items[k] = { ...item, spokenSummary: carriedSummary };
+        // Take the carrier when there is nothing yet, and upgrade a summary
+        // still waiting on its recording once one arrives.
+        const waitingForAudio = item.spokenSummary && !item.spokenSummary.audioFileId;
+        if (!item.spokenSummary || (waitingForAudio && carriedSummary.audioFileId)) {
+          items[k] = { ...item, spokenSummary: carriedSummary };
+        }
         break;
       }
     }

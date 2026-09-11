@@ -7,12 +7,11 @@ import type { ActiveResponse } from "@/store/types";
 /**
  * How long after a turn finalizes a summary may still arrive and be spoken.
  *
- * The rewrite runs after the turn completes, and its default backend spawns the
- * `agy` CLI (~6s observed, capped at `OMNIGENT_SPOKEN_SUMMARY_AGY_TIMEOUT_S`), so a
- * real one lands within tens of seconds or never. Wide enough to cover that backend,
- * still bounded so a rebuild minutes later can never replay a turn already read.
+ * Has to cover both post-turn steps: the `agy` rewrite (capped at 45s) and the voice
+ * synthesis after it. Still bounded, so a rebuild minutes later never replays a turn
+ * the reader already finished.
  */
-const LIVE_SUMMARY_WINDOW_MS = 60_000;
+const LIVE_SUMMARY_WINDOW_MS = 120_000;
 
 /**
  * Compile-time exhaustive check for ToolState.
@@ -119,13 +118,19 @@ export function useSpokenSummaryPlayback(
         // A completed response stays in the store until the next send, so identity alone never
         // goes false while the user reads. Stale is a disqualifier, not a liveness requirement:
         // suppressing without positive evidence would silence turns that have no active response.
-        const isResponseStale = Boolean(
+        // The reader has moved on to another turn, so this one's summary is no longer the
+        // answer in front of them, whenever it arrives.
+        const anotherResponseIsLive = Boolean(
+          activeResponse && activeResponse.responseId !== responseId,
+        );
+        // This turn finalized too long ago for a summary to still be its live answer --
+        // unless the summary itself says otherwise, settled below against its server stamp.
+        const responseAgedOut = Boolean(
           activeResponse &&
-          // Another response is live, or this one finalized too long ago for a real summary.
-          (activeResponse.responseId !== responseId ||
-            (activeResponse.state !== "streaming" &&
-              activeResponse.completedAt !== undefined &&
-              Date.now() - activeResponse.completedAt > LIVE_SUMMARY_WINDOW_MS)),
+          activeResponse.responseId === responseId &&
+          activeResponse.state !== "streaming" &&
+          activeResponse.completedAt !== undefined &&
+          Date.now() - activeResponse.completedAt > LIVE_SUMMARY_WINDOW_MS,
         );
 
         // Select the text item that actually carries the spoken summary (the LAST/final one), not the first.
@@ -179,6 +184,9 @@ export function useSpokenSummaryPlayback(
             summaryAgeS !== undefined &&
             summaryAgeS >= 0 &&
             summaryAgeS * 1000 < LIVE_SUMMARY_WINDOW_MS;
+          // A summary that just landed is this turn's live answer however long it took to
+          // build, so its own stamp settles the age question the response's cannot.
+          const isResponseStale = anotherResponseIsLive || (responseAgedOut && !isFreshSummary);
 
           if (
             (wasObservedLive || isFreshSummary) &&

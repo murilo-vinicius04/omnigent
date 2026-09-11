@@ -336,7 +336,7 @@ export function translatedTextFromMessageContent(content: unknown): string | und
 
 export function spokenSummaryFromMessageContent(
   content: unknown,
-): { text: string; lang: string; audioFileId?: string } | undefined {
+): { text: string; lang: string; audioFileId?: string; audioPending?: boolean } | undefined {
   if (!Array.isArray(content)) return undefined;
   for (const block of content) {
     if (!block || typeof block !== "object") continue;
@@ -351,7 +351,15 @@ export function spokenSummaryFromMessageContent(
       // Present when the server synthesized this summary: the read-aloud
       // control plays that audio instead of the host's speech engine.
       const audioFileId = typeof b.audio_file_id === "string" ? b.audio_file_id : undefined;
-      return { text: b.text, lang: b.lang, ...(audioFileId ? { audioFileId } : {}) };
+      // The summary shipped before its recording: a second item carries the
+      // audio when synthesis finishes (tens of seconds later).
+      const audioPending = b.audio_pending === true;
+      return {
+        text: b.text,
+        lang: b.lang,
+        ...(audioFileId ? { audioFileId } : {}),
+        ...(audioPending ? { audioPending: true } : {}),
+      };
     }
   }
   return undefined;

@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronRightIcon, SquareIcon, Volume2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useSpeechPlaybackStore } from "@/lib/speechPlayback";
+import { claimSpeechChannel, useSpeechPlaybackStore } from "@/lib/speechPlayback";
 import { useChatStore } from "@/store/chatStore";
 
 export interface FriendlyResponseProps {
   /** The rewritten, reader-facing version of the reply. */
-  summary: { text: string; lang: string; audioFileId?: string };
+  summary: { text: string; lang: string; audioFileId?: string; audioPending?: boolean };
   /** Stable identifier for playback tracking (the turn's responseId). */
   id?: string;
   /** The model's original reply, one click away. */
@@ -25,9 +25,11 @@ export interface FriendlyResponseProps {
 export function FriendlyResponse({ summary, id, children }: FriendlyResponseProps) {
   const [showOriginal, setShowOriginal] = useState(false);
   const [audioPlaying, setAudioPlaying] = useState(false);
+  // Set when the reader asks for a recording that is still being made, so the
+  // control can say so instead of answering with the robotic host voice.
+  const [waitingForAudio, setWaitingForAudio] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const speakingItemId = useSpeechPlaybackStore((s) => s.speakingItemId);
-  const playManual = useSpeechPlaybackStore((s) => s.playManual);
   const stop = useSpeechPlaybackStore((s) => s.stop);
   const sessionId = useChatStore((s) => s.conversationId);
 
@@ -38,9 +40,12 @@ export function FriendlyResponse({ summary, id, children }: FriendlyResponseProp
     summary.audioFileId && sessionId
       ? `/v1/sessions/${encodeURIComponent(sessionId)}/resources/files/${encodeURIComponent(summary.audioFileId)}/content`
       : undefined;
-  const isSpeaking = audioUrl
-    ? audioPlaying
-    : Boolean(effectiveId && speakingItemId === effectiveId);
+  const autoplayOwnsThis = Boolean(effectiveId && speakingItemId === effectiveId);
+  const isSpeaking = audioUrl ? audioPlaying || autoplayOwnsThis : autoplayOwnsThis;
+
+  useEffect(() => {
+    if (audioUrl) setWaitingForAudio(false);
+  }, [audioUrl]);
 
   // Stop the audio if this bubble goes away mid-playback.
   useEffect(() => {
@@ -51,31 +56,40 @@ export function FriendlyResponse({ summary, id, children }: FriendlyResponseProp
   }, []);
 
   const toggleSpeech = () => {
+    // The written summary lands as soon as it exists; its recording follows a
+    // good while later. Asking for it early gets an answer, not silence.
+    if (!audioUrl && summary.audioPending) {
+      setWaitingForAudio(true);
+      return;
+    }
     if (audioUrl) {
       const el = audioRef.current;
       if (!el) return;
-      if (audioPlaying) {
+      if (audioPlaying || autoplayOwnsThis) {
+        // Covers both streams: this element, and the one autoplay owns.
         el.pause();
         el.currentTime = 0;
         setAudioPlaying(false);
+        stop();
         return;
       }
-      // Silence the browser engine before taking over the channel.
-      stop();
+      // Sole owner of the channel: silences the engine and any other player.
+      claimSpeechChannel(el, sessionId);
       void el.play().then(
         () => setAudioPlaying(true),
         () => {
-          // The recording is gone -- a session keeps only its newest ones, so
-          // an older summary outlives its audio. Read it with the browser
-          // engine rather than leaving the control silent.
+          // The recording would not start: a session keeps only its newest
+          // ones, so an older summary outlives its audio. Stay silent -- the
+          // summary is on screen, and the host's robotic voice is what the
+          // generated one exists to replace.
+          el.pause();
+          el.currentTime = 0;
           setAudioPlaying(false);
-          playManual(effectiveId, summary.text, summary.lang);
         },
       );
       return;
     }
     if (isSpeaking) stop();
-    else playManual(effectiveId, summary.text, summary.lang);
   };
 
   return (
@@ -99,7 +113,7 @@ export function FriendlyResponse({ summary, id, children }: FriendlyResponseProp
           {showOriginal ? "Hide original" : "Show original"}
         </button>
 
-        {(effectiveId || audioUrl) && (
+        {(audioUrl || summary.audioPending) && (
           <button
             type="button"
             onClick={toggleSpeech}
@@ -113,9 +127,18 @@ export function FriendlyResponse({ summary, id, children }: FriendlyResponseProp
                 <span className="font-medium text-primary">Stop</span>
               </>
             ) : (
-              <Volume2Icon className="size-3.5" aria-hidden="true" />
+              <Volume2Icon
+                className={cn("size-3.5", !audioUrl && summary.audioPending && "opacity-60")}
+                aria-hidden="true"
+              />
             )}
           </button>
+        )}
+
+        {waitingForAudio && !audioUrl && (
+          <span data-testid="friendly-response-audio-pending" aria-live="polite">
+            Recording it now — one moment.
+          </span>
         )}
       </div>
 
@@ -124,6 +147,7 @@ export function FriendlyResponse({ summary, id, children }: FriendlyResponseProp
           ref={audioRef}
           src={audioUrl}
           preload="none"
+          data-summary-audio=""
           data-testid="friendly-response-audio"
           onEnded={() => setAudioPlaying(false)}
           onError={() => setAudioPlaying(false)}
