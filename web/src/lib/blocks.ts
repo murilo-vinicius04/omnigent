@@ -8,6 +8,7 @@
 // uses camelCase fields + a `type` discriminator string equal to the
 // Python class name lowercased (e.g. ResponseStartBlock → "response_start").
 
+import type { SummaryShowBlock } from "./blockStream";
 import type { RoutingDecisionExtras } from "./routingDecision";
 import type { CodexPersistMode, RememberScope, Response } from "./types";
 
@@ -274,7 +275,13 @@ export interface TextDone {
   /** True when this persisted assistant text came from an interrupted turn. */
   interrupted?: boolean;
   /** Optional server-side spoken summary. */
-  spokenSummary?: { text: string; lang: string; audioFileId?: string; audioPending?: boolean };
+  spokenSummary?: {
+    text: string;
+    lang: string;
+    audioFileId?: string;
+    audioPending?: boolean;
+    show?: SummaryShowBlock[];
+  };
   /** Files this assistant message attached. */
   files?: AttachedFile[];
 }

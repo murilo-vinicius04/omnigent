@@ -334,9 +334,47 @@ export function translatedTextFromMessageContent(content: unknown): string | und
   return undefined;
 }
 
-export function spokenSummaryFromMessageContent(
-  content: unknown,
-): { text: string; lang: string; audioFileId?: string; audioPending?: boolean } | undefined {
+/** One part of the answer rendered under its summary, never spoken. */
+export interface SummaryShowBlock {
+  kind: "table" | "image" | "link" | "output" | "code" | "file";
+  label: string;
+  /** Markdown for a table, a URL for an image or link, lines for output, a file id for a file. */
+  content: string;
+  filename?: string;
+  mime_type?: string;
+}
+
+const SHOW_KINDS = new Set(["table", "image", "link", "output", "code", "file"]);
+
+/** Validate the `show` list off the wire, dropping anything unrecognized. */
+function parseShowBlocks(raw: unknown): SummaryShowBlock[] {
+  if (!Array.isArray(raw)) return [];
+  const blocks: SummaryShowBlock[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const b = entry as Record<string, unknown>;
+    if (typeof b.kind !== "string" || !SHOW_KINDS.has(b.kind)) continue;
+    if (typeof b.content !== "string" || !b.content) continue;
+    blocks.push({
+      kind: b.kind as SummaryShowBlock["kind"],
+      label: typeof b.label === "string" ? b.label : "",
+      content: b.content,
+      ...(typeof b.filename === "string" ? { filename: b.filename } : {}),
+      ...(typeof b.mime_type === "string" ? { mime_type: b.mime_type } : {}),
+    });
+  }
+  return blocks;
+}
+
+export function spokenSummaryFromMessageContent(content: unknown):
+  | {
+      text: string;
+      lang: string;
+      audioFileId?: string;
+      audioPending?: boolean;
+      show?: SummaryShowBlock[];
+    }
+  | undefined {
   if (!Array.isArray(content)) return undefined;
   for (const block of content) {
     if (!block || typeof block !== "object") continue;
@@ -354,11 +392,15 @@ export function spokenSummaryFromMessageContent(
       // The summary shipped before its recording: a second item carries the
       // audio when synthesis finishes (tens of seconds later).
       const audioPending = b.audio_pending === true;
+      // Parts of the answer worth showing rather than describing: rendered
+      // under the summary and never spoken.
+      const show = parseShowBlocks(b.show);
       return {
         text: b.text,
         lang: b.lang,
         ...(audioFileId ? { audioFileId } : {}),
         ...(audioPending ? { audioPending: true } : {}),
+        ...(show.length ? { show } : {}),
       };
     }
   }

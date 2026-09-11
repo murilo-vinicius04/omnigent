@@ -78,6 +78,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { SummaryShowKindsControl } from "@/components/chat/SummaryShowKindsControl";
 import {
   Select,
   SelectContent,
@@ -1310,6 +1311,9 @@ function GeneralSection() {
           <ComposerSendShortcutControl />
           <div className="mt-4 border-t border-border pt-4">
             <AlwaysSteerControl />
+          </div>
+          <div className="mt-4 border-t border-border pt-4">
+            <SummaryShowKindsControl />
           </div>
           <div className="mt-4 border-t border-border pt-4"></div>
         </div>

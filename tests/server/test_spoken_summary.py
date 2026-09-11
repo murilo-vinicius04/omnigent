@@ -219,11 +219,11 @@ def test_strip_markdown_for_speech() -> None:
     assert "def test" not in cleaned
 
 
-def test_the_rewriter_is_told_what_it_cannot_see() -> None:
-    """Tables, code, images and links are stripped before the rewrite, so a
-    reply whose point IS the table was summarized as if it had none and the
-    reader never learned it was there."""
-    from omnigent.server.spoken_summary import describe_answer_artifacts
+def test_the_rewriter_is_offered_what_the_reader_could_be_shown() -> None:
+    """Tables, images and links are stripped before the rewrite, so a reply
+    whose point IS the table was summarized as if it had none. Now they are
+    offered as things to show rather than describe."""
+    from omnigent.server.summary_blocks import describe_candidates, extract_show_candidates
 
     answer = (
         "Here are the results:\n\n"
@@ -231,40 +231,37 @@ def test_the_rewriter_is_told_what_it_cannot_see() -> None:
         "```python\nprint(1)\n```\n"
         "See [the report](https://example.test/r) and ![chart](chart.png).\n"
     )
-    inventory = describe_answer_artifacts(answer)
-    assert inventory is not None
-    assert "1 table" in inventory and "engine, WER, latency" in inventory
-    # Code blocks are deliberately absent: naming one costs a clause and tells
-    # the reader nothing they would act on.
-    assert "code block" not in inventory
-    assert "1 image" in inventory
-    assert "1 link (the report)" in inventory
+    listing = describe_candidates(extract_show_candidates(answer))
+    assert "table of 1 row (engine, WER, latency)" in listing
+    assert "code in python, 1 line" in listing
+    assert "image (chart)" in listing
+    assert "link (the report)" in listing
 
 
-def test_plain_prose_has_no_inventory() -> None:
-    """Nothing to point at means nothing added to the prompt."""
-    from omnigent.server.spoken_summary import describe_answer_artifacts
+def test_plain_prose_offers_nothing_to_show() -> None:
+    from omnigent.server.summary_blocks import extract_show_candidates
 
-    assert describe_answer_artifacts("Just words, no markup at all.") is None
-    assert describe_answer_artifacts("") is None
+    assert extract_show_candidates("Just words, no markup at all.") == []
+    assert extract_show_candidates("") == []
 
 
-def test_the_brief_asks_for_the_whole_answer_and_names_what_is_hidden() -> None:
+def test_the_brief_asks_for_the_whole_answer_and_offers_the_blocks() -> None:
     from omnigent.server.spoken_summary import build_spoken_summary_instructions
 
     with patch("omnigent.server.spoken_summary.load_voice_profile", return_value=None):
         plain = build_spoken_summary_instructions("en-US")
-        with_table = build_spoken_summary_instructions(
-            "en-US", artifacts="1 table (columns: a, b)"
+        with_blocks = build_spoken_summary_instructions(
+            "en-US", candidates="1. table of 3 rows (engine, WER)"
         )
 
     # The old brief capped every summary at "a short paragraph at most", which
     # is why endings went missing.
     assert "a short paragraph at most" not in plain
     assert "including the last thing it says" in plain
-    assert "1 table (columns: a, b)" in with_table
-    # Labels only: it must not describe contents it was never shown.
-    assert "never describe what any of them says" in with_table
+    assert "1. table of 3 rows (engine, WER)" in with_blocks
+    assert "SHOW:" in with_blocks
+    # A shown block speaks for itself; describing it is wasted breath.
+    assert "never invent what" in with_blocks
 
 
 def test_clamp_sentences() -> None:
@@ -2356,3 +2353,72 @@ def test_rewrite_is_told_to_keep_the_reader_s_decision(tmp_path: Any) -> None:
     assert "still phrased as a question" in out
     # And it must be told where to put it, so the ask is not buried mid-paragraph.
     assert "END with" in out
+
+
+def test_only_real_tables_become_blocks() -> None:
+    """A lone pipe row in prose is not a table, and showing it as one would be
+    worse than the prose it came from."""
+    from omnigent.server.summary_blocks import extract_show_candidates
+
+    assert extract_show_candidates("a | b in a sentence") == []
+    assert extract_show_candidates("| just | one |\n") == []
+    real = extract_show_candidates("| a | b |\n|---|---|\n| 1 | 2 |\n")
+    assert [b.kind for b in real] == ["table"]
+
+
+def test_a_long_listing_is_left_to_the_original() -> None:
+    """Short output can be the finding; forty lines of it is a listing."""
+    from omnigent.server.summary_blocks import extract_show_candidates
+
+    short = "```\nerror: boom\n```"
+    long = "```\n" + "\n".join(f"line {i}" for i in range(40)) + "\n```"
+    assert [b.kind for b in extract_show_candidates(short)] == ["output"]
+    assert extract_show_candidates(long) == []
+
+
+def test_the_selection_line_is_stripped_from_the_spoken_text() -> None:
+    """`SHOW: 1` is an instruction to the renderer, not something to read out."""
+    from omnigent.server.summary_blocks import extract_show_candidates, parse_show_selection
+
+    blocks = extract_show_candidates("| a | b |\n|---|---|\n| 1 | 2 |\n")
+    prose, chosen = parse_show_selection("The results are below.\nSHOW: 1", blocks)
+    assert prose == "The results are below."
+    assert [b.kind for b in chosen] == ["table"]
+
+
+def test_a_rewrite_with_no_selection_still_summarizes() -> None:
+    """A model that ignores the SHOW line must not cost the reader a summary."""
+    from omnigent.server.summary_blocks import extract_show_candidates, parse_show_selection
+
+    blocks = extract_show_candidates("| a | b |\n|---|---|\n| 1 | 2 |\n")
+    prose, chosen = parse_show_selection("Just the summary, thanks.", blocks)
+    assert prose == "Just the summary, thanks."
+    assert chosen == []
+
+
+def test_an_invented_block_id_is_dropped() -> None:
+    from omnigent.server.summary_blocks import extract_show_candidates, parse_show_selection
+
+    blocks = extract_show_candidates("| a | b |\n|---|---|\n| 1 | 2 |\n")
+    _, chosen = parse_show_selection("Summary.\nSHOW: 1, 7, 99", blocks)
+    assert [b.id for b in chosen] == [1]
+
+
+def test_attached_files_become_blocks_without_being_chosen() -> None:
+    from omnigent.server.summary_blocks import file_blocks
+
+    blocks = file_blocks(
+        [
+            {"file_id": "f_1", "filename": "report.pdf", "mime_type": "application/pdf"},
+            {"filename": "no-id.png"},  # unusable, dropped
+        ]
+    )
+    assert [b.as_dict() for b in blocks] == [
+        {
+            "kind": "file",
+            "label": "file (report.pdf)",
+            "content": "f_1",
+            "filename": "report.pdf",
+            "mime_type": "application/pdf",
+        }
+    ]

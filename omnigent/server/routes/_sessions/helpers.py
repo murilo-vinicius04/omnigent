@@ -7971,6 +7971,7 @@ async def _native_turn_text(
         return fallback
 
     said: list[str] = []
+    files: list[dict[str, Any]] = []
     for item in page.data:
         if item.response_id != response_id:
             continue
@@ -7981,13 +7982,39 @@ async def _native_turn_text(
         if getattr(data, "agent", None) == "spoken_summary":
             continue
         for block in getattr(data, "content", None) or []:
-            text = block.get("text") if isinstance(block, dict) else None
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "output_file":
+                files.append(block)
+                continue
+            text = block.get("text")
             if isinstance(text, str) and text.strip():
                 said.append(text.strip())
+    files.reverse()
+    _TURN_FILES[(session_id, response_id)] = files
     if not said:
         return fallback
     said.reverse()  # listed newest-first; the turn reads oldest-first
     return "\n\n".join(said)
+
+
+#: Files seen while rebuilding a turn's text, keyed by turn. Read moments later
+#: by the summary that ships them, then dropped: a file the assistant attached
+#: is always shown, so it never goes through the rewriter's choice.
+_TURN_FILES: OrderedDict[tuple[str, str], list[dict[str, Any]]] = OrderedDict()
+_TURN_FILES_MAX = 64
+
+
+def _take_turn_files(session_id: str, response_id: str) -> list[dict[str, Any]]:
+    """Pop the files found on this turn, if any.
+
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :param response_id: Response id of the turn being summarized.
+    :returns: The turn's ``output_file`` blocks, oldest first.
+    """
+    while len(_TURN_FILES) > _TURN_FILES_MAX:
+        _TURN_FILES.popitem(last=False)
+    return _TURN_FILES.pop((session_id, response_id), [])
 
 
 def _is_passive_watch(task: Any) -> bool:
@@ -8247,6 +8274,18 @@ async def _attach_native_spoken_summary(
 
     if spoken_summary_part is None:
         return
+
+    # A file the assistant attached is always shown: that judgement was made
+    # when it was sent, and the reported failure is a file that never surfaced.
+    from omnigent.server.summary_blocks import file_blocks
+
+    attached = file_blocks(_take_turn_files(session_id, response_id))
+    if attached:
+        shown = list(spoken_summary_part.get("show") or [])
+        spoken_summary_part = {
+            **spoken_summary_part,
+            "show": shown + [block.as_dict() for block in attached],
+        }
 
     # The summary goes out now and the voice follows it. Synthesis takes tens
     # of seconds, and holding the text back for it means staring at nothing

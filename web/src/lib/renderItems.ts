@@ -18,6 +18,7 @@
 //
 // Pure function. No React, no DOM. Tested in `renderItems.test.ts`.
 
+import type { SummaryShowBlock } from "./blockStream";
 import type {
   AttachedFile,
   AnyBlock,
@@ -66,7 +67,13 @@ export type RenderItem =
        * it just arrived or is being replayed from history.
        */
       createdAtS?: number;
-      spokenSummary?: { text: string; lang: string; audioFileId?: string; audioPending?: boolean };
+      spokenSummary?: {
+        text: string;
+        lang: string;
+        audioFileId?: string;
+        audioPending?: boolean;
+        show?: SummaryShowBlock[];
+      };
       /** Files this turn attached, lifted from its message blocks. */
       files?: AttachedFile[];
     }

@@ -26,6 +26,12 @@ from omnigent.model_fallbacks import (
     SPOKEN_SUMMARY_GEMINI_DEFAULT_MODEL,
     SPOKEN_SUMMARY_OPENAI_DEFAULT_MODEL,
 )
+from omnigent.server.summary_blocks import (
+    ShowBlock,
+    describe_candidates,
+    extract_show_candidates,
+    parse_show_selection,
+)
 from omnigent.server.voice_profile import load_voice_profile
 
 if TYPE_CHECKING:
@@ -351,49 +357,11 @@ def clamp_sentences(
 # decisions, or state mutations.
 
 
-def describe_answer_artifacts(text: str) -> str | None:
-    """List what the answer holds that the rewriter is never shown.
-
-    :func:`strip_markdown_for_speech` removes tables, images and links before
-    the rewrite, so a reply whose point IS the table gets summarized as if the
-    table did not exist and the reader never learns it is there. This inventory
-    is the rewriter's only evidence of them: counts and labels, never contents,
-    so it can point at them without inventing what they say. Code blocks are
-    left out on purpose -- naming them costs a clause and tells the reader
-    nothing they would act on.
-
-    :param text: The raw assistant text, before stripping.
-    :returns: A one-line inventory, or ``None`` when the answer is plain prose.
-    """
-    if not text:
-        return None
-    parts: list[str] = []
-
-    tables = re.findall(r"^[ \t]*\|.+\|[ \t]*$\n[ \t]*\|[ \t:|-]+\|[ \t]*$", text, re.M)
-    if tables:
-        header = tables[0].splitlines()[0]
-        columns = [c.strip() for c in header.strip().strip("|").split("|") if c.strip()][:6]
-        label = f"{len(tables)} table{'s' if len(tables) > 1 else ''}"
-        parts.append(f"{label} (first one's columns: {', '.join(columns)})" if columns else label)
-
-    images = re.findall(r"!\[[^\]]*\]\([^)]*\)", text)
-    if images:
-        parts.append(f"{len(images)} image{'s' if len(images) > 1 else ''}")
-
-    links = re.findall(r"(?<!!)\[([^\]]+)\]\(([^)]*)\)", text)
-    if links:
-        titles = [t.strip() for t, _ in links[:3] if t.strip()]
-        label = f"{len(links)} link{'s' if len(links) > 1 else ''}"
-        parts.append(f"{label} ({', '.join(titles)})" if titles else label)
-
-    return "; ".join(parts) or None
-
-
 def build_spoken_summary_instructions(
     language: str = "auto",
     *,
     pending_work: Sequence[str] = (),
-    artifacts: str | None = None,
+    candidates: str | None = None,
 ) -> str:
     """Construct the system instructions for the friendly rewrite.
 
@@ -472,14 +440,19 @@ def build_spoken_summary_instructions(
         "Never add information, never speculate, never comment on the answer's quality. "
         "Reply with the rewritten text only."
     )
-    if artifacts:
+    if candidates:
         base += (
-            "\n\nThe answer also contains, where you cannot see them: "
-            f"{artifacts}. "
-            "Say that each exists and what it is for, in one short clause, when it "
-            "changes what the reader does next -- a table of results, an image they "
-            "asked for, a link to open. You were given labels only, so never "
-            "describe what any of them says. Skip the ones that are incidental."
+            "\n\nThe answer also holds these, which the reader can be SHOWN rather "
+            "than told about:\n"
+            f"{candidates}\n"
+            "Pick the ones that are worth looking at -- a table of results they "
+            "asked for, an image, output that is itself the finding -- and end your "
+            "reply with a line `SHOW: 1, 3` naming them. Usually that is none or "
+            "one; showing everything is the same as showing nothing. Do not "
+            "describe what a shown one contains: it is displayed in full, so a "
+            "sentence about it is wasted breath -- at most say it is there. You "
+            "were given labels only and never their contents, so never invent what "
+            "any of them says. Omit the SHOW line when nothing is worth showing."
         )
     profile = load_voice_profile()
     if not profile:
@@ -522,11 +495,11 @@ def build_spoken_summary_prompt(
     language: str = "auto",
     *,
     pending_work: Sequence[str] = (),
-    artifacts: str | None = None,
+    candidates: str | None = None,
 ) -> str:
     """Backward-compatible helper returning a combined prompt string."""
     instructions = build_spoken_summary_instructions(
-        language, pending_work=pending_work, artifacts=artifacts
+        language, pending_work=pending_work, candidates=candidates
     )
     user_content, _ = build_spoken_summary_user_content(cleaned_text)
     return f"{instructions}\n\n---\n{user_content}"
@@ -950,22 +923,36 @@ async def _generate_via_agy(
     language: str,
     timeout_s: float,
     pending_work: Sequence[str] = (),
-    artifacts: str | None = None,
+    candidates: str | None = None,
 ) -> str | None:
     """Rewrite an assistant reply into friendly prose through the agy CLI.
 
     :param cleaned_text: Sanitized assistant output prose.
     :param language: Target language ("auto" or a BCP-47 tag).
     :param timeout_s: Hard timeout for the CLI call.
-    :param artifacts: Inventory of parts stripped from *cleaned_text*.
+    :param candidates: Blocks the reader could be shown, one per line.
     :returns: The raw rewritten text, or ``None`` on any failure.
     """
     return await run_agy_prompt(
         build_spoken_summary_prompt(
-            cleaned_text, language, pending_work=pending_work, artifacts=artifacts
+            cleaned_text, language, pending_work=pending_work, candidates=candidates
         ),
         timeout_s=timeout_s,
     )
+
+
+def _summary_part(text: str, lang: str, show: list[ShowBlock]) -> dict[str, Any]:
+    """Build the spoken-summary content part.
+
+    :param text: The rewritten prose, which is what gets spoken.
+    :param lang: BCP-47 tag for that prose.
+    :param show: Blocks to render under it; never spoken.
+    :returns: The content part.
+    """
+    part: dict[str, Any] = {"type": "spoken_summary", "text": text, "lang": lang}
+    if show:
+        part["show"] = [block.as_dict() for block in show]
+    return part
 
 
 async def generate_spoken_summary(
@@ -994,9 +981,11 @@ async def generate_spoken_summary(
     cleaned_text = strip_markdown_for_speech(text)
     if not cleaned_text:
         return None, None
-    # Taken from the raw text: stripping removes the tables, code, images and
-    # links, and a rewrite that cannot see them drops them silently.
-    artifacts = describe_answer_artifacts(text)
+    # Taken from the raw text: stripping removes tables, code, images and links,
+    # and a rewrite that cannot see them drops them silently. The reader can be
+    # shown these instead of told about them.
+    candidates = extract_show_candidates(text)
+    candidate_lines = describe_candidates(candidates) or None
 
     # An explicitly supplied client forces the API path, so the backend decision
     # and the timeout budget must agree — otherwise an API call inherits agy's
@@ -1016,10 +1005,11 @@ async def generate_spoken_summary(
                 language=language,
                 timeout_s=effective_timeout,
                 pending_work=pending_work,
-                artifacts=artifacts,
+                candidates=candidate_lines,
             )
             if not raw:
                 return None, None
+            raw, chosen = parse_show_selection(raw, candidates)
             summary_text = clamp_sentences(
                 raw,
                 max_sentences=REWRITE_MAX_SENTENCES,
@@ -1040,7 +1030,7 @@ async def generate_spoken_summary(
             # quota it exists to save, instead of being invisible.
             agy_usage: dict[str, Any] = {"by_model": {_agy_usage_model_id(): {"calls": 1}}}
             return (
-                {"type": "spoken_summary", "text": summary_text, "lang": lang_tag},
+                _summary_part(summary_text, lang_tag, chosen),
                 agy_usage,
             )
 
@@ -1055,7 +1045,7 @@ async def generate_spoken_summary(
             client = llm_client
 
         instructions = build_spoken_summary_instructions(
-            language=language, pending_work=pending_work, artifacts=artifacts
+            language=language, pending_work=pending_work, candidates=candidate_lines
         )
         user_content, _ = build_spoken_summary_user_content(cleaned_text)
 
@@ -1081,6 +1071,7 @@ async def generate_spoken_summary(
             raw_summary = getattr(resp, "text", "") or ""
 
         # Post-clean summary: clamp sentences and characters, check implausible output
+        raw_summary, chosen = parse_show_selection(raw_summary, candidates)
         summary_text = clamp_sentences(raw_summary, max_sentences=3, input_text=text)
         if not summary_text:
             return None, None
@@ -1091,11 +1082,7 @@ async def generate_spoken_summary(
         else:
             lang_tag = detect_bcp47_language(summary_text)
 
-        spoken_summary_part = {
-            "type": "spoken_summary",
-            "text": summary_text,
-            "lang": lang_tag,
-        }
+        spoken_summary_part = _summary_part(summary_text, lang_tag, chosen)
 
         # Build usage delta for attribution
         usage_delta: dict[str, Any] | None = None

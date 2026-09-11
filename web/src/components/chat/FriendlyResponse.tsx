@@ -3,10 +3,18 @@ import { ChevronRightIcon, SquareIcon, Volume2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { claimSpeechChannel, useSpeechPlaybackStore } from "@/lib/speechPlayback";
 import { useChatStore } from "@/store/chatStore";
+import type { SummaryShowBlock } from "@/lib/blockStream";
+import { SummaryShowBlocks } from "@/components/chat/SummaryShowBlocks";
 
 export interface FriendlyResponseProps {
   /** The rewritten, reader-facing version of the reply. */
-  summary: { text: string; lang: string; audioFileId?: string; audioPending?: boolean };
+  summary: {
+    text: string;
+    lang: string;
+    audioFileId?: string;
+    audioPending?: boolean;
+    show?: SummaryShowBlock[];
+  };
   /** Stable identifier for playback tracking (the turn's responseId). */
   id?: string;
   /** The model's original reply, one click away. */
@@ -97,6 +105,9 @@ export function FriendlyResponse({ summary, id, children }: FriendlyResponseProp
       <div data-testid="friendly-response-text" className="min-w-0 whitespace-pre-wrap">
         {summary.text}
       </div>
+
+      {/* Shown, not spoken: the voice reads the prose above only. */}
+      <SummaryShowBlocks blocks={summary.show} />
 
       <div className="mt-1.5 flex items-center gap-3 text-xs text-muted-foreground">
         <button
