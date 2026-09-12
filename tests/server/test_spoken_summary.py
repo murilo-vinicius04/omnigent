@@ -2543,3 +2543,28 @@ def test_earlier_messages_reach_the_assembled_prompt() -> None:
     )
     assert "one session or one per message?" in prompt
     assert "do it the second way" in prompt
+
+
+def test_clamping_keeps_paragraph_breaks() -> None:
+    """A long rewrite arrived as one unbroken block.
+
+    Splitting on the whitespace after a terminal consumed the blank line
+    between paragraphs, and rejoining with a space threw it away -- so only
+    rewrites long enough to be clamped lost their shape, which is exactly
+    when the shape matters most.
+    """
+    long_rewrite = "\n\n".join(
+        " ".join(f"Sentence {i * 3 + j}." for j in range(3)) for i in range(4)
+    )
+    clamped = clamp_sentences(long_rewrite, max_sentences=9, max_chars=1200)
+    assert clamped is not None
+    assert "\n\n" in clamped
+    # Still clamped: nine sentences kept, the rest dropped.
+    assert clamped.count(".") == 9
+    assert "Sentence 9." not in clamped
+
+
+def test_clamping_within_the_limit_is_left_alone() -> None:
+    """Under the cap nothing is rewritten, paragraphs included."""
+    text = "First point.\n\nSecond point.\n\nThird point."
+    assert clamp_sentences(text, max_sentences=9, max_chars=1200) == text

@@ -338,10 +338,19 @@ def clamp_sentences(
         if len(cleaned) > max(allowance + _LENGTH_GRACE_CHARS, allowance * _LENGTH_GRACE_RATIO):
             return None
 
-    # Split on sentence terminals followed by whitespace
-    parts = re.split(r"(?<=[.!?])\s+", cleaned)
-    if len(parts) > max_sentences:
-        clamped = " ".join(parts[:max_sentences])
+    # Split on sentence terminals, keeping the whitespace that followed each
+    # one. Rejoining with a plain space would flatten every paragraph break
+    # in the rewrite into a single block -- so a long answer, and only a long
+    # answer, arrived as one unbroken wall.
+    pieces = re.split(r"((?<=[.!?])\s+)", cleaned)
+    sentences = pieces[0::2]
+    separators = pieces[1::2]
+    if len(sentences) > max_sentences:
+        kept = sentences[:max_sentences]
+        clamped = "".join(
+            part + (separators[i] if i < len(kept) - 1 and i < len(separators) else "")
+            for i, part in enumerate(kept)
+        )
     else:
         clamped = cleaned
 

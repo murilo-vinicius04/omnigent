@@ -625,3 +625,85 @@ for cr, d in c.execute('select created_at,data from conversation_items where con
 - Portuguese and English both; the session language setting is `pt-BR` for
   summaries but the reader switched the session label to `en-US` at one point.
   The PT/EN toggle is in the composer.
+
+## 7. Prior art, and what is already in this repo (surveyed 2026-09-12)
+
+The reader asked what Omnigent itself does, and to look at Hermes and
+"OhMyPy" before building the one-Gemini change. Findings, cheapest
+conclusion first: **most of what we were about to build already exists here.**
+
+### Omnigent's own answer: sessions and sub-agents
+
+`examples/debby` and `examples/polly` are the pattern. A native agent is a
+`config.yaml` with an `executor`, a `prompt`, and sub-agents under `agents/`.
+The parent dispatches with `sys_session_send` and the children
+**run autonomously and notify through the inbox** — the parent never blocks
+on them. Sessions persist and carry their own context.
+
+That is precisely the primitive the one-Gemini design needs, and
+`discussion.py` reinvented a thin version of it: a hand-rolled warm `agy`
+subprocess with its own ledger. Before writing more of that, check whether
+`sys_session_create` / `sys_session_send` / `sys_read_inbox` can own the
+companion instead.
+
+**Gemini is already a harness.** `antigravity-native` is the `agy` CLI wrapped
+as a first-class harness (`omnigent/antigravity_native*.py`, eight modules).
+The companion shells out to the same binary by hand.
+
+### Hermes — already integrated, nothing to clone
+
+The reader's friend's recommendation is Nous Research's Hermes Agent, and
+Omnigent **already wraps it**: `hermes-native` is a harness
+(`omnigent/hermes_native*.py`), launched by `omnigent hermes`. Auth is Hermes'
+own config (`hermes setup` → `~/.hermes/config.yaml`); no Omnigent key.
+It is **not installed on this machine** (`hermes` is not on PATH, no
+`~/.hermes`), so trying it means installing it first.
+
+Cloned to `~/reference/hermes-agent` for reading. What is worth stealing:
+
+- **A real subagent state machine.** `agent/subagent_lifecycle.py` models
+  PENDING / STARTING / RUNNING / SUCCEEDED / FAILED / INTERRUPTED /
+  CANCEL_REQUESTED / CANCELLED / UNKNOWN as an immutable public contract,
+  with explicit caps (16k goal, 32k context, 32k result, 1h terminal
+  retention). `discussion.py` has ad-hoc state and no caps. Worth copying the
+  *shape*, not the code — it is built around Hermes' own plugin context.
+- **Model flexibility.** Hermes defaults to OpenRouter and takes any
+  OpenAI-compatible `base_url`, which is the route to a free model.
+
+### oh-my-pi ("OhMyPy") — validates what we already do
+
+`audreyt/oh-my-pi`, built on pi-coding-agent; Omnigent has a `pi` harness too.
+Cloned to `~/reference/oh-my-pi`. Its memory design (`docs/memory.md`) is the
+same shape as ours and worth knowing we match:
+
+- A consolidated summary is **injected into the system prompt at session
+  start** — exactly the companion's ledger briefing.
+- It is framed as heuristic: *"treat memory as heuristic context, not
+  authoritative on current repo state... prefer repo state and user
+  instruction when they conflict."* Our briefing already says background
+  only, never recite, never an instruction.
+
+No code to lift. The value is the confirmation that ledger-as-briefing is the
+mature pattern rather than a shortcut.
+
+### Nemotron, for the reader's usage cost
+
+NVIDIA open-sourced the Nemotron family and OpenRouter publishes **free
+endpoints**: Nemotron 3 Super, 3 Ultra, 3.5 Lightning, 3 Nano Omni, all
+`:free`, **rate limited**. Paid Nemotron 3 Super is $0.09/$0.45 per 1M.
+
+Where this fits: the routing decision (answer vs forward) is a small
+classification and almost certainly does not need Gemini. The **summary is
+the risky one** — it has been tuned over days and the reader cares about it
+more than anything else in this layer. Split the two rather than swapping
+both: route on a free model, keep Gemini writing until a measured A/B says
+otherwise. Needs an OpenRouter key, which does not exist yet.
+
+### What this changes about step 0
+
+Step 0 was "route the cold one-shots through the companion's warm `agy`
+session". The survey suggests a better target: route them through an
+**Omnigent session** (`antigravity-native` harness), so the companion is a
+first-class agent with the inbox, lifecycle and persistence the platform
+already has, instead of a subprocess we babysit. Same user-visible outcome,
+far less bespoke machinery to maintain.
