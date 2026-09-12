@@ -253,6 +253,20 @@ function silentTrack(): MediaStreamTrack | null {
   }
 }
 
+/** One finished utterance, from whichever side said it. */
+export interface Utterance {
+  /** Who spoke: the reader at the microphone, or the model. */
+  readonly who: "reader" | "voice";
+  readonly text: string;
+}
+
+/**
+ * How long a transcript may go quiet before it counts as a finished
+ * utterance. Deltas arrive as words are said, so a gap is a pause; short
+ * enough to record promptly, long enough not to split a sentence in two.
+ */
+const UTTERANCE_GAP_MS = 1500;
+
 /** A two-way spoken conversation with the live model. */
 export interface LiveConversation {
   /** The model's voice, for attaching to an audio element. */
@@ -280,7 +294,10 @@ export interface LiveConversation {
  * @param sessionId - Conversation whose ledger briefs the model.
  * @throws LiveVoiceUnavailable when the microphone or the session is refused.
  */
-export async function openLiveConversation(sessionId: string | null): Promise<LiveConversation> {
+export async function openLiveConversation(
+  sessionId: string | null,
+  options: { onUtterance?: (utterance: Utterance) => void } = {},
+): Promise<LiveConversation> {
   if (typeof RTCPeerConnection === "undefined") {
     throw new LiveVoiceUnavailable("this browser has no WebRTC");
   }
@@ -305,6 +322,36 @@ export async function openLiveConversation(sessionId: string | null): Promise<Li
   const channel = pc.createDataChannel("oai-events");
   const inbound = new MediaStream();
 
+  // Buffer each side's transcript and flush it on a pause. Nothing else
+  // records this conversation: audio goes browser-to-OpenAI directly, so if
+  // it is not captured here it is gone the moment it is said.
+  const buffers: Record<"reader" | "voice", { text: string; timer?: ReturnType<typeof setTimeout> }> =
+    {
+      reader: { text: "" },
+      voice: { text: "" },
+    };
+
+  const collect = (who: "reader" | "voice", delta: string): void => {
+    const buffer = buffers[who];
+    buffer.text += delta;
+    clearTimeout(buffer.timer);
+    buffer.timer = setTimeout(() => {
+      const said = buffer.text.trim();
+      buffer.text = "";
+      if (said) options.onUtterance?.({ who, text: said });
+    }, UTTERANCE_GAP_MS);
+  };
+
+  const flushAll = (): void => {
+    for (const who of ["reader", "voice"] as const) {
+      const buffer = buffers[who];
+      clearTimeout(buffer.timer);
+      const said = buffer.text.trim();
+      buffer.text = "";
+      if (said) options.onUtterance?.({ who, text: said });
+    }
+  };
+
   const stop = (): void => {
     if (closed) return;
     closed = true;
@@ -315,6 +362,8 @@ export async function openLiveConversation(sessionId: string | null): Promise<Li
     } catch {
       // Already gone; closing the connection below is what stops the meter.
     }
+    // Whatever was mid-sentence is still worth recording.
+    flushAll();
     // Release the microphone, or the browser keeps showing it as in use.
     for (const track of mic.getTracks()) track.stop();
     try {
@@ -334,13 +383,19 @@ export async function openLiveConversation(sessionId: string | null): Promise<Li
     if (pc.connectionState === "failed" || pc.connectionState === "closed") stop();
   });
   channel.addEventListener("message", (event) => {
-    let payload: { type?: string };
+    let payload: { type?: string; delta?: string };
     try {
       payload = JSON.parse(String(event.data));
     } catch {
       return;
     }
-    if (payload.type === "session.closed") stop();
+    if (payload.type === "session.input_transcript.delta") {
+      collect("reader", payload.delta ?? "");
+    } else if (payload.type === "session.output_transcript.delta") {
+      collect("voice", payload.delta ?? "");
+    } else if (payload.type === "session.closed") {
+      stop();
+    }
   });
 
   for (const track of mic.getTracks()) pc.addTrack(track, mic);

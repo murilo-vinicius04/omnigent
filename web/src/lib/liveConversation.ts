@@ -7,6 +7,7 @@
 
 import { create } from "zustand";
 import { openLiveConversation, type LiveConversation } from "./liveVoice";
+import { noteCompanion } from "./companionApi";
 import { claimSpeechChannel } from "./speechPlayback";
 
 /** Billed rate, mirrored from the server so the meter can be shown. */
@@ -55,7 +56,14 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
     set({ connecting: true, error: null });
     let live: LiveConversation;
     try {
-      live = await openLiveConversation(sessionId);
+      live = await openLiveConversation(sessionId, {
+        // Nothing else records this: the audio never touches our server. Written
+        // to the ledger so the companion remembers it, the panel shows it, and
+        // the next conversation opens knowing what the last one said.
+        onUtterance: ({ who, text }) => {
+          void noteCompanion(sessionId, who === "reader" ? "question" : "answer", text);
+        },
+      });
     } catch (error) {
       set({ connecting: false, error: String(error) });
       return;

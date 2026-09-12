@@ -8,6 +8,11 @@ vi.mock("./liveVoice", () => ({
   LiveVoiceUnavailable: class extends Error {},
 }));
 vi.mock("./speechPlayback", () => ({ claimSpeechChannel: vi.fn() }));
+const noteCompanion = vi.fn(async (_sessionId: string, _kind: string, _text: string) => {});
+vi.mock("./companionApi", () => ({
+  noteCompanion: (sessionId: string, kind: string, text: string) =>
+    noteCompanion(sessionId, kind, text),
+}));
 
 import { useLiveConversationStore, conversationCostUsd } from "./liveConversation";
 
@@ -42,7 +47,7 @@ describe("the open spoken conversation", () => {
   it("opens one for the session and reports it", async () => {
     openLiveConversation.mockResolvedValue(fakeConversation());
     await useLiveConversationStore.getState().start("conv_a");
-    expect(openLiveConversation).toHaveBeenCalledWith("conv_a");
+    expect(openLiveConversation.mock.calls[0]?.[0]).toBe("conv_a");
     expect(useLiveConversationStore.getState().sessionId).toBe("conv_a");
   });
 
@@ -78,6 +83,30 @@ describe("the open spoken conversation", () => {
     expect(useLiveConversationStore.getState().sessionId).toBeNull();
     expect(useLiveConversationStore.getState().connecting).toBe(false);
     expect(useLiveConversationStore.getState().error).toContain("microphone");
+  });
+
+  it("records what was said, since nothing else does", async () => {
+    const live = fakeConversation();
+    let emit: ((u: { who: string; text: string }) => void) | undefined;
+    openLiveConversation.mockImplementation(
+      (_id: string, opts: { onUtterance?: (u: { who: string; text: string }) => void }) => {
+        emit = opts.onUtterance;
+        return Promise.resolve(live);
+      },
+    );
+
+    await useLiveConversationStore.getState().start("conv_a");
+    emit?.({ who: "reader", text: "does the waveform work in live mode?" });
+    emit?.({ who: "voice", text: "it renders but never moves" });
+
+    // The audio never touches our server, so if these are not written to the
+    // ledger the conversation is gone the moment it ends.
+    expect(noteCompanion).toHaveBeenCalledWith(
+      "conv_a",
+      "question",
+      "does the waveform work in live mode?",
+    );
+    expect(noteCompanion).toHaveBeenCalledWith("conv_a", "answer", "it renders but never moves");
   });
 
   it("prices the session the way the API bills it", () => {

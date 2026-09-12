@@ -118,3 +118,31 @@ export async function askCompanion(
   const body = await readOrThrow<CompanionAskWire>(res);
   return { answer: body.answer, state: fromWire(body.state) };
 }
+
+/**
+ * Record something into a session's ledger without spending a turn.
+ *
+ * Used by the spoken conversation, which is otherwise unrecorded: its audio
+ * goes browser-to-OpenAI directly, so nothing said in it survives unless it
+ * is written here. Best effort -- a lost line costs the companion some
+ * memory, never the conversation.
+ *
+ * @param sessionId The session whose ledger to write to.
+ * @param kind How the entry reads back, e.g. `"question"` or `"answer"`.
+ * @param text What was said.
+ */
+export async function noteCompanion(
+  sessionId: string,
+  kind: "activity" | "summary" | "question" | "answer" | "note",
+  text: string,
+): Promise<void> {
+  try {
+    await authenticatedFetch(`${base(sessionId)}/note`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, text }),
+    });
+  } catch {
+    // The conversation continues either way.
+  }
+}

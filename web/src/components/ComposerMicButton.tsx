@@ -284,10 +284,25 @@ export const ComposerMicButton = ({
     [],
   );
 
+  // The live conversation is the other thing this button can be doing.
+  // Subscribing to both keeps the icon honest when either changes.
+  void useVoiceBackendStore((s) => s.choices);
+  const conversationSessionId = useLiveConversationStore((s) => s.sessionId);
+  const conversationConnecting = useLiveConversationStore((s) => s.connecting);
+  const conversationError = useLiveConversationStore((s) => s.error);
+  const inConversation = Boolean(conversationSessionId) || conversationConnecting;
+  const liveVoiceChosen = currentVoiceBackend(liveSessionId) === "live";
+  const active = isListening || inConversation;
+
   // Second getUserMedia stream just for visualization — Web Speech API
-  // hides its audio buffer. Chrome batches the permission to one prompt.
+  // hides its audio buffer, and the live conversation's stream belongs to
+  // the peer connection. Chrome batches the permission to one prompt.
+  //
+  // Driven by `active`, not `isListening`: a live conversation is listening
+  // in every sense that matters to the reader, and bars that render but
+  // never move read as a dead microphone.
   useEffect(() => {
-    if (!isListening) return;
+    if (!active) return;
     let cancelled = false;
     let stream: MediaStream | null = null;
     let audioCtx: AudioContext | null = null;
@@ -350,7 +365,7 @@ export const ComposerMicButton = ({
         if (el) el.style.transform = `scaleY(${BAR_BASELINE})`;
       }
     };
-  }, [isListening]);
+  }, [active]);
 
   // Server-dictation toggle. Start resolves only once the mic + socket
   // handshake are up, so isListening flips exactly when audio flows.
@@ -411,14 +426,6 @@ export const ComposerMicButton = ({
   }, []);
   toggleServerRef.current = toggleServer;
 
-  // The live conversation is the other thing this button can be doing.
-  // Subscribing to both keeps the icon honest when either changes.
-  void useVoiceBackendStore((s) => s.choices);
-  const conversationSessionId = useLiveConversationStore((s) => s.sessionId);
-  const conversationConnecting = useLiveConversationStore((s) => s.connecting);
-  const conversationError = useLiveConversationStore((s) => s.error);
-  const inConversation = Boolean(conversationSessionId) || conversationConnecting;
-  const liveVoiceChosen = currentVoiceBackend(liveSessionId) === "live";
 
   const toggle = useCallback(() => {
     // On the live voice the mic is not dictation. There is no transcription
@@ -528,7 +535,7 @@ export const ComposerMicButton = ({
       : liveVoiceChosen
         ? "Talk to it out loud. Opens a live session billed about $0.05 a minute."
         : a11yLabel);
-  const active = isListening || inConversation;
+
 
   return (
     <Button
