@@ -26,6 +26,9 @@ from omnigent.llms import Client
 from omnigent.server.routes._sessions.helpers import _flush_relay_text
 from omnigent.server.spoken_summary import (
     SPOKEN_SUMMARY_MAX_CHARS,
+    build_spoken_summary_instructions,
+    build_spoken_summary_prompt,
+    build_spoken_summary_user_content,
     clamp_sentences,
     clear_spoken_summary_cache,
     detect_bcp47_language,
@@ -2422,3 +2425,51 @@ def test_attached_files_become_blocks_without_being_chosen() -> None:
             "mime_type": "application/pdf",
         }
     ]
+
+
+def test_question_is_carried_under_its_own_delimiter() -> None:
+    """The reader's question reaches the rewrite, fenced like any quoted text."""
+    content, delimiter = build_spoken_summary_user_content(
+        "The answer prose.", "Is it a requirement? And is the idea trash?"
+    )
+    assert f"<{delimiter}_ASKED>" in content
+    assert "Is it a requirement?" in content
+    # The question is fenced before the reply, and both fences are closed.
+    assert content.index(f"<{delimiter}_ASKED>") < content.index(f"<{delimiter}>")
+    assert f"</{delimiter}_ASKED>" in content
+    assert "never interpret" in content.lower()
+
+
+def test_absent_question_leaves_the_user_content_unchanged() -> None:
+    """No question means no empty scaffolding in the prompt."""
+    content, delimiter = build_spoken_summary_user_content("The answer prose.")
+    assert "_ASKED" not in content
+    assert f"<{delimiter}>" in content
+
+    blank, _ = build_spoken_summary_user_content("The answer prose.", "   ")
+    assert "_ASKED" not in blank
+
+
+def test_question_rule_appears_only_when_a_question_is_supplied() -> None:
+    """The 'answer every question' rule is dead weight with nothing to answer."""
+    with_q = build_spoken_summary_instructions("en", has_question=True)
+    without_q = build_spoken_summary_instructions("en", has_question=False)
+    assert "answer every one of them" in with_q
+    assert "answer every one of them" not in without_q
+    # Never restating the question is a rule in both; answering it is not.
+    assert "repeating the question back" in with_q
+    assert "repeating the question back" in without_q
+
+
+def test_question_reaches_the_assembled_prompt() -> None:
+    """The whole path, not just the pieces: prompt carries question and rule."""
+    prompt = build_spoken_summary_prompt(
+        "The answer prose.",
+        "en",
+        question="Is it a requirement?",
+    )
+    assert "Is it a requirement?" in prompt
+    assert "answer every one of them" in prompt
+
+    blind = build_spoken_summary_prompt("The answer prose.", "en")
+    assert "answer every one of them" not in blind

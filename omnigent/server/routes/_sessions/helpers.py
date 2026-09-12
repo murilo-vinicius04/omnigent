@@ -7499,11 +7499,13 @@ async def _flush_relay_text(
                     deny_reason=deny_reason,
                     enabled=enabled,
                 ):
+                    question = await _turn_user_question(conversation_store, session_id)
                     spoken_summary_part, spoken_summary_usage = await generate_spoken_summary(
                         text,
                         language=language,
                         model_override=spoken_summary_model,
                         llm_client=llm_client,
+                        question=question,
                     )
                     _tell_companion(session_id, spoken_summary_part)
         except asyncio.CancelledError as exc:
@@ -7997,6 +7999,67 @@ async def _native_turn_text(
         return fallback
     said.reverse()  # listed newest-first; the turn reads oldest-first
     return "\n\n".join(said)
+
+
+#: A reader's message is their own words, not a transcript, so the whole of it
+#: fits well inside this. The cap only stops a pasted log from crowding out the
+#: reply the rewrite is actually about.
+_QUESTION_MAX_CHARS = 2000
+
+
+async def _turn_user_question(
+    conversation_store: Any,
+    session_id: str,
+) -> str | None:
+    """Return the reader's message that prompted this turn.
+
+    The rewrite is spoken to the person who asked, and until it was given
+    this it could not see the asking -- only the reply. A reply that answers
+    three questions in passing was summarized down to whichever one it
+    happened to dwell on, and the reader had to open the original to find
+    the rest. Knowing the question lets the rewrite lead with the answer.
+
+    :param conversation_store: Store holding the turn's items.
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :returns: The reader's prompting message, or ``None`` when it cannot be read.
+    """
+    if conversation_store is None:
+        return None
+    try:
+        page = await asyncio.to_thread(
+            conversation_store.list_items,
+            session_id,
+            _TURN_TEXT_SCAN_LIMIT,
+            None,
+            None,
+            "desc",
+            "message",
+        )
+    except Exception:  # noqa: BLE001 - the question is a bonus, the summary is not
+        _logger.warning(
+            "Could not read the question for session=%s; summarizing without it",
+            session_id,
+            extra={"session_id": session_id},
+            exc_info=True,
+        )
+        return None
+
+    # Newest first, so the first user message below this turn's assistant
+    # messages is the one that started it.
+    for item in page.data:
+        data = item.data
+        if getattr(data, "role", None) != "user":
+            continue
+        said: list[str] = []
+        for block in getattr(data, "content", None) or []:
+            if not isinstance(block, dict):
+                continue
+            text = block.get("text")
+            if isinstance(text, str) and text.strip():
+                said.append(text.strip())
+        if said:
+            return "\n\n".join(said)[:_QUESTION_MAX_CHARS]
+    return None
 
 
 #: Files seen while rebuilding a turn's text, keyed by turn. Read moments later

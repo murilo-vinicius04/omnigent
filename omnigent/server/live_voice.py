@@ -11,11 +11,13 @@ forwards it with the key attached and hands back the answer. That is the
 whole exchange — afterwards audio flows browser-to-OpenAI directly.
 
 **Cost shape, which drives the design.** Sessions bill on wall-clock, not
-on speech: silence costs the same as talking. The API has no way to list
-or terminate a session, so the only thing that ends one is the peer
-connection dropping. Session lifetime is therefore entirely the client's
-responsibility, and :data:`MAX_SESSION_S` exists as a runaway guard
-rather than as a UX timeout.
+on speech: silence costs the same as talking. There is no way to *list*
+open sessions, so a session whose page vanished is unreachable; ending
+one cleanly means sending ``session.close`` over the data channel, which
+answers ``session.closed`` with ``reason: close_requested``. Dropping the
+peer connection also ends it. Session lifetime is therefore the client's
+responsibility, and :data:`MAX_SESSION_S` is a runaway guard rather than
+a UX timeout.
 """
 
 from __future__ import annotations
