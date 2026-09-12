@@ -5714,23 +5714,37 @@ def _strip_force_claude(content: Any) -> tuple[Any, bool]:
     return (kept, True) if len(kept) != len(content) else (content, False)
 
 
-async def _route_through_companion(session_id: str, content: list[Any]) -> Routing | None:
-    """Ask the companion whether Claude is needed, and for the English.
+async def _route_through_companion(
+    session_id: str,
+    content: list[Any],
+    conversation_store: ConversationStore,
+) -> Routing | None:
+    """Ask the companion whether Claude is needed, and what to send it.
+
+    What may happen to the reader's words is the session's language
+    setting, not the companion's to decide -- the same two gates the
+    inbound pass uses. A reader working in another language gets their
+    message restated in English; a reader already set to English gets
+    dictation slips repaired and nothing else; an unset language, or the
+    inbound-pass kill switch, forwards their words untouched. Only the
+    routing decision is unconditional.
 
     Returns ``None`` when routing is off or there is nothing to route, so
     the caller falls back to the inbound repair pass unchanged. Never
     raises: the companion sits between the reader pressing enter and
     Claude seeing the message, so every failure has to forward.
 
-    The reader's language needs no lookup here: the companion replies in
-    whatever language the message was written in, which is the same rule
-    the summaries already follow.
-
     :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
     :param content: The outgoing message's content blocks.
+    :param conversation_store: Store used to resolve the session's language.
     :returns: The decision, or ``None`` to leave the old path in charge.
     """
     from omnigent.server import discussion
+    from omnigent.server.inbound_translation import (
+        inbound_pass_enabled,
+        inbound_translation_enabled,
+    )
+    from omnigent.server.spoken_summary import resolve_spoken_summary_settings_async
 
     if not discussion.routing_enabled():
         return None
@@ -5738,8 +5752,17 @@ async def _route_through_companion(session_id: str, content: list[Any]) -> Routi
     if not text:
         return None
     try:
+        _enabled, language, _conv = await resolve_spoken_summary_settings_async(
+            session_id, conversation_store
+        )
+        if not inbound_pass_enabled(language):
+            restate = "off"
+        elif inbound_translation_enabled(language):
+            restate = "translate"
+        else:
+            restate = "repair"
         companion = await discussion.registry().get(session_id)
-        return await companion.route(text)
+        return await companion.route(text, restate=restate)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - forwarding is always safe
@@ -5999,7 +6022,7 @@ async def _dispatch_session_event_to_runner_impl(
         # Claude is needed at all. When it answers, the message never reaches
         # the terminal and this server writes the turn itself.
         routed = (
-            await _route_through_companion(session_id, content)
+            await _route_through_companion(session_id, content, conversation_store)
             if isinstance(content, list) and content and not forced_to_claude
             else None
         )

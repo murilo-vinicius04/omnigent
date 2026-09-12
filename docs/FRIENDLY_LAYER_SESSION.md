@@ -251,6 +251,21 @@ what it already knows, it answers; everything else forwards.
 | answer marker | `web/src/components/chat/CompanionAnswerNote.tsx` |
 | tests | `tests/server/test_discussion.py` (46), 9 web tests |
 
+**What happens to the reader's words is the session's language setting, not
+the companion's call.** Routing asks for three different things, matching the
+inbound pass's own two gates (`inbound_pass_enabled`, `inbound_translation_enabled`):
+
+| session language | mode | what Claude receives |
+| --- | --- | --- |
+| another language (`pt-BR`) | `translate` | restated in English |
+| English (`en`, `en-*`) | `repair` | their own words, dictation slips fixed only |
+| unset / `auto`, or the pass killed | `off` | their words, untouched |
+
+In `off` the caller discards any `english` the model returned, so a model that
+restates anyway cannot put words in the reader's mouth. Verified against the
+real CLI: `off` → `None`, `repair` → byte-identical, `translate` → rewritten.
+The routing decision itself is unconditional in all three.
+
 **Everything fails toward forwarding.** An unparseable reply, a dead process, a
 missing CLI, a timeout, `"forward": false` with no answer to show — all forward.
 A slow answer from Claude costs seconds; a confident wrong answer from

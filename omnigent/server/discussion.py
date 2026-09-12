@@ -143,6 +143,12 @@ class DiscussionUnavailable(RuntimeError):
     """The companion cannot be reached, so the caller should degrade."""
 
 
+#: What the routing turn should do to the reader's text, mirroring the
+#: inbound pass's own two jobs: a reader working in another language gets
+#: their message restated in English, a reader already writing English gets
+#: dictation slips repaired, and an unset language means hands off entirely.
+Restatement = Literal["translate", "repair", "off"]
+
 #: The routing turn. Asks for both jobs at once because they need the same
 #: context and a second turn would double the latency on the typing path.
 _ROUTE_PROMPT: Final[str] = """\
@@ -151,11 +157,9 @@ answer it completely yourself.]
 {message}
 
 Reply with ONE line of JSON and nothing else:
-{{"forward": true, "english": "...", "answer": ""}}
+{{"forward": true, "english": {english_example}, "answer": ""}}
 
-- "english": their message restated in plain English for Claude. Faithful, \
-same meaning, no commentary, no answering it. Always fill this in, even when \
-you are answering yourself. If it is already English, repeat it unchanged.
+{english_rule}
 - "forward": false ONLY when you can answer completely from what you already \
 know -- small talk, a question about what has been happening, something you \
 were just told. If it needs the code, the files, a tool, a change, or any \
@@ -166,6 +170,39 @@ Empty otherwise.
 When in doubt, forward. Making them wait for Claude costs seconds; a \
 confident wrong answer from someone who cannot see the code costs much more.\
 """
+
+#: Restate the message in English. The reader is not writing English, so the
+#: harness would otherwise pay the tokenization premium on every turn.
+_RULE_TRANSLATE: Final[str] = (
+    '- "english": their message restated in plain English for Claude. Faithful, '
+    "same meaning, no commentary, no answering it. Always fill this in, even when "
+    "you are answering yourself. Reproduce code, commands, paths, identifiers and "
+    "quoted output exactly as given."
+)
+
+#: The reader already writes English, so this is a repair, not an edit. The
+#: bar is deliberately high: their own words are the default, and only a
+#: word the sentence plainly settles may change.
+_RULE_REPAIR: Final[str] = (
+    '- "english": their message with speech-to-text slips fixed, and NOTHING else '
+    "changed. They already write English, so this is a repair, not a rewrite: keep "
+    "their words, register and phrasing, including wording you find clumsy. Fix a "
+    "word only when the surrounding sentence makes the intended one obvious. "
+    "Reproduce code, commands, paths, identifiers and quoted output exactly. If "
+    "nothing is clearly mis-heard, repeat the message unchanged."
+)
+
+#: Hands off. The field is still asked for so the shape stays constant, but
+#: the caller ignores it and the reader's own words are what forward.
+_RULE_VERBATIM: Final[str] = (
+    '- "english": repeat their message back exactly as written, unchanged.'
+)
+
+_RESTATEMENT_RULES: Final[dict[str, str]] = {
+    "translate": _RULE_TRANSLATE,
+    "repair": _RULE_REPAIR,
+    "off": _RULE_VERBATIM,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,7 +549,13 @@ class DiscussionSession:
             self._last_used = time.time()
             return answer
 
-    async def route(self, text: str, *, timeout_s: float | None = None) -> Routing:
+    async def route(
+        self,
+        text: str,
+        *,
+        restate: Restatement = "translate",
+        timeout_s: float | None = None,
+    ) -> Routing:
         """Decide whether Claude is needed, and restate the message for it.
 
         One warm turn doing the work the cold inbound repair pass used to
@@ -521,9 +564,13 @@ class DiscussionSession:
         stay usable when the companion is not.
 
         :param text: What the reader typed.
+        :param restate: What may happen to their words -- ``"translate"``
+            for a reader working in another language, ``"repair"`` for one
+            already writing English, ``"off"`` to forward them untouched.
         :param timeout_s: Budget. Short by default -- this sits on the
             typing path, so a slow companion must get out of the way.
-        :returns: The decision.
+        :returns: The decision. ``english`` is ``None`` when *restate* is
+            ``"off"``, whatever the model replied.
         """
         message = text.strip()
         if not message:
@@ -534,7 +581,11 @@ class DiscussionSession:
             try:
                 await self._ensure_process()
                 blocks = self._preamble()
-                prompt = _ROUTE_PROMPT.format(message=message)
+                prompt = _ROUTE_PROMPT.format(
+                    message=message,
+                    english_rule=_RESTATEMENT_RULES[restate],
+                    english_example='"..."' if restate != "off" else '"<their words>"',
+                )
                 reply = await self._turn(
                     "\n\n".join([*blocks, prompt]) if blocks else prompt,
                     timeout_s=budget,
@@ -549,6 +600,10 @@ class DiscussionSession:
             self._last_used = time.time()
 
         decision = _parse_routing(reply)
+        if restate == "off":
+            # The session asked for no rewriting. A model that restated
+            # anyway must not be allowed to put words in the reader's mouth.
+            decision = Routing(forward=decision.forward, answer=decision.answer)
         self._record("question", message)
         if not decision.forward and decision.answer:
             self._record("answer", decision.answer)

@@ -545,3 +545,65 @@ def test_swapping_text_that_is_not_there_changes_nothing():
     content, english = _swap_first_text(original, "run the tests")
     assert english is None
     assert content is original
+
+
+# --- whose words go to Claude: the session's language decides ---------
+
+
+async def test_translate_mode_asks_for_english(session, monkeypatch):
+    seen: list[str] = []
+    monkeypatch.setattr(
+        session, "_turn", _capturing_turn(seen, '{"forward": true, "english": "run the tests"}')
+    )
+    decision = await session.route("roda os testes", restate="translate")
+    assert decision.english == "run the tests"
+    assert "restated in plain English" in seen[0]
+
+
+async def test_repair_mode_asks_for_a_repair_not_a_rewrite(session, monkeypatch):
+    seen: list[str] = []
+    monkeypatch.setattr(
+        session,
+        "_turn",
+        _capturing_turn(seen, '{"forward": true, "english": "fix the pool leak"}'),
+    )
+    decision = await session.route("fix the pull leak", restate="repair")
+    assert decision.english == "fix the pool leak"
+    # A reader already writing English keeps their own words; only a word
+    # the sentence plainly settles may change.
+    assert "repair, not a rewrite" in seen[0]
+    assert "restated in plain English" not in seen[0]
+
+
+async def test_off_mode_forwards_the_readers_own_words(session, monkeypatch):
+    # The session asked for no rewriting, so even a model that restates
+    # anyway must not put words in the reader's mouth.
+    monkeypatch.setattr(
+        session,
+        "_turn",
+        _fake_turn('{"forward": true, "english": "A tidier version of what they wrote"}'),
+    )
+    decision = await session.route("whatever i actually typed", restate="off")
+    assert decision.english is None
+    assert decision.forward is True
+
+
+async def test_off_mode_still_lets_the_companion_answer(session, monkeypatch):
+    # Only the restatement is off; deciding who answers is unconditional.
+    monkeypatch.setattr(
+        session, "_turn", _fake_turn('{"forward": false, "english": "hi", "answer": "Hey."}')
+    )
+    decision = await session.route("hi", restate="off")
+    assert decision.forward is False
+    assert decision.answer == "Hey."
+    assert decision.english is None
+
+
+def _capturing_turn(sink: list[str], reply: str):
+    """Return a ``_turn`` stand-in that records the prompt it was given."""
+
+    async def turn(message: str, *, timeout_s: float) -> str:
+        sink.append(message)
+        return reply
+
+    return turn
