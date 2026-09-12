@@ -607,3 +607,63 @@ def _capturing_turn(sink: list[str], reply: str):
         return reply
 
     return turn
+
+
+def test_ledger_outlives_the_process_and_the_server(tmp_path, monkeypatch):
+    """A restart used to erase everything the companion knew.
+
+    The ledger lived in a dict on the registry, so every server restart --
+    and there are many during development -- silently wiped the session's
+    whole memory while the UI went on showing a companion.
+    """
+    monkeypatch.setattr(discussion, "LEDGER_DIR", tmp_path)
+
+    first = discussion.DiscussionSession("conv_a")
+    first.note("activity", "running the migration tests")
+    first.note("summary", "eight of thirteen terms matched")
+
+    # A new process, as after a restart: same session id, nothing in memory.
+    second = discussion.DiscussionSession("conv_a")
+    assert [e.text for e in second.context] == [
+        "running the migration tests",
+        "eight of thirteen terms matched",
+    ]
+    assert [e.kind for e in second.context] == ["activity", "summary"]
+
+
+def test_a_different_session_starts_empty(tmp_path, monkeypatch):
+    """Ledgers are per session, not per machine."""
+    monkeypatch.setattr(discussion, "LEDGER_DIR", tmp_path)
+    discussion.DiscussionSession("conv_a").note("summary", "only for A")
+    assert discussion.DiscussionSession("conv_b").context == []
+
+
+def test_an_unreadable_ledger_starts_fresh_rather_than_raising(tmp_path, monkeypatch):
+    """Corrupt memory is where a fresh companion already starts."""
+    monkeypatch.setattr(discussion, "LEDGER_DIR", tmp_path)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "conv_a.json").write_text("{not json", encoding="utf-8")
+    session = discussion.DiscussionSession("conv_a")
+    assert session.context == []
+    # And it recovers: the next note writes a valid ledger over the bad one.
+    session.note("note", "still works")
+    assert [e.text for e in discussion.DiscussionSession("conv_a").context] == ["still works"]
+
+
+def test_ledger_stays_bounded_across_restarts(tmp_path, monkeypatch):
+    """MAX_ENTRIES is what keeps a replay small; loading must respect it."""
+    monkeypatch.setattr(discussion, "LEDGER_DIR", tmp_path)
+    writer = discussion.DiscussionSession("conv_a")
+    for i in range(discussion.MAX_ENTRIES + 25):
+        writer.note("note", f"entry {i}")
+    reloaded = discussion.DiscussionSession("conv_a")
+    assert len(reloaded.context) == discussion.MAX_ENTRIES
+    assert reloaded.context[-1].text == f"entry {discussion.MAX_ENTRIES + 24}"
+
+
+def test_a_session_id_cannot_escape_the_ledger_directory(tmp_path, monkeypatch):
+    """The path is built from an id, so it is sanitized rather than trusted."""
+    monkeypatch.setattr(discussion, "LEDGER_DIR", tmp_path)
+    session = discussion.DiscussionSession("../../etc/passwd")
+    assert session._ledger_path().parent == tmp_path
+    assert ".." not in session._ledger_path().name

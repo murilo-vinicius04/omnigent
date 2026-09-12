@@ -640,3 +640,18 @@ async def client(
     sessions_routes._runner_relay_tasks.clear()
     set_harness_process_manager(None)
     await pm.shutdown()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_companion_ledger(tmp_path, monkeypatch):
+    """Keep companion ledgers out of the developer's real state directory.
+
+    A companion loads and saves its ledger on disk, so without this any
+    test that records a note writes into ``~/.omnigent/companion`` -- and
+    two tests naming the same session id would share memory through it.
+    Worse, a test run would quietly edit the ledger of a session the
+    reader is actually using.
+    """
+    from omnigent.server import discussion
+
+    monkeypatch.setattr(discussion, "LEDGER_DIR", tmp_path / "companion")

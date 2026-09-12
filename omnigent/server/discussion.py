@@ -62,6 +62,7 @@ import contextlib
 import json
 import logging
 import os
+import pathlib
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -93,6 +94,16 @@ MAX_ENTRIES: Final[int] = 60
 
 #: stderr lines retained for diagnostics when a process misbehaves.
 _STDERR_LINES: Final[int] = 20
+
+#: Where ledgers are kept between restarts, one file per session.
+#:
+#: Not the conversation's ``session_state`` column: that is written whole by
+#: the policy engine from its own hot cache, so a companion write there would
+#: be clobbered, or would clobber it. Not a label either -- labels upsert per
+#: key, which is right, but they hold small metadata and a sixty-entry ledger
+#: is not that. A file per session is the smallest thing that is actually
+#: durable and collides with nothing.
+LEDGER_DIR: Final[pathlib.Path] = pathlib.Path.home() / ".omnigent" / "companion"
 
 #: What the companion is told it is. There is no ``--system-prompt``
 #: flag on the CLI, so the role rides as the head of the first message —
@@ -290,6 +301,7 @@ class DiscussionSession:
         self._binary = binary or _binary()
         self._entries: deque[ContextEntry] = deque(maxlen=MAX_ENTRIES)
         self._next_id = 1
+        self._load()
         self._undelivered: list[ContextEntry] = []
         self._process: asyncio.subprocess.Process | None = None
         self._stderr: deque[str] = deque(maxlen=_STDERR_LINES)
@@ -359,7 +371,72 @@ class DiscussionSession:
         entry = ContextEntry(kind=kind, text=text, at=time.time(), id=self._next_id)
         self._next_id += 1
         self._entries.append(entry)
+        self._save()
         return entry
+
+    # -- the ledger outlives the process, and the server ---------------
+
+    def _ledger_path(self) -> pathlib.Path:
+        """Where this session's ledger lives on disk."""
+        # Session ids are Omnigent-minted (``conv_`` + hex), but this builds a
+        # filesystem path from one, so anything that could climb out of the
+        # directory is replaced rather than trusted.
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in self.session_id)
+        return LEDGER_DIR / f"{safe}.json"
+
+    def _load(self) -> None:
+        """Restore the ledger written by a previous process, if any.
+
+        Silent on every failure. A ledger that cannot be read costs the
+        companion its memory of this session, which is exactly where a
+        fresh companion starts -- so there is nothing to report and
+        nothing to do.
+        """
+        try:
+            raw = json.loads(self._ledger_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        entries = raw.get("entries") if isinstance(raw, dict) else None
+        if not isinstance(entries, list):
+            return
+        for item in entries[-MAX_ENTRIES:]:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("kind")
+            text = item.get("text")
+            if kind not in ("activity", "summary", "question", "answer", "note"):
+                continue
+            if not isinstance(text, str) or not text.strip():
+                continue
+            self._entries.append(
+                ContextEntry(
+                    kind=kind,
+                    text=text,
+                    at=float(item.get("at") or time.time()),
+                    id=self._next_id,
+                )
+            )
+            self._next_id += 1
+
+    def _save(self) -> None:
+        """Write the ledger out, atomically.
+
+        Replace via a temp file in the same directory: a half-written
+        ledger read after a crash would be worse than none, because it
+        would load as a plausible but truncated memory.
+        """
+        try:
+            LEDGER_DIR.mkdir(parents=True, exist_ok=True)
+            path = self._ledger_path()
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps({"entries": [entry.as_dict() for entry in self._entries]}),
+                encoding="utf-8",
+            )
+            tmp.replace(path)
+        except OSError:
+            # Losing durability is not worth failing a turn over.
+            _logger.debug("could not persist companion ledger for %s", self.session_id)
 
     # -- process lifecycle --------------------------------------------
 
