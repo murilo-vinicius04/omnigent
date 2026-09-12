@@ -1011,8 +1011,16 @@ async def _generate_via_agy(
     candidates: str | None = None,
     question: str | None = None,
     earlier: Sequence[str] = (),
+    session_id: str | None = None,
 ) -> str | None:
-    """Rewrite an assistant reply into friendly prose through the agy CLI.
+    """Rewrite an assistant reply into friendly prose through Gemini.
+
+    Prefers the session's warm companion, which has already seen the
+    question arrive and decided what to do with it -- so the Gemini that
+    writes the summary is the one that was there, not a third process
+    meeting the exchange for the first time. Falls back to a cold
+    one-shot whenever the companion cannot take it, because a wedged
+    companion must never cost the reader their summary.
 
     :param cleaned_text: Sanitized assistant output prose.
     :param language: Target language ("auto" or a BCP-47 tag).
@@ -1020,19 +1028,24 @@ async def _generate_via_agy(
     :param candidates: Blocks the reader could be shown, one per line.
     :param question: The reader's prompting message, when known.
     :param earlier: Preceding reader messages, oldest first, for context only.
+    :param session_id: Session whose companion should write it, when known.
     :returns: The raw rewritten text, or ``None`` on any failure.
     """
-    return await run_agy_prompt(
-        build_spoken_summary_prompt(
-            cleaned_text,
-            language,
-            pending_work=pending_work,
-            candidates=candidates,
-            question=question,
-            earlier=earlier,
-        ),
-        timeout_s=timeout_s,
+    prompt = build_spoken_summary_prompt(
+        cleaned_text,
+        language,
+        pending_work=pending_work,
+        candidates=candidates,
+        question=question,
+        earlier=earlier,
     )
+    if session_id:
+        from omnigent.server.discussion import run_task
+
+        warm = await run_task(session_id, prompt, timeout_s=timeout_s)
+        if warm:
+            return warm
+    return await run_agy_prompt(prompt, timeout_s=timeout_s)
 
 
 def _summary_part(text: str, lang: str, show: list[ShowBlock]) -> dict[str, Any]:
@@ -1059,6 +1072,7 @@ async def generate_spoken_summary(
     pending_work: Sequence[str] = (),
     question: str | None = None,
     earlier: Sequence[str] = (),
+    session_id: str | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Perform the spoken rewrite LLM call and return (spoken_summary_part, usage_delta).
 
@@ -1076,6 +1090,8 @@ async def generate_spoken_summary(
         asked rather than echoing whatever the reply happened to dwell on.
     :param earlier: The couple of reader messages before it, so a question
         that leans on the previous one still makes sense. Context only.
+    :param session_id: Session whose companion should write the rewrite, so
+        one Gemini sees the whole exchange instead of three that never meet.
     :returns: (spoken_summary_content_part, usage_delta) or (None, None).
     """
     cleaned_text = strip_markdown_for_speech(text)
@@ -1108,6 +1124,7 @@ async def generate_spoken_summary(
                 candidates=candidate_lines,
                 question=question,
                 earlier=earlier,
+                session_id=session_id,
             )
             if not raw:
                 return None, None

@@ -208,8 +208,16 @@ def validate_inbound_translation(translated: str, original: str) -> str | None:
     return cleaned
 
 
-async def translate_inbound_message(text: str, *, source_language: str) -> str | None:
+async def translate_inbound_message(
+    text: str, *, source_language: str, session_id: str | None = None
+) -> str | None:
     """Translate a reader's message to English for the answering model.
+
+    Runs on the session's warm companion when there is one. Repairing what
+    the reader dictated is the first thing that happens to a message, and
+    the companion is the one Gemini that will still be there when the
+    answer comes back to be summarized -- so it sees the question as it
+    arrived rather than meeting the exchange halfway through.
 
     Never raises: on any failure the caller forwards the original unchanged, so
     a translation outage degrades to today's behaviour rather than losing the
@@ -217,6 +225,7 @@ async def translate_inbound_message(text: str, *, source_language: str) -> str |
 
     :param text: The reader's original message.
     :param source_language: The reader's language tag, e.g. ``"pt-BR"``.
+    :param session_id: Session whose companion should do the repair.
     :returns: The English message, or ``None`` to forward the original.
     """
     import secrets
@@ -230,10 +239,17 @@ async def translate_inbound_message(text: str, *, source_language: str) -> str |
         if reader_writes_english(source_language)
         else build_inbound_translation_prompt(source, source_language, delimiter)
     )
+    budget = get_inbound_translation_timeout_s()
     try:
-        from omnigent.server.spoken_summary import run_agy_prompt
+        raw: str | None = None
+        if session_id:
+            from omnigent.server.discussion import run_task
 
-        raw = await run_agy_prompt(prompt, timeout_s=get_inbound_translation_timeout_s())
+            raw = await run_task(session_id, prompt, timeout_s=budget)
+        if not raw:
+            from omnigent.server.spoken_summary import run_agy_prompt
+
+            raw = await run_agy_prompt(prompt, timeout_s=budget)
     except Exception as exc:  # noqa: BLE001 - forwarding the original is always safe
         _logger.warning(
             "Inbound translation failed (%s); forwarding the original message",

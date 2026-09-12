@@ -667,3 +667,104 @@ def test_a_session_id_cannot_escape_the_ledger_directory(tmp_path, monkeypatch):
     session = discussion.DiscussionSession("../../etc/passwd")
     assert session._ledger_path().parent == tmp_path
     assert ".." not in session._ledger_path().name
+
+
+@pytest.mark.asyncio
+async def test_perform_runs_a_task_without_recording_it(session):
+    """A task's prompt is not knowledge, so it must not enter the ledger."""
+    session = session
+    output = await session.perform("Rewrite this: the tests pass.", timeout_s=10)
+    assert output
+    assert session.context == []
+
+
+@pytest.mark.asyncio
+async def test_perform_fences_the_task_off_from_the_conversation(session):
+    """Without fencing, a summary written mid-chat refers back to the chat."""
+    session = session
+    echoed = await session.perform("Rewrite this: the tests pass.", timeout_s=10)
+    assert "not a turn in our conversation" in echoed
+    assert "do not refer back to anything said earlier" in echoed
+
+
+@pytest.mark.asyncio
+async def test_perform_still_briefs_a_cold_process(session):
+    """The first task on a fresh process carries the role and the ledger."""
+    session = session
+    session.note("summary", "eight of thirteen terms matched")
+    echoed = await session.perform("Rewrite this: done.", timeout_s=10)
+    assert "eight of thirteen terms matched" in echoed
+
+
+@pytest.mark.asyncio
+async def test_run_task_returns_none_when_the_companion_cannot_take_it(monkeypatch):
+    """None means 'fall back', which is what keeps a wedged companion cheap."""
+
+    async def unavailable(_self, _task, *, timeout_s=None):
+        raise DiscussionUnavailable("no binary")
+
+    monkeypatch.setattr(DiscussionSession, "perform", unavailable)
+    assert await discussion.run_task("conv_a", "do the thing", timeout_s=5) is None
+
+
+@pytest.mark.asyncio
+async def test_run_task_swallows_an_unexpected_failure(monkeypatch):
+    """The caller has a working one-shot; a surprise here must not surface."""
+
+    async def explode(_self, _task, *, timeout_s=None):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(DiscussionSession, "perform", explode)
+    assert await discussion.run_task("conv_a", "do the thing", timeout_s=5) is None
+
+
+@pytest.mark.asyncio
+async def test_run_task_declines_empty_work():
+    assert await discussion.run_task("conv_a", "   ", timeout_s=5) is None
+    assert await discussion.run_task("", "something", timeout_s=5) is None
+
+
+@pytest.mark.asyncio
+async def test_inbound_repair_prefers_the_warm_companion(monkeypatch):
+    """The repair and the summary should be the same Gemini, same context."""
+    from omnigent.server import inbound_translation
+
+    seen: dict[str, object] = {}
+
+    async def warm(session_id, prompt, *, timeout_s):
+        seen["session_id"] = session_id
+        return "Did the paragraph fix land?"
+
+    async def cold(_prompt, *, timeout_s):
+        seen["cold_ran"] = True
+        return "cold"
+
+    monkeypatch.setattr("omnigent.server.discussion.run_task", warm)
+    monkeypatch.setattr("omnigent.server.spoken_summary.run_agy_prompt", cold)
+
+    out = await inbound_translation.translate_inbound_message(
+        "did the paragrraph fix land", source_language="en-US", session_id="conv_a"
+    )
+    assert out == "Did the paragraph fix land?"
+    assert seen["session_id"] == "conv_a"
+    assert "cold_ran" not in seen
+
+
+@pytest.mark.asyncio
+async def test_inbound_repair_falls_back_to_the_one_shot(monkeypatch):
+    """A message must never be lost because the companion was busy."""
+    from omnigent.server import inbound_translation
+
+    async def declines(_session_id, _prompt, *, timeout_s):
+        return None
+
+    async def cold(_prompt, *, timeout_s):
+        return "Did the paragraph fix land?"
+
+    monkeypatch.setattr("omnigent.server.discussion.run_task", declines)
+    monkeypatch.setattr("omnigent.server.spoken_summary.run_agy_prompt", cold)
+
+    out = await inbound_translation.translate_inbound_message(
+        "did the paragrraph fix land", source_language="en-US", session_id="conv_a"
+    )
+    assert out == "Did the paragraph fix land?"

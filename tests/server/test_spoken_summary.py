@@ -2568,3 +2568,75 @@ def test_clamping_within_the_limit_is_left_alone() -> None:
     """Under the cap nothing is rewritten, paragraphs included."""
     text = "First point.\n\nSecond point.\n\nThird point."
     assert clamp_sentences(text, max_sentences=9, max_chars=1200) == text
+
+
+@pytest.mark.asyncio
+async def test_summary_prefers_the_warm_companion(monkeypatch):
+    """One Gemini should see the whole exchange, not three that never meet."""
+    from omnigent.server import spoken_summary as module
+
+    seen: dict[str, object] = {}
+
+    async def warm(session_id, prompt, *, timeout_s):
+        seen.update(session_id=session_id, prompt=prompt)
+        return "The tests pass and the migration is done."
+
+    async def cold(_prompt, *, timeout_s):
+        seen["cold_ran"] = True
+        return "cold output"
+
+    monkeypatch.setattr("omnigent.server.discussion.run_task", warm)
+    monkeypatch.setattr(module, "run_agy_prompt", cold)
+    monkeypatch.setattr(module, "use_agy_backend", lambda *_a, **_k: True)
+
+    part, _ = await module.generate_spoken_summary(
+        _LONG_RESPONSE_TEXT, language="en", session_id="conv_a"
+    )
+    assert part is not None
+    assert seen["session_id"] == "conv_a"
+    assert "cold_ran" not in seen
+
+
+@pytest.mark.asyncio
+async def test_summary_falls_back_when_the_companion_declines(monkeypatch):
+    """A wedged companion must never cost the reader their summary."""
+    from omnigent.server import spoken_summary as module
+
+    ran_cold = False
+
+    async def declines(_session_id, _prompt, *, timeout_s):
+        return None
+
+    async def cold(_prompt, *, timeout_s):
+        nonlocal ran_cold
+        ran_cold = True
+        return "The migration finished and every test passed."
+
+    monkeypatch.setattr("omnigent.server.discussion.run_task", declines)
+    monkeypatch.setattr(module, "run_agy_prompt", cold)
+    monkeypatch.setattr(module, "use_agy_backend", lambda *_a, **_k: True)
+
+    part, _ = await module.generate_spoken_summary(
+        _LONG_RESPONSE_TEXT, language="en", session_id="conv_a"
+    )
+    assert part is not None
+    assert ran_cold is True
+
+
+@pytest.mark.asyncio
+async def test_no_session_still_uses_the_one_shot(monkeypatch):
+    """Summaries outside a session (tests, tools) keep working."""
+    from omnigent.server import spoken_summary as module
+
+    ran_cold = False
+
+    async def cold(_prompt, *, timeout_s):
+        nonlocal ran_cold
+        ran_cold = True
+        return "Everything passed."
+
+    monkeypatch.setattr(module, "run_agy_prompt", cold)
+    monkeypatch.setattr(module, "use_agy_backend", lambda *_a, **_k: True)
+
+    await module.generate_spoken_summary(_LONG_RESPONSE_TEXT, language="en")
+    assert ran_cold is True

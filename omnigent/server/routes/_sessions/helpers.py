@@ -7507,6 +7507,7 @@ async def _flush_relay_text(
                         llm_client=llm_client,
                         question=asked[-1] if asked else None,
                         earlier=asked[:-1],
+                        session_id=session_id,
                     )
                     _tell_companion(session_id, spoken_summary_part)
         except asyncio.CancelledError as exc:

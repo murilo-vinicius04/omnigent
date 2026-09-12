@@ -699,7 +699,52 @@ more than anything else in this layer. Split the two rather than swapping
 both: route on a free model, keep Gemini writing until a measured A/B says
 otherwise. Needs an OpenRouter key, which does not exist yet.
 
-### What this changes about step 0
+### Step 0, as built (2026-09-12)
+
+Both halves are in.
+
+**The ledger is durable.** One bounded JSON file per session under
+``~/.omnigent/companion``, written atomically through a temp file in the same
+directory. Not ``session_state`` (the policy engine writes that column whole
+from its own hot cache, so either side would clobber the other) and not a
+label (right shape, wrong size -- labels carry small metadata, not sixty
+entries). Every failure is silent: an unreadable ledger leaves the companion
+where a fresh one already starts. Verified by restarting the service and
+reading the note back.
+
+**Three Gemini calls became one context.** ``DiscussionSession.perform()``
+runs a self-contained task on the warm process, and ``run_task()`` is the
+module-level entry point. The spoken summary and the inbound repair both go
+through it now, so the Gemini that reads the dictated question is the one
+that writes the summary of the answer. ``voice_profile.py`` still has its own
+one-shot: it is rare and has nothing to do with the exchange.
+
+Three things worth knowing about how it behaves:
+
+- **Tasks are fenced.** ``[Task. This is a job, not a turn in our
+  conversation...]`` -- without it, a summary written mid-conversation starts
+  referring back to what was said earlier. Measured with a companion
+  deliberately seeded with unrelated context (Hermes, cloning, harnesses):
+  **no bleed** in the output either way.
+- **Warm is faster, not slower.** 3.8s against the cold one-shot's 4.8s, for
+  the obvious reason -- no process to start.
+- **Turns serialize**, because it is one process behind one lock. Worst case
+  measured: a question sent while a summary is being written waits
+  **+0.9s** (2.3s against 1.4s alone). Bounded and acceptable; the
+  alternative is a second process, which is the thing this removed.
+
+**The fallback is the safety property.** ``run_task`` returns ``None`` rather
+than raising whenever the companion cannot take the work, and both callers
+then run their own cold one-shot. A wedged companion costs a second, never
+the summary or the message.
+
+One trap this sprang, worth remembering: loading the ledger on construction
+meant every server test began writing into the developer's real
+``~/.omnigent/companion``, and two tests naming the same session id shared
+memory through it. An autouse fixture in ``tests/server/conftest.py`` points
+that directory at ``tmp_path`` for every server test.
+
+### What this changed about step 0
 
 Step 0 was "route the cold one-shots through the companion's warm `agy`
 session". The survey suggests a better target: route them through an

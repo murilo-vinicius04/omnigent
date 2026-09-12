@@ -5663,7 +5663,9 @@ async def _translate_inbound_content(
         text = _message_text([b for b in content if isinstance(b, dict)])
         if not text:
             return content, None
-        translated = await translate_inbound_message(text, source_language=language)
+        translated = await translate_inbound_message(
+            text, source_language=language, session_id=session_id
+        )
         if not translated:
             return content, None
     except asyncio.CancelledError:

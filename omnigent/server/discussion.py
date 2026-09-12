@@ -626,6 +626,56 @@ class DiscussionSession:
             self._last_used = time.time()
             return answer
 
+    async def perform(self, task: str, *, timeout_s: float | None = None) -> str:
+        """Run a self-contained task on the warm process and return its output.
+
+        The companion is the only Gemini that remembers this session, so
+        work about the session belongs here rather than in a cold one-shot
+        that has never seen it. Repairing what the reader dictated and
+        writing the spoken summary are both that kind of work: having done
+        them, the companion has *been there* for the exchange instead of
+        being told about it afterwards.
+
+        Unlike :meth:`ask`, nothing here is recorded. The task text is a
+        prompt, not knowledge, and what the result means for the ledger is
+        the caller's to decide -- a summary is worth remembering, a repaired
+        sentence is not.
+
+        The task is fenced so the model treats it as a job rather than as
+        the next thing said to it. Without that, a summary written mid
+        conversation starts referring back to what was said earlier.
+
+        :param task: A complete, self-contained prompt.
+        :param timeout_s: Budget; covers a cold start.
+        :returns: The model's raw output.
+        :raises DiscussionUnavailable: When the CLI is missing, dies, or
+            fails to answer in time. The ledger is intact either way.
+        """
+        work = task.strip()
+        if not work:
+            raise DiscussionUnavailable("nothing to do")
+        budget = timeout_s if timeout_s is not None else DEFAULT_TIMEOUT_S
+        async with self._lock:
+            self._last_used = time.time()
+            fenced = (
+                "[Task. This is a job, not a turn in our conversation: do exactly "
+                "what it says and reply with nothing but the result. Do not greet "
+                "me, do not refer back to anything said earlier, and do not treat "
+                "it as something I said to you.]\n\n" + work
+            )
+            try:
+                await self._ensure_process()
+                blocks = self._preamble()
+                message = "\n\n".join([*blocks, fenced]) if blocks else fenced
+                output = await self._turn(message, timeout_s=budget)
+            except DiscussionUnavailable:
+                await self._kill()
+                raise
+            self._briefed = True
+            self._undelivered.clear()
+            self._last_used = time.time()
+            return output
+
     async def route(
         self,
         text: str,
@@ -890,6 +940,39 @@ def note(session_id: str, kind: EntryKind, text: str) -> None:
         _REGISTRY.note(session_id, kind, text)
     except Exception:  # noqa: BLE001 - a companion must never break a turn
         _logger.debug("companion note dropped for %s", session_id, exc_info=True)
+
+
+async def run_task(session_id: str, prompt: str, *, timeout_s: float) -> str | None:
+    """Run a prompt on the session's warm companion, or return ``None``.
+
+    The entry point for work that used to spawn its own cold ``agy``:
+    repairing what the reader dictated, and writing the spoken summary.
+    Routing them here means one Gemini has seen the whole exchange --
+    the question as it arrived, the decision about it, and the answer it
+    summarized -- rather than three that have never met.
+
+    ``None`` is a real answer, not an error: it means the companion could
+    not take the work, and the caller should fall back to its own one-shot.
+    That fallback is what keeps a wedged companion from costing the reader
+    their summary.
+
+    :param session_id: Omnigent session whose companion should do the work.
+    :param prompt: A complete, self-contained prompt.
+    :param timeout_s: Budget for the turn.
+    :returns: The model's output, or ``None`` to fall back.
+    """
+    if not session_id or not prompt.strip():
+        return None
+    try:
+        session = await _REGISTRY.get(session_id)
+        output = await session.perform(prompt, timeout_s=timeout_s)
+    except DiscussionUnavailable as exc:
+        _logger.info("companion could not take the task for %s: %s", session_id, exc)
+        return None
+    except Exception:  # noqa: BLE001 - the caller has a working fallback
+        _logger.warning("companion task failed for %s", session_id, exc_info=True)
+        return None
+    return output.strip() or None
 
 
 async def sweep_idle_companions(*, interval_s: float = 60.0) -> None:
