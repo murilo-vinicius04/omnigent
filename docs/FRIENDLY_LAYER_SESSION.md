@@ -386,6 +386,41 @@ The deciding half already exists for *typed* messages:
 "I can answer this" or "this is for Claude". The voice loop is that same
 decision applied to speech, plus a hang-up.
 
+### The hard constraint, measured 2026-09-12
+
+**`gpt-live-1` cannot be a mouth for another model in a live conversation.**
+Two runs settle it:
+
+- Given the strongest possible instruction ("You are a voice interface, not a
+  participant. NEVER answer, greet, acknowledge, or speak on your own
+  initiative -- not even a filler word"), it heard a spoken question and
+  answered anyway: *"Right, checking the latest now."* Suppression works when
+  the session is silent, which is why narration is safe; it does not survive
+  real speech.
+- Text pushed in afterwards was **generated but never voiced**. The backend
+  produced `response.output_text.delta` through `response.completed`, and no
+  `session.output_transcript.delta` and no audio followed. The same push is
+  spoken normally in a narration session, so the difference is a conversation
+  that has already had an audio turn.
+
+What this rules out: Gemini writing the words that come out of the voice
+*during a conversation*. What it leaves intact:
+
+- **Its ears are ours.** `session.input_transcript.delta` transcribed the test
+  utterance exactly -- "Hey, give me a quick status update on the companion
+  work" -- at no cost beyond the per-minute rate. That replaces Whisper.
+- **Narration still works the other way.** One-way reading of finished text is
+  a different mode and Gemini's words are spoken verbatim there. That replaces
+  Chatterbox.
+- **Gemini still decides.** Every utterance reaches it as text, so it can route,
+  hand off to Claude, and hang up. It just cannot be the speaking voice mid-
+  conversation.
+
+So the division is: `gpt-live-1` owns the *audio* end to end -- hearing,
+small talk, and speaking -- and Gemini owns *memory and judgement*, shaping
+what the voice knows through its briefing and speaking directly whenever the
+channel is one-way.
+
 ### Why making Gemini the voice's brain is the expensive option
 
 The obvious move — take the brain out of `gpt-live-1` and let Gemini answer
@@ -424,10 +459,36 @@ summary silently, which looks identical to nothing happening. Needs a
 diagnostic before it needs a fix. Optionally reopen the mic afterwards so the
 reader can answer back without reaching for anything.
 
-**Step 3 — Gemini as the voice, only if Step 1 is not enough.** Flip to
-`responses` delegation, push Gemini's words, and build barge-in and turn
-detection by hand. Do this only if GPT's own answers prove too thin in
-practice; the ledger briefing may well be enough.
+**Step 3 — ~~Gemini as the voice~~. Ruled out by measurement**, see the hard
+constraint above. The voice will always be `gpt-live-1`'s own. Gemini reaches
+the reader through the briefing that shapes it, and directly whenever the
+channel is one-way.
+
+**Step 0, and it comes first — one Gemini, not four.** Today there are four
+separate `agy` invocations and only one of them remembers anything:
+
+| what | where | process |
+| --- | --- | --- |
+| repairs the transcription on the way in | `inbound_translation.py:236` | cold one-shot |
+| writes the spoken summary on the way out | `spoken_summary.py:1016` | cold one-shot |
+| revises the voice profile | `voice_profile.py:253` | cold one-shot |
+| companion / routing | `discussion.py` | warm, holds the ledger |
+
+The Gemini that reads what the reader said and the Gemini that summarizes the
+answer are different processes that have never met, and neither is the
+companion -- it is only *told* about them afterwards, as notes. Route all of
+them through the one warm session and it stops being told and starts having
+been there: one context that heard the question, chose to answer or forward,
+and then wrote the summary of what came back. That is the reader's ask, and
+it is the same principle as the ledger, applied to the work rather than to
+the record.
+
+Watch when doing it: turns in one session serialize, so a summary being
+written while the reader speaks makes one wait -- today those run in
+parallel. And the summary prompt is tuned as a one-shot; as a turn in an
+ongoing conversation it may start referring back to things. The existing rule
+still saves us if the process dies: the ledger is the memory, the process is
+a cache.
 
 ### Things already established that this depends on
 
@@ -445,7 +506,11 @@ practice; the ledger briefing may well be enough.
 
 ## 3. The queue, in the reader's priority order
 
-1. **The spoken handoff — the reader's current priority. See §2e, step 1.**
+0. **One Gemini, not four — §2e, step 0.** Route the inbound repair and the
+   spoken summary through the companion's warm session so one context sees the
+   whole exchange. Server-side only, no OpenAI cost, and it is the foundation
+   the rest of §2e stands on.
+1. **The spoken handoff — see §2e, step 1.**
    Gemini decides, per spoken utterance, whether this is work for Claude; if
    it is, the prompt is sent as if typed and the session hangs up. Removes the
    Enter key and stops the meter while Claude works. Reuses `route()` and the
