@@ -74,7 +74,7 @@ def test_offer_surfaces_openai_refusals(client, monkeypatch):
 
 
 def test_offer_returns_the_answer_sdp(client, monkeypatch):
-    async def accept(*, sdp_offer, instructions, model=None, voice=None):
+    async def accept(*, sdp_offer, instructions, model=None, voice=None, backend=None):
         assert sdp_offer == "v=0 offer"
         assert instructions
         return "live_abc", "v=0 answer"
@@ -82,7 +82,7 @@ def test_offer_returns_the_answer_sdp(client, monkeypatch):
     monkeypatch.setattr("omnigent.server.routes.live_voice.open_session", accept)
     response = client.post("/v1/live/offer", json={"sdp": "v=0 offer"})
     assert response.status_code == 200
-    assert response.json() == {"session_id": "live_abc", "sdp": "v=0 answer"}
+    assert response.json() == {"session_id": "live_abc", "sdp": "v=0 answer", "speak": None}
 
 
 def test_test_page_bakes_in_the_rate_and_cap(client):
@@ -100,3 +100,81 @@ def test_page_closes_the_session_when_the_tab_goes_away(client):
     body = client.get("/v1/live/test").text
     assert "pagehide" in body
     assert "beforeunload" in body
+
+
+def test_reading_delegates_to_a_backend_and_conversing_does_not():
+    """Only responses delegation accepts text pushed in; conversing needs none."""
+    reading = live_voice.session_config(
+        instructions="read it", model=None, voice=None, backend="gpt-4o-mini"
+    )
+    assert reading["delegation"] == {
+        "type": "responses",
+        "responses": {"model": "gpt-4o-mini"},
+    }
+    talking = live_voice.session_config(instructions="chat", model=None, voice=None)
+    assert "delegation" not in talking
+
+
+def test_reader_model_is_overridable(monkeypatch):
+    monkeypatch.delenv("OMNIGENT_LIVE_READER_MODEL", raising=False)
+    assert live_voice.reader_model() == live_voice.DEFAULT_READER_MODEL
+    monkeypatch.setenv("OMNIGENT_LIVE_READER_MODEL", "gpt-4.1-mini")
+    assert live_voice.reader_model() == "gpt-4.1-mini"
+
+
+def test_framing_tells_it_to_read_rather_than_reply():
+    """Handed a bare summary the model answers it instead of reading it."""
+    framed = live_voice.frame_for_reading("  All 199 tests pass.  ")
+    assert "All 199 tests pass." in framed
+    assert "Do not reply to it" in framed
+    assert framed.index("Read the following") < framed.index("All 199 tests pass.")
+
+
+def test_narrator_instructions_forbid_speaking_with_nothing_to_say():
+    """A session speaks on connect by itself; a narrator with no text invents."""
+    assert "say absolutely nothing" in live_voice.NARRATOR_INSTRUCTIONS
+    assert "Never invent content" in live_voice.NARRATOR_INSTRUCTIONS
+
+
+def test_narrate_mode_returns_the_framed_text_to_push(client, monkeypatch):
+    seen: dict[str, object] = {}
+
+    async def accept(*, sdp_offer, instructions, model=None, voice=None, backend=None):
+        seen.update(instructions=instructions, backend=backend)
+        return "live_n", "v=0 answer"
+
+    monkeypatch.setattr("omnigent.server.routes.live_voice.open_session", accept)
+    response = client.post(
+        "/v1/live/offer",
+        json={"sdp": "v=0 offer", "mode": "narrate", "text": "All 199 tests pass."},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert "All 199 tests pass." in body["speak"]
+    assert "Do not reply to it" in body["speak"]
+    assert seen["backend"] == live_voice.DEFAULT_READER_MODEL
+    assert "narrator" in str(seen["instructions"]).lower()
+
+
+def test_conversing_pushes_nothing_and_delegates_nothing(client, monkeypatch):
+    seen: dict[str, object] = {}
+
+    async def accept(*, sdp_offer, instructions, model=None, voice=None, backend=None):
+        seen.update(backend=backend)
+        return "live_c", "v=0 answer"
+
+    monkeypatch.setattr("omnigent.server.routes.live_voice.open_session", accept)
+    response = client.post("/v1/live/offer", json={"sdp": "v=0 offer"})
+    assert response.status_code == 200
+    assert response.json()["speak"] is None
+    assert seen["backend"] is None
+
+
+def test_narrate_without_text_is_refused_not_silently_empty(client):
+    """An empty narration would open a billing session that says nothing."""
+    response = client.post("/v1/live/offer", json={"sdp": "v=0 offer", "mode": "narrate"})
+    assert response.status_code == 400
+    response = client.post(
+        "/v1/live/offer", json={"sdp": "v=0 offer", "mode": "narrate", "text": "   "}
+    )
+    assert response.status_code == 400

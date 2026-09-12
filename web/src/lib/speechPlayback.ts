@@ -1,5 +1,7 @@
 import { create } from "zustand";
+import { narrateViaLive, type LiveNarration } from "./liveVoice";
 import { currentNarrationVolume, isNarrationEnabled } from "./sessionNarrationVolume";
+import { currentVoiceBackend } from "./sessionVoiceBackend";
 
 /**
  * Engine interface for text-to-speech playback.
@@ -316,6 +318,22 @@ interface SpeechPlaybackStoreState {
 /** The server-audio element currently playing, so `stop` can silence it. */
 let activeAudio: HTMLAudioElement | null = null;
 
+/**
+ * The live session currently speaking, if any.
+ *
+ * Tracked separately from `activeAudio` because stopping it is not pausing an
+ * element: the session bills by wall clock until it is hung up, so silencing
+ * one without closing it would keep spending on audio nobody hears.
+ */
+let activeLive: LiveNarration | null = null;
+
+/** Hang up any live session, whether or not it is still speaking. */
+function closeActiveLive(): void {
+  const live = activeLive;
+  activeLive = null;
+  live?.stop();
+}
+
 /** A summary waiting for the one before it to finish. */
 interface QueuedSummary {
   itemId: string;
@@ -367,6 +385,7 @@ export function clearSpeechQueue(): void {
  */
 export function claimSpeechChannel(el: HTMLAudioElement | null, sessionId?: string | null): void {
   getSpeechEngine().stop();
+  closeActiveLive();
   if (el) el.volume = currentNarrationVolume(sessionId ?? null);
   if (activeAudio && activeAudio !== el) {
     activeAudio.pause();
@@ -395,8 +414,33 @@ function startSummaryPlayback(
   set: (partial: Partial<SpeechPlaybackStoreState>) => void,
   get: () => SpeechPlaybackStoreState,
 ): boolean {
-  const { itemId, audioUrl, sessionId } = item;
+  const { text, sessionId } = item;
   speakingSessionId = sessionId ?? null;
+
+  // The live voice starts speaking in about a second where the local
+  // recording takes tens, so when a session has chosen it, try it first and
+  // keep the recording as the fallback. A live session that cannot open must
+  // never cost the reader their narration.
+  if (currentVoiceBackend(sessionId ?? null) === "live" && text.trim()) {
+    startLivePlayback(item, set, get);
+    return true;
+  }
+
+  return playRecording(item, set, get);
+}
+
+/**
+ * Play one summary from the recording the server synthesized for it.
+ *
+ * Split out from `startSummaryPlayback` so the live path can fall back to it
+ * without routing back through the choice and looping.
+ */
+function playRecording(
+  item: QueuedSummary,
+  set: (partial: Partial<SpeechPlaybackStoreState>) => void,
+  get: () => SpeechPlaybackStoreState,
+): boolean {
+  const { itemId, audioUrl, sessionId } = item;
   if (audioUrl) {
     const el = new Audio(audioUrl);
     set({ isSpeaking: true, speakingItemId: itemId });
@@ -429,6 +473,66 @@ function startSummaryPlayback(
   }
 
   return false; // nothing to play without a recording
+}
+
+/**
+ * Speak one summary through a live session, falling back to its recording.
+ *
+ * Starts asynchronously: the handshake takes a moment, and the queue must
+ * not stall behind it. Any failure hands the same item back to the recording
+ * path rather than leaving the reader in silence.
+ */
+function startLivePlayback(
+  item: QueuedSummary,
+  set: (partial: Partial<SpeechPlaybackStoreState>) => void,
+  get: () => SpeechPlaybackStoreState,
+): void {
+  const { itemId, text, sessionId } = item;
+  set({ isSpeaking: true, speakingItemId: itemId });
+
+  const clear = (): void => {
+    if (get().speakingItemId === itemId) set({ isSpeaking: false, speakingItemId: null });
+    playNextQueued(set, get);
+  };
+
+  void narrateViaLive(text)
+    .then((live) => {
+      // Between the handshake starting and finishing, the reader may have
+      // stopped playback or moved on. Hang up rather than talk over them.
+      if (get().speakingItemId !== itemId) {
+        live.stop();
+        return;
+      }
+      const el = new Audio();
+      el.srcObject = live.stream;
+      el.dataset.summaryAudio = "live";
+      claimSpeechChannel(el, sessionId);
+      activeLive = live;
+      void el.play().catch(() => {
+        // Autoplay refused the stream. Forget it was spoken so the play
+        // button still works, and stop billing for audio nobody hears.
+        unmarkMessageSpoken(itemId);
+        live.stop();
+      });
+      void live.finished.then(() => {
+        if (activeLive === live) activeLive = null;
+        el.pause();
+        el.srcObject = null;
+        if (activeAudio === el) activeAudio = null;
+        clear();
+      });
+    })
+    .catch(() => {
+      // No live session, so read it the free way. `startSummaryPlayback`
+      // would route straight back here, so go to the recording directly.
+      if (get().speakingItemId !== itemId) return;
+      set({ isSpeaking: false, speakingItemId: null });
+      if (playRecording(item, set, get)) return;
+      // Nothing recorded yet either: forget it was spoken so the recording
+      // reads it when it lands, seconds from now.
+      unmarkMessageSpoken(itemId);
+      clear();
+    });
 }
 
 /** Start the next waiting summary, if the channel just went quiet. */
@@ -466,7 +570,12 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
     // not speak. Reading it in the host's robotic voice is exactly what the
     // generated one exists to replace -- and marking it spoken here would bury
     // the real recording when it lands seconds later.
-    if (!audioUrl) return false;
+    //
+    // The live voice is the exception: it reads the text itself and never
+    // needs a recording. Making it wait for one would hand back the very
+    // delay it exists to remove.
+    const live = currentVoiceBackend(sessionId ?? null) === "live" && Boolean(text.trim());
+    if (!audioUrl && !live) return false;
     markMessageSpoken(itemId);
 
     // Another conversation is being read: wait rather than talk over it. A
@@ -493,6 +602,8 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
     // The reader asked for quiet: drop what is waiting rather than starting it.
     clearSpeechQueue();
     speakingSessionId = null;
+    // Pausing a live session would silence it while it kept billing.
+    closeActiveLive();
     if (activeAudio) {
       activeAudio.pause();
       activeAudio = null;
