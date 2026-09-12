@@ -115,3 +115,21 @@ describe("the open spoken conversation", () => {
     expect(conversationCostUsd(3600)).toBeCloseTo(3);
   });
 });
+
+describe("a conversation nobody is having", () => {
+  it("names an idle limit rather than billing until noticed", async () => {
+    // The limit lives in liveVoice; this pins the contract the store relies
+    // on: a session that goes quiet ends itself and reports it closed, so
+    // the meter stops without the reader having to come back and press stop.
+    const live = fakeConversation();
+    openLiveConversation.mockResolvedValue(live);
+    await useLiveConversationStore.getState().start("conv_a");
+    expect(useLiveConversationStore.getState().sessionId).toBe("conv_a");
+
+    live.end(); // what the idle timer does
+    await vi.waitFor(() => {
+      expect(useLiveConversationStore.getState().sessionId).toBeNull();
+      expect(useLiveConversationStore.getState().elapsedS).toBe(0);
+    });
+  });
+});

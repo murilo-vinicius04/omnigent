@@ -43,6 +43,16 @@ const FIRST_WORD_TIMEOUT_MS = 15_000;
 const CONNECT_TIMEOUT_MS = 20_000;
 
 /**
+ * How long a conversation may sit silent before it hangs itself up.
+ *
+ * A conversation bills by wall clock whether anyone is talking or not, and
+ * the expensive mistake is a session left open after the reader walked away.
+ * Ten seconds of nobody speaking is the signal. Being wrong costs one press
+ * of the mic button; not doing it costs dollars an hour against silence.
+ */
+const CONVERSATION_IDLE_MS = 10_000;
+
+/**
  * Nothing should ever bill longer than this for one summary, whatever goes
  * wrong. A minute of speech is already far past any summary we generate.
  */
@@ -321,6 +331,13 @@ export async function openLiveConversation(
 
   const channel = pc.createDataChannel("oai-events");
   const inbound = new MediaStream();
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Speech from either side means the conversation is alive. */
+  const touch = (): void => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(stop, CONVERSATION_IDLE_MS);
+  };
 
   // Buffer each side's transcript and flush it on a pause. Nothing else
   // records this conversation: audio goes browser-to-OpenAI directly, so if
@@ -355,6 +372,7 @@ export async function openLiveConversation(
   const stop = (): void => {
     if (closed) return;
     closed = true;
+    clearTimeout(idleTimer);
     try {
       if (channel.readyState === "open") {
         channel.send(JSON.stringify({ type: "session.close" }));
@@ -390,8 +408,10 @@ export async function openLiveConversation(
       return;
     }
     if (payload.type === "session.input_transcript.delta") {
+      touch();
       collect("reader", payload.delta ?? "");
     } else if (payload.type === "session.output_transcript.delta") {
+      touch();
       collect("voice", payload.delta ?? "");
     } else if (payload.type === "session.closed") {
       stop();
@@ -399,6 +419,9 @@ export async function openLiveConversation(
   });
 
   for (const track of mic.getTracks()) pc.addTrack(track, mic);
+  // The clock starts at connect, so a session nobody ever speaks into hangs
+  // up too rather than billing until the reader notices it is open.
+  touch();
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
 
