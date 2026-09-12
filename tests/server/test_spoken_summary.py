@@ -346,8 +346,26 @@ def test_clamp_sentences_bounds_and_implausible_output() -> None:
     code_blob = "Here is the summary with code ```python\nprint(1)\n``` done."
     assert clamp_sentences(code_blob) is None
 
-    # 5. Implausible output: longer than input
-    assert clamp_sentences("Summary is much longer than input", input_text="Short input") is None
+    # 5. Runaway output: far longer than its source means invention
+    assert clamp_sentences("Padding. " * 200, input_text="Short input") is None
+    assert clamp_sentences("x" * 900, input_text="y" * 400) is None
+
+
+def test_short_reply_may_be_longer_spoken_than_written() -> None:
+    """A brief reply's spoken form legitimately outgrows it, and must survive.
+
+    Spelling numbers out, and saying which question the reply did not answer,
+    both add characters honestly. Rejecting on length alone dropped those
+    summaries outright, leaving the reader nothing rather than something long.
+    """
+    source = "Handshake is 6s, then 1.4s. Chatterbox stays as the fallback."
+    spoken = (
+        "The handshake takes about six seconds on the first connect, and every "
+        "later utterance starts in one point four seconds. Chatterbox does stay "
+        "wired as the fallback. It doesn't mention the mobile app, though."
+    )
+    assert len(spoken) > len(source)
+    assert clamp_sentences(spoken, max_sentences=9, max_chars=1200, input_text=source) == spoken
 
 
 def test_detect_bcp47_language() -> None:
@@ -2473,3 +2491,55 @@ def test_question_reaches_the_assembled_prompt() -> None:
 
     blind = build_spoken_summary_prompt("The answer prose.", "en")
     assert "answer every one of them" not in blind
+
+
+def test_earlier_messages_are_fenced_apart_from_the_latest() -> None:
+    """Recency is structural, so the rewrite never has to infer it."""
+    content, delimiter = build_spoken_summary_user_content(
+        "The answer prose.",
+        "do it the second way then",
+        ["should it be one session or one per message?", "and what about cost?"],
+    )
+    assert f"<{delimiter}_EARLIER>" in content
+    assert "one session or one per message" in content
+    # Oldest first inside the fence, and the whole fence precedes the latest.
+    assert content.index("one session or one per message") < content.index("what about cost")
+    assert content.index(f"<{delimiter}_EARLIER>") < content.index(f"<{delimiter}_ASKED>")
+    assert content.index(f"<{delimiter}_ASKED>") < content.index(f"<{delimiter}>")
+
+
+def test_earlier_messages_are_never_declared_answered() -> None:
+    """A follow-up sent mid-turn means the reply answers the EARLIER message.
+
+    Marking history as settled would forbid the one thing worth saying, so the
+    reply decides what was asked rather than recency alone.
+    """
+    content, _ = build_spoken_summary_user_content(
+        "The answer prose.", "latest question", ["earlier question"]
+    )
+    assert "already answered" not in content
+    assert "never answer them again" not in content
+
+    rule = build_spoken_summary_instructions("en", has_question=True)
+    assert "never answer one it does not touch" in rule
+
+
+def test_no_earlier_messages_leaves_no_empty_fence() -> None:
+    """Nothing before this turn means no scaffolding for it."""
+    content, _ = build_spoken_summary_user_content("The answer prose.", "a question")
+    assert "_EARLIER" not in content
+
+    blank, _ = build_spoken_summary_user_content("The answer prose.", "a question", ["", "  "])
+    assert "_EARLIER" not in blank
+
+
+def test_earlier_messages_reach_the_assembled_prompt() -> None:
+    """The whole path carries the thread, not just the latest message."""
+    prompt = build_spoken_summary_prompt(
+        "The answer prose.",
+        "en",
+        question="do it the second way",
+        earlier=["one session or one per message?"],
+    )
+    assert "one session or one per message?" in prompt
+    assert "do it the second way" in prompt

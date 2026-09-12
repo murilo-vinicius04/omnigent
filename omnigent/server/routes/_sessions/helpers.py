@@ -7499,13 +7499,14 @@ async def _flush_relay_text(
                     deny_reason=deny_reason,
                     enabled=enabled,
                 ):
-                    question = await _turn_user_question(conversation_store, session_id)
+                    asked = await _turn_user_questions(conversation_store, session_id)
                     spoken_summary_part, spoken_summary_usage = await generate_spoken_summary(
                         text,
                         language=language,
                         model_override=spoken_summary_model,
                         llm_client=llm_client,
-                        question=question,
+                        question=asked[-1] if asked else None,
+                        earlier=asked[:-1],
                     )
                     _tell_companion(session_id, spoken_summary_part)
         except asyncio.CancelledError as exc:
@@ -8006,25 +8007,40 @@ async def _native_turn_text(
 #: reply the rewrite is actually about.
 _QUESTION_MAX_CHARS = 2000
 
+#: Earlier messages are background, so they are cut harder than the live one.
+_EARLIER_MAX_CHARS = 1200
 
-async def _turn_user_question(
+#: How many of the reader's messages to carry, the live one included. Enough
+#: for a question that leans on the one before it ("do it the second way"),
+#: and enough that a follow-up sent mid-turn cannot push the real question out
+#: of view.
+_QUESTION_HISTORY = 3
+
+
+async def _turn_user_questions(
     conversation_store: Any,
     session_id: str,
-) -> str | None:
-    """Return the reader's message that prompted this turn.
+) -> list[str]:
+    """Return the reader's recent messages, oldest first, live one last.
 
     The rewrite is spoken to the person who asked, and until it was given
-    this it could not see the asking -- only the reply. A reply that answers
+    these it could not see the asking -- only the reply. A reply that answers
     three questions in passing was summarized down to whichever one it
     happened to dwell on, and the reader had to open the original to find
-    the rest. Knowing the question lets the rewrite lead with the answer.
+    the rest.
+
+    Carrying a couple of earlier messages does two things: it lets a question
+    that leans on the previous one still make sense, and it means a follow-up
+    typed while the turn is still running cannot displace the question the
+    reply is actually answering.
 
     :param conversation_store: Store holding the turn's items.
     :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
-    :returns: The reader's prompting message, or ``None`` when it cannot be read.
+    :returns: Up to :data:`_QUESTION_HISTORY` messages, oldest first. Empty
+        when the store cannot be read.
     """
     if conversation_store is None:
-        return None
+        return []
     try:
         page = await asyncio.to_thread(
             conversation_store.list_items,
@@ -8035,17 +8051,18 @@ async def _turn_user_question(
             "desc",
             "message",
         )
-    except Exception:  # noqa: BLE001 - the question is a bonus, the summary is not
+    except Exception:  # noqa: BLE001 - the questions are a bonus, the summary is not
         _logger.warning(
-            "Could not read the question for session=%s; summarizing without it",
+            "Could not read the questions for session=%s; summarizing without them",
             session_id,
             extra={"session_id": session_id},
             exc_info=True,
         )
-        return None
+        return []
 
     # Newest first, so the first user message below this turn's assistant
     # messages is the one that started it.
+    found: list[str] = []
     for item in page.data:
         data = item.data
         if getattr(data, "role", None) != "user":
@@ -8057,9 +8074,15 @@ async def _turn_user_question(
             text = block.get("text")
             if isinstance(text, str) and text.strip():
                 said.append(text.strip())
-        if said:
-            return "\n\n".join(said)[:_QUESTION_MAX_CHARS]
-    return None
+        if not said:
+            continue
+        whole = "\n\n".join(said)
+        cap = _QUESTION_MAX_CHARS if not found else _EARLIER_MAX_CHARS
+        found.append(whole[:cap])
+        if len(found) >= _QUESTION_HISTORY:
+            break
+    found.reverse()  # collected newest-first; the thread reads oldest-first
+    return found
 
 
 #: Files seen while rebuilding a turn's text, keyed by turn. Read moments later
