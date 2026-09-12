@@ -522,9 +522,18 @@ function startLivePlayback(
       el.dataset.summaryAudio = "live";
       claimSpeechChannel(el, sessionId);
       activeLive = live;
-      void el.play().catch(() => {
+      void el.play().catch((reason: unknown) => {
         // Autoplay refused the stream. Forget it was spoken so the play
         // button still works, and stop billing for audio nobody hears.
+        //
+        // Say so out loud: silently un-marking looks identical to the
+        // feature never having run, and a refused WebRTC stream is a browser
+        // policy decision the reader can act on, not a bug in the session.
+        console.warn(
+          "[omnigent] the browser refused to autoplay the live voice; " +
+            "press play on the summary to hear it",
+          reason,
+        );
         unmarkMessageSpoken(itemId);
         live.stop();
       });

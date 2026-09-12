@@ -1,10 +1,13 @@
-# Friendly layer — session handoff (2026-09-10 / 09-11)
+# Friendly layer — session handoff (2026-09-10 / 09-12)
 
 Everything done in this session, everything still queued, and the environment
 facts that are easy to get wrong. Written so a fresh context can pick up
 without re-deriving any of it.
 
-Branch: `feat/friendly-layer`. Twelve commits, `518ce2900..2a8a55ba2`.
+**Read §2e first.** It holds the reader's own description of where live mode
+is going, and it is the thing most easily lost to a compaction.
+
+Branch: `feat/friendly-layer`, head `3cf2014a7`.
 **Nothing is pushed** — the branch has no upstream, deliberately.
 
 **Restore point:** tag `friendly-layer-known-good` and branch
@@ -314,14 +317,144 @@ min), `OMNIGENT_DISCUSSION_MODEL`, `OMNIGENT_DISCUSSION_AGY_BIN`.
 
 ---
 
+## 2e. Live mode — what it is now, and the loop it is meant to become
+
+### The reader's idea, in their words
+
+> "Gemini already knows, so Gemini is telling me this, so I'll just answer it.
+> But if Gemini doesn't know, I'll ask Claude. I don't want to press an enter
+> button. It decides to stop discussing with the user, it already knows the
+> user's intention, so it just sends the prompt to Claude, and stops
+> listening, stops talking — because that way it will not have to spend
+> anymore."
+
+Three layers, each doing only what it is good at:
+
+| layer | job | knows | costs |
+| --- | --- | --- | --- |
+| `gpt-live-1` | ears and mouth | nothing between sessions | $0.05/min wall clock |
+| Gemini companion | what has happened | the session ledger | free, the reader's plan |
+| Claude | the work | the workspace | the reader's plan |
+
+The loop the reader wants:
+
+1. They talk. `gpt-live-1` hears.
+2. **Gemini decides**: do I already know this?
+   - **Yes** → answer out loud. The conversation continues.
+   - **No, this is work** → compose the prompt from what was said, send it to
+     Claude, and **hang up** — stop listening, stop talking, stop billing.
+3. Claude works. The meter is off for the whole of it, which is the expensive
+   part: minutes of silence at $0.05/min while a turn runs.
+4. The turn finishes, a summary is written, and live mode reads it aloud.
+
+The hang-up is not a detail. It is the reason the design is affordable: the
+session is open only while someone is actually talking.
+
+### What is built today (2026-09-12)
+
+Working, committed, and testable:
+
+- **Narration.** Press play, or let a turn finish. Gemini writes the words,
+  `gpt-live-1` reads them, ~1s to first sound. Session opens on the text and
+  closes 2s after the voice stops. ~$0.016 for a 15s summary.
+- **Conversation.** The mic button in live mode opens a two-way session.
+  `gpt-live-1` hears, thinks **for itself**, and answers. Native full duplex,
+  so interruption works. Briefed at open from the companion ledger.
+- **Memory.** Both sides' transcripts are captured in the browser and written
+  to the ledger as `question` / `answer`, so the panel shows the conversation
+  and the next one opens knowing what the last one said.
+- **Cost is visible.** A clock and running total sit in the composer while a
+  conversation is open.
+
+### The gap, precisely
+
+**Gemini is not in the spoken conversation.** In live mode `gpt-live-1`
+answers natively. It is briefed from the ledger, so it knows *what happened*,
+but the judgement is GPT's, and it cannot act:
+
+- It has no tools. It cannot message Claude, run anything, or touch a file.
+  It offered to once, was told yes, and did nothing. It is now told plainly
+  it cannot, so it says the reader must type it — which is exactly the Enter
+  key the reader does not want to press.
+- It cannot hand off. There is no path from the spoken session into the
+  session's own composer.
+- It cannot decide to stop. Only the reader hangs up.
+
+The deciding half already exists for *typed* messages:
+`DiscussionSession.route()` in `discussion.py` returns
+`Routing(forward, english, answer)` — Gemini looking at a message and saying
+"I can answer this" or "this is for Claude". The voice loop is that same
+decision applied to speech, plus a hang-up.
+
+### Why making Gemini the voice's brain is the expensive option
+
+The obvious move — take the brain out of `gpt-live-1` and let Gemini answer
+through it — costs more than it looks:
+
+- **Delegation flips.** Answering natively is `client` delegation, which bills
+  no tokens at all. Pushing text in requires `responses` delegation and a
+  reader model. (Measured, and there is no third mode.)
+- **Latency roughly triples.** ~1s native, versus Gemini's ~1.2s plus the
+  reader's ~1.4s ≈ 3s. And the voice clock runs the whole time, so a slow
+  backend is billed twice: its own tokens, and the dead air.
+- **Interruption stops being free.** Barge-in is native when the model answers
+  itself. With a mouth-only session we would have to detect the reader
+  starting to talk, stop playback and cancel the response by hand.
+- **Turn detection becomes ours.** Native VAD decides when the reader has
+  finished speaking. Mouth-only, the best signal we have is a gap in
+  transcript deltas (currently 1.5s), which is crude.
+
+So the cheap path keeps `gpt-live-1` answering, and adds Gemini *beside* it as
+the thing that decides when to stop talking and start working.
+
+### The steps, cheapest first
+
+**Step 1 — the handoff, with GPT still answering.** After each reader
+utterance (we already capture it), ask Gemini `route()` in the background:
+is this work for Claude? If yes: send the composed prompt into the session as
+if typed, tell the reader out loud that it is going to Claude, and hang up.
+No delegation change, no latency change, interruption still native. This is
+the step that removes the Enter key, and it is most of the reader's idea.
+
+**Step 2 — close the loop coming back.** When the turn finishes in live mode,
+the summary should speak itself. The path is wired (`speakLiveSummary` no
+longer waits for a recording), but autoplay of a WebRTC stream has not been
+confirmed in a real browser — a refused `play()` currently un-marks the
+summary silently, which looks identical to nothing happening. Needs a
+diagnostic before it needs a fix. Optionally reopen the mic afterwards so the
+reader can answer back without reaching for anything.
+
+**Step 3 — Gemini as the voice, only if Step 1 is not enough.** Flip to
+`responses` delegation, push Gemini's words, and build barge-in and turn
+detection by hand. Do this only if GPT's own answers prove too thin in
+practice; the ledger briefing may well be enough.
+
+### Things already established that this depends on
+
+- `session.close` exists and stops billing cleanly; there is no way to *list*
+  open sessions, so a session whose page vanished is unreachable.
+- Billing is wall clock: a session held silent for 75s billed 74.
+- `gpt-live-1` generates an opening turn by itself on connect. A narrator with
+  nothing to read invents something and says it confidently; the instructions
+  forbid speaking with nothing to say.
+- The reader model must be pinned small. gpt-5 took 27.8s to first word
+  against gpt-4o-mini's 1.4s, and that wait is billed as voice time.
+- Handed a bare summary the reader model *answers* it. It must be framed as a
+  read-aloud command, and openers ("[sigh]", "Oh.") have to be forbidden
+  explicitly.
+
 ## 3. The queue, in the reader's priority order
 
-1. **The companion owns the composer (§2d) — items 1 and 4 are both done.**
-   It routes every typed message, answers what Claude is not needed for, shows
-   who answered, and offers one-click "ask Claude anyway". What remains:
-   - **Wire it to live voice (§2b)**: `prewarm()` when the channel opens, then
-     `route()` per utterance. Latency to watch — ~1.2s warm plus the live
-     model's own turnaround.
+1. **The spoken handoff — the reader's current priority. See §2e, step 1.**
+   Gemini decides, per spoken utterance, whether this is work for Claude; if
+   it is, the prompt is sent as if typed and the session hangs up. Removes the
+   Enter key and stops the meter while Claude works. Reuses `route()` and the
+   transcripts already captured; no delegation change and no latency cost.
+   - **Step 2**: confirm the summary speaks itself on the way back. The path
+     is wired; a browser refusing to autoplay a WebRTC stream now warns in the
+     console rather than failing silently.
+   - **Step 3**, only if needed: Gemini as the voice's brain. Costs ~3s per
+     reply instead of ~1s, and hand-built barge-in. See §2e for why.
    - **Notes during a turn**, not only at the end. That is item 2, and the
      `discussion.note(session_id, "activity", …)` call it needs already exists.
 2. **Progress updates while Claude works** — "Claude is doing X now", so the
