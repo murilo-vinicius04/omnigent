@@ -170,7 +170,6 @@ import {
 } from "@/hooks/useWorkspaceChangedFiles";
 import { ComposerMicButton } from "@/components/ComposerMicButton";
 import { ComposerNarrateButton } from "@/components/ComposerNarrateButton";
-import { ComposerCompanionButton } from "@/components/ComposerCompanionButton";
 import { ComposerSummaryLanguageButton } from "@/components/ComposerSummaryLanguageButton";
 import { ComposerNarrateVolume } from "@/components/ComposerNarrateVolume";
 import { isCostRoutingSession, isSubagentRoutingSession } from "@/components/CostRoutingControl";
@@ -3695,7 +3694,6 @@ function ComposerImpl({
               <span className="sr-only">Attach files</span>
             </Button>
             <ComposerNarrateButton disabled={disabled || isReadOnly} />
-            <ComposerCompanionButton disabled={disabled || isReadOnly} />
             <ComposerSummaryLanguageButton disabled={disabled || isReadOnly} />
             <ComposerNarrateVolume disabled={disabled || isReadOnly} />
             <ComposerMicButton

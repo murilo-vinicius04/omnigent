@@ -60,7 +60,8 @@ export type MessageContentBlock =
   | { type: "input_image"; file_id: string; filename?: string }
   | { type: "input_file"; file_id: string; filename?: string }
   | { type: "output_text"; text: string }
-  | { type: "spoken_summary"; text: string; lang: string };
+  | { type: "spoken_summary"; text: string; lang: string }
+  | { type: "companion_answer" };
 
 /** A single tool call paired with its result. Mirrors `ToolExecution`. */
 export interface ToolExecution {
@@ -284,6 +285,13 @@ export interface TextDone {
   };
   /** Files this assistant message attached. */
   files?: AttachedFile[];
+  /**
+   * Set when the companion answered instead of Claude — a message that
+   * never reached the harness. `asked` is the reader's original text, so the
+   * bubble can offer to send it to Claude anyway. An unlabelled reply here
+   * would read as Claude's own, which is the whole reason this is carried.
+   */
+  companionAnswer?: { asked: string };
 }
 
 // ── Reasoning ────────────────────────────────────────────

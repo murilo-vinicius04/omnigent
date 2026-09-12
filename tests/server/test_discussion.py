@@ -391,3 +391,157 @@ async def test_tell_companion_ignores_a_turn_with_no_summary():
     _tell_companion("conv_y", None)
     _tell_companion("conv_y", {"type": "spoken_summary", "text": "  "})
     assert discussion.registry().peek("conv_y") is None
+
+
+# --- routing: who gets the message the reader typed -------------------
+
+
+def test_routing_parses_a_clean_decision():
+    decision = discussion._parse_routing(
+        '{"forward": false, "english": "how are you?", "answer": "All good."}'
+    )
+    assert decision.forward is False
+    assert decision.english == "how are you?"
+    assert decision.answer == "All good."
+
+
+def test_routing_keeps_the_english_when_it_forwards():
+    decision = discussion._parse_routing('{"forward": true, "english": "run the tests"}')
+    assert decision.forward is True
+    assert decision.english == "run the tests"
+    # An answer on a forwarded message would be shown to nobody.
+    assert decision.answer is None
+
+
+def test_routing_tolerates_a_model_that_wraps_its_json():
+    decision = discussion._parse_routing(
+        'Sure!\n```json\n{"forward": false, "english": "hi", "answer": "Hey."}\n```'
+    )
+    assert decision.forward is False
+    assert decision.answer == "Hey."
+
+
+def test_every_unreadable_reply_forwards():
+    # Forwarding costs seconds; a confident wrong answer from something
+    # that cannot see the code costs much more. So every failure forwards.
+    for reply in ["", "I think you should ask Claude", "{not json}", "[1, 2]", "{}"]:
+        assert discussion._parse_routing(reply).forward is True
+
+
+def test_keeping_a_message_requires_something_to_say():
+    # "forward": false with no answer would consume the message and show
+    # the reader nothing at all.
+    assert discussion._parse_routing('{"forward": false, "english": "hi"}').forward is True
+
+
+def test_only_an_explicit_false_keeps_the_message():
+    assert discussion._parse_routing('{"forward": "no", "answer": "hi"}').forward is True
+    assert discussion._parse_routing('{"answer": "hi"}').forward is True
+
+
+async def test_route_asks_once_and_records_the_exchange(session, monkeypatch):
+    monkeypatch.setattr(
+        session,
+        "_turn",
+        _fake_turn('{"forward": false, "english": "how are you?", "answer": "All good."}'),
+    )
+    decision = await session.route("tudo bem?")
+    assert decision.forward is False
+    assert [(e.kind, e.text) for e in session.context] == [
+        ("question", "tudo bem?"),
+        ("answer", "All good."),
+    ]
+
+
+async def test_route_records_a_forwarded_message_without_an_answer(session, monkeypatch):
+    monkeypatch.setattr(
+        session, "_turn", _fake_turn('{"forward": true, "english": "run the tests"}')
+    )
+    await session.route("roda os testes")
+    # Claude's own summary arrives later; recording an answer here would
+    # put words in its mouth.
+    assert [(e.kind, e.text) for e in session.context] == [("question", "roda os testes")]
+
+
+async def test_route_forwards_when_the_companion_is_broken(fake_agy, tmp_path):
+    broken = DiscussionSession("s", binary=str(tmp_path / "absent"))
+    decision = await broken.route("qualquer coisa")
+    assert decision.forward is True
+    assert decision.english is None
+    # The reader's message still lands in the ledger, so a companion that
+    # recovers has not missed half the conversation.
+    assert broken.context[-1].text == "qualquer coisa"
+
+
+async def test_route_forwards_an_empty_message(session):
+    assert (await session.route("   ")).forward is True
+
+
+def test_routing_is_on_unless_switched_off(monkeypatch):
+    monkeypatch.delenv("OMNIGENT_COMPANION_ROUTING", raising=False)
+    assert discussion.routing_enabled() is True
+    for off in ["0", "false", "no", "off", "OFF"]:
+        monkeypatch.setenv("OMNIGENT_COMPANION_ROUTING", off)
+        assert discussion.routing_enabled() is False
+
+
+def _fake_turn(reply: str):
+    """Return a ``_turn`` stand-in that answers with *reply*."""
+
+    async def turn(_message: str, *, timeout_s: float) -> str:
+        return reply
+
+    return turn
+
+
+# --- the dispatch bypass: "ask Claude anyway" ------------------------
+
+
+def test_force_claude_marker_is_stripped_before_anything_sees_it():
+    from omnigent.server.routes._sessions.orchestration import _strip_force_claude
+
+    content, forced = _strip_force_claude(
+        [{"type": "input_text", "text": "hi"}, {"type": "force_claude"}]
+    )
+    assert forced is True
+    # It is transport, not content: the transcript and the harness must
+    # never see it.
+    assert content == [{"type": "input_text", "text": "hi"}]
+
+
+def test_content_without_the_marker_is_left_alone():
+    from omnigent.server.routes._sessions.orchestration import _strip_force_claude
+
+    original = [{"type": "input_text", "text": "hi"}]
+    content, forced = _strip_force_claude(original)
+    assert forced is False
+    assert content is original
+
+
+def test_swapping_in_the_english_matches_the_translation_path():
+    from omnigent.server.routes._sessions.orchestration import _swap_first_text
+
+    content, english = _swap_first_text(
+        [
+            {"type": "input_image", "file_id": "f1"},
+            {"type": "input_text", "text": "roda os testes"},
+            {"type": "input_text", "text": "trailing"},
+        ],
+        "run the tests",
+    )
+    assert english == "run the tests"
+    # First text swapped, later text dropped, non-text kept — the same
+    # shape the inbound repair pass produces.
+    assert content == [
+        {"type": "input_image", "file_id": "f1"},
+        {"type": "input_text", "text": "run the tests"},
+    ]
+
+
+def test_swapping_text_that_is_not_there_changes_nothing():
+    from omnigent.server.routes._sessions.orchestration import _swap_first_text
+
+    original = [{"type": "input_image", "file_id": "f1"}]
+    content, english = _swap_first_text(original, "run the tests")
+    assert english is None
+    assert content is original

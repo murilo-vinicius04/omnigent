@@ -6,6 +6,7 @@ import {
   GlobeIcon,
   Loader2Icon,
   MaximizeIcon,
+  MessagesSquareIcon,
   MinimizeIcon,
   PlusIcon,
   TerminalIcon,
@@ -37,6 +38,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { BrowserPane } from "@/components/BrowserPane/BrowserPane";
+import { CompanionPanel } from "./CompanionPanel";
 import { useSessionAgent } from "@/hooks/useAgents";
 import type { SessionLiveness } from "@/hooks/useSessionLiveness";
 import { terminalTabKey, useCreateTerminal, useTerminals } from "@/hooks/useTerminals";
@@ -858,6 +860,16 @@ function WorkspacePanelImpl({
                 </span>
               </TabsTrigger>
             </WorkspaceTabTooltip>
+            <WorkspaceTabTooltip label="Companion">
+              <TabsTrigger
+                value="companion"
+                aria-label="Companion"
+                className="size-6 shrink-0 p-0 hover:border-1 hover:border-muted rounded-md!"
+              >
+                <MessagesSquareIcon />
+                <span className="sr-only">Companion</span>
+              </TabsTrigger>
+            </WorkspaceTabTooltip>
             {showBrowserTab && (
               <WorkspaceTabTooltip label="Browser">
                 <TabsTrigger
@@ -984,6 +996,8 @@ function WorkspacePanelImpl({
           <BrowserPane conversationId={conversationId} className="min-h-0 flex-1" />
         ) : rightRailTab === "github" && showGithubTab ? (
           <GithubPanel conversationId={conversationId} />
+        ) : rightRailTab === "companion" ? (
+          <CompanionPanel conversationId={conversationId} />
         ) : rightRailTab === "subagents" && rootSessionId ? (
           <SubagentsPanel conversationId={conversationId} rootSessionId={rootSessionId} />
         ) : (

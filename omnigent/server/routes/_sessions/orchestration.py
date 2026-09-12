@@ -14,7 +14,7 @@ import math
 import secrets
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from typing import Any, Literal, cast
+from typing import Any, Final, Literal, cast
 
 import httpx
 from fastapi import (
@@ -112,6 +112,7 @@ from omnigent.server.background_session_titles import (
     prepare_background_session_title,
 )
 from omnigent.server.bundles import bundle_location, validate_agent_bundle
+from omnigent.server.discussion import Routing
 from omnigent.server.host_registry import HostConnection, HostRegistry, RunnerExitReports
 from omnigent.server.managed_hosts import (
     ManagedHostLaunch,
@@ -320,6 +321,7 @@ from omnigent.server.schemas import (
     ElicitationResult,
     ErrorDetail,
     NativeModelOption,
+    OutputItemDoneEvent,
     SessionCreateInput,
     SessionCreateMetadata,
     SessionEventInput,
@@ -5693,6 +5695,171 @@ async def _translate_inbound_content(
     return (rebuilt, translated) if swapped else (content, None)
 
 
+def _strip_force_claude(content: Any) -> tuple[Any, bool]:
+    """Remove the "send this to Claude anyway" marker, reporting whether it was there.
+
+    The marker rides as a content block because that is the only channel
+    the composer already has to the dispatch path. It is stripped before
+    anything persists or forwards, so it never reaches the transcript or
+    the harness -- it is transport, not content.
+
+    :param content: The outgoing message's content blocks.
+    :returns: ``(content without the marker, whether it was present)``.
+    """
+    if not isinstance(content, list):
+        return content, False
+    kept = [
+        b for b in content if not (isinstance(b, dict) and b.get("type") == _FORCE_CLAUDE_BLOCK)
+    ]
+    return (kept, True) if len(kept) != len(content) else (content, False)
+
+
+async def _route_through_companion(session_id: str, content: list[Any]) -> Routing | None:
+    """Ask the companion whether Claude is needed, and for the English.
+
+    Returns ``None`` when routing is off or there is nothing to route, so
+    the caller falls back to the inbound repair pass unchanged. Never
+    raises: the companion sits between the reader pressing enter and
+    Claude seeing the message, so every failure has to forward.
+
+    The reader's language needs no lookup here: the companion replies in
+    whatever language the message was written in, which is the same rule
+    the summaries already follow.
+
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :param content: The outgoing message's content blocks.
+    :returns: The decision, or ``None`` to leave the old path in charge.
+    """
+    from omnigent.server import discussion
+
+    if not discussion.routing_enabled():
+        return None
+    text = _message_text([b for b in content if isinstance(b, dict)])
+    if not text:
+        return None
+    try:
+        companion = await discussion.registry().get(session_id)
+        return await companion.route(text)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - forwarding is always safe
+        _logger.warning(
+            "Companion routing skipped for session=%s: %s",
+            session_id,
+            exc,
+            extra={"session_id": session_id},
+        )
+        return None
+
+
+def _swap_first_text(content: Any, english: str) -> tuple[Any, str | None]:
+    """Replace the first text block with *english*, dropping later ones.
+
+    Mirrors what :func:`_translate_inbound_content` does to its content,
+    so both paths hand the harness the same shape.
+
+    :param content: The outgoing message's content blocks.
+    :param english: The message restated in English.
+    :returns: ``(content to dispatch, the English text)``, or the content
+        unchanged and ``None`` when there was no text block to swap.
+    """
+    if not isinstance(content, list):
+        return content, None
+    rebuilt: list[Any] = []
+    swapped = False
+    for block in content:
+        if not isinstance(block, dict):
+            rebuilt.append(block)
+            continue
+        is_text = isinstance(block.get("text"), str) or isinstance(block.get("input_text"), str)
+        if is_text and not swapped:
+            key = "text" if isinstance(block.get("text"), str) else "input_text"
+            rebuilt.append({**block, key: english})
+            swapped = True
+            continue
+        if is_text:
+            continue
+        rebuilt.append(block)
+    return (rebuilt, english) if swapped else (content, None)
+
+
+async def _persist_companion_answer(
+    session_id: str,
+    conv: Conversation,
+    body: SessionEventInput,
+    conversation_store: ConversationStore,
+    *,
+    answer: str,
+    asked: str,
+    created_by: str | None,
+) -> str:
+    """Write a turn the companion answered, so Claude never sees it.
+
+    The message never reaches the terminal, so nothing downstream will
+    echo it back: this server becomes the writer for this turn. It
+    records the reader's message (consuming the input) and a sibling
+    assistant message carrying the companion's reply, then publishes both
+    so an open client renders them without a refresh.
+
+    The reply is marked with a ``companion_answer`` content part rather
+    than passed off as Claude's. Who answered has to be visible, and the
+    reader needs one click to send it to Claude anyway.
+
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :param conv: Conversation row for the session.
+    :param body: The original user message event.
+    :param conversation_store: Store used for the durable append.
+    :param answer: The companion's reply, in the reader's language.
+    :param asked: What the reader typed, for the re-send affordance.
+    :param created_by: Authenticated posting actor, or ``None``.
+    :returns: Store-assigned id of the consumed user message item.
+    """
+    turn_id = generate_task_id()
+    user_item = _build_new_item(body, turn_id, created_by=created_by)
+    answer_item = NewConversationItem(
+        type="message",
+        response_id=turn_id,
+        data=parse_item_data(
+            "message",
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "output_text", "text": answer},
+                    # Carries the question so the bubble's "ask Claude
+                    # anyway" can re-send it without the reader retyping.
+                    {"type": "companion_answer", "asked": asked},
+                ],
+            },
+        ),
+    )
+    persisted = await asyncio.to_thread(
+        conversation_store.append,
+        session_id,
+        [user_item, answer_item],
+    )
+    await _seed_missing_title_from_user_message(conv, user_item, conversation_store)
+    consumed = persisted[0]
+    _publish_input_consumed(session_id, consumed)
+    if len(persisted) > 1:
+        session_stream.publish(
+            session_id,
+            OutputItemDoneEvent(
+                type="response.output_item.done",
+                item=persisted[1].to_api_dict(),
+            ).model_dump(),
+        )
+    # The turn is over the moment it is written: nothing is running, and a
+    # client left on "thinking" would wait forever for a harness that was
+    # never asked.
+    _publish_status(session_id, "idle", None)
+    return consumed.id
+
+
+#: Content-block marker meaning "do not route this, Claude must see it".
+_FORCE_CLAUDE_BLOCK: Final[str] = "force_claude"
+
+
 async def _dispatch_session_event_to_runner_impl(
     session_id: str,
     conv: Conversation,
@@ -5821,16 +5988,45 @@ async def _dispatch_session_event_to_runner_impl(
         # server-side immediately (replayed into the snapshot). Roll it
         # back on any failure/cancellation so a message the TUI never
         # received doesn't replay as a ghost.
-        content = body.data.get("content")
+        # "Ask Claude anyway" re-sends a message the companion already
+        # answered; routing it again would answer it again.
+        content, forced_to_claude = _strip_force_claude(body.data.get("content"))
+        if forced_to_claude:
+            body.data["content"] = content
+        # The companion sees the message before Claude does. One warm turn
+        # does both jobs: it restates the message in English for the harness
+        # (what the cold repair pass used to do at 4-5s) and says whether
+        # Claude is needed at all. When it answers, the message never reaches
+        # the terminal and this server writes the turn itself.
+        routed = (
+            await _route_through_companion(session_id, content)
+            if isinstance(content, list) and content and not forced_to_claude
+            else None
+        )
+        if routed is not None and not routed.forward and routed.answer:
+            item_id = await _persist_companion_answer(
+                session_id,
+                conv,
+                body,
+                conversation_store,
+                answer=routed.answer,
+                asked=_message_text([b for b in content if isinstance(b, dict)]) or "",
+                created_by=created_by,
+            )
+            return _SessionEventDispatchResult(item_id=item_id, pending_id=None)
         # Translate the reader's message to English before the harness sees it.
         # The pending entry keeps the original plus a marker naming the English
         # that was dispatched, so the transcript can show the reader their own
         # words with that English one click away. Any failure dispatches the
         # message unchanged.
         dispatch_content, translated_en = (
-            await _translate_inbound_content(session_id, content, conversation_store)
-            if isinstance(content, list) and content
-            else (content, None)
+            _swap_first_text(content, routed.english)
+            if routed is not None and routed.english
+            else (
+                await _translate_inbound_content(session_id, content, conversation_store)
+                if isinstance(content, list) and content
+                else (content, None)
+            )
         )
         pending_content = (
             [*content, {"type": "translated_text", "text": translated_en}]
@@ -5842,11 +6038,10 @@ async def _dispatch_session_event_to_runner_impl(
             if isinstance(pending_content, list) and pending_content
             else None
         )
-        # Tell the companion what was just asked. Without this it would
-        # only ever hear Claude's side, which reads like listening to one
-        # half of a phone call. Recording a note does not talk to the
-        # model, so this costs nothing on the dispatch path.
-        if isinstance(content, list) and content:
+        # When routing is off the companion still has to hear the reader's
+        # side, or it is listening to half a phone call. Routing records the
+        # message itself, so this only covers the unrouted path.
+        if routed is None and isinstance(content, list) and content:
             from omnigent.server import discussion
 
             asked = _message_text([b for b in content if isinstance(b, dict)])

@@ -35,6 +35,7 @@ import type { SessionStatus } from "@/lib/types";
 import type { ActiveResponse } from "@/store/types";
 import { cn } from "@/lib/utils";
 import { FilePathAwareMessageResponse } from "./ChatMarkdown";
+import { CompanionAnswerNote } from "@/components/chat/CompanionAnswerNote";
 import { AttachedFiles } from "@/components/chat/AttachedFiles";
 import { FriendlyResponse } from "@/components/chat/FriendlyResponse";
 import { ElicitationCard } from "./ApprovalCard";
@@ -798,6 +799,7 @@ function renderItem(
             <FilePathAwareMessageResponse>{item.text}</FilePathAwareMessageResponse>
           )}
           {item.files && item.files.length > 0 && <AttachedFiles files={item.files} />}
+          {item.companionAnswer && <CompanionAnswerNote asked={item.companionAnswer.asked} />}
         </div>
       );
     case "reasoning":

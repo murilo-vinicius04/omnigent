@@ -233,69 +233,79 @@ start on every message the reader types**. Warm, it would be ~1s.
 
 ---
 
-## 2d. The companion — wired into the session, not beside it
+## 2d. The companion — it owns the composer now
 
-One warm `agy` per Omnigent session. **It lives in the composer**: the
-speech-bubble button next to the narrate controls opens a panel showing what it
-knows and a box to talk to it, without interrupting Claude.
+One warm `agy` per Omnigent session, and **every message the reader types goes
+to it before Claude sees it**. The same turn does two jobs: restate the message
+in English for the harness (what the cold inbound repair pass used to do at
+4–5s) and decide whether Claude is needed at all. Trivia it can answer from
+what it already knows, it answers; everything else forwards.
 
 | thing | where |
 | --- | --- |
-| session manager | `omnigent/server/discussion.py` |
-| routes | `omnigent/server/routes/discussion.py` (`/v1/discussion/{session_id}`) |
-| fed from | `routes/_sessions/helpers.py` `_tell_companion` (summaries), `routes/_sessions/orchestration.py` (the reader's message) |
-| panel | `web/src/components/ComposerCompanionButton.tsx`, `web/src/lib/companionApi.ts` |
-| tests | `tests/server/test_discussion.py` (31), `ComposerCompanionButton.test.tsx` (6) |
+| session manager + routing | `omnigent/server/discussion.py` (`route()`, `_parse_routing`) |
+| dispatch hook | `routes/_sessions/orchestration.py` — `_route_through_companion`, `_persist_companion_answer`, `_strip_force_claude` |
+| summaries feed | `routes/_sessions/helpers.py` `_tell_companion` |
+| ledger API | `routes/discussion.py` (`/v1/discussion/{session_id}`) |
+| rail panel | `web/src/shell/CompanionPanel.tsx` (Companion tab) |
+| answer marker | `web/src/components/chat/CompanionAnswerNote.tsx` |
+| tests | `tests/server/test_discussion.py` (46), 9 web tests |
 
-**What feeds it, in the real turn path:**
+**Everything fails toward forwarding.** An unparseable reply, a dead process, a
+missing CLI, a timeout, `"forward": false` with no answer to show — all forward.
+A slow answer from Claude costs seconds; a confident wrong answer from
+something that cannot see the code costs much more.
 
-- The reader's message, at dispatch (`"they asked Claude: …"`).
-- Each spoken summary, as it is generated — the same text the reader hears
-  narrated, already written and already compressed.
-- What is still running when a turn ends (`_pending_work_labels`).
+**A kept message never reaches the terminal**, so the server becomes the writer
+for that turn: it persists the reader's message (consuming the input) plus an
+assistant message carrying a `companion_answer` content part, publishes both,
+and marks the session idle. The bubble says *"Answered by the companion — Claude
+never saw this"* and offers **Ask Claude anyway**, which re-sends the original
+text with a `force_claude` marker that skips routing (the marker is transport:
+stripped before anything persists or forwards).
 
-It never sees the transcript or the code. Asked about a detail it was not told,
-it says so and suggests asking Claude — confirmed in testing, not assumed.
+**Measured** (2026-09-11, `gemini-3.8-flash-low`, 7/7 decisions correct):
+
+```
+  4.2s  kept     oi, tudo bem?                          -> answered in pt-BR
+  1.3s  kept     o que voce esta fazendo agora?
+  1.4s  kept     quantos testes passaram?
+  1.3s  FORWARD  conserta o bug do parser no tts.py     -> en: fix the parser bug in tts.py
+  1.3s  FORWARD  roda os testes de novo
+  1.1s  FORWARD  what does the sweep function do?
+```
+
+Since it replaces a 4–5s cold repair pass, typing to Claude got *faster*.
 
 **The one idea the rest falls out of: the ledger is the memory, the process is
 a cache.** Every note, question and answer lands in a `ContextEntry` list on
-the session — *that* is the conversation. The subprocess holds the same history
-only as a warm copy, so any process death is recoverable: crash, timeout, idle
-reap, server restart. The next question spawns a new process and replays the
-ledger. This is why the code is free to kill the process whenever its state is
-in doubt — notably after a timeout, where a late answer would otherwise pair
-with the *next* question and silently desync the conversation.
+the session. The subprocess holds the same history only as a warm copy, so any
+process death is recoverable — crash, timeout, idle reap, restart — by
+replaying the ledger into a replacement. That is why the code is free to kill
+the process whenever its state is in doubt, notably after a timeout, where a
+late answer would otherwise pair with the *next* question.
 
-**Notes cost nothing until they are needed.** `discussion.note(...)` never
-touches the process; it appends to the ledger and returns, which is what makes
-it safe on the turn hot path. Undelivered notes are folded into the next
-question as a briefing block, so the context arrives when it becomes relevant.
-The panel dims entries the process has not been told yet. `note()` swallows
-every exception: a companion failure must be invisible to the turn being served.
+What it knows is deliberately thin: the reader's messages and the spoken
+summaries, never the transcript or the code. The **Companion tab** in the right
+rail shows the whole ledger, read-only — the composer is how you talk to it,
+and a second input there was the mistake this replaced.
 
-**Cold start is one turn, not three.** The first version sent the role, then
-the ledger replay, then the question — three turns, **8.3s**, *worse* than the
-4–5s one-shot this replaces. Folding all three into one message: **3.5s**.
-Opening the panel calls `prewarm()`, so the reader's first question is ~1.1s
-while they are still reading the ledger.
+**Switches:** `OMNIGENT_COMPANION_ROUTING=0` sends everything straight to
+Claude (the companion still listens). Also
+`OMNIGENT_COMPANION_ROUTE_TIMEOUT_S` (8s), `OMNIGENT_DISCUSSION_IDLE_S` (15
+min), `OMNIGENT_DISCUSSION_MODEL`, `OMNIGENT_DISCUSSION_AGY_BIN`.
 
-Lifecycle is in the server lifespan (`app.py`): a 60s sweep reaps processes
-idle past `OMNIGENT_DISCUSSION_IDLE_S` (default 15 min), and `close_all()` on
-shutdown means a restart never orphans an `agy`. Other env overrides:
-`OMNIGENT_DISCUSSION_AGY_BIN`, `OMNIGENT_DISCUSSION_MODEL`.
-
-**Not done:** it is text-only — not yet connected to the live voice channel
-(§2b), and there are still no progress notes *during* a turn (queue item 2),
-only at the end.
+**Not done:** no notes *during* a turn (item 2), and not wired to live voice.
 
 ---
 
 ## 3. The queue, in the reader's priority order
 
-1. **The companion is wired into the composer and fed by real turns (§2d).**
-   What remains:
+1. **The companion owns the composer (§2d) — items 1 and 4 are both done.**
+   It routes every typed message, answers what Claude is not needed for, shows
+   who answered, and offers one-click "ask Claude anyway". What remains:
    - **Wire it to live voice (§2b)**: `prewarm()` when the channel opens, then
-     `ask()` per utterance. Latency to watch — ~1.1s warm plus the live
+     `route()` per utterance. Latency to watch — ~1.2s warm plus the live
      model's own turnaround.
    - **Notes during a turn**, not only at the end. That is item 2, and the
      `discussion.note(session_id, "activity", …)` call it needs already exists.
@@ -306,10 +316,9 @@ only at the end.
    compaction telling it to document its context so nothing is lost, plus a
    configurable percentage in the Omnigent UI. Motivation: cost, and not
    wanting to think about compaction.
-4. **Gemini answering directly when Claude is not needed** — a minor question,
-   a clarification, a word. Discussed: must be biased toward forwarding, show
-   who answered, and offer one-click "ask Claude anyway", because a confident
-   wrong answer without the repo context is the failure mode.
+4. ~~**Gemini answering directly when Claude is not needed**~~ — **done**, as
+   part of item 1. Biased toward forwarding, shows who answered, one-click
+   "ask Claude anyway". See §2d.
 5. **Permanent systemd unit + linger**, and the `voice-agent` memory line that
    still points the console at `omnigent-fork` (needs the reader's OK).
 6. **`answer_language_instruction` is dead code** (`inbound_translation.py:53`).
@@ -367,7 +376,7 @@ cd /home/nexus/wt/friendly-layer
 cd web && npx vitest run src/ && node_modules/.bin/tsc -b && npx vite build
 ```
 
-Current: 177 server tests in that set, 6922 web tests, 0 type errors
+Current: 192 server tests in that set, 6925 web tests, 0 type errors
 (`.venv/bin/python -m pyrefly check <files>`). `pre-commit run --all-files` fails only on pre-existing
 `omnigent/runtime/telemetry.py` opentelemetry imports — not from this work.
 `pyrefly` reports one pre-existing error in `_sessions/helpers.py:8379`

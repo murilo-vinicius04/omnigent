@@ -76,6 +76,8 @@ export type RenderItem =
       };
       /** Files this turn attached, lifted from its message blocks. */
       files?: AttachedFile[];
+      /** Set when the companion answered this one instead of Claude. */
+      companionAnswer?: { asked: string };
     }
   | {
       kind: "reasoning";
@@ -1680,6 +1682,7 @@ function textItem(run: AnyBlock[]): RenderItem {
         ...(b.ctx.createdAtS !== undefined ? { createdAtS: b.ctx.createdAtS } : {}),
         ...(b.spokenSummary ? { spokenSummary: b.spokenSummary } : {}),
         ...(b.files ? { files: b.files } : {}),
+        ...(b.companionAnswer ? { companionAnswer: b.companionAnswer } : {}),
       };
     }
   }

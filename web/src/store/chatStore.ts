@@ -138,6 +138,15 @@ export interface SendOptions {
    * `send` already set `conversationId` before the callback.
    */
   onConversationCreated?: (conversationId: string) => void;
+  /**
+   * Send straight to Claude, skipping the companion's routing decision.
+   *
+   * Used by "ask Claude anyway" on a reply the companion kept: without it
+   * the same message would be routed again and answered the same way. Rides
+   * as a marker content block, which the server strips before the message
+   * persists or forwards.
+   */
+  forceClaude?: boolean;
 }
 
 /**
@@ -1709,7 +1718,12 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
         type: "message",
         data: {
           role: "user",
-          content: serverContent,
+          // The routing-bypass marker rides on the POST only: it is transport,
+          // so it must not reach the optimistic bubble that `serverContent`
+          // also feeds.
+          content: opts?.forceClaude
+            ? [...serverContent, { type: "force_claude" as const }]
+            : serverContent,
         },
       });
       // Policy denied the input — the server returned immediately

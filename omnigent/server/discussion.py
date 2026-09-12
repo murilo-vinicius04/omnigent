@@ -30,6 +30,21 @@ is why this module is free to kill it whenever the state is in doubt.
 The ledger is also exactly what the UI shows, so "what does it know?"
 has one answer rather than one per surface.
 
+Routing: the companion sees the message first
+---------------------------------------------
+
+:meth:`DiscussionSession.route` is the composer's path. Every message the
+reader types goes to the companion before Claude sees it, and the same
+turn does two jobs: it restates the message in English for the harness
+(the job the cold inbound repair pass used to do, at 4-5s) and it says
+whether Claude is needed at all. Trivia it can answer from what it
+already knows, it answers; everything else forwards.
+
+The bias is heavily toward forwarding, and every failure mode forwards:
+an unparseable reply, a dead process, a missing CLI, a timeout. A slow
+answer from Claude is a cost; a confident wrong answer from something
+that cannot see the code is a trap.
+
 Notes cost nothing until they are needed
 ----------------------------------------
 
@@ -63,6 +78,10 @@ DISCUSSION_AGY_BIN: Final[str] = "agy"
 #: Warm turns measure ~1.0s and a cold first turn ~3.1s, so this is
 #: loose enough to absorb a restart-and-replay and still bound the wait.
 DEFAULT_TIMEOUT_S: Final[float] = 30.0
+
+#: Budget for a routing turn. A warm one lands in ~1s; this leaves room
+#: for one cold start before the message goes to Claude unrouted.
+DEFAULT_ROUTE_TIMEOUT_S: Final[float] = 8.0
 
 #: Idle time after which the process is reaped. The ledger survives, so
 #: the only cost of reaping early is one cold start later.
@@ -124,6 +143,47 @@ class DiscussionUnavailable(RuntimeError):
     """The companion cannot be reached, so the caller should degrade."""
 
 
+#: The routing turn. Asks for both jobs at once because they need the same
+#: context and a second turn would double the latency on the typing path.
+_ROUTE_PROMPT: Final[str] = """\
+[The person just typed this to Claude. It goes to Claude unless you can \
+answer it completely yourself.]
+{message}
+
+Reply with ONE line of JSON and nothing else:
+{{"forward": true, "english": "...", "answer": ""}}
+
+- "english": their message restated in plain English for Claude. Faithful, \
+same meaning, no commentary, no answering it. Always fill this in, even when \
+you are answering yourself. If it is already English, repeat it unchanged.
+- "forward": false ONLY when you can answer completely from what you already \
+know -- small talk, a question about what has been happening, something you \
+were just told. If it needs the code, the files, a tool, a change, or any \
+fact you were not given, forward it.
+- "answer": your reply when forward is false, in the language they wrote in. \
+Empty otherwise.
+
+When in doubt, forward. Making them wait for Claude costs seconds; a \
+confident wrong answer from someone who cannot see the code costs much more.\
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class Routing:
+    """What the companion decided about one typed message.
+
+    :param forward: Whether Claude should see it. Every failure yields
+        ``True``: forwarding is always safe, answering is not.
+    :param english: The message restated for the harness, or ``None``
+        when the companion could not produce one.
+    :param answer: The companion's own reply when it kept the message.
+    """
+
+    forward: bool
+    english: str | None = None
+    answer: str | None = None
+
+
 def _model() -> str:
     """Return the configured companion model."""
     return (
@@ -134,6 +194,33 @@ def _model() -> str:
 def _binary() -> str:
     """Return the configured ``agy`` binary."""
     return os.environ.get("OMNIGENT_DISCUSSION_AGY_BIN", "").strip() or DISCUSSION_AGY_BIN
+
+
+def route_timeout_s() -> float:
+    """Return the budget for a routing turn, in seconds.
+
+    Deliberately tight: this sits between the reader pressing enter and
+    Claude seeing the message, so a companion that is thinking too long
+    must get out of the way rather than hold the composer.
+    """
+    raw = os.environ.get("OMNIGENT_COMPANION_ROUTE_TIMEOUT_S", "").strip()
+    if raw:
+        with contextlib.suppress(ValueError):
+            parsed = float(raw)
+            if parsed > 0:
+                return parsed
+    return DEFAULT_ROUTE_TIMEOUT_S
+
+
+def routing_enabled() -> bool:
+    """Whether typed messages are routed through the companion first.
+
+    On by default: the composer is the feature. Set
+    ``OMNIGENT_COMPANION_ROUTING=0`` to send everything straight to Claude
+    (the companion still listens and can still be asked directly).
+    """
+    raw = os.environ.get("OMNIGENT_COMPANION_ROUTING", "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 def idle_timeout_s() -> float:
@@ -425,6 +512,48 @@ class DiscussionSession:
             self._last_used = time.time()
             return answer
 
+    async def route(self, text: str, *, timeout_s: float | None = None) -> Routing:
+        """Decide whether Claude is needed, and restate the message for it.
+
+        One warm turn doing the work the cold inbound repair pass used to
+        do, plus the decision. Never raises: anything that goes wrong
+        returns a forwarding :class:`Routing`, because the composer must
+        stay usable when the companion is not.
+
+        :param text: What the reader typed.
+        :param timeout_s: Budget. Short by default -- this sits on the
+            typing path, so a slow companion must get out of the way.
+        :returns: The decision.
+        """
+        message = text.strip()
+        if not message:
+            return Routing(forward=True)
+        budget = timeout_s if timeout_s is not None else route_timeout_s()
+        async with self._lock:
+            self._last_used = time.time()
+            try:
+                await self._ensure_process()
+                blocks = self._preamble()
+                prompt = _ROUTE_PROMPT.format(message=message)
+                reply = await self._turn(
+                    "\n\n".join([*blocks, prompt]) if blocks else prompt,
+                    timeout_s=budget,
+                )
+            except DiscussionUnavailable as exc:
+                _logger.info("companion routing unavailable, forwarding: %s", exc)
+                await self._kill()
+                self._record("question", message)
+                return Routing(forward=True)
+            self._briefed = True
+            self._undelivered.clear()
+            self._last_used = time.time()
+
+        decision = _parse_routing(reply)
+        self._record("question", message)
+        if not decision.forward and decision.answer:
+            self._record("answer", decision.answer)
+        return decision
+
     async def _turn(self, message: str, *, timeout_s: float) -> str:
         """Run exactly one NDJSON turn against the warm process. Lock held.
 
@@ -481,6 +610,35 @@ class DiscussionSession:
     def _stderr_tail(self) -> str:
         """Return the last stderr lines, for an error message."""
         return " | ".join(self._stderr) or "no stderr"
+
+
+def _parse_routing(reply: str) -> Routing:
+    """Read the model's routing reply, defaulting to forwarding.
+
+    The model is asked for one line of JSON, and mostly obliges, but a
+    stray sentence or a code fence must not strand a message. Anything
+    unreadable forwards -- the only safe failure.
+
+    :param reply: Raw text of the routing turn.
+    :returns: The decision.
+    """
+    start, end = reply.find("{"), reply.rfind("}")
+    if start < 0 or end <= start:
+        _logger.info("companion routing reply was not JSON, forwarding: %r", reply[:200])
+        return Routing(forward=True)
+    try:
+        parsed = json.loads(reply[start : end + 1])
+    except json.JSONDecodeError:
+        _logger.info("companion routing reply did not parse, forwarding: %r", reply[:200])
+        return Routing(forward=True)
+    if not isinstance(parsed, dict):
+        return Routing(forward=True)
+    english = str(parsed.get("english") or "").strip() or None
+    answer = str(parsed.get("answer") or "").strip() or None
+    # Only an explicit false keeps the message, and only with something to
+    # say: "forward": "no" or a missing answer both mean forward.
+    forward = parsed.get("forward") is not False or not answer
+    return Routing(forward=forward, english=english, answer=None if forward else answer)
 
 
 def _render(entry: ContextEntry) -> str:

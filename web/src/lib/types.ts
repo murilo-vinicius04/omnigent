@@ -133,6 +133,18 @@ export type ContentBlock =
   | { type: "input_image"; file_id: string; filename?: string }
   | { type: "input_file"; file_id: string; filename: string };
 
+/**
+ * Wire-level flag: do not route this message through the companion.
+ *
+ * Travels in the content array because that is the only channel the composer
+ * has to the dispatch path, but it is not content: the server strips it
+ * before the message persists or reaches the harness, and it must never be
+ * stored alongside what the reader actually wrote.
+ */
+export interface ForceClaudeBlock {
+  type: "force_claude";
+}
+
 // ── Sessions (/v1/sessions) ──────────────────────────────
 
 /**
@@ -173,7 +185,10 @@ export type SessionStatus = "idle" | "launching" | "running" | "waiting" | "fail
  * Mirrors `omnigent.server.schemas.SessionEventInput`.
  */
 export type SessionEventInput =
-  | { type: "message"; data: { role: "user"; content: ContentBlock[] } }
+  | {
+      type: "message";
+      data: { role: "user"; content: (ContentBlock | ForceClaudeBlock)[] };
+    }
   | { type: "function_call_output"; data: Record<string, unknown> }
   | { type: "approval"; data: Record<string, unknown> }
   | { type: "interrupt"; data?: Record<string, unknown> }

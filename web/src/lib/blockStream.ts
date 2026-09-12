@@ -317,6 +317,27 @@ export function outputFilesFromMessageContent(content: unknown): AttachedFile[] 
 }
 
 /**
+ * Whether an assistant message was written by the companion, not Claude.
+ *
+ * The companion answers messages that never needed Claude. Its replies sit in
+ * the same transcript as Claude's, so the marker has to survive into the
+ * rendered block: passing one off as the other is how a reader ends up
+ * trusting an answer from something that cannot see the code.
+ */
+export function companionAnswerFromMessageContent(
+  content: unknown,
+): { asked: string } | undefined {
+  if (!Array.isArray(content)) return undefined;
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (b.type !== "companion_answer") continue;
+    return { asked: typeof b.asked === "string" ? b.asked : "" };
+  }
+  return undefined;
+}
+
+/**
  * Extract the English a user message was translated into before dispatch.
  *
  * Present only when inbound translation ran: the block body is what the reader

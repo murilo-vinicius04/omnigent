@@ -40,6 +40,7 @@ import {
   formatToolArgsBrief,
   outputFilesFromMessageContent,
   spokenSummaryFromMessageContent,
+  companionAnswerFromMessageContent,
   translatedTextFromMessageContent,
 } from "./blockStream";
 import {
@@ -336,6 +337,7 @@ function assistantMessageToBlock(item: MessageItem): TextDone {
     .join("");
   const spokenSummary = spokenSummaryFromMessageContent(item.content);
   const files = outputFilesFromMessageContent(item.content);
+  const companionAnswer = companionAnswerFromMessageContent(item.content);
   return {
     type: "text_done",
     ctx: ctxFor(item),
@@ -344,6 +346,7 @@ function assistantMessageToBlock(item: MessageItem): TextDone {
     ...(item.interrupted === true ? { interrupted: true } : {}),
     ...(spokenSummary ? { spokenSummary } : {}),
     ...(files ? { files } : {}),
+    ...(companionAnswer ? { companionAnswer } : {}),
   };
 }
 
