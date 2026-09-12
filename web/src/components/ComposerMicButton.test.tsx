@@ -640,11 +640,12 @@ describe("ComposerMicButton on the live voice", () => {
     const start = vi.fn(async () => {});
     useLiveConversationStore.setState({ start } as never);
 
-    render(<ComposerMicButton onTranscript={() => {}} sessionId="conv_a" />);
+    render(<ComposerMicButton onTranscript={() => {}} sessionId="conv_a" agentId="agent_1" />);
     fireEvent.click(screen.getByRole("button"));
 
     // In live mode the mic is the conversation, not a transcription step.
-    expect(start).toHaveBeenCalledWith("conv_a");
+    // The agent rides along so a spoken request can reach Claude.
+    expect(start).toHaveBeenCalledWith("conv_a", "agent_1");
   });
 
   it("hangs up when pressed again", () => {

@@ -99,6 +99,8 @@ export interface ComposerMicButtonProps {
    * chat composer mounts one too, and there it is dictation and nothing else.
    */
   sessionId?: string | null;
+  /** Agent the session is talking to, so a spoken request can reach it. */
+  agentId?: string | null;
 }
 
 /** getUserMedia permission failures, distinct from transport failures. */
@@ -115,6 +117,7 @@ export const ComposerMicButton = ({
   onVoiceStart,
   onVoiceDiscard,
   sessionId: liveSessionId = null,
+  agentId: liveAgentId = null,
 }: ComposerMicButtonProps) => {
   // Web Speech is primary whenever the browser has the constructor
   // (Chrome/Safari, unchanged behavior); with no constructor at all
@@ -436,7 +439,7 @@ export const ComposerMicButton = ({
     if (currentVoiceBackend(liveSessionId) === "live") {
       const conversation = useLiveConversationStore.getState();
       if (conversation.sessionId || conversation.connecting) conversation.stop();
-      else if (liveSessionId) void conversation.start(liveSessionId);
+      else if (liveSessionId) void conversation.start(liveSessionId, liveAgentId);
       return;
     }
     // An active (or starting) server take is owned by the server path,
@@ -468,7 +471,15 @@ export const ComposerMicButton = ({
       // user can try again, and let the next event reconcile state.
       transitionRef.current = false;
     }
-  }, [isListening, Ctor, serverAvailable, serverPreferred, toggleServer, liveSessionId]);
+  }, [
+    isListening,
+    Ctor,
+    serverAvailable,
+    serverPreferred,
+    toggleServer,
+    liveSessionId,
+    liveAgentId,
+  ]);
 
   // ⌘⌥V toggles dictation from anywhere — same as clicking the button. Enabled
   // whenever dictation could run (Web Speech OR the server path) and the

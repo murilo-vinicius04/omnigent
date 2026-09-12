@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const openLiveConversation = vi.fn();
 
@@ -9,9 +9,20 @@ vi.mock("./liveVoice", () => ({
 }));
 vi.mock("./speechPlayback", () => ({ claimSpeechChannel: vi.fn() }));
 const noteCompanion = vi.fn(async (_sessionId: string, _kind: string, _text: string) => {});
+const routeSpoken = vi.fn(async (_sessionId: string, _text: string) => ({
+  forward: false,
+  english: null as string | null,
+  answer: null as string | null,
+}));
 vi.mock("./companionApi", () => ({
   noteCompanion: (sessionId: string, kind: string, text: string) =>
     noteCompanion(sessionId, kind, text),
+  routeSpoken: (sessionId: string, text: string) => routeSpoken(sessionId, text),
+}));
+
+const send = vi.fn(async (_text: string, _agentId: string) => {});
+vi.mock("@/store/chatStore", () => ({
+  useChatStore: { getState: () => ({ send }) },
 }));
 
 import { useLiveConversationStore, conversationCostUsd } from "./liveConversation";
@@ -131,5 +142,108 @@ describe("a conversation nobody is having", () => {
       expect(useLiveConversationStore.getState().sessionId).toBeNull();
       expect(useLiveConversationStore.getState().elapsedS).toBe(0);
     });
+  });
+});
+
+describe("handing a spoken request to Claude", () => {
+  /** Drive one conversation and return its utterance callback. */
+  async function open(agentId: string | null = "agent_1") {
+    const live = fakeConversation();
+    let emit: ((u: { who: string; text: string }) => void) | undefined;
+    openLiveConversation.mockImplementation(
+      (_id: string, opts: { onUtterance?: (u: { who: string; text: string }) => void }) => {
+        emit = opts.onUtterance;
+        return Promise.resolve(live);
+      },
+    );
+    await useLiveConversationStore.getState().start("conv_a", agentId);
+    // A leftover session from a previous test makes start() return early and
+    // the failure then shows up as "emit is not a function", which points at
+    // the wrong thing entirely.
+    if (!emit) throw new Error("start() never opened a conversation");
+    return { live, emit };
+  }
+
+  beforeEach(() => {
+    // A sibling describe, so the reset in the first one does not reach here.
+    vi.clearAllMocks();
+    routeSpoken.mockResolvedValue({ forward: false, english: null, answer: null });
+    useLiveConversationStore.setState({
+      sessionId: null,
+      handedOff: null,
+      connecting: false,
+      elapsedS: 0,
+      error: null,
+    });
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("joins fragments instead of sending half a thought", async () => {
+    const { emit } = await open();
+    emit({ who: "reader", text: "can you run" });
+    await vi.advanceTimersByTimeAsync(1000); // a breath, not the end
+    emit({ who: "reader", text: "the migration tests" });
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(routeSpoken).toHaveBeenCalledTimes(1);
+    expect(routeSpoken.mock.calls[0]?.[1]).toBe("can you run the migration tests");
+  });
+
+  it("sends to Claude and hangs up when it is work", async () => {
+    routeSpoken.mockResolvedValueOnce({
+      forward: true,
+      english: "Run the migration tests.",
+      answer: null,
+    });
+    const { live, emit } = await open();
+    emit({ who: "reader", text: "run the migration tests" });
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(send).toHaveBeenCalledWith("Run the migration tests.", "agent_1");
+    // The meter must not run through however long the turn takes.
+    expect(live.stop).toHaveBeenCalled();
+  });
+
+  it("keeps talking when the companion can answer", async () => {
+    const { live, emit } = await open();
+    emit({ who: "reader", text: "what did you change?" });
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(live.stop).not.toHaveBeenCalled();
+  });
+
+  it("never hands off twice", async () => {
+    routeSpoken.mockResolvedValue({ forward: true, english: null, answer: null });
+    const { emit } = await open();
+    emit({ who: "reader", text: "run the tests" });
+    await vi.advanceTimersByTimeAsync(3000);
+    emit({ who: "reader", text: "and the linter" });
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays open when there is no agent to send to", async () => {
+    routeSpoken.mockResolvedValueOnce({ forward: true, english: null, answer: null });
+    const { live, emit } = await open(null);
+    emit({ who: "reader", text: "run the tests" });
+    await vi.advanceTimersByTimeAsync(3000);
+
+    // Hanging up without sending would lose the request entirely.
+    expect(live.stop).not.toHaveBeenCalled();
+  });
+
+  it("ignores what the voice itself says", async () => {
+    const { emit } = await open();
+    emit({ who: "voice", text: "sure, let me look at that" });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(routeSpoken).not.toHaveBeenCalled();
   });
 });

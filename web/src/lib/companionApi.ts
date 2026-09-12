@@ -146,3 +146,40 @@ export async function noteCompanion(
     // The conversation continues either way.
   }
 }
+
+/** What the companion decided about something said aloud. */
+export interface SpokenRouting {
+  /** Whether this is work for Claude rather than something to talk about. */
+  forward: boolean;
+  /** The message as Claude should receive it, when it differs. */
+  english: string | null;
+  /** What the companion would say back, when it is not forwarding. */
+  answer: string | null;
+}
+
+/**
+ * Ask the companion whether something said aloud is work for Claude.
+ *
+ * The spoken counterpart of pressing enter, and the same decision: the
+ * session's language setting governs what may happen to the words, and only
+ * the routing decision is unconditional.
+ *
+ * Forwards on any failure. A message that reaches Claude late is a smaller
+ * harm than one that never arrives.
+ *
+ * @param sessionId The session the reader is talking about.
+ * @param text What they said.
+ */
+export async function routeSpoken(sessionId: string, text: string): Promise<SpokenRouting> {
+  try {
+    const res = await authenticatedFetch(`${base(sessionId)}/route`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) return { forward: true, english: null, answer: null };
+    return (await res.json()) as SpokenRouting;
+  } catch {
+    return { forward: true, english: null, answer: null };
+  }
+}

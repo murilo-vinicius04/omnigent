@@ -2688,7 +2688,10 @@ def create_app(
     # The warm companion: one agy process per session, plus its probe
     # page. Registered unconditionally; a missing CLI reports 503.
     app.include_router(
-        create_discussion_router(auth_provider=auth_provider),
+        create_discussion_router(
+            auth_provider=auth_provider,
+            conversation_store=conversation_store,
+        ),
         prefix="/v1",
         tags=["discussion"],
     )

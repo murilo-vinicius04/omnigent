@@ -255,7 +255,7 @@ async def test_json_is_well_formed_for_awkward_text(session):
     await session.close()
 
 
-def _app_with_companions(fake_agy, *, auth_provider=None):
+def _app_with_companions(fake_agy, *, auth_provider=None, conversation_store=None):
     """Build a test app whose lifespan owns its own companion registry.
 
     Closing the registry from the app's own shutdown — the way the real
@@ -278,7 +278,9 @@ def _app_with_companions(fake_agy, *, auth_provider=None):
     app = FastAPI(lifespan=lifespan)
     app.include_router(
         create_discussion_router(
-            auth_provider=auth_provider, registry_provider=lambda: companions
+            auth_provider=auth_provider,
+            registry_provider=lambda: companions,
+            conversation_store=conversation_store,
         ),
         prefix="/v1",
     )
@@ -768,3 +770,52 @@ async def test_inbound_repair_falls_back_to_the_one_shot(monkeypatch):
         "did the paragrraph fix land", source_language="en-US", session_id="conv_a"
     )
     assert out == "Did the paragraph fix land?"
+
+
+def test_spoken_routing_forwards_when_it_cannot_decide(client):
+    """The safe answer is Claude seeing it.
+
+    A message that reaches Claude late is a smaller harm than one that never
+    arrives, so every failure path on this route answers forward.
+    """
+    # The test router is built without a conversation store, so the language
+    # gate cannot be resolved -- exactly the "cannot decide" case.
+    body = client.post("/v1/discussion/r9/route", json={"text": "run the tests"}).json()
+    assert body["forward"] is True
+    assert body["answer"] is None
+
+
+def test_spoken_routing_rejects_an_empty_utterance(client):
+    assert client.post("/v1/discussion/r9/route", json={"text": ""}).status_code == 422
+
+
+def test_spoken_routing_answers_forward_when_the_companion_explodes(client, monkeypatch):
+    """A raising router must not strand what the reader said."""
+
+    async def explode(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "omnigent.server.routes._sessions.orchestration._route_through_companion", explode
+    )
+    body = client.post("/v1/discussion/r9/route", json={"text": "run the tests"}).json()
+    assert body["forward"] is True
+
+
+def test_spoken_routing_passes_the_decision_through(monkeypatch, fake_agy):
+    """When the companion decides, the caller gets exactly that decision."""
+    from fastapi.testclient import TestClient
+
+    from omnigent.server.discussion import Routing
+
+    async def decides(_session_id, _content, _store):
+        return Routing(forward=False, english=None, answer="I can answer that one.")
+
+    monkeypatch.setattr(
+        "omnigent.server.routes._sessions.orchestration._route_through_companion", decides
+    )
+    app = _app_with_companions(fake_agy, conversation_store=object())
+    with TestClient(app) as spoken:
+        body = spoken.post("/v1/discussion/r9/route", json={"text": "what changed?"}).json()
+    assert body["forward"] is False
+    assert body["answer"] == "I can answer that one."

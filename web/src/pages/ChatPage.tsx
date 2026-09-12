@@ -3702,6 +3702,7 @@ function ComposerImpl({
             <ComposerLiveMeter />
             <ComposerMicButton
               sessionId={conversationId}
+              agentId={selectedAgentId ?? agents?.[0]?.id ?? null}
               enableHotkey
               disabled={disabled || isReadOnly || hasPendingElicitation}
               onVoiceStart={() => {

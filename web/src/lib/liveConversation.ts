@@ -7,22 +7,34 @@
 
 import { create } from "zustand";
 import { openLiveConversation, type LiveConversation } from "./liveVoice";
-import { noteCompanion } from "./companionApi";
+import { noteCompanion, routeSpoken } from "./companionApi";
 import { claimSpeechChannel } from "./speechPlayback";
 
 /** Billed rate, mirrored from the server so the meter can be shown. */
 export const USD_PER_MINUTE = 0.05;
 
+/**
+ * How long the reader must stop talking before what they said is routed.
+ *
+ * Longer than the ledger's own flush, deliberately. A transcript settles
+ * after a short pause, which is right for recording but too eager for
+ * deciding: a breath in the middle of a sentence would send half a thought
+ * to Claude. Fragments that arrive inside this window are joined instead.
+ */
+const ROUTE_SETTLE_MS = 2500;
+
 interface ConversationStoreState {
   /** Session whose conversation is open, or null when none is. */
   sessionId: string | null;
+  /** What was last handed to Claude, so the UI can say so. */
+  handedOff: string | null;
   /** True while the handshake is in flight, so the control can say so. */
   connecting: boolean;
   /** Seconds the open session has been billed, ticking while it runs. */
   elapsedS: number;
   /** Why the last attempt failed, for the control to show. */
   error: string | null;
-  start: (sessionId: string) => Promise<void>;
+  start: (sessionId: string, agentId?: string | null) => Promise<void>;
   stop: () => void;
 }
 
@@ -44,16 +56,61 @@ function teardown(set: (partial: Partial<ConversationStoreState>) => void): void
   set({ sessionId: null, connecting: false, elapsedS: 0 });
 }
 
+/**
+ * Hand something the reader said to Claude, as if they had typed it.
+ *
+ * Deliberately the same path the composer uses: the message appears in the
+ * conversation, the turn starts, and everything downstream -- the summary,
+ * the narration -- behaves exactly as it would have.
+ */
+async function handToClaude(text: string, agentId: string | null): Promise<boolean> {
+  if (!agentId) return false;
+  try {
+    const { useChatStore } = await import("@/store/chatStore");
+    await useChatStore.getState().send(text, agentId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export const useLiveConversationStore = create<ConversationStoreState>((set, get) => ({
   sessionId: null,
+  handedOff: null,
   connecting: false,
   elapsedS: 0,
   error: null,
 
-  start: async (sessionId: string) => {
+  start: async (sessionId: string, agentId: string | null = null) => {
     // Opening a second would be two voices and two meters.
     if (get().sessionId || get().connecting) return;
-    set({ connecting: true, error: null });
+    set({ connecting: true, error: null, handedOff: null });
+
+    // What the reader has said since they last stopped talking. Routed as
+    // one thought once they stay quiet, so a mid-sentence breath does not
+    // send half of it.
+    let pending = "";
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    let handedOff = false;
+
+    const decide = async (): Promise<void> => {
+      const said = pending.trim();
+      pending = "";
+      if (!said || handedOff) return;
+      const routing = await routeSpoken(sessionId, said);
+      if (!routing.forward || handedOff) return;
+      // Claude is needed. Send it exactly as typing it would, then hang up:
+      // the meter must not run through however long the turn takes.
+      handedOff = true;
+      const sent = await handToClaude(routing.english ?? said, agentId);
+      if (!sent) {
+        handedOff = false;
+        return;
+      }
+      set({ handedOff: routing.english ?? said });
+      get().stop();
+    };
+
     let live: LiveConversation;
     try {
       live = await openLiveConversation(sessionId, {
@@ -62,6 +119,10 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
         // the next conversation opens knowing what the last one said.
         onUtterance: ({ who, text }) => {
           void noteCompanion(sessionId, who === "reader" ? "question" : "answer", text);
+          if (who !== "reader" || handedOff) return;
+          pending = pending ? `${pending} ${text}` : text;
+          clearTimeout(settle);
+          settle = setTimeout(() => void decide(), ROUTE_SETTLE_MS);
         },
       });
     } catch (error) {
