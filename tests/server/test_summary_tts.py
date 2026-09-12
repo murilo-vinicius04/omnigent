@@ -538,3 +538,41 @@ async def test_prune_never_breaks_the_turn() -> None:
             raise RuntimeError("store down")
 
     assert await _prune_summary_audio(_Broken(), _FakeArtifactStore(), "conv_p") == 0
+
+
+@pytest.mark.asyncio
+async def test_live_voice_sessions_skip_synthesis():
+    """A session on the live voice never plays the recording, so none is made.
+
+    The live voice speaks the summary text itself. Synthesizing a file it will
+    never open spends tens of seconds of GPU per turn for nothing.
+    """
+    from omnigent.server.routes._sessions.helpers import _reads_through_live_voice
+
+    class _Conv:
+        def __init__(self, labels):
+            self.labels = labels
+
+    class _Store:
+        def __init__(self, labels):
+            self._conv = _Conv(labels)
+
+        def get_conversation(self, _session_id):
+            return self._conv
+
+    assert await _reads_through_live_voice(_Store({"voice_backend": "live"}), "conv_a") is True
+    assert await _reads_through_live_voice(_Store({"voice_backend": "local"}), "conv_a") is False
+    assert await _reads_through_live_voice(_Store({}), "conv_a") is False
+    assert await _reads_through_live_voice(None, "conv_a") is False
+
+
+@pytest.mark.asyncio
+async def test_unreadable_label_still_synthesizes():
+    """Fail towards the recording: the opposite mistake is silence."""
+    from omnigent.server.routes._sessions.helpers import _reads_through_live_voice
+
+    class _Broken:
+        def get_conversation(self, _session_id):
+            raise RuntimeError("store is down")
+
+    assert await _reads_through_live_voice(_Broken(), "conv_a") is False

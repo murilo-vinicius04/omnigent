@@ -219,7 +219,7 @@ describe("FriendlyResponse on the live voice", () => {
 
   it("reads through the live voice rather than the recording", () => {
     chooseLive("conv_live");
-    const speakNow = vi.fn(() => true);
+    const speakNow = vi.fn((_id: string, _text: string) => true);
     useSpeechPlaybackStore.setState({ speakNow } as never);
 
     render(

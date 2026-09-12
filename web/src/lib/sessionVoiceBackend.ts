@@ -11,6 +11,7 @@
 // decision is never made on the reader's behalf.
 
 import { create } from "zustand";
+import { updateSession } from "./sessionsApi";
 
 const KEY_PREFIX = "omnigent:voice-backend:";
 
@@ -54,6 +55,25 @@ export function writeSessionBackend(sessionId: string, value: VoiceBackend): voi
   }
 }
 
+/**
+ * Tell the server which voice this session uses.
+ *
+ * The choice is a playback property, but the server has to know one thing
+ * about it: a session on the live voice never plays the synthesized
+ * recording, so making one spends tens of seconds of GPU on a file nobody
+ * opens. Written as a conversation label, which upserts, so it leaves the
+ * summary language and enable labels alone.
+ *
+ * Best effort. A failed write costs a wasted recording, never the narration.
+ */
+async function announceBackend(sessionId: string, value: VoiceBackend): Promise<void> {
+  try {
+    await updateSession(sessionId, { labels: { voice_backend: value }, silent: true });
+  } catch {
+    // The server keeps synthesizing; playback is unaffected either way.
+  }
+}
+
 interface BackendStoreState {
   /** Session id -> chosen voice, for sessions touched this page load. */
   choices: Record<string, VoiceBackend>;
@@ -78,6 +98,7 @@ export const useVoiceBackendStore = create<BackendStoreState>((set, get) => ({
   set: (sessionId, value) => {
     writeSessionBackend(sessionId, value);
     set((s) => ({ choices: { ...s.choices, [sessionId]: value } }));
+    void announceBackend(sessionId, value);
   },
 }));
 

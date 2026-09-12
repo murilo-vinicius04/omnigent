@@ -8223,6 +8223,36 @@ def _pending_work_labels(count: int | None, tasks: list[Any] | None) -> list[str
 _detached_summary_audio: set[asyncio.Task[None]] = set()
 
 
+#: Conversation label naming the voice a session is read in. Written by the
+#: client when the reader switches it; absent means the local voice.
+_VOICE_BACKEND_LABEL = "voice_backend"
+
+
+async def _reads_through_live_voice(conversation_store: Any, session_id: str) -> bool:
+    """Whether this session is set to read summaries through the live voice.
+
+    Read straight from the conversation rather than the settings cache: the
+    reader flips this mid-conversation and expects the very next turn to
+    follow, where a cached answer would take a minute to catch up.
+
+    Fails towards synthesizing. An unreadable label costs some GPU time; the
+    opposite mistake is a session with no recording and no live voice either,
+    which is silence.
+
+    :param conversation_store: Store holding the conversation row.
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :returns: ``True`` only when the session is definitely on the live voice.
+    """
+    if conversation_store is None:
+        return False
+    try:
+        conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+    except Exception:  # noqa: BLE001 - a missing label must not cost the recording
+        return False
+    labels = getattr(conv, "labels", None) or {}
+    return str(labels.get(_VOICE_BACKEND_LABEL, "")).strip().lower() == "live"
+
+
 def _spawn_summary_audio(
     conversation_store: ConversationStore,
     file_store: Any,
@@ -8417,7 +8447,15 @@ async def _attach_native_spoken_summary(
     # while a finished answer waits to be read. ``audio_pending`` tells the
     # reader's play control that a recording is on its way, so it can say so
     # rather than falling back to the robotic host voice.
-    speak_it = tts_enabled() and file_store is not None and artifact_store is not None
+    speak_it = (
+        tts_enabled()
+        and file_store is not None
+        and artifact_store is not None
+        # A session reading through the live voice never plays this recording:
+        # that voice speaks the text itself. Synthesizing it anyway spends
+        # tens of seconds of GPU on a file nobody opens.
+        and not await _reads_through_live_voice(conversation_store, session_id)
+    )
     if speak_it:
         spoken_summary_part = {**spoken_summary_part, "audio_pending": True}
     content: list[dict[str, Any]] = [spoken_summary_part]
