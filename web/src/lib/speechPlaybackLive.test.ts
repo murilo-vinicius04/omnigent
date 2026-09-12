@@ -11,9 +11,8 @@ import { useSpeechPlaybackStore, resetSpokenMessageTracking } from "./speechPlay
 import { useVoiceBackendStore } from "./sessionVoiceBackend";
 
 // jsdom implements neither MediaStream nor the srcObject it is attached to.
-class StubMediaStream {}
 if (typeof globalThis.MediaStream === "undefined") {
-  (globalThis as unknown as { MediaStream: unknown }).MediaStream = StubMediaStream;
+  (globalThis as unknown as { MediaStream: unknown }).MediaStream = function MediaStream() {};
 }
 
 /** A live session that never finishes on its own, so tests control the end. */

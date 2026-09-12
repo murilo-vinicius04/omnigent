@@ -5,6 +5,8 @@ import { useVoiceDictationHotkey } from "@/hooks/useVoiceDictationHotkey";
 import { useServerInfo } from "@/lib/CapabilitiesContext";
 import { DictationBusyError, DictationSession } from "@/lib/dictation";
 import { isElectronShell } from "@/lib/nativeBridge";
+import { useLiveConversationStore } from "@/lib/liveConversation";
+import { currentVoiceBackend, useVoiceBackendStore } from "@/lib/sessionVoiceBackend";
 import { cn } from "@/lib/utils";
 import { MicIcon, SquareIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -88,6 +90,15 @@ export interface ComposerMicButtonProps {
   /** Fired when Esc ends dictation. The parent should restore the text it
    *  snapshotted in {@link onVoiceStart}, discarding what was dictated. */
   onVoiceDiscard?: () => void;
+  /**
+   * Session this mic belongs to, when it has one.
+   *
+   * Only meaningful on the live voice, where pressing the mic opens a spoken
+   * conversation briefed from that session. Passed in rather than read from
+   * the chat store so the button stays usable outside a session — the new
+   * chat composer mounts one too, and there it is dictation and nothing else.
+   */
+  sessionId?: string | null;
 }
 
 /** getUserMedia permission failures, distinct from transport failures. */
@@ -103,6 +114,7 @@ export const ComposerMicButton = ({
   enableHotkey = false,
   onVoiceStart,
   onVoiceDiscard,
+  sessionId: liveSessionId = null,
 }: ComposerMicButtonProps) => {
   // Web Speech is primary whenever the browser has the constructor
   // (Chrome/Safari, unchanged behavior); with no constructor at all
@@ -399,7 +411,27 @@ export const ComposerMicButton = ({
   }, []);
   toggleServerRef.current = toggleServer;
 
+  // The live conversation is the other thing this button can be doing.
+  // Subscribing to both keeps the icon honest when either changes.
+  void useVoiceBackendStore((s) => s.choices);
+  const conversationSessionId = useLiveConversationStore((s) => s.sessionId);
+  const conversationConnecting = useLiveConversationStore((s) => s.connecting);
+  const conversationError = useLiveConversationStore((s) => s.error);
+  const inConversation = Boolean(conversationSessionId) || conversationConnecting;
+  const liveVoiceChosen = currentVoiceBackend(liveSessionId) === "live";
+
   const toggle = useCallback(() => {
+    // On the live voice the mic is not dictation. There is no transcription
+    // step and no text to review: the session hears the reader and answers
+    // out loud, and pressing again hangs it up. Checked before every other
+    // path, including an in-flight dictation take, because the two never
+    // run together -- both want the microphone.
+    if (currentVoiceBackend(liveSessionId) === "live") {
+      const conversation = useLiveConversationStore.getState();
+      if (conversation.sessionId || conversation.connecting) conversation.stop();
+      else if (liveSessionId) void conversation.start(liveSessionId);
+      return;
+    }
     // An active (or starting) server take is owned by the server path,
     // whichever mode started it.
     if (sessionRef.current || serverBusyRef.current) {
@@ -429,7 +461,7 @@ export const ComposerMicButton = ({
       // user can try again, and let the next event reconcile state.
       transitionRef.current = false;
     }
-  }, [isListening, Ctor, serverAvailable, serverPreferred, toggleServer]);
+  }, [isListening, Ctor, serverAvailable, serverPreferred, toggleServer, liveSessionId]);
 
   // ⌘⌥V toggles dictation from anywhere — same as clicking the button. Enabled
   // whenever dictation could run (Web Speech OR the server path) and the
@@ -481,8 +513,22 @@ export const ComposerMicButton = ({
 
   // Stable accessible name with aria-pressed signals toggle state to
   // screen readers. Error text takes over the tooltip when set.
-  const a11yLabel = "Voice dictation";
-  const tooltip = error ?? a11yLabel;
+  // On the live voice this button is a conversation, not dictation, and the
+  // cost of leaving it open is the thing the reader most needs to see.
+  const a11yLabel = inConversation
+    ? "End the spoken conversation"
+    : liveVoiceChosen
+      ? "Start a spoken conversation"
+      : "Voice dictation";
+  const tooltip =
+    error ??
+    conversationError ??
+    (inConversation
+      ? "Talking live — billed about $0.05 a minute. Click to hang up."
+      : liveVoiceChosen
+        ? "Talk to it out loud. Opens a live session billed about $0.05 a minute."
+        : a11yLabel);
+  const active = isListening || inConversation;
 
   return (
     <Button
@@ -491,17 +537,17 @@ export const ComposerMicButton = ({
       variant="ghost"
       disabled={disabled}
       onClick={toggle}
-      aria-pressed={isListening}
+      aria-pressed={active}
       aria-label={a11yLabel}
       title={tooltip}
       className={cn(
         "size-9 md:size-8",
-        isListening &&
+        active &&
           "bg-muted/60 text-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive",
         error && "text-destructive",
       )}
     >
-      {isListening ? (
+      {active ? (
         // Bars fade out and stop icon fades in on hover OR keyboard focus,
         // so keyboard users get the stop affordance without needing hover.
         <span className="relative flex size-4 items-center justify-center" aria-hidden>

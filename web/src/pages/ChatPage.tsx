@@ -173,6 +173,7 @@ import { ComposerNarrateButton } from "@/components/ComposerNarrateButton";
 import { ComposerSummaryLanguageButton } from "@/components/ComposerSummaryLanguageButton";
 import { ComposerNarrateVolume } from "@/components/ComposerNarrateVolume";
 import { ComposerVoicePicker } from "@/components/ComposerVoicePicker";
+import { ComposerLiveMeter } from "@/components/ComposerLiveMeter";
 import { isCostRoutingSession, isSubagentRoutingSession } from "@/components/CostRoutingControl";
 import {
   SMART_ROUTING_ARMS,
@@ -3698,7 +3699,9 @@ function ComposerImpl({
             <ComposerSummaryLanguageButton disabled={disabled || isReadOnly} />
             <ComposerNarrateVolume disabled={disabled || isReadOnly} />
             <ComposerVoicePicker disabled={disabled || isReadOnly} />
+            <ComposerLiveMeter />
             <ComposerMicButton
+              sessionId={conversationId}
               enableHotkey
               disabled={disabled || isReadOnly || hasPendingElicitation}
               onVoiceStart={() => {

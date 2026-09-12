@@ -22,6 +22,8 @@ import { CapabilitiesContext } from "@/lib/CapabilitiesContext";
 import type { ServerInfo } from "@/lib/capabilities";
 import type { DictationSessionEvents } from "@/lib/dictation";
 import { ComposerMicButton } from "./ComposerMicButton";
+import { useVoiceBackendStore } from "@/lib/sessionVoiceBackend";
+import { useLiveConversationStore } from "@/lib/liveConversation";
 
 // Controllable DictationSession stand-in for the server-mode tests. The
 // factory reads the mutable spies at call time, so each test installs its
@@ -618,5 +620,57 @@ describe("ComposerMicButton (server dictation)", () => {
     });
     expect(onInterim).not.toHaveBeenCalled();
     expect(onTranscript).not.toHaveBeenCalled();
+  });
+});
+
+describe("ComposerMicButton on the live voice", () => {
+  afterEach(() => {
+    useVoiceBackendStore.setState({ choices: {} });
+    useLiveConversationStore.setState({
+      sessionId: null,
+      connecting: false,
+      elapsedS: 0,
+      error: null,
+    });
+    window.localStorage.clear();
+  });
+
+  it("opens a spoken conversation instead of dictating", () => {
+    useVoiceBackendStore.getState().set("conv_a", "live");
+    const start = vi.fn(async () => {});
+    useLiveConversationStore.setState({ start } as never);
+
+    render(<ComposerMicButton onTranscript={() => {}} sessionId="conv_a" />);
+    fireEvent.click(screen.getByRole("button"));
+
+    // In live mode the mic is the conversation, not a transcription step.
+    expect(start).toHaveBeenCalledWith("conv_a");
+  });
+
+  it("hangs up when pressed again", () => {
+    useVoiceBackendStore.getState().set("conv_a", "live");
+    const stop = vi.fn();
+    useLiveConversationStore.setState({ sessionId: "conv_a", stop } as never);
+
+    render(<ComposerMicButton onTranscript={() => {}} sessionId="conv_a" />);
+    fireEvent.click(screen.getByRole("button"));
+
+    expect(stop).toHaveBeenCalled();
+  });
+
+  it("still dictates when the session is on the local voice", () => {
+    const start = vi.fn(async () => {});
+    useLiveConversationStore.setState({ start } as never);
+
+    render(<ComposerMicButton onTranscript={() => {}} sessionId="conv_local" />);
+    fireEvent.click(screen.getByRole("button"));
+
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("says what it costs before the reader opens one", () => {
+    useVoiceBackendStore.getState().set("conv_a", "live");
+    render(<ComposerMicButton onTranscript={() => {}} sessionId="conv_a" />);
+    expect(screen.getByRole("button").getAttribute("title")).toContain("$0.05");
   });
 });

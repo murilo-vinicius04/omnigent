@@ -252,3 +252,125 @@ function silentTrack(): MediaStreamTrack | null {
     return null;
   }
 }
+
+/** A two-way spoken conversation with the live model. */
+export interface LiveConversation {
+  /** The model's voice, for attaching to an audio element. */
+  readonly stream: MediaStream;
+  /** Resolves when the session ends, however it ends. */
+  readonly closed: Promise<void>;
+  /** Seconds of wall clock billed so far. */
+  readonly elapsedS: () => number;
+  /** Hang up now. Safe to call repeatedly. */
+  readonly stop: () => void;
+}
+
+/**
+ * Open a two-way conversation: it hears the microphone and answers aloud.
+ *
+ * Unlike narration this has no natural end, so nothing here closes it on a
+ * silence. It bills by wall clock for as long as it is open -- roughly three
+ * dollars an hour, whether anyone is talking or not -- so the only thing that
+ * ends it is the reader, and the caller is expected to show them the meter.
+ *
+ * The model answers natively rather than through a backend: it is briefed
+ * from the session's companion ledger when the session opens, which costs no
+ * tokens at all and keeps the reply as fast as the model can talk.
+ *
+ * @param sessionId - Conversation whose ledger briefs the model.
+ * @throws LiveVoiceUnavailable when the microphone or the session is refused.
+ */
+export async function openLiveConversation(sessionId: string | null): Promise<LiveConversation> {
+  if (typeof RTCPeerConnection === "undefined") {
+    throw new LiveVoiceUnavailable("this browser has no WebRTC");
+  }
+
+  let mic: MediaStream;
+  try {
+    mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (error) {
+    // Refusing the microphone is a choice, not a fault: report it plainly so
+    // the caller can say so rather than looking broken.
+    throw new LiveVoiceUnavailable(`microphone unavailable: ${String(error)}`);
+  }
+
+  const pc = new RTCPeerConnection();
+  const startedAt = Date.now();
+  let closed = false;
+  let settleClosed: () => void = () => {};
+  const closedPromise = new Promise<void>((resolve) => {
+    settleClosed = resolve;
+  });
+
+  const channel = pc.createDataChannel("oai-events");
+  const inbound = new MediaStream();
+
+  const stop = (): void => {
+    if (closed) return;
+    closed = true;
+    try {
+      if (channel.readyState === "open") {
+        channel.send(JSON.stringify({ type: "session.close" }));
+      }
+    } catch {
+      // Already gone; closing the connection below is what stops the meter.
+    }
+    // Release the microphone, or the browser keeps showing it as in use.
+    for (const track of mic.getTracks()) track.stop();
+    try {
+      pc.close();
+    } catch {
+      // Nothing left to close.
+    }
+    settleClosed();
+  };
+
+  pc.addEventListener("track", (event) => {
+    for (const track of event.streams[0]?.getTracks() ?? [event.track]) {
+      inbound.addTrack(track);
+    }
+  });
+  pc.addEventListener("connectionstatechange", () => {
+    if (pc.connectionState === "failed" || pc.connectionState === "closed") stop();
+  });
+  channel.addEventListener("message", (event) => {
+    let payload: { type?: string };
+    try {
+      payload = JSON.parse(String(event.data));
+    } catch {
+      return;
+    }
+    if (payload.type === "session.closed") stop();
+  });
+
+  for (const track of mic.getTracks()) pc.addTrack(track, mic);
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  try {
+    const response = await authenticatedFetch(OFFER_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sdp: pc.localDescription?.sdp ?? offer.sdp,
+        mode: "converse",
+        session_id: sessionId,
+      }),
+    });
+    if (!response.ok) {
+      throw new LiveVoiceUnavailable(`live session refused: ${response.status}`);
+    }
+    const answer = (await response.json()) as OfferResponse;
+    await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp });
+  } catch (error) {
+    stop();
+    throw error instanceof LiveVoiceUnavailable ? error : new LiveVoiceUnavailable(String(error));
+  }
+
+  return {
+    stream: inbound,
+    closed: closedPromise,
+    elapsedS: () => (Date.now() - startedAt) / 1000,
+    stop,
+  };
+}
