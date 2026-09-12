@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FriendlyResponse } from "./FriendlyResponse";
 import { useSpeechPlaybackStore } from "@/lib/speechPlayback";
 import { useChatStore } from "@/store/chatStore";
+import { useVoiceBackendStore } from "@/lib/sessionVoiceBackend";
 
 afterEach(cleanup);
 
@@ -189,5 +190,75 @@ describe("FriendlyResponse — server-synthesized audio", () => {
 
     expect(screen.queryByTestId("friendly-response-play")).toBeNull();
     expect(screen.queryByTestId("friendly-response-audio")).toBeNull();
+  });
+});
+
+describe("FriendlyResponse on the live voice", () => {
+  const summary = { text: "All one hundred ninety nine tests pass.", lang: "en" };
+
+  afterEach(() => {
+    useVoiceBackendStore.setState({ choices: {} });
+    window.localStorage.clear();
+  });
+
+  function chooseLive(sessionId: string) {
+    useChatStore.setState({ conversationId: sessionId } as never);
+    useVoiceBackendStore.getState().set(sessionId, "live");
+  }
+
+  it("offers the control with no recording, since none is needed", () => {
+    chooseLive("conv_live");
+    render(
+      <FriendlyResponse summary={summary} id="resp_1">
+        <div>ORIGINAL</div>
+      </FriendlyResponse>,
+    );
+    // No audioFileId and nothing pending: the local voice would show nothing.
+    expect(screen.getByTestId("friendly-response-play")).toBeTruthy();
+  });
+
+  it("reads through the live voice rather than the recording", () => {
+    chooseLive("conv_live");
+    const speakNow = vi.fn(() => true);
+    useSpeechPlaybackStore.setState({ speakNow } as never);
+
+    render(
+      <FriendlyResponse summary={{ ...summary, audioFileId: "file_1" }} id="resp_1">
+        <div>ORIGINAL</div>
+      </FriendlyResponse>,
+    );
+    fireEvent.click(screen.getByTestId("friendly-response-play"));
+
+    // The bug this pins: the play button had its own audio element and
+    // played the local recording, so choosing the live voice changed nothing.
+    expect(speakNow).toHaveBeenCalled();
+    expect(speakNow.mock.calls[0]?.[1]).toBe(summary.text);
+  });
+
+  it("never asks the reader to wait for a recording it will not use", () => {
+    chooseLive("conv_live");
+    useSpeechPlaybackStore.setState({ speakNow: vi.fn(() => true) } as never);
+    render(
+      <FriendlyResponse summary={{ ...summary, audioPending: true }} id="resp_1">
+        <div>ORIGINAL</div>
+      </FriendlyResponse>,
+    );
+    fireEvent.click(screen.getByTestId("friendly-response-play"));
+    expect(screen.queryByTestId("friendly-response-audio-pending")).toBeNull();
+  });
+
+  it("still plays the recording when the session is on the local voice", () => {
+    // jsdom's play() returns undefined rather than a promise.
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    useChatStore.setState({ conversationId: "conv_local" } as never);
+    const speakNow = vi.fn(() => true);
+    useSpeechPlaybackStore.setState({ speakNow } as never);
+    render(
+      <FriendlyResponse summary={{ ...summary, audioFileId: "file_1" }} id="resp_1">
+        <div>ORIGINAL</div>
+      </FriendlyResponse>,
+    );
+    fireEvent.click(screen.getByTestId("friendly-response-play"));
+    expect(speakNow).not.toHaveBeenCalled();
   });
 });

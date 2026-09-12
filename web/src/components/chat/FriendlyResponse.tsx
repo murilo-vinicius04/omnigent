@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronRightIcon, SquareIcon, Volume2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { claimSpeechChannel, useSpeechPlaybackStore } from "@/lib/speechPlayback";
+import { currentVoiceBackend, useVoiceBackendStore } from "@/lib/sessionVoiceBackend";
 import { useChatStore } from "@/store/chatStore";
 import type { SummaryShowBlock } from "@/lib/blockStream";
 import { SummaryShowBlocks } from "@/components/chat/SummaryShowBlocks";
@@ -39,6 +40,7 @@ export function FriendlyResponse({ summary, id, children }: FriendlyResponseProp
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const speakingItemId = useSpeechPlaybackStore((s) => s.speakingItemId);
   const stop = useSpeechPlaybackStore((s) => s.stop);
+  const speakNow = useSpeechPlaybackStore((s) => s.speakNow);
   const sessionId = useChatStore((s) => s.conversationId);
 
   const effectiveId = id || "";
@@ -49,7 +51,15 @@ export function FriendlyResponse({ summary, id, children }: FriendlyResponseProp
       ? `/v1/sessions/${encodeURIComponent(sessionId)}/resources/files/${encodeURIComponent(summary.audioFileId)}/content`
       : undefined;
   const autoplayOwnsThis = Boolean(effectiveId && speakingItemId === effectiveId);
-  const isSpeaking = audioUrl ? audioPlaying || autoplayOwnsThis : autoplayOwnsThis;
+  // Subscribing is what re-renders this when the session's voice is switched;
+  // the read itself goes through the store so an untouched session resolves
+  // to the default.
+  void useVoiceBackendStore((s) => s.choices);
+  // The live voice reads the text itself, so the control is available the
+  // moment the summary is on screen -- there is no recording to wait for.
+  const liveVoice = currentVoiceBackend(sessionId) === "live" && Boolean(summary.text.trim());
+  const isSpeaking =
+    audioUrl && !liveVoice ? audioPlaying || autoplayOwnsThis : autoplayOwnsThis;
 
   useEffect(() => {
     if (audioUrl) setWaitingForAudio(false);
@@ -64,6 +74,20 @@ export function FriendlyResponse({ summary, id, children }: FriendlyResponseProp
   }, []);
 
   const toggleSpeech = () => {
+    // On the live voice, pressing play reads the text straight out. It needs
+    // no recording, so it must not wait for one -- and it cannot use the
+    // element below, because there is no file to point it at.
+    if (currentVoiceBackend(sessionId) === "live" && summary.text.trim()) {
+      if (audioPlaying || autoplayOwnsThis) {
+        audioRef.current?.pause();
+        setAudioPlaying(false);
+        stop();
+        return;
+      }
+      setWaitingForAudio(false);
+      speakNow(effectiveId, summary.text, summary.lang, audioUrl, sessionId);
+      return;
+    }
     // The written summary lands as soon as it exists; its recording follows a
     // good while later. Asking for it early gets an answer, not silence.
     if (!audioUrl && summary.audioPending) {
@@ -124,7 +148,7 @@ export function FriendlyResponse({ summary, id, children }: FriendlyResponseProp
           {showOriginal ? "Hide original" : "Show original"}
         </button>
 
-        {(audioUrl || summary.audioPending) && (
+        {(audioUrl || summary.audioPending || liveVoice) && (
           <button
             type="button"
             onClick={toggleSpeech}
@@ -139,7 +163,10 @@ export function FriendlyResponse({ summary, id, children }: FriendlyResponseProp
               </>
             ) : (
               <Volume2Icon
-                className={cn("size-3.5", !audioUrl && summary.audioPending && "opacity-60")}
+                className={cn(
+                  "size-3.5",
+                  !audioUrl && !liveVoice && summary.audioPending && "opacity-60",
+                )}
                 aria-hidden="true"
               />
             )}

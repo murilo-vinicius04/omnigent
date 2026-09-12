@@ -312,6 +312,20 @@ interface SpeechPlaybackStoreState {
     sessionId?: string | null,
   ) => boolean;
   playManual: (itemId: string) => void;
+  /**
+   * Speak one summary because the reader pressed play.
+   *
+   * Same choice of voice as autoplay, but none of its gates: a deliberate
+   * press is not subject to having-been-spoken, the live window, or waiting
+   * behind another conversation's queue.
+   */
+  speakNow: (
+    itemId: string,
+    text: string,
+    lang?: string,
+    audioUrl?: string,
+    sessionId?: string | null,
+  ) => boolean;
   stop: () => void;
 }
 
@@ -588,6 +602,14 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
       if (speechQueue.length > QUEUE_MAX) speechQueue.shift();
       return true;
     }
+    return startSummaryPlayback({ itemId, text, lang, audioUrl, sessionId }, set, get);
+  },
+
+  speakNow: (itemId, text, lang, audioUrl, sessionId) => {
+    if (!itemId) return false;
+    clearSpeechQueue();
+    closeActiveLive();
+    markMessageSpoken(itemId);
     return startSummaryPlayback({ itemId, text, lang, audioUrl, sessionId }, set, get);
   },
 
