@@ -58,6 +58,11 @@ export function useSpokenSummaryPlayback(
 ): void {
   // Set of responseIds that were positively observed streaming live in this client session.
   const observedLiveResponseIdsRef = useRef<Set<string>>(new Set());
+  // Turns this client watched sit finished with no summary yet. When one then
+  // appears, it arrived while we were looking -- evidence that survives the
+  // turn's id changing from its streaming form to its stored one, which is
+  // what "watched it stream" does not.
+  const awaitedSummaryIdsRef = useRef<Set<string>>(new Set());
   const sessionId = useChatStore((s) => s.conversationId);
   const speakLiveSummary = useSpeechPlaybackStore((s) => s.speakLiveSummary);
   const stop = useSpeechPlaybackStore((s) => s.stop);
@@ -90,6 +95,11 @@ export function useSpokenSummaryPlayback(
 
         if (isStreamingLifecycle || hasStreamingItem) {
           observedLiveResponseIdsRef.current.add(responseId);
+          // A native turn streams under a client id and commits under the
+          // server's, so evidence filed under the streaming id alone is lost
+          // exactly when the summary arrives. The bubble's stable key spans
+          // both.
+          if (bubble.stableId) observedLiveResponseIdsRef.current.add(bubble.stableId);
         }
       }
     }
@@ -115,7 +125,9 @@ export function useSpokenSummaryPlayback(
         }
 
         const isLatestTurn = i === lastAssistantIdx;
-        const wasObservedLive = observedLiveResponseIdsRef.current.has(responseId);
+        const wasObservedLive =
+          observedLiveResponseIdsRef.current.has(responseId) ||
+          Boolean(bubble.stableId && observedLiveResponseIdsRef.current.has(bubble.stableId));
         // The reader has moved on to another turn, so this one's summary is no longer
         // the answer in front of them, whenever it arrives. Only a turn that is
         // actually streaming means that, though: a completed response stays in the
@@ -207,8 +219,14 @@ export function useSpokenSummaryPlayback(
             isLatestTurn &&
             (replyAgeS === undefined || replyAgeS * 1000 < LIVE_SUMMARY_WINDOW_MS);
 
+          // The summary appeared while this client watched the reply wait for
+          // it: evidence neither the server stamp nor the streaming id can give
+          // once the turn commits under a different identity.
+          const summaryArrivedWhileWatching =
+            hasValidSummary && awaitedSummaryIdsRef.current.has(responseId);
+
           if (
-            (wasObservedLive || isFreshSummary) &&
+            (wasObservedLive || isFreshSummary || summaryArrivedWhileWatching) &&
             isLatestTurn &&
             isFinal &&
             hasValidSummary &&
@@ -248,6 +266,8 @@ export function useSpokenSummaryPlayback(
             // queue for single-persist batch marking so it is never replayed later.
             toMarkSpoken.add(responseId);
           } else if (isFinal && awaitingSummary) {
+            // Remembered so the summary that follows counts as newly arrived.
+            awaitedSummaryIdsRef.current.add(responseId);
             reportNarration({
               path: "in-session",
               decision: "waiting-for-summary",

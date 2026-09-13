@@ -1306,6 +1306,73 @@ describe("useSpokenSummaryPlayback — server audio", () => {
     speak.mockRestore();
   });
 
+  /** The same bubble, with no server stamp yet, as it arrives live. */
+  function unstampedBubbleWithSummary(responseId: string, stableId = responseId): Bubble {
+    return {
+      kind: "assistant",
+      responseId,
+      stableId,
+      lifecycle: "completed",
+      error: null,
+      items: [
+        {
+          kind: "text",
+          itemId: "i1",
+          text: "resposta completa",
+          final: true,
+          spokenSummary: { text: "resumo falado", lang: "pt-BR" },
+        },
+      ],
+    } as Bubble;
+  }
+
+  it("speaks a summary that appears while this client is watching the reply wait", () => {
+    // Exactly the sequence the decision log recorded: the reply sits finished
+    // with no summary ("waiting-for-summary"), the summary lands seconds
+    // later, and the turn was then filed as history because it streamed under
+    // a different id and carries no server stamp yet.
+    const speak = vi.spyOn(useSpeechPlaybackStore.getState(), "speakLiveSummary");
+    const waiting = {
+      ...unstampedBubbleWithSummary("resp_committed"),
+      items: [{ kind: "text", itemId: "i1", text: "resposta completa", final: true }],
+    } as Bubble;
+
+    const { rerender } = renderHook(
+      ({ bubbles }: { bubbles: Bubble[] }) => useSpokenSummaryPlayback(bubbles, null),
+      { initialProps: { bubbles: [waiting] } },
+    );
+    expect(speak).not.toHaveBeenCalled();
+
+    rerender({ bubbles: [unstampedBubbleWithSummary("resp_committed")] });
+
+    expect(speak).toHaveBeenCalledTimes(1);
+    expect(speak.mock.calls[0]?.[0]).toBe("resp_committed");
+    speak.mockRestore();
+  });
+
+  it("remembers watching a turn arrive after it commits under a server id", () => {
+    // Streaming id "live:uuid", stored id "resp_...": the evidence has to
+    // survive the swap, or the summary that follows looks like history.
+    const speak = vi.spyOn(useSpeechPlaybackStore.getState(), "speakLiveSummary");
+    const streaming = {
+      ...unstampedBubbleWithSummary("live:uuid", "bubble_1"),
+      lifecycle: "streaming",
+      items: [{ kind: "text", itemId: "i1", text: "partial", final: false }],
+    } as Bubble;
+
+    const { rerender } = renderHook(
+      ({ bubbles }: { bubbles: Bubble[] }) => useSpokenSummaryPlayback(bubbles, null),
+      { initialProps: { bubbles: [streaming] } },
+    );
+    expect(speak).not.toHaveBeenCalled();
+
+    rerender({ bubbles: [unstampedBubbleWithSummary("resp_committed", "bubble_1")] });
+
+    expect(speak).toHaveBeenCalledTimes(1);
+    expect(speak.mock.calls[0]?.[0]).toBe("resp_committed");
+    speak.mockRestore();
+  });
+
   it("speaks when the finished response in the store is a different identity", () => {
     // A native turn streams under a client id ("live:uuid") and is stored under
     // a server id, so activeResponse almost never matches the bubble it belongs
