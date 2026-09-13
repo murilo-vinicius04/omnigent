@@ -187,6 +187,18 @@ export function useSpokenSummaryPlayback(
           // A summary that just landed is this turn's live answer however long it took to
           // build, so its own stamp settles the age question the response's cannot.
           const isResponseStale = anotherResponseIsLive || (responseAgedOut && !isFreshSummary);
+          // A finished reply whose summary has not been appended yet. Its own stamp
+          // says whether that summary can still be on the way; indexing it as history
+          // now would skip the summary when it lands seconds later.
+          const replyAgeS =
+            textItem?.createdAtS !== undefined
+              ? Date.now() / 1000 - textItem.createdAtS
+              : undefined;
+          const awaitingSummary =
+            !hasValidSummary &&
+            isLatestTurn &&
+            replyAgeS !== undefined &&
+            replyAgeS * 1000 < LIVE_SUMMARY_WINDOW_MS;
 
           if (
             (wasObservedLive || isFreshSummary) &&
@@ -203,7 +215,9 @@ export function useSpokenSummaryPlayback(
             speakLiveSummary(responseId, summary!.text, summary!.lang, audioUrl, sessionId);
           } else if (
             isFinal &&
-            ((!wasObservedLive && !isFreshSummary) || !isLatestTurn || isResponseStale)
+            ((!wasObservedLive && !isFreshSummary && !awaitingSummary) ||
+              !isLatestTurn ||
+              isResponseStale)
           ) {
             // Settled history, non-tail turn, or a response past its live window:
             // queue for single-persist batch marking so it is never replayed later.

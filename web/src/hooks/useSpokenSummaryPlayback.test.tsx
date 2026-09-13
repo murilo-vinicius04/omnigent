@@ -1315,4 +1315,45 @@ describe("useSpokenSummaryPlayback — server audio", () => {
     expect(isMessageSpoken("resp_old")).toBe(true);
     speak.mockRestore();
   });
+
+  /** The same reply before its summary has been appended. */
+  function replyWithoutSummary(responseId: string, createdAtS: number): Bubble {
+    const bubble = bubbleWithStampedSummary(responseId, createdAtS);
+    return {
+      ...bubble,
+      items: [{ kind: "text", itemId: "i1", text: "resposta completa", final: true, createdAtS }],
+    } as Bubble;
+  }
+
+  it("speaks a summary that lands after its reply, even when the turn was never watched live", () => {
+    // A Claude Code reply arrives already finished, and its summary follows a
+    // couple of seconds later as a separate item. The render in between must
+    // not index the reply as history, or the summary is skipped when it lands.
+    const speak = vi.spyOn(useSpeechPlaybackStore.getState(), "speakLiveSummary");
+    const nowS = Date.now() / 1000;
+    const { rerender } = renderHook(
+      ({ bubbles }: { bubbles: Bubble[] }) => useSpokenSummaryPlayback(bubbles, null),
+      { initialProps: { bubbles: [replyWithoutSummary("resp_late", nowS - 2)] } },
+    );
+    expect(speak).not.toHaveBeenCalled();
+
+    rerender({ bubbles: [bubbleWithStampedSummary("resp_late", nowS - 2)] });
+
+    expect(speak).toHaveBeenCalledTimes(1);
+    expect(speak.mock.calls[0]?.[0]).toBe("resp_late");
+    speak.mockRestore();
+  });
+
+  it("still indexes an old reply as history before any summary shows up", () => {
+    const speak = vi.spyOn(useSpeechPlaybackStore.getState(), "speakLiveSummary");
+    renderHook(() =>
+      useSpokenSummaryPlayback(
+        [replyWithoutSummary("resp_history", Date.now() / 1000 - 3600)],
+        null,
+      ),
+    );
+    expect(speak).not.toHaveBeenCalled();
+    expect(isMessageSpoken("resp_history")).toBe(true);
+    speak.mockRestore();
+  });
 });
