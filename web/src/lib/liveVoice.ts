@@ -484,6 +484,8 @@ export async function openLiveConversation(
       };
       timer = setTimeout(done, ANNOUNCE_FIRST_WORD_MS);
       void closedPromise.then(done);
+      // The idle hang-up must not fire while the voice is being told something.
+      touch();
       channel.send(
         JSON.stringify({
           type: "response.item.create",

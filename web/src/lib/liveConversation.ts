@@ -29,6 +29,16 @@ const HANDOFF_ANNOUNCEMENT =
   "and this call is ending. Tell them so in one short sentence, in the language " +
   "they are speaking, and say nothing else.]";
 
+/** Told to the voice when it held off on something that stays with it. */
+const KEPT_ANNOUNCEMENT =
+  "[From the app, not from them: that was not sent to Claude, it is yours. " +
+  "Answer them now from the notes you were given, in a sentence or two. If " +
+  "the notes do not cover it, say so plainly.]";
+
+/** A reply that holds the floor instead of answering. */
+const DEFERRAL =
+  /\b(one sec|just a sec|hold on|let'?s see|let me (see|check)|let you know|as soon as i hear|i'?ll check|um segundo|deixa eu ver)\b/i;
+
 interface ConversationStoreState {
   /** Session whose conversation is open, or null when none is. */
   sessionId: string | null;
@@ -99,13 +109,21 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
     let pending = "";
     let settle: ReturnType<typeof setTimeout> | undefined;
     let handedOff = false;
+    // What the voice has said since the reader started this thought.
+    let voiceReply = "";
 
     const decide = async (): Promise<void> => {
       const said = pending.trim();
       pending = "";
       if (!said || handedOff) return;
       const routing = await routeSpoken(sessionId, said);
-      if (!routing.forward || handedOff) return;
+      if (handedOff) return;
+      if (!routing.forward) {
+        // A voice that held off is waiting to be told; left alone it goes quiet
+        // and the idle timer hangs up on a question it could have answered.
+        if (DEFERRAL.test(voiceReply)) await active?.announce(KEPT_ANNOUNCEMENT);
+        return;
+      }
       // Claude is needed. Send it exactly as typing it would, then hang up:
       // the meter must not run through however long the turn takes.
       handedOff = true;
@@ -128,7 +146,13 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
         // the next conversation opens knowing what the last one said.
         onUtterance: ({ who, text }) => {
           void noteCompanion(sessionId, who === "reader" ? "question" : "answer", text);
-          if (who !== "reader" || handedOff) return;
+          if (who === "voice") {
+            voiceReply = voiceReply ? `${voiceReply} ${text}` : text;
+            return;
+          }
+          if (handedOff) return;
+          // A new thought: whatever the voice said before belongs to the last one.
+          if (!pending) voiceReply = "";
           pending = pending ? `${pending} ${text}` : text;
           clearTimeout(settle);
           settle = setTimeout(() => void decide(), ROUTE_SETTLE_MS);

@@ -256,6 +256,26 @@ describe("handing a spoken request to Claude", () => {
     expect(live.announce).not.toHaveBeenCalled();
   });
 
+  it("tells a voice that stalled on something kept to answer it", async () => {
+    // It said "one sec" to "what are the next steps", nothing followed, and the
+    // idle timer hung up on a question it had the answer to.
+    const { live, emit } = await open();
+    emit({ who: "reader", text: "what were we planning as next steps?" });
+    emit({ who: "voice", text: "Yeah! One sec." });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(live.announce).toHaveBeenCalledTimes(1);
+    expect(live.announce.mock.calls[0]?.[0]).toContain("not sent to Claude");
+    expect(live.stop).not.toHaveBeenCalled();
+  });
+
+  it("leaves a voice that actually answered alone", async () => {
+    const { live, emit } = await open();
+    emit({ who: "reader", text: "what are the next steps?" });
+    emit({ who: "voice", text: "Making the A76 mesh watertight, then the per-link survey." });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(live.announce).not.toHaveBeenCalled();
+  });
+
   it("keeps talking when the companion can answer", async () => {
     const { live, emit } = await open();
     emit({ who: "reader", text: "what did you change?" });
