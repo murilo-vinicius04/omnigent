@@ -235,14 +235,15 @@ def test_ledger_is_marked_as_background_not_instructions():
     assert "never recite it back" in prompt
 
 
-def test_the_voice_is_told_it_cannot_act():
-    """It offered to pass something to Claude and then could not.
+def test_the_voice_acknowledges_requests_instead_of_refusing():
+    """It said "no, I can't" while the request was already on its way to Claude.
 
-    The live session has no tools and no path back into the session, so an
-    offer to relay is a promise it cannot keep. Better to say no.
+    Spoken requests are routed to Claude beside the voice, so refusing or
+    sending the reader to the keyboard contradicts what actually happens.
     """
     from omnigent.server.discussion import LIVE_VOICE_ROLE
 
-    assert "You cannot DO anything" in LIVE_VOICE_ROLE
     assert "no tools" in LIVE_VOICE_ROLE
-    assert "type it in the chat" in LIVE_VOICE_ROLE
+    assert "passed to Claude on its own" in LIVE_VOICE_ROLE
+    assert "never refuse" in LIVE_VOICE_ROLE
+    assert "type it" not in LIVE_VOICE_ROLE

@@ -190,9 +190,7 @@ export async function narrateViaLive(
     answer = (await response.json()) as OfferResponse;
   } catch (error) {
     stop();
-    throw error instanceof LiveVoiceUnavailable
-      ? error
-      : new LiveVoiceUnavailable(String(error));
+    throw error instanceof LiveVoiceUnavailable ? error : new LiveVoiceUnavailable(String(error));
   }
 
   if (!answer.speak) {
@@ -306,7 +304,11 @@ export interface LiveConversation {
  */
 export async function openLiveConversation(
   sessionId: string | null,
-  options: { onUtterance?: (utterance: Utterance) => void } = {},
+  options: {
+    onUtterance?: (utterance: Utterance) => void;
+    /** Fires on every word the reader says, before an utterance settles. */
+    onReaderSpeaking?: () => void;
+  } = {},
 ): Promise<LiveConversation> {
   if (typeof RTCPeerConnection === "undefined") {
     throw new LiveVoiceUnavailable("this browser has no WebRTC");
@@ -342,11 +344,13 @@ export async function openLiveConversation(
   // Buffer each side's transcript and flush it on a pause. Nothing else
   // records this conversation: audio goes browser-to-OpenAI directly, so if
   // it is not captured here it is gone the moment it is said.
-  const buffers: Record<"reader" | "voice", { text: string; timer?: ReturnType<typeof setTimeout> }> =
-    {
-      reader: { text: "" },
-      voice: { text: "" },
-    };
+  const buffers: Record<
+    "reader" | "voice",
+    { text: string; timer?: ReturnType<typeof setTimeout> }
+  > = {
+    reader: { text: "" },
+    voice: { text: "" },
+  };
 
   const collect = (who: "reader" | "voice", delta: string): void => {
     const buffer = buffers[who];
@@ -409,6 +413,7 @@ export async function openLiveConversation(
     }
     if (payload.type === "session.input_transcript.delta") {
       touch();
+      options.onReaderSpeaking?.();
       collect("reader", payload.delta ?? "");
     } else if (payload.type === "session.output_transcript.delta") {
       touch();

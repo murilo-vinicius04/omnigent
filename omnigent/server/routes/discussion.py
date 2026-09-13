@@ -65,8 +65,8 @@ class RouteResponse(BaseModel):
     """What to do with what they said.
 
     ``forward`` is the whole point: the reader spoke, and this says whether
-    Claude has to see it. Defaults everywhere are the forwarding ones --
-    when the companion cannot decide, Claude gets the message.
+    Claude has to see it. When the companion cannot decide, the
+    conversation keeps it.
     """
 
     #: Whether this is work for Claude rather than something to talk about.
@@ -144,27 +144,28 @@ def create_discussion_router(
         language setting decides what may happen to their words, and only
         the routing decision is unconditional.
 
-        Never fails the caller. A companion that cannot decide answers
-        ``forward``, because a message that reaches Claude late is a
-        smaller harm than one that never arrives.
+        Never fails the caller. Unlike a typed message, a companion that
+        cannot decide keeps what was said: the voice is already answering
+        it, and forwarding every failure sent small talk to Claude.
         """
         _require_user(request)
         from omnigent.server.routes._sessions.orchestration import _route_through_companion
 
         if conversation_store is None:
-            return RouteResponse(forward=True)
+            return RouteResponse(forward=False)
         try:
             routing = await _route_through_companion(
                 session_id,
                 [{"type": "input_text", "text": body.text}],
                 conversation_store,
+                spoken=True,
             )
-        except Exception:  # noqa: BLE001 - never strand what the reader said
+        except Exception:  # noqa: BLE001 - the voice still has what they said
             _logger.warning("spoken routing failed for %s", session_id, exc_info=True)
             routing = None
         if routing is None:
-            # Routing is off, or it could not decide. Claude sees it.
-            return RouteResponse(forward=True)
+            # Routing is off, or it could not decide. The conversation keeps it.
+            return RouteResponse(forward=False)
         return RouteResponse(
             forward=routing.forward, english=routing.english, answer=routing.answer
         )

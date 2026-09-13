@@ -182,6 +182,30 @@ When in doubt, forward. Making them wait for Claude costs seconds; a \
 confident wrong answer from someone who cannot see the code costs much more.\
 """
 
+#: The routing turn for something said aloud. A voice is already answering
+#: them, so keeping a message costs nothing, and the bar for starting Claude
+#: is a clear request rather than doubt.
+_SPOKEN_ROUTE_PROMPT: Final[str] = """\
+[The person just said this out loud, in a voice conversation. That voice \
+answers them itself; you only decide whether Claude has to act on it.]
+{message}
+
+Reply with ONE line of JSON and nothing else:
+{{"forward": false, "english": {english_example}}}
+
+{english_rule}
+- "forward": true ONLY when they clearly ask for something to be done or \
+checked on their machine -- run, fix, change, look into, find out -- or say to \
+tell or ask Claude something. Talking the work through, asking what happened, \
+thinking out loud, greetings, reactions, and anything said to the voice itself \
+stay here: forward false.
+- A sentence that trails off unfinished is never forwarded: they have not \
+finished asking yet.
+
+When in doubt, keep it. They are mid-conversation, and they can repeat a \
+request far more easily than they can take back one Claude has started on.\
+"""
+
 #: Restate the message in English. The reader is not writing English, so the
 #: harness would otherwise pay the tokenization premium on every turn.
 _RULE_TRANSLATE: Final[str] = (
@@ -681,19 +705,24 @@ class DiscussionSession:
         text: str,
         *,
         restate: Restatement = "translate",
+        spoken: bool = False,
         timeout_s: float | None = None,
     ) -> Routing:
         """Decide whether Claude is needed, and restate the message for it.
 
         One warm turn doing the work the cold inbound repair pass used to
-        do, plus the decision. Never raises: anything that goes wrong
-        returns a forwarding :class:`Routing`, because the composer must
-        stay usable when the companion is not.
+        do, plus the decision. Never raises. A typed message forwards on
+        any failure, because the composer must stay usable when the
+        companion is not; a spoken one is kept, because the voice is
+        already answering it.
 
-        :param text: What the reader typed.
+        :param text: What the reader typed or said.
         :param restate: What may happen to their words -- ``"translate"``
             for a reader working in another language, ``"repair"`` for one
             already writing English, ``"off"`` to forward them untouched.
+        :param spoken: Whether it was said aloud. Speech is kept unless it
+            is a clear request, and is not recorded here: the live client
+            notes every utterance itself.
         :param timeout_s: Budget. Short by default -- this sits on the
             typing path, so a slow companion must get out of the way.
         :returns: The decision. ``english`` is ``None`` when *restate* is
@@ -701,14 +730,14 @@ class DiscussionSession:
         """
         message = text.strip()
         if not message:
-            return Routing(forward=True)
+            return Routing(forward=not spoken)
         budget = timeout_s if timeout_s is not None else route_timeout_s()
         async with self._lock:
             self._last_used = time.time()
             try:
                 await self._ensure_process()
                 blocks = self._preamble()
-                prompt = _ROUTE_PROMPT.format(
+                prompt = (_SPOKEN_ROUTE_PROMPT if spoken else _ROUTE_PROMPT).format(
                     message=message,
                     english_rule=_RESTATEMENT_RULES[restate],
                     english_example='"..."' if restate != "off" else '"<their words>"',
@@ -718,19 +747,23 @@ class DiscussionSession:
                     timeout_s=budget,
                 )
             except DiscussionUnavailable as exc:
-                _logger.info("companion routing unavailable, forwarding: %s", exc)
+                _logger.info("companion routing unavailable: %s", exc)
                 await self._kill()
+                if spoken:
+                    return Routing(forward=False)
                 self._record("question", message)
                 return Routing(forward=True)
             self._briefed = True
             self._undelivered.clear()
             self._last_used = time.time()
 
-        decision = _parse_routing(reply)
+        decision = _parse_routing(reply, spoken=spoken)
         if restate == "off":
             # The session asked for no rewriting. A model that restated
             # anyway must not be allowed to put words in the reader's mouth.
             decision = Routing(forward=decision.forward, answer=decision.answer)
+        if spoken:
+            return decision
         self._record("question", message)
         if not decision.forward and decision.answer:
             self._record("answer", decision.answer)
@@ -794,28 +827,34 @@ class DiscussionSession:
         return " | ".join(self._stderr) or "no stderr"
 
 
-def _parse_routing(reply: str) -> Routing:
-    """Read the model's routing reply, defaulting to forwarding.
+def _parse_routing(reply: str, *, spoken: bool = False) -> Routing:
+    """Read the model's routing reply, falling back to the safe side.
 
     The model is asked for one line of JSON, and mostly obliges, but a
-    stray sentence or a code fence must not strand a message. Anything
-    unreadable forwards -- the only safe failure.
+    stray sentence or a code fence must not strand a message. For a typed
+    message anything unreadable forwards. For speech it is kept: the voice
+    is already answering, so only an explicit ``true`` starts Claude.
 
     :param reply: Raw text of the routing turn.
+    :param spoken: Whether the message was said aloud.
     :returns: The decision.
     """
+    fallback = Routing(forward=not spoken)
     start, end = reply.find("{"), reply.rfind("}")
     if start < 0 or end <= start:
-        _logger.info("companion routing reply was not JSON, forwarding: %r", reply[:200])
-        return Routing(forward=True)
+        _logger.info("companion routing reply was not JSON: %r", reply[:200])
+        return fallback
     try:
         parsed = json.loads(reply[start : end + 1])
     except json.JSONDecodeError:
-        _logger.info("companion routing reply did not parse, forwarding: %r", reply[:200])
-        return Routing(forward=True)
+        _logger.info("companion routing reply did not parse: %r", reply[:200])
+        return fallback
     if not isinstance(parsed, dict):
-        return Routing(forward=True)
+        return fallback
     english = str(parsed.get("english") or "").strip() or None
+    if spoken:
+        # The voice speaks for itself, so an answer here would reach no one.
+        return Routing(forward=parsed.get("forward") is True, english=english)
     answer = str(parsed.get("answer") or "").strip() or None
     # Only an explicit false keeps the message, and only with something to
     # say: "forward": "no" or a missing answer both mean forward.
@@ -1011,12 +1050,14 @@ LIVE_VOICE_ROLE: Final[str] = (
     "Expect to be interrupted; stop immediately when they start talking. "
     "If you do not know something, say so plainly rather than guessing -- you "
     "see only what you are told below, never their screen or their files. "
-    "You cannot DO anything. You have no tools: you cannot message Claude, "
-    "start or stop work, read or change a file, or run a command. Never offer "
-    "to, never say you will, and never say you have -- offering to pass "
-    "something to Claude and then not doing it is worse than saying no. When "
-    "they want Claude to act, say plainly that they need to type it in the "
-    "chat, and help them work out what to say."
+    "You cannot act yourself: you have no tools, and you cannot read or change "
+    "a file or run a command. But when they clearly ask for something to be "
+    "done or checked, it is passed to Claude on its own once they finish "
+    "speaking, and this call then ends. So never refuse such a request and "
+    "never send them to the keyboard: acknowledge it in a few words, like "
+    "'okay, Claude will take that', without attempting the work or guessing "
+    "its result. Everything else -- talking the work through, what has "
+    "happened, ideas -- is yours to answer."
 )
 
 

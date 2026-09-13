@@ -67,7 +67,8 @@ async function handToClaude(text: string, agentId: string | null): Promise<boole
   if (!agentId) return false;
   try {
     const { useChatStore } = await import("@/store/chatStore");
-    await useChatStore.getState().send(text, agentId);
+    // Already routed as speech; the typed-message pass could answer it instead.
+    await useChatStore.getState().send(text, agentId, undefined, { forceClaude: true });
     return true;
   } catch {
     return false;
@@ -121,6 +122,12 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
           void noteCompanion(sessionId, who === "reader" ? "question" : "answer", text);
           if (who !== "reader" || handedOff) return;
           pending = pending ? `${pending} ${text}` : text;
+          clearTimeout(settle);
+          settle = setTimeout(() => void decide(), ROUTE_SETTLE_MS);
+        },
+        // Still talking: a thought already waiting is not finished yet.
+        onReaderSpeaking: () => {
+          if (!pending || handedOff) return;
           clearTimeout(settle);
           settle = setTimeout(() => void decide(), ROUTE_SETTLE_MS);
         },

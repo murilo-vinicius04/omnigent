@@ -164,22 +164,23 @@ export interface SpokenRouting {
  * session's language setting governs what may happen to the words, and only
  * the routing decision is unconditional.
  *
- * Forwards on any failure. A message that reaches Claude late is a smaller
- * harm than one that never arrives.
+ * Keeps what was said on any failure. The voice is already answering it,
+ * and forwarding failures sent small talk to Claude.
  *
  * @param sessionId The session the reader is talking about.
  * @param text What they said.
  */
 export async function routeSpoken(sessionId: string, text: string): Promise<SpokenRouting> {
+  const kept: SpokenRouting = { forward: false, english: null, answer: null };
   try {
     const res = await authenticatedFetch(`${base(sessionId)}/route`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
     });
-    if (!res.ok) return { forward: true, english: null, answer: null };
+    if (!res.ok) return kept;
     return (await res.json()) as SpokenRouting;
   } catch {
-    return { forward: true, english: null, answer: null };
+    return kept;
   }
 }

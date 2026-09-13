@@ -479,6 +479,42 @@ async def test_route_forwards_an_empty_message(session):
     assert (await session.route("   ")).forward is True
 
 
+# --- routing what was said aloud: the conversation keeps it by default ---
+
+
+def test_spoken_routing_keeps_anything_short_of_an_explicit_forward():
+    # The voice answers whatever it keeps, so keeping needs no answer, and a
+    # reply that cannot be read must not send small talk to Claude.
+    for reply in ["", "{not json}", "{}", '{"forward": false}', '{"forward": "yes"}']:
+        assert discussion._parse_routing(reply, spoken=True).forward is False
+    decision = discussion._parse_routing(
+        '{"forward": true, "english": "Run the tests.", "answer": "ok"}', spoken=True
+    )
+    assert decision.forward is True
+    assert decision.english == "Run the tests."
+    assert decision.answer is None
+
+
+async def test_spoken_route_uses_its_own_prompt_and_records_nothing(session, monkeypatch):
+    seen: list[str] = []
+    monkeypatch.setattr(
+        session, "_turn", _capturing_turn(seen, '{"forward": true, "english": "Run the tests."}')
+    )
+    decision = await session.route("run the tests", restate="repair", spoken=True)
+    assert decision.forward is True
+    assert "said this out loud" in seen[0]
+    assert "When in doubt, forward" not in seen[0]
+    # The live client already notes each utterance; a second copy doubles the ledger.
+    assert list(session.context) == []
+
+
+async def test_spoken_route_keeps_what_was_said_when_the_companion_is_broken(tmp_path):
+    broken = DiscussionSession("s", binary=str(tmp_path / "absent"))
+    decision = await broken.route("so now you can use the tools", spoken=True)
+    assert decision.forward is False
+    assert list(broken.context) == []
+
+
 def test_routing_is_on_unless_switched_off(monkeypatch):
     monkeypatch.delenv("OMNIGENT_COMPANION_ROUTING", raising=False)
     assert discussion.routing_enabled() is True
@@ -772,16 +808,16 @@ async def test_inbound_repair_falls_back_to_the_one_shot(monkeypatch):
     assert out == "Did the paragraph fix land?"
 
 
-def test_spoken_routing_forwards_when_it_cannot_decide(client):
-    """The safe answer is Claude seeing it.
+def test_spoken_routing_keeps_what_was_said_when_it_cannot_decide(client):
+    """The voice is already answering, so the safe answer is keeping it.
 
-    A message that reaches Claude late is a smaller harm than one that never
-    arrives, so every failure path on this route answers forward.
+    Forwarding every failure sent small talk said to the voice into Claude's
+    chat while the voice replied to it out loud.
     """
     # The test router is built without a conversation store, so the language
     # gate cannot be resolved -- exactly the "cannot decide" case.
     body = client.post("/v1/discussion/r9/route", json={"text": "run the tests"}).json()
-    assert body["forward"] is True
+    assert body["forward"] is False
     assert body["answer"] is None
 
 
@@ -789,8 +825,8 @@ def test_spoken_routing_rejects_an_empty_utterance(client):
     assert client.post("/v1/discussion/r9/route", json={"text": ""}).status_code == 422
 
 
-def test_spoken_routing_answers_forward_when_the_companion_explodes(client, monkeypatch):
-    """A raising router must not strand what the reader said."""
+def test_spoken_routing_keeps_what_was_said_when_the_companion_explodes(client, monkeypatch):
+    """A raising router answers keep: the voice still has what the reader said."""
 
     async def explode(*_args, **_kwargs):
         raise RuntimeError("boom")
@@ -799,7 +835,7 @@ def test_spoken_routing_answers_forward_when_the_companion_explodes(client, monk
         "omnigent.server.routes._sessions.orchestration._route_through_companion", explode
     )
     body = client.post("/v1/discussion/r9/route", json={"text": "run the tests"}).json()
-    assert body["forward"] is True
+    assert body["forward"] is False
 
 
 def test_spoken_routing_passes_the_decision_through(monkeypatch, fake_agy):
@@ -808,7 +844,9 @@ def test_spoken_routing_passes_the_decision_through(monkeypatch, fake_agy):
 
     from omnigent.server.discussion import Routing
 
-    async def decides(_session_id, _content, _store):
+    async def decides(_session_id, _content, _store, *, spoken=False):
+        # Routed with the spoken prompt, not the typed one.
+        assert spoken is True
         return Routing(forward=False, english=None, answer="I can answer that one.")
 
     monkeypatch.setattr(

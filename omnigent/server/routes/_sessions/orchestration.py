@@ -5720,6 +5720,8 @@ async def _route_through_companion(
     session_id: str,
     content: list[Any],
     conversation_store: ConversationStore,
+    *,
+    spoken: bool = False,
 ) -> Routing | None:
     """Ask the companion whether Claude is needed, and what to send it.
 
@@ -5739,6 +5741,7 @@ async def _route_through_companion(
     :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
     :param content: The outgoing message's content blocks.
     :param conversation_store: Store used to resolve the session's language.
+    :param spoken: Whether the message was said aloud in a live conversation.
     :returns: The decision, or ``None`` to leave the old path in charge.
     """
     from omnigent.server import discussion
@@ -5764,7 +5767,7 @@ async def _route_through_companion(
         else:
             restate = "repair"
         companion = await discussion.registry().get(session_id)
-        return await companion.route(text, restate=restate)
+        return await companion.route(text, restate=restate, spoken=spoken)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - forwarding is always safe

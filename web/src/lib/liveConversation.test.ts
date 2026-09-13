@@ -150,9 +150,17 @@ describe("handing a spoken request to Claude", () => {
   async function open(agentId: string | null = "agent_1") {
     const live = fakeConversation();
     let emit: ((u: { who: string; text: string }) => void) | undefined;
+    let speaking: (() => void) | undefined;
     openLiveConversation.mockImplementation(
-      (_id: string, opts: { onUtterance?: (u: { who: string; text: string }) => void }) => {
+      (
+        _id: string,
+        opts: {
+          onUtterance?: (u: { who: string; text: string }) => void;
+          onReaderSpeaking?: () => void;
+        },
+      ) => {
         emit = opts.onUtterance;
+        speaking = opts.onReaderSpeaking;
         return Promise.resolve(live);
       },
     );
@@ -160,9 +168,23 @@ describe("handing a spoken request to Claude", () => {
     // A leftover session from a previous test makes start() return early and
     // the failure then shows up as "emit is not a function", which points at
     // the wrong thing entirely.
-    if (!emit) throw new Error("start() never opened a conversation");
-    return { live, emit };
+    if (!emit || !speaking) throw new Error("start() never opened a conversation");
+    return { live, emit, speaking };
   }
+
+  it("waits while the reader is still talking, even past the settle window", async () => {
+    const { emit, speaking } = await open();
+    emit({ who: "reader", text: "hey, so now you can" });
+    await vi.advanceTimersByTimeAsync(2000);
+    speaking(); // the rest of the sentence has started arriving
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(routeSpoken).not.toHaveBeenCalled();
+
+    emit({ who: "reader", text: "talk to Claude" });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(routeSpoken).toHaveBeenCalledTimes(1);
+    expect(routeSpoken.mock.calls[0]?.[1]).toBe("hey, so now you can talk to Claude");
+  });
 
   beforeEach(() => {
     // A sibling describe, so the reset in the first one does not reach here.
@@ -205,7 +227,10 @@ describe("handing a spoken request to Claude", () => {
     emit({ who: "reader", text: "run the migration tests" });
     await vi.advanceTimersByTimeAsync(3000);
 
-    expect(send).toHaveBeenCalledWith("Run the migration tests.", "agent_1");
+    // Forced past routing: it was already routed as speech.
+    expect(send).toHaveBeenCalledWith("Run the migration tests.", "agent_1", undefined, {
+      forceClaude: true,
+    });
     // The meter must not run through however long the turn takes.
     expect(live.stop).toHaveBeenCalled();
   });
