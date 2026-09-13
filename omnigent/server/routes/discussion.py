@@ -165,7 +165,17 @@ def create_discussion_router(
             routing = None
         if routing is None:
             # Routing is off, or it could not decide. The conversation keeps it.
+            _logger.info("spoken route session=%s kept (undecided) said=%r", session_id, body.text)
             return RouteResponse(forward=False)
+        # The call itself leaves no trace on this server, so every decision is
+        # logged: what was said, and what Claude was sent.
+        _logger.info(
+            "spoken route session=%s forward=%s said=%r sent=%r",
+            session_id,
+            routing.forward,
+            body.text,
+            (routing.english or body.text) if routing.forward else None,
+        )
         return RouteResponse(
             forward=routing.forward, english=routing.english, answer=routing.answer
         )

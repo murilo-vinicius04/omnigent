@@ -504,6 +504,8 @@ async def test_spoken_route_uses_its_own_prompt_and_records_nothing(session, mon
     assert decision.forward is True
     assert "said this out loud" in seen[0]
     assert "When in doubt, forward" not in seen[0]
+    # What the voice cannot answer goes to Claude, not only explicit work.
+    assert "the notes above do not answer" in seen[0]
     # The live client already notes each utterance; a second copy doubles the ledger.
     assert list(session.context) == []
 

@@ -194,19 +194,17 @@ Reply with ONE line of JSON and nothing else:
 {{"forward": false, "english": {english_example}}}
 
 {english_rule}
-- "forward": true ONLY when they clearly ask for something to be done or \
-checked on their machine -- run, fix, change, look into, find out -- or say to \
-tell or ask Claude something. Talking the work through, asking what happened, \
-thinking out loud, greetings, reactions, and anything said to the voice itself \
-stay here: forward false.
+- "forward": true when Claude is needed: they ask for something to be done or \
+checked on their machine (run, fix, change, look into), or they ask something \
+the notes above do not answer -- a fact about the code, the files, the data or \
+the measurements that Claude would have to look up.
+- "forward": false for what the conversation can handle: greetings, reactions, \
+thinking out loud, opinions and plans being talked through, and questions the \
+notes already answer, such as what happened or what comes next.
 - A sentence that trails off unfinished is never forwarded: they have not \
 finished asking yet.
-- Asking whether you or the voice can reach Claude, or saying "ask Claude" \
-with nothing to ask, is a question about the conversation, not a request: \
-forward false. Forward only when there is an actual task or question for Claude.
-
-When in doubt, keep it. They are mid-conversation, and they can repeat a \
-request far more easily than they can take back one Claude has started on.\
+- Asking whether the voice can reach Claude, or saying "ask Claude" with \
+nothing to ask, is about the conversation itself: forward false.\
 """
 
 #: Restate the message in English. The reader is not writing English, so the
@@ -1055,12 +1053,13 @@ LIVE_VOICE_ROLE: Final[str] = (
     "notes below, with the latest update last. When they ask what is happening, "
     "what was done, what you were doing or what comes next, answer straight away "
     "from those notes -- 'you' and 'we' mean the work, not you personally. Never "
-    "say you will check, look into it or get back to them: you cannot, and "
-    "nobody will. If the notes do not cover it, say so plainly rather than "
-    "guessing -- you never see their screen or their files. "
-    "You have no tools and cannot run, read or change anything. When they ask "
-    "for work on the machine itself, neither refuse nor promise it: say 'okay' "
-    "and nothing more. If it is sent to Claude, you will be told."
+    "say you will check, sort it out, look into it or get back to them, and "
+    "never say 'hold on' or 'one sec': you cannot act, and nothing follows. "
+    "If the notes do not cover it, say plainly that you don't have that and "
+    "that it is one for Claude -- never guess, you never see their screen or "
+    "their files. You have no tools and cannot run, read or change anything. "
+    "When they ask for work on the machine itself, neither refuse nor promise "
+    "it: say 'okay' and nothing more."
 )
 
 

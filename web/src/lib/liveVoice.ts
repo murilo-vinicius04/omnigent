@@ -286,17 +286,18 @@ export interface LiveConversation {
   /** Hang up now. Safe to call repeatedly. */
   readonly stop: () => void;
   /**
-   * Tell the voice something from the app and have it respond. Resolves once
-   * it has stopped talking, or gave up waiting for it to start.
+   * Resolve once the voice is not mid-sentence, so hanging up does not cut it
+   * off. Nothing can be pushed into a conversation for it to say: text sent
+   * after the first audio turn is generated but never voiced.
    */
-  readonly announce: (instruction: string) => Promise<void>;
+  readonly untilQuiet: () => Promise<void>;
 }
 
-/** How long an announcement may take to start before it is given up on. */
-const ANNOUNCE_FIRST_WORD_MS = 8000;
+/** The pause in the voice's words that marks a sentence as finished. */
+const QUIET_GAP_MS = 1200;
 
-/** The pause in the voice's words that marks an announcement as finished. */
-const ANNOUNCE_SILENCE_MS = 1500;
+/** Never hold a hang-up longer than this waiting for the voice to stop. */
+const QUIET_MAX_MS = 4000;
 
 /**
  * Open a two-way conversation: it hears the microphone and answers aloud.
@@ -465,38 +466,27 @@ export async function openLiveConversation(
     throw error instanceof LiveVoiceUnavailable ? error : new LiveVoiceUnavailable(String(error));
   }
 
-  const announce = (instruction: string): Promise<void> =>
+  const untilQuiet = (): Promise<void> =>
     new Promise<void>((resolve) => {
-      if (closed || channel.readyState !== "open") {
+      if (closed) {
         resolve();
         return;
       }
-      let timer: ReturnType<typeof setTimeout> | undefined;
+      let gap: ReturnType<typeof setTimeout> | undefined;
       const done = (): void => {
-        clearTimeout(timer);
+        clearTimeout(gap);
+        clearTimeout(ceiling);
         voiceSpeaking = undefined;
         resolve();
       };
+      const ceiling = setTimeout(done, QUIET_MAX_MS);
       // Each word from the voice pushes the finish back; a pause ends it.
       voiceSpeaking = () => {
-        clearTimeout(timer);
-        timer = setTimeout(done, ANNOUNCE_SILENCE_MS);
+        clearTimeout(gap);
+        gap = setTimeout(done, QUIET_GAP_MS);
       };
-      timer = setTimeout(done, ANNOUNCE_FIRST_WORD_MS);
+      gap = setTimeout(done, QUIET_GAP_MS);
       void closedPromise.then(done);
-      // The idle hang-up must not fire while the voice is being told something.
-      touch();
-      channel.send(
-        JSON.stringify({
-          type: "response.item.create",
-          item: {
-            type: "message",
-            role: "user",
-            content: [{ type: "input_text", text: instruction }],
-          },
-        }),
-      );
-      channel.send(JSON.stringify({ type: "response.create" }));
     });
 
   return {
@@ -504,6 +494,6 @@ export async function openLiveConversation(
     closed: closedPromise,
     elapsedS: () => (Date.now() - startedAt) / 1000,
     stop,
-    announce,
+    untilQuiet,
   };
 }

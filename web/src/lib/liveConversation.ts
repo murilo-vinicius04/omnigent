@@ -23,21 +23,20 @@ export const USD_PER_MINUTE = 0.05;
  */
 const ROUTE_SETTLE_MS = 2500;
 
-/** Told to the voice once something has been sent, since it cannot know. */
-const HANDOFF_ANNOUNCEMENT =
-  "[From the app, not from them: what they just said has been sent to Claude, " +
-  "and this call is ending. Tell them so in one short sentence, in the language " +
-  "they are speaking, and say nothing else.]";
-
-/** Told to the voice when it held off on something that stays with it. */
-const KEPT_ANNOUNCEMENT =
-  "[From the app, not from them: that was not sent to Claude, it is yours. " +
-  "Answer them now from the notes you were given, in a sentence or two. If " +
-  "the notes do not cover it, say so plainly.]";
-
-/** A reply that holds the floor instead of answering. */
-const DEFERRAL =
-  /\b(one sec|just a sec|hold on|let'?s see|let me (see|check)|let you know|as soon as i hear|i'?ll check|um segundo|deixa eu ver)\b/i;
+/**
+ * Say out loud that a request went to Claude, once the call has ended.
+ *
+ * The live voice cannot be told: text pushed into a conversation is generated
+ * but never voiced. The browser's own speech is free and needs no session.
+ */
+function confirmHandoff(): void {
+  if (typeof speechSynthesis === "undefined") return;
+  try {
+    speechSynthesis.speak(new SpeechSynthesisUtterance("Sent to Claude."));
+  } catch {
+    // Nothing to say it with; the message appearing in the chat still shows it.
+  }
+}
 
 interface ConversationStoreState {
   /** Session whose conversation is open, or null when none is. */
@@ -109,21 +108,12 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
     let pending = "";
     let settle: ReturnType<typeof setTimeout> | undefined;
     let handedOff = false;
-    // What the voice has said since the reader started this thought.
-    let voiceReply = "";
-
     const decide = async (): Promise<void> => {
       const said = pending.trim();
       pending = "";
       if (!said || handedOff) return;
       const routing = await routeSpoken(sessionId, said);
-      if (handedOff) return;
-      if (!routing.forward) {
-        // A voice that held off is waiting to be told; left alone it goes quiet
-        // and the idle timer hangs up on a question it could have answered.
-        if (DEFERRAL.test(voiceReply)) await active?.announce(KEPT_ANNOUNCEMENT);
-        return;
-      }
+      if (!routing.forward || handedOff) return;
       // Claude is needed. Send it exactly as typing it would, then hang up:
       // the meter must not run through however long the turn takes.
       handedOff = true;
@@ -133,9 +123,10 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
         return;
       }
       set({ handedOff: routing.english ?? said });
-      // The voice cannot know this on its own, so it is told before hanging up.
-      await active?.announce(HANDOFF_ANNOUNCEMENT);
+      // Let the voice finish its sentence rather than cutting it off.
+      await active?.untilQuiet();
       get().stop();
+      confirmHandoff();
     };
 
     let live: LiveConversation;
@@ -146,13 +137,7 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
         // the next conversation opens knowing what the last one said.
         onUtterance: ({ who, text }) => {
           void noteCompanion(sessionId, who === "reader" ? "question" : "answer", text);
-          if (who === "voice") {
-            voiceReply = voiceReply ? `${voiceReply} ${text}` : text;
-            return;
-          }
-          if (handedOff) return;
-          // A new thought: whatever the voice said before belongs to the last one.
-          if (!pending) voiceReply = "";
+          if (who !== "reader" || handedOff) return;
           pending = pending ? `${pending} ${text}` : text;
           clearTimeout(settle);
           settle = setTimeout(() => void decide(), ROUTE_SETTLE_MS);

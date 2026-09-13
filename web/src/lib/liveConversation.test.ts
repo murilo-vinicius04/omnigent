@@ -39,13 +39,13 @@ function fakeConversation() {
   const stop = vi.fn(() => {
     settle();
   });
-  const announce = vi.fn(async (_instruction: string) => {});
+  const untilQuiet = vi.fn(async () => {});
   return {
     stream: new MediaStream(),
     closed,
     elapsedS: () => 12,
     stop,
-    announce,
+    untilQuiet,
     end: () => settle(),
   };
 }
@@ -239,41 +239,22 @@ describe("handing a spoken request to Claude", () => {
     expect(send).toHaveBeenCalledWith("Run the migration tests.", "agent_1", undefined, {
       forceClaude: true,
     });
-    // The voice is told before the call ends; on its own it guessed and said no.
-    expect(live.announce).toHaveBeenCalledTimes(1);
-    expect(live.announce.mock.calls[0]?.[0]).toContain("sent to Claude");
-    // The meter must not run through however long the turn takes.
+    // The meter must not run through however long the turn takes, but the
+    // voice finishes its sentence first rather than being cut off mid-word.
+    expect(live.untilQuiet).toHaveBeenCalledTimes(1);
     expect(live.stop).toHaveBeenCalled();
-    expect(live.announce.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(live.untilQuiet.mock.invocationCallOrder[0]).toBeLessThan(
       live.stop.mock.invocationCallOrder[0] ?? 0,
     );
   });
 
-  it("tells the voice nothing when the conversation keeps what was said", async () => {
+  it("neither sends nor hangs up when the conversation keeps what was said", async () => {
     const { live, emit } = await open();
     emit({ who: "reader", text: "can't you ask Claude?" });
     await vi.advanceTimersByTimeAsync(3000);
-    expect(live.announce).not.toHaveBeenCalled();
-  });
-
-  it("tells a voice that stalled on something kept to answer it", async () => {
-    // It said "one sec" to "what are the next steps", nothing followed, and the
-    // idle timer hung up on a question it had the answer to.
-    const { live, emit } = await open();
-    emit({ who: "reader", text: "what were we planning as next steps?" });
-    emit({ who: "voice", text: "Yeah! One sec." });
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(live.announce).toHaveBeenCalledTimes(1);
-    expect(live.announce.mock.calls[0]?.[0]).toContain("not sent to Claude");
+    expect(send).not.toHaveBeenCalled();
+    expect(live.untilQuiet).not.toHaveBeenCalled();
     expect(live.stop).not.toHaveBeenCalled();
-  });
-
-  it("leaves a voice that actually answered alone", async () => {
-    const { live, emit } = await open();
-    emit({ who: "reader", text: "what are the next steps?" });
-    emit({ who: "voice", text: "Making the A76 mesh watertight, then the per-link survey." });
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(live.announce).not.toHaveBeenCalled();
   });
 
   it("keeps talking when the companion can answer", async () => {
