@@ -768,3 +768,53 @@ session". The survey suggests a better target: route them through an
 first-class agent with the inbox, lifecycle and persistence the platform
 already has, instead of a subprocess we babysit. Same user-visible outcome,
 far less bespoke machinery to maintain.
+
+## Session state — 2026-09-13 evening
+
+Branch `feat/friendly-layer`, worktree `/home/nexus/wt/friendly-layer`. Restart:
+`export XDG_RUNTIME_DIR=/run/user/1000; systemctl --user restart omnigent-server.service`.
+Web changes need `cd web && node_modules/.bin/vite build` first (it wipes
+`static/web-ui`, which is why the live probe page is a route).
+
+**Live mode now runs on GPT-Live client delegation** (`b1e7efc87`). The voice
+answers from its briefing; what it cannot answer it delegates
+(`session.delegation.created`), the page asks the companion via
+`POST /v1/discussion/{id}/delegate`, and the answer goes back as
+`session.commentary.append` — spoken in the voice's own words. If the companion
+cannot answer either, the question is sent to Claude with `forceClaude`, the
+voice says so, and the call hangs up. Docs: OpenAI's live-delegation,
+live-conversations and live-prompting guides. Superseded and not to be
+rebuilt: per-utterance spoken routing, the "that's one for Claude" phrase
+detector, browser speechSynthesis confirmations, and pushing text with
+`response.item.create` (responses-mode commands, never voiced in a call).
+
+**Summaries and autoplay.** A native turn exists under two identities — a
+client id while it streams (`live:uuid`) and a server id once stored — which
+broke autoplay all day: the hook read the mismatch as "the reader moved on"
+and filed every reply as history before its summary arrived. Fixed in
+`07c2efb4c` (only a *streaming* turn counts) and `50d1c6349` (a summary that
+appears while this client watched the reply wait counts as live). Live-voice
+sessions never play a Chatterbox recording (`aa73cce25`).
+
+**Everything decides out loud now.** Summary skips log their reason
+(`spoken summary skipped: … reason=…`), and the page reports every autoplay
+decision to `POST /v1/narration/decision` (`d465e0f1d`). That is how the last
+three bugs were found: check the server log first.
+
+**Auto-compaction** (`6da27c7c2`): at a turn end past 60% of the context
+window the session is asked to write its context down, and the turn that
+answers is compacted. Threshold label `omnigent.autocompact_pct` (10–95),
+kill switch `OMNIGENT_AUTO_COMPACT=0`. Claude Code's own auto-compact is much
+later (~967K of 1M; `/autocompact`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW`).
+
+**Open, in the user's order:** the UI control for the compaction percentage;
+progress updates while Claude works (item 2 — `session.thinking.append` can
+feed a live call mid-turn); permanent systemd unit + linger; dead
+`answer_language_instruction`. Also: **rotate the OpenAI key** (it was pasted
+into chat), per-call cost logging, and 29GB of Qwen weights if disk is needed
+again (26GB free).
+
+**Rules learned the hard way:** read the vendor docs before designing (a whole
+afternoon of workarounds existed because client delegation was never read
+about), and reproduce a bug in a test before fixing it — every fix today that
+skipped that step was wrong.
