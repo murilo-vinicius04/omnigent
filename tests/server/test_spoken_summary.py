@@ -2342,6 +2342,67 @@ async def test_native_idle_edge_summarizes_a_turn_only_once() -> None:
     _SUMMARIZED_RESPONSES.clear()
 
 
+@pytest.mark.asyncio
+async def test_native_idle_edge_answers_the_readers_question() -> None:
+    """Claude Code turns end on the idle edge, and only the relay path was ever
+    handed the reader's messages, so their summaries could not answer them."""
+    from types import SimpleNamespace
+
+    from omnigent.server.routes._sessions.helpers import (
+        _SUMMARIZED_RESPONSES,
+        _attach_native_spoken_summary,
+    )
+
+    _SUMMARIZED_RESPONSES.clear()
+    clear_spoken_summary_cache()
+    conv = Conversation(
+        id="conv_asked",
+        root_conversation_id="conv_asked",
+        created_at=1,
+        updated_at=1,
+        parent_conversation_id=None,
+        kind="default",
+        project_id="proj_asked",
+    )
+
+    def _msg(role: str, text: str) -> Any:
+        data = SimpleNamespace(role=role, agent=None, content=[{"type": "text", "text": text}])
+        return SimpleNamespace(type="message", response_id="resp_asked", data=data)
+
+    class _Store(_FakeConversationStore):
+        def list_items(self, *a: Any, **k: Any) -> Any:
+            return SimpleNamespace(
+                data=[
+                    _msg("assistant", _LONG_RESPONSE_TEXT),
+                    _msg("user", "why did the disk fill up?"),
+                    _msg("user", "what broke?"),
+                ]
+            )
+
+    store = _Store(
+        conversation=conv,
+        project_config={"spoken_summary": {"enabled": True, "language": "en-US"}},
+    )
+    seen: dict[str, Any] = {}
+
+    async def _fake_generate(text: str, **kwargs: Any) -> tuple[dict[str, Any], None]:
+        seen.update(kwargs)
+        return {"type": "spoken_summary", "text": "It filled up.", "lang": "en-US"}, None
+
+    with patch("omnigent.server.spoken_summary.generate_spoken_summary", _fake_generate):
+        await _attach_native_spoken_summary(
+            store,  # type: ignore[arg-type]
+            "conv_asked",
+            "resp_asked",
+            _LONG_RESPONSE_TEXT,
+        )
+
+    assert seen["question"] == "why did the disk fill up?"
+    assert seen["earlier"] == ["what broke?"]
+    assert seen["session_id"] == "conv_asked"
+    _SUMMARIZED_RESPONSES.clear()
+
+
 def test_summary_turn_claim_is_bounded() -> None:
     """The claim must not grow without bound on a long-lived server."""
     from omnigent.server.routes._sessions.helpers import (

@@ -578,33 +578,81 @@ async def test_unreadable_label_still_synthesizes():
     assert await _reads_through_live_voice(_Broken(), "conv_a") is False
 
 
+def _turn_message(role: str, text: str, response_id: str = "resp_1") -> Any:
+    from types import SimpleNamespace
+
+    data = SimpleNamespace(
+        role=role, agent="claude-native-ui", content=[{"type": "output_text", "text": text}]
+    )
+    return SimpleNamespace(type="message", response_id=response_id, data=data)
+
+
+def _turn_tool(kind: str, response_id: str = "resp_1") -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(type=kind, response_id=response_id, data=SimpleNamespace())
+
+
 @pytest.mark.asyncio
-async def test_the_final_message_survives_an_idle_edge_that_beats_persistence() -> None:
-    """The edge can fire before its own final message reaches the store.
+async def test_the_summary_waits_for_a_final_message_stored_after_the_edge(monkeypatch) -> None:
+    """The Stop hook fires before the transcript mirror stores the final message.
 
-    The rebuild then held only the opening "checking before I answer" note,
-    and the summary told the reader work was still under way when the answer
-    was already on screen.
+    Read at the edge, the turn held only its opening line and its tool calls:
+    too short to summarize, so the turn was skipped without a word.
     """
-    from omnigent.server.routes._sessions.helpers import _native_turn_text
+    from types import SimpleNamespace
 
-    class _Data:
-        def __init__(self, texts: list[str]) -> None:
-            self.role = "assistant"
-            self.agent = "claude-native-ui"
-            self.content = [{"type": "output_text", "text": t} for t in texts]
+    from omnigent.server.routes._sessions import helpers
 
-    class _Item:
-        def __init__(self, texts: list[str]) -> None:
-            self.response_id = "resp_1"
-            self.data = _Data(texts)
-
-    class _Page:
-        data = [_Item(["Checking before I answer."])]  # final message not stored yet
+    monkeypatch.setattr(helpers, "_TURN_SETTLE_POLL_S", 0.0)
+    early = [
+        _turn_tool("function_call_output"),
+        _turn_tool("function_call"),
+        _turn_message("assistant", "Let me measure first."),
+    ]
+    final = [_turn_message("assistant", "It was seventy gigabytes in two weeks."), *early]
+    polls: list[object] = []
 
     class _Store:
         def list_items(self, *a: Any, **k: Any) -> Any:
-            return _Page()
+            polls.append(a)
+            return SimpleNamespace(data=early if len(polls) < 3 else final)
 
-    got = await _native_turn_text(_Store(), "conv_1", "resp_1", "You were right on both.")
-    assert got == "Checking before I answer.\n\nYou were right on both."
+    store = _Store()
+    await helpers._await_turn_settled(store, "conv_1", "resp_1")
+    got = await helpers._native_turn_text(store, "conv_1", "resp_1", "Let me measure first.")
+    assert got == "Let me measure first.\n\nIt was seventy gigabytes in two weeks."
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_never_settles_is_still_summarized(monkeypatch) -> None:
+    """A turn that ends on a tool call has no closing message to wait for."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from omnigent.server.routes._sessions import helpers
+
+    monkeypatch.setattr(helpers, "_TURN_SETTLE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(helpers, "_TURN_SETTLE_POLL_S", 0.01)
+
+    class _Store:
+        def list_items(self, *a: Any, **k: Any) -> Any:
+            return SimpleNamespace(data=[_turn_tool("function_call_output")])
+
+    await asyncio.wait_for(helpers._await_turn_settled(_Store(), "conv_1", "resp_1"), 2)
+
+
+@pytest.mark.asyncio
+async def test_the_rebuild_never_borrows_another_turns_reply() -> None:
+    """The edge's text is the session's newest stored reply, whichever turn it
+    belongs to, so grafting it on can attach the previous answer to this one."""
+    from types import SimpleNamespace
+
+    from omnigent.server.routes._sessions.helpers import _native_turn_text
+
+    class _Store:
+        def list_items(self, *a: Any, **k: Any) -> Any:
+            return SimpleNamespace(data=[_turn_message("assistant", "the answer")])
+
+    got = await _native_turn_text(_Store(), "conv_1", "resp_1", "the reply to the turn before")
+    assert got == "the answer"

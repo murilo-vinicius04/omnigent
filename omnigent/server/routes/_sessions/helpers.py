@@ -7930,6 +7930,66 @@ def _claim_summary_turn(session_id: str, response_id: str) -> bool:
 #: conversation cannot turn one summary into an unbounded read.
 _TURN_TEXT_SCAN_LIMIT = 400
 
+#: How long a turn-end edge waits for the turn's final message to be stored.
+#: Claude's Stop hook fires before the transcript mirror posts that message.
+_TURN_SETTLE_TIMEOUT_S = 10.0
+_TURN_SETTLE_POLL_S = 0.25
+
+#: Items that make up a turn's steps; anything else is bookkeeping.
+_TURN_STEP_TYPES = frozenset({"message", "function_call", "function_call_output"})
+
+
+def _turn_has_settled(items: list[Any], response_id: str) -> bool:
+    """Whether a turn's newest stored step is the assistant speaking, not a tool.
+
+    :param items: The session's items, newest first.
+    :param response_id: Response id of the turn being summarized.
+    :returns: True once the turn's closing message is in the store.
+    """
+    for item in items:
+        if item.response_id != response_id or item.type not in _TURN_STEP_TYPES:
+            continue
+        if getattr(item.data, "agent", None) == "spoken_summary":
+            continue
+        return item.type == "message" and getattr(item.data, "role", None) == "assistant"
+    return False
+
+
+async def _await_turn_settled(
+    conversation_store: Any,
+    session_id: str,
+    response_id: str,
+) -> None:
+    """Wait until the turn's final message is stored, or give up and go on.
+
+    Read too early, the turn holds only its opening line and tool calls: too
+    short to summarize, so the whole answer goes unspoken without a trace.
+
+    :param conversation_store: Store holding the turn's items.
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :param response_id: Response id of the turn being summarized.
+    :returns: None.
+    """
+    deadline = time.monotonic() + _TURN_SETTLE_TIMEOUT_S
+    while True:
+        try:
+            page = await asyncio.to_thread(
+                conversation_store.list_items, session_id, 20, None, None, "desc", None
+            )
+        except Exception:  # noqa: BLE001 - cannot tell, so do not hold the summary
+            return
+        if _turn_has_settled(list(page.data), response_id):
+            return
+        if time.monotonic() >= deadline:
+            _logger.info(
+                "Turn %s showed no closing message for session=%s; summarizing what is stored",
+                response_id,
+                session_id,
+                extra={"session_id": session_id},
+            )
+            return
+        await asyncio.sleep(_TURN_SETTLE_POLL_S)
+
 
 async def _native_turn_text(
     conversation_store: Any,
@@ -7998,12 +8058,6 @@ async def _native_turn_text(
     files.reverse()
     _TURN_FILES[(session_id, response_id)] = files
     said.reverse()  # listed newest-first; the turn reads oldest-first
-    # The idle edge can arrive before its own final message is persisted, so
-    # the store may hold only the opening "checking, back in a minute" note.
-    # The edge text IS that final message: never let the rebuild drop it.
-    final = (fallback or "").strip()
-    if final and not any(final in part or part in final for part in said[-1:]):
-        said.append(final)
     if not said:
         return fallback
     return "\n\n".join(said)
@@ -8229,6 +8283,37 @@ def _pending_work_labels(count: int | None, tasks: list[Any] | None) -> list[str
 #: Detached synthesis tasks, held so the event loop cannot drop them mid-run.
 _detached_summary_audio: set[asyncio.Task[None]] = set()
 
+#: Detached native summaries, held for the same reason.
+_detached_native_summaries: set[asyncio.Task[None]] = set()
+
+
+def _spawn_native_spoken_summary(
+    conversation_store: ConversationStore | None,
+    session_id: str,
+    response_id: str | None,
+    text: str | None,
+    **kwargs: Any,
+) -> None:
+    """Summarize a native turn without holding up its idle edge.
+
+    The summary waits for the turn's final message to be stored; the edge
+    itself has to reach the runner now. Arguments are those of
+    :func:`_attach_native_spoken_summary`.
+
+    :returns: None.
+    """
+
+    async def _run() -> None:
+        await _attach_native_spoken_summary(
+            conversation_store, session_id, response_id, text, **kwargs
+        )
+        # Keep the rewriter's notes on this reader current, so the voice goes on adapting.
+        await _refresh_voice_observations_if_due(conversation_store, session_id)
+
+    task = asyncio.create_task(_run())
+    _detached_native_summaries.add(task)
+    task.add_done_callback(_detached_native_summaries.discard)
+
 
 #: Conversation label naming the voice a session is read in. Written by the
 #: client when the reader switches it; absent means the local voice.
@@ -8382,10 +8467,13 @@ async def _attach_native_spoken_summary(
         live-update monitor) out of it.
     :returns: None.
     """
-    if conversation_store is None or not text or not response_id:
+    if conversation_store is None or not response_id:
         return
-    # The idle edge carries only the turn's last message; summarize the whole turn.
+    await _await_turn_settled(conversation_store, session_id, response_id)
+    # The idle edge carries only the newest stored message; summarize the whole turn.
     text = await _native_turn_text(conversation_store, session_id, response_id, text) or text
+    if not text:
+        return
     try:
         from omnigent.server.spoken_summary import (
             SPOKEN_SUMMARY_THRESHOLD_CHARS,
@@ -8417,10 +8505,14 @@ async def _attach_native_spoken_summary(
         if not _claim_summary_turn(session_id, response_id):
             return
         pending = _pending_work_labels(background_task_count, background_tasks)
+        asked = await _turn_user_questions(conversation_store, session_id)
         spoken_summary_part, spoken_summary_usage = await generate_spoken_summary(
             text,
             language=language,
             pending_work=pending,
+            question=asked[-1] if asked else None,
+            earlier=asked[:-1],
+            session_id=session_id,
         )
         _tell_companion(session_id, spoken_summary_part, pending_work=pending)
     except asyncio.CancelledError:

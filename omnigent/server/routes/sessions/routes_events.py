@@ -127,7 +127,6 @@ from omnigent.server.routes._sessions.helpers import (
     _TUI_INJECT_FORWARD_TIMEOUT_S,
     SessionLiveness,
     _apply_pending_policy_ask_writes,
-    _attach_native_spoken_summary,
     _await_settled_managed_launch,
     _background_task_delivery_status,
     _build_actor,
@@ -167,10 +166,10 @@ from omnigent.server.routes._sessions.helpers import (
     _publish_policy_deny,
     _publish_session_superseded,
     _publish_status,
-    _refresh_voice_observations_if_due,
     _remove_session_worktree_best_effort,
     _require_external_status_forward,
     _signal_harness_elicitation_resolved_by_id,
+    _spawn_native_spoken_summary,
     _stop_session_host_runner,
     _stop_session_via_runner,
     _stream_live_events,
@@ -1321,7 +1320,9 @@ def register_events_routes(
             # Native forwarders never emit ``response.completed``, so this idle
             # edge is where a native turn ends and its summary is produced.
             if status == "idle":
-                await _attach_native_spoken_summary(
+                # Detached: the summary waits for the turn's final message to
+                # be stored, and the runner must not wait along with it.
+                _spawn_native_spoken_summary(
                     conversation_store,
                     session_id,
                     response_id,
@@ -1331,9 +1332,6 @@ def register_events_routes(
                     background_task_count=bg_count,
                     background_tasks=bg_tasks,
                 )
-                # Keep the rewriter's notes on this reader current, so the voice
-                # goes on adapting rather than being seeded once.
-                await _refresh_voice_observations_if_due(conversation_store, session_id)
             forward_body = body.model_dump()
             forward_body["data"] = data
             runner_result = await _forward_session_change_to_runner(
