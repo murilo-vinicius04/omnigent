@@ -58,8 +58,7 @@ export function FriendlyResponse({ summary, id, children }: FriendlyResponseProp
   // The live voice reads the text itself, so the control is available the
   // moment the summary is on screen -- there is no recording to wait for.
   const liveVoice = currentVoiceBackend(sessionId) === "live" && Boolean(summary.text.trim());
-  const isSpeaking =
-    audioUrl && !liveVoice ? audioPlaying || autoplayOwnsThis : autoplayOwnsThis;
+  const isSpeaking = audioUrl && !liveVoice ? audioPlaying || autoplayOwnsThis : autoplayOwnsThis;
 
   useEffect(() => {
     if (audioUrl) setWaitingForAudio(false);
@@ -77,7 +76,9 @@ export function FriendlyResponse({ summary, id, children }: FriendlyResponseProp
     // On the live voice, pressing play reads the text straight out. It needs
     // no recording, so it must not wait for one -- and it cannot use the
     // element below, because there is no file to point it at.
-    if (currentVoiceBackend(sessionId) === "live" && summary.text.trim()) {
+    if (currentVoiceBackend(sessionId) === "live") {
+      // Never the local recording on the live voice, even when one exists.
+      if (!summary.text.trim()) return;
       if (audioPlaying || autoplayOwnsThis) {
         audioRef.current?.pause();
         setAudioPlaying(false);

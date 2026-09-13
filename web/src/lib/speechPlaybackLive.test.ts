@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const narrateViaLive = vi.fn();
 
@@ -7,7 +7,11 @@ vi.mock("./liveVoice", () => ({
   LiveVoiceUnavailable: class extends Error {},
 }));
 
-import { useSpeechPlaybackStore, resetSpokenMessageTracking } from "./speechPlayback";
+import {
+  isMessageSpoken,
+  useSpeechPlaybackStore,
+  resetSpokenMessageTracking,
+} from "./speechPlayback";
 import { useVoiceBackendStore } from "./sessionVoiceBackend";
 
 // jsdom implements neither MediaStream nor the srcObject it is attached to.
@@ -27,6 +31,9 @@ function fakeLive() {
   return { stream: new MediaStream(), finished, stop, end: () => settle() };
 }
 
+/** Recording URLs handed to an audio element, so tests can see what played. */
+const played: string[] = [];
+
 describe("speech playback routing between voices", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -37,6 +44,21 @@ describe("speech playback routing between voices", () => {
     // jsdom has no real media element playback.
     vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
     vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    played.length = 0;
+    const RealAudio = window.Audio;
+    vi.stubGlobal(
+      "Audio",
+      class extends RealAudio {
+        constructor(src?: string) {
+          super(src);
+          if (src) played.push(src);
+        }
+      },
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("uses the recording when the session is on the local voice", () => {
@@ -44,6 +66,7 @@ describe("speech playback routing between voices", () => {
       .getState()
       .speakLiveSummary("m1", "All tests pass.", "en", "/audio/m1.mp3", "conv_a");
     expect(narrateViaLive).not.toHaveBeenCalled();
+    expect(played).toEqual(["/audio/m1.mp3"]);
   });
 
   it("reads through the live voice when the session has chosen it", async () => {
@@ -57,6 +80,7 @@ describe("speech playback routing between voices", () => {
     await vi.waitFor(() => {
       expect(narrateViaLive).toHaveBeenCalledWith("All tests pass.");
     });
+    expect(played).toEqual([]);
   });
 
   it("speaks without waiting for a recording that the live voice never needs", async () => {
@@ -74,7 +98,7 @@ describe("speech playback routing between voices", () => {
     });
   });
 
-  it("falls back to the recording when no live session can be opened", async () => {
+  it("never plays the local recording on the live voice, even when live cannot open", async () => {
     useVoiceBackendStore.getState().set("conv_a", "live");
     narrateViaLive.mockRejectedValue(new Error("no credits remaining"));
 
@@ -82,11 +106,25 @@ describe("speech playback routing between voices", () => {
       .getState()
       .speakLiveSummary("m1", "All tests pass.", "en", "/audio/m1.mp3", "conv_a");
 
-    // The recording plays instead, so the reader still hears the summary.
     await vi.waitFor(() => {
-      expect(useSpeechPlaybackStore.getState().speakingItemId).toBe("m1");
-      expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(true);
+      expect(narrateViaLive).toHaveBeenCalled();
+      expect(useSpeechPlaybackStore.getState().isSpeaking).toBe(false);
     });
+    // The reader chose live: the local voice is the wrong voice, not a rescue.
+    expect(played).toEqual([]);
+    // Left unmarked, so pressing play tries the live voice again.
+    expect(isMessageSpoken("m1")).toBe(false);
+  });
+
+  it("never plays a recording for a live session whose summary has no text", () => {
+    useVoiceBackendStore.getState().set("conv_a", "live");
+
+    useSpeechPlaybackStore
+      .getState()
+      .speakLiveSummary("m1", "   ", "en", "/audio/m1.mp3", "conv_a");
+
+    expect(narrateViaLive).not.toHaveBeenCalled();
+    expect(played).toEqual([]);
   });
 
   it("hangs up rather than pausing when the reader asks for quiet", async () => {

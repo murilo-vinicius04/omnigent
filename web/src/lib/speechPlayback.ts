@@ -418,7 +418,7 @@ export function claimSpeechChannel(el: HTMLAudioElement | null, sessionId?: stri
 }
 
 /**
- * Play one summary now from its own recording.
+ * Play one summary now, in the voice its session has chosen.
  *
  * Every path ends by advancing the queue, so one that fails silently does not
  * strand the summaries waiting behind it.
@@ -431,11 +431,11 @@ function startSummaryPlayback(
   const { text, sessionId } = item;
   speakingSessionId = sessionId ?? null;
 
-  // The live voice starts speaking in about a second where the local
-  // recording takes tens, so when a session has chosen it, try it first and
-  // keep the recording as the fallback. A live session that cannot open must
-  // never cost the reader their narration.
-  if (currentVoiceBackend(sessionId ?? null) === "live" && text.trim()) {
+  // A session on the live voice is read by the live voice and nothing else.
+  // The local recording is never its fallback: the reader chose live, and
+  // hearing the local voice there is the wrong voice, not a rescue.
+  if (currentVoiceBackend(sessionId ?? null) === "live") {
+    if (!text.trim()) return false;
     startLivePlayback(item, set, get);
     return true;
   }
@@ -446,8 +446,7 @@ function startSummaryPlayback(
 /**
  * Play one summary from the recording the server synthesized for it.
  *
- * Split out from `startSummaryPlayback` so the live path can fall back to it
- * without routing back through the choice and looping.
+ * Only ever reached on the local voice; the live voice never plays recordings.
  */
 function playRecording(
   item: QueuedSummary,
@@ -490,11 +489,12 @@ function playRecording(
 }
 
 /**
- * Speak one summary through a live session, falling back to its recording.
+ * Speak one summary through a live session.
  *
  * Starts asynchronously: the handshake takes a moment, and the queue must
- * not stall behind it. Any failure hands the same item back to the recording
- * path rather than leaving the reader in silence.
+ * not stall behind it. A session that cannot open leaves the summary unread
+ * but unmarked, so pressing play tries again; the local recording is never
+ * played instead.
  */
 function startLivePlayback(
   item: QueuedSummary,
@@ -546,13 +546,9 @@ function startLivePlayback(
       });
     })
     .catch(() => {
-      // No live session, so read it the free way. `startSummaryPlayback`
-      // would route straight back here, so go to the recording directly.
+      // No live session could be opened. The local recording is never the
+      // fallback on the live voice; forget it was spoken so play tries again.
       if (get().speakingItemId !== itemId) return;
-      set({ isSpeaking: false, speakingItemId: null });
-      if (playRecording(item, set, get)) return;
-      // Nothing recorded yet either: forget it was spoken so the recording
-      // reads it when it lands, seconds from now.
       unmarkMessageSpoken(itemId);
       clear();
     });

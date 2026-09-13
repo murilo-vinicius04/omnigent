@@ -247,6 +247,22 @@ describe("FriendlyResponse on the live voice", () => {
     expect(screen.queryByTestId("friendly-response-audio-pending")).toBeNull();
   });
 
+  it("never plays the recording on the live voice, even with no text to read", () => {
+    chooseLive("conv_live");
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    const speakNow = vi.fn(() => true);
+    useSpeechPlaybackStore.setState({ speakNow } as never);
+    render(
+      <FriendlyResponse summary={{ ...summary, text: " ", audioFileId: "file_1" }} id="resp_1">
+        <div>ORIGINAL</div>
+      </FriendlyResponse>,
+    );
+    fireEvent.click(screen.getByTestId("friendly-response-play"));
+    // The reader chose live; the local recording would be the wrong voice.
+    expect(play).not.toHaveBeenCalled();
+    expect(speakNow).not.toHaveBeenCalled();
+  });
+
   it("still plays the recording when the session is on the local voice", () => {
     // jsdom's play() returns undefined rather than a promise.
     vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
