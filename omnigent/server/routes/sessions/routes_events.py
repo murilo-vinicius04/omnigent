@@ -197,6 +197,7 @@ from omnigent.server.routes._sessions.orchestration import (
     _persist_host_launch_failure_turn,
     _persist_native_terminal_failure,
     _resolve_elicitation,
+    _spawn_auto_compaction,
     _wait_for_host_bound_runner_client,
     ensure_runner_connected,
 )
@@ -1332,6 +1333,9 @@ def register_events_routes(
                     background_task_count=bg_count,
                     background_tasks=bg_tasks,
                 )
+                # A turn end is also where a full context is noticed: ask for
+                # the write-up now, and compact when that turn ends.
+                _spawn_auto_compaction(session_id, conversation_store, runner_router)
             forward_body = body.model_dump()
             forward_body["data"] = data
             runner_result = await _forward_session_change_to_runner(

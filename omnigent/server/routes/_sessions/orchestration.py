@@ -7620,6 +7620,128 @@ async def _wake_parent_for_blocked_child(
     return True
 
 
+#: Detached auto-compaction steps, held so the event loop cannot drop them.
+_detached_auto_compaction: set[asyncio.Task[None]] = set()
+
+
+async def _run_auto_compaction(
+    session_id: str,
+    conversation_store: ConversationStore,
+    runner_router: RunnerRouter | None,
+) -> None:
+    """Ask a full session to write its context down, then compact it.
+
+    Two turn-ends, never one: the first carries the request, and the turn that
+    answers it is the one compacted, so the notes exist before anything is
+    dropped. Claude Code compacts on its own much later (~967K of 1M); this is
+    the early, deliberate one, and the write-up is the whole point of it.
+
+    Never raises: a session that cannot be reached is left alone, and the
+    decision is logged either way.
+
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :param conversation_store: Store used to read the session's labels.
+    :param runner_router: Router used to reach the session's runner.
+    :returns: None.
+    """
+    from omnigent.server import auto_compact
+    from omnigent.server.routes._sessions.common import _COMPACT_TYPE
+    from omnigent.server.routes._sessions.helpers import _TUI_INJECT_FORWARD_TIMEOUT_S
+
+    conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+    if conv is None:
+        auto_compact.forget(session_id)
+        return
+    labels = dict(conv.labels or {})
+    step = auto_compact.next_step(session_id, labels)
+    if step is None:
+        return
+    share = auto_compact.context_share_pct(labels) or 0.0
+
+    if step == "write-notes":
+        runner_client = await _get_runner_client(session_id, runner_router)
+        if runner_client is None:
+            # Nothing to ask: leave the crossing unhandled so the next turn
+            # end tries again rather than compacting an unwritten context.
+            auto_compact.forget(session_id)
+            _logger.info(
+                "auto-compaction: session=%s is at %.0f%% but has no runner; waiting",
+                session_id,
+                share,
+            )
+            return
+        _ensure_runner_relay(session_id, conv.runner_id, runner_client, conversation_store)
+        body = SessionEventInput(
+            type="message",
+            data={
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": auto_compact.DOCUMENTATION_PROMPT.format(pct=round(share)),
+                    }
+                ],
+            },
+        )
+        try:
+            await _dispatch_session_event_to_runner(
+                session_id,
+                conv,
+                body,
+                conversation_store,
+                runner_client,
+                agent_name=None,
+                file_store=None,
+                artifact_store=None,
+                runner_router=runner_router,
+            )
+        except (httpx.HTTPError, OmnigentError):
+            auto_compact.forget(session_id)
+            _logger.warning(
+                "auto-compaction: could not ask session=%s to write its context down",
+                session_id,
+                exc_info=True,
+            )
+            return
+        _logger.info(
+            "auto-compaction: asked session=%s to write its context down at %.0f%%",
+            session_id,
+            share,
+        )
+        return
+
+    result = await _forward_session_change_to_runner(
+        session_id,
+        runner_router,
+        {"type": _COMPACT_TYPE},
+        timeout_s=_TUI_INJECT_FORWARD_TIMEOUT_S,
+    )
+    status = result.status_code if result is not None else None
+    _logger.info(
+        "auto-compaction: compacting session=%s at %.0f%% -> %s",
+        session_id,
+        share,
+        "done" if status in (200, 204) else f"failed ({status or 'no runner'})",
+    )
+
+
+def _spawn_auto_compaction(
+    session_id: str,
+    conversation_store: ConversationStore,
+    runner_router: RunnerRouter | None,
+) -> None:
+    """Run the auto-compaction step for a finished turn, without holding it up.
+
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :param conversation_store: Store used to read the session's labels.
+    :param runner_router: Router used to reach the session's runner.
+    :returns: None.
+    """
+    task = asyncio.create_task(_run_auto_compaction(session_id, conversation_store, runner_router))
+    _detached_auto_compaction.add(task)
+    task.add_done_callback(_detached_auto_compaction.discard)
+
+
 def configure_subagent_block_notifier(
     conversation_store: ConversationStore,
     runner_router: RunnerRouter | None,
