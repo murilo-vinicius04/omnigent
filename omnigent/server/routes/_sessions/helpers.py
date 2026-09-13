@@ -7997,9 +7997,15 @@ async def _native_turn_text(
                 said.append(text.strip())
     files.reverse()
     _TURN_FILES[(session_id, response_id)] = files
+    said.reverse()  # listed newest-first; the turn reads oldest-first
+    # The idle edge can arrive before its own final message is persisted, so
+    # the store may hold only the opening "checking, back in a minute" note.
+    # The edge text IS that final message: never let the rebuild drop it.
+    final = (fallback or "").strip()
+    if final and not any(final in part or part in final for part in said[-1:]):
+        said.append(final)
     if not said:
         return fallback
-    said.reverse()  # listed newest-first; the turn reads oldest-first
     return "\n\n".join(said)
 
 

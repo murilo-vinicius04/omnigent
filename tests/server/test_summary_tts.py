@@ -576,3 +576,35 @@ async def test_unreadable_label_still_synthesizes():
             raise RuntimeError("store is down")
 
     assert await _reads_through_live_voice(_Broken(), "conv_a") is False
+
+
+@pytest.mark.asyncio
+async def test_the_final_message_survives_an_idle_edge_that_beats_persistence() -> None:
+    """The edge can fire before its own final message reaches the store.
+
+    The rebuild then held only the opening "checking before I answer" note,
+    and the summary told the reader work was still under way when the answer
+    was already on screen.
+    """
+    from omnigent.server.routes._sessions.helpers import _native_turn_text
+
+    class _Data:
+        def __init__(self, texts: list[str]) -> None:
+            self.role = "assistant"
+            self.agent = "claude-native-ui"
+            self.content = [{"type": "output_text", "text": t} for t in texts]
+
+    class _Item:
+        def __init__(self, texts: list[str]) -> None:
+            self.response_id = "resp_1"
+            self.data = _Data(texts)
+
+    class _Page:
+        data = [_Item(["Checking before I answer."])]  # final message not stored yet
+
+    class _Store:
+        def list_items(self, *a: Any, **k: Any) -> Any:
+            return _Page()
+
+    got = await _native_turn_text(_Store(), "conv_1", "resp_1", "You were right on both.")
+    assert got == "Checking before I answer.\n\nYou were right on both."
