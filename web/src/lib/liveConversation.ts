@@ -23,6 +23,12 @@ export const USD_PER_MINUTE = 0.05;
  */
 const ROUTE_SETTLE_MS = 2500;
 
+/** Told to the voice once something has been sent, since it cannot know. */
+const HANDOFF_ANNOUNCEMENT =
+  "[From the app, not from them: what they just said has been sent to Claude, " +
+  "and this call is ending. Tell them so in one short sentence, in the language " +
+  "they are speaking, and say nothing else.]";
+
 interface ConversationStoreState {
   /** Session whose conversation is open, or null when none is. */
   sessionId: string | null;
@@ -109,6 +115,8 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
         return;
       }
       set({ handedOff: routing.english ?? said });
+      // The voice cannot know this on its own, so it is told before hanging up.
+      await active?.announce(HANDOFF_ANNOUNCEMENT);
       get().stop();
     };
 

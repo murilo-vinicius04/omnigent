@@ -235,15 +235,15 @@ def test_ledger_is_marked_as_background_not_instructions():
     assert "never recite it back" in prompt
 
 
-def test_the_voice_acknowledges_requests_instead_of_refusing():
-    """It said "no, I can't" while the request was already on its way to Claude.
+def test_the_voice_neither_promises_nor_refuses_a_handoff():
+    """It said "I can't talk to Claude" while the request was being sent.
 
-    Spoken requests are routed to Claude beside the voice, so refusing or
-    sending the reader to the keyboard contradicts what actually happens.
+    The voice answers before the routing decision exists, so any claim about
+    sending is a guess. It waits, and the app tells it once something is sent.
     """
     from omnigent.server.discussion import LIVE_VOICE_ROLE
 
     assert "no tools" in LIVE_VOICE_ROLE
-    assert "passed to Claude on its own" in LIVE_VOICE_ROLE
-    assert "never refuse" in LIVE_VOICE_ROLE
+    assert "only told once it has happened" in LIVE_VOICE_ROLE
+    assert "never promise it and never refuse it" in LIVE_VOICE_ROLE
     assert "type it" not in LIVE_VOICE_ROLE

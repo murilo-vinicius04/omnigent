@@ -285,7 +285,18 @@ export interface LiveConversation {
   readonly elapsedS: () => number;
   /** Hang up now. Safe to call repeatedly. */
   readonly stop: () => void;
+  /**
+   * Tell the voice something from the app and have it respond. Resolves once
+   * it has stopped talking, or gave up waiting for it to start.
+   */
+  readonly announce: (instruction: string) => Promise<void>;
 }
+
+/** How long an announcement may take to start before it is given up on. */
+const ANNOUNCE_FIRST_WORD_MS = 8000;
+
+/** The pause in the voice's words that marks an announcement as finished. */
+const ANNOUNCE_SILENCE_MS = 1500;
 
 /**
  * Open a two-way conversation: it hears the microphone and answers aloud.
@@ -404,6 +415,9 @@ export async function openLiveConversation(
   pc.addEventListener("connectionstatechange", () => {
     if (pc.connectionState === "failed" || pc.connectionState === "closed") stop();
   });
+  /** Set while an announcement waits for the voice to finish saying it. */
+  let voiceSpeaking: (() => void) | undefined;
+
   channel.addEventListener("message", (event) => {
     let payload: { type?: string; delta?: string };
     try {
@@ -417,6 +431,7 @@ export async function openLiveConversation(
       collect("reader", payload.delta ?? "");
     } else if (payload.type === "session.output_transcript.delta") {
       touch();
+      voiceSpeaking?.();
       collect("voice", payload.delta ?? "");
     } else if (payload.type === "session.closed") {
       stop();
@@ -450,10 +465,43 @@ export async function openLiveConversation(
     throw error instanceof LiveVoiceUnavailable ? error : new LiveVoiceUnavailable(String(error));
   }
 
+  const announce = (instruction: string): Promise<void> =>
+    new Promise<void>((resolve) => {
+      if (closed || channel.readyState !== "open") {
+        resolve();
+        return;
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const done = (): void => {
+        clearTimeout(timer);
+        voiceSpeaking = undefined;
+        resolve();
+      };
+      // Each word from the voice pushes the finish back; a pause ends it.
+      voiceSpeaking = () => {
+        clearTimeout(timer);
+        timer = setTimeout(done, ANNOUNCE_SILENCE_MS);
+      };
+      timer = setTimeout(done, ANNOUNCE_FIRST_WORD_MS);
+      void closedPromise.then(done);
+      channel.send(
+        JSON.stringify({
+          type: "response.item.create",
+          item: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: instruction }],
+          },
+        }),
+      );
+      channel.send(JSON.stringify({ type: "response.create" }));
+    });
+
   return {
     stream: inbound,
     closed: closedPromise,
     elapsedS: () => (Date.now() - startedAt) / 1000,
     stop,
+    announce,
   };
 }

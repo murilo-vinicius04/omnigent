@@ -39,7 +39,15 @@ function fakeConversation() {
   const stop = vi.fn(() => {
     settle();
   });
-  return { stream: new MediaStream(), closed, elapsedS: () => 12, stop, end: () => settle() };
+  const announce = vi.fn(async (_instruction: string) => {});
+  return {
+    stream: new MediaStream(),
+    closed,
+    elapsedS: () => 12,
+    stop,
+    announce,
+    end: () => settle(),
+  };
 }
 
 describe("the open spoken conversation", () => {
@@ -231,8 +239,21 @@ describe("handing a spoken request to Claude", () => {
     expect(send).toHaveBeenCalledWith("Run the migration tests.", "agent_1", undefined, {
       forceClaude: true,
     });
+    // The voice is told before the call ends; on its own it guessed and said no.
+    expect(live.announce).toHaveBeenCalledTimes(1);
+    expect(live.announce.mock.calls[0]?.[0]).toContain("sent to Claude");
     // The meter must not run through however long the turn takes.
     expect(live.stop).toHaveBeenCalled();
+    expect(live.announce.mock.invocationCallOrder[0]).toBeLessThan(
+      live.stop.mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it("tells the voice nothing when the conversation keeps what was said", async () => {
+    const { live, emit } = await open();
+    emit({ who: "reader", text: "can't you ask Claude?" });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(live.announce).not.toHaveBeenCalled();
   });
 
   it("keeps talking when the companion can answer", async () => {
