@@ -944,11 +944,13 @@ describe("useSpokenSummaryPlayback", () => {
     expect(storedRaw).not.toBeNull();
     const storedIds = JSON.parse(storedRaw!);
     expect(storedIds.length).toBe(MAX_PERSISTED_SPOKEN_IDS);
-    // FIFO eviction retained newest 200 IDs (resp_bulk_50 .. resp_bulk_249)
-    expect(storedIds[0]).toBe("resp_bulk_50");
-    expect(storedIds[storedIds.length - 1]).toBe("resp_bulk_249");
+    // 249 turns are indexed: the newest has no summary yet, so it waits for one
+    // rather than being filed as history. FIFO keeps resp_bulk_49..248.
+    expect(storedIds[0]).toBe("resp_bulk_49");
+    expect(storedIds[storedIds.length - 1]).toBe("resp_bulk_248");
     expect(storedIds).not.toContain("resp_bulk_0");
-    expect(storedIds).not.toContain("resp_bulk_49");
+    expect(storedIds).not.toContain("resp_bulk_48");
+    expect(storedIds).not.toContain("resp_bulk_249");
   });
 
   it("does NOT re-speak when bubbles re-render without new messages", () => {
@@ -1301,6 +1303,32 @@ describe("useSpokenSummaryPlayback — server audio", () => {
 
     expect(speak).toHaveBeenCalled();
     expect(speak.mock.calls[0]?.[0]).toBe("resp_fresh");
+    speak.mockRestore();
+  });
+
+  it("speaks when the finished response in the store is a different identity", () => {
+    // A native turn streams under a client id ("live:uuid") and is stored under
+    // a server id, so activeResponse almost never matches the bubble it belongs
+    // to. Reading that as "the reader moved on" silenced every summary in these
+    // sessions: the log showed each reply indexed as history seconds before its
+    // summary even landed.
+    const speak = vi.spyOn(useSpeechPlaybackStore.getState(), "speakLiveSummary");
+    const bubbles = [bubbleWithStampedSummary("resp_persisted", Date.now() / 1000 - 2)];
+
+    renderHook(() => useSpokenSummaryPlayback(bubbles, completedResponse("live:abc", 1000)));
+
+    expect(speak).toHaveBeenCalled();
+    expect(speak.mock.calls[0]?.[0]).toBe("resp_persisted");
+    speak.mockRestore();
+  });
+
+  it("still stays quiet while another turn is actually streaming", () => {
+    const speak = vi.spyOn(useSpeechPlaybackStore.getState(), "speakLiveSummary");
+    const bubbles = [bubbleWithStampedSummary("resp_earlier_turn", Date.now() / 1000 - 2)];
+
+    renderHook(() => useSpokenSummaryPlayback(bubbles, streamingResponse("resp_new_turn")));
+
+    expect(speak).not.toHaveBeenCalled();
     speak.mockRestore();
   });
 

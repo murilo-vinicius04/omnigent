@@ -116,13 +116,18 @@ export function useSpokenSummaryPlayback(
 
         const isLatestTurn = i === lastAssistantIdx;
         const wasObservedLive = observedLiveResponseIdsRef.current.has(responseId);
-        // A completed response stays in the store until the next send, so identity alone never
-        // goes false while the user reads. Stale is a disqualifier, not a liveness requirement:
-        // suppressing without positive evidence would silence turns that have no active response.
-        // The reader has moved on to another turn, so this one's summary is no longer the
-        // answer in front of them, whenever it arrives.
+        // The reader has moved on to another turn, so this one's summary is no longer
+        // the answer in front of them, whenever it arrives. Only a turn that is
+        // actually streaming means that, though: a completed response stays in the
+        // store until the next send.
+        // A native turn arrives under a client id while it streams ("live:uuid")
+        // and a server id once stored, so a *completed* response almost never
+        // matches the bubble it belongs to -- and treating that as "moved on"
+        // indexed every reply as history and silenced autoplay entirely.
         const anotherResponseIsLive = Boolean(
-          activeResponse && activeResponse.responseId !== responseId,
+          activeResponse &&
+          activeResponse.responseId !== responseId &&
+          activeResponse.state === "streaming",
         );
         // This turn finalized too long ago for a summary to still be its live answer --
         // unless the summary itself says otherwise, settled below against its server stamp.
@@ -195,11 +200,12 @@ export function useSpokenSummaryPlayback(
             textItem?.createdAtS !== undefined
               ? Date.now() / 1000 - textItem.createdAtS
               : undefined;
+          // An unstamped reply is one this client is watching arrive: a stored
+          // one always carries the server's stamp, so unknown means "just now".
           const awaitingSummary =
             !hasValidSummary &&
             isLatestTurn &&
-            replyAgeS !== undefined &&
-            replyAgeS * 1000 < LIVE_SUMMARY_WINDOW_MS;
+            (replyAgeS === undefined || replyAgeS * 1000 < LIVE_SUMMARY_WINDOW_MS);
 
           if (
             (wasObservedLive || isFreshSummary) &&
