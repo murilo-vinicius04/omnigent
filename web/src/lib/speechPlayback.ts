@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { narrateViaLive, type LiveNarration } from "./liveVoice";
 import { currentNarrationVolume, isNarrationEnabled } from "./sessionNarrationVolume";
 import { currentVoiceBackend } from "./sessionVoiceBackend";
+import { reportNarration } from "./narrationLog";
 
 /**
  * Engine interface for text-to-speech playback.
@@ -548,6 +549,7 @@ function startLivePlayback(
     .catch(() => {
       // No live session could be opened. The local recording is never the
       // fallback on the live voice; forget it was spoken so play tries again.
+      reportNarration({ path: "playback", decision: "live-voice-failed", sessionId, itemId });
       if (get().speakingItemId !== itemId) return;
       unmarkMessageSpoken(itemId);
       clear();
@@ -580,11 +582,17 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
   ) => {
     // Hard requirement: do NOT autoplay anything into a muted session. The
     // volume control is the switch: zero means the reader wants quiet here.
-    if (!isNarrationEnabled(sessionId ?? null)) return false;
+    if (!isNarrationEnabled(sessionId ?? null)) {
+      reportNarration({ path: "playback", decision: "skipped-muted", sessionId, itemId });
+      return false;
+    }
     // Never treat empty/falsy ID as a valid speaking identity
     if (!itemId) return false;
     // Hard requirement: speak ONLY on newly-arrived live messages.
-    if (isMessageSpoken(itemId)) return false;
+    if (isMessageSpoken(itemId)) {
+      reportNarration({ path: "playback", decision: "skipped-already-spoken", sessionId, itemId });
+      return false;
+    }
     // The summary ships before its recording, so "no audio yet" means wait,
     // not speak. Reading it in the host's robotic voice is exactly what the
     // generated one exists to replace -- and marking it spoken here would bury

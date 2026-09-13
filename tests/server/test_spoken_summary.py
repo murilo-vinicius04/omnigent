@@ -1858,6 +1858,107 @@ async def test_native_idle_edge_attaches_spoken_summary() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_turn_whose_id_matches_nothing_stored_still_summarizes(monkeypatch: Any) -> None:
+    """A reply that got no summary at all, with nothing in the log to say why.
+
+    The idle edge's response id matched no stored item and carried no text, so
+    the rebuild came back empty and the turn was dropped in silence. The reply
+    is on screen either way, so the session's newest one is summarized instead.
+    """
+    from omnigent.server.routes._sessions import helpers
+
+    clear_spoken_summary_cache()
+    conv = Conversation(
+        id="conv_unmatched",
+        root_conversation_id="conv_unmatched",
+        created_at=1,
+        updated_at=1,
+        parent_conversation_id=None,
+        kind="default",
+        project_id="proj_unmatched",
+    )
+    store = _FakeConversationStore(
+        conversation=conv,
+        project_config={"spoken_summary": {"enabled": True, "language": "en-US"}},
+    )
+
+    async def _settled(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def _rebuilds_nothing(*_args: Any, **_kwargs: Any) -> str | None:
+        return None
+
+    async def _fake_generate(text: str, **_kwargs: Any) -> tuple[dict[str, Any], None]:
+        assert text == _LONG_RESPONSE_TEXT
+        return {"type": "spoken_summary", "text": "Resumo.", "lang": "en-US"}, None
+
+    monkeypatch.setattr(helpers, "_await_turn_settled", _settled)
+    monkeypatch.setattr(helpers, "_native_turn_text", _rebuilds_nothing)
+    monkeypatch.setattr(
+        helpers,
+        "_latest_assistant_text_from_store",
+        lambda *_args, **_kwargs: _LONG_RESPONSE_TEXT,
+    )
+
+    with patch("omnigent.server.spoken_summary.generate_spoken_summary", _fake_generate):
+        await helpers._attach_native_spoken_summary(
+            store,  # type: ignore[arg-type]
+            "conv_unmatched",
+            "resp_unmatched",
+            None,
+        )
+
+    assert len(store.appended) == 1
+    assert store.appended[0].data.content[0]["text"] == "Resumo."
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_summary_says_why_in_the_log(monkeypatch: Any) -> None:
+    """Every skip was silent, so a summary that never appeared left no trace."""
+    from omnigent.server.routes._sessions import helpers
+
+    async def _settled(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def _rebuilds_nothing(*_args: Any, **_kwargs: Any) -> str | None:
+        return None
+
+    said: list[str] = []
+
+    class _Spy:
+        """Watches the module's own logger; other tests here reconfigure logging."""
+
+        def info(self, message: str, *args: Any, **_kwargs: Any) -> None:
+            said.append(message % args if args else message)
+
+        def warning(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def exception(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def debug(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+    monkeypatch.setattr(helpers, "_await_turn_settled", _settled)
+    monkeypatch.setattr(helpers, "_native_turn_text", _rebuilds_nothing)
+    monkeypatch.setattr(helpers, "_latest_assistant_text_from_store", lambda *_a, **_k: None)
+    monkeypatch.setattr(helpers, "_logger", _Spy())
+
+    await helpers._attach_native_spoken_summary(
+        _FakeConversationStore(),  # type: ignore[arg-type]
+        "conv_quiet",
+        "resp_quiet",
+        None,
+    )
+
+    lines = [line for line in said if "spoken summary skipped" in line]
+    assert lines, "a skipped summary must say why"
+    assert "no text to summarize" in lines[0]
+    assert "resp_quiet" in lines[0]
+
+
+@pytest.mark.asyncio
 async def test_native_idle_edge_skips_short_text_without_calling_model() -> None:
     """Short turns never reach the model on the native path either."""
     from omnigent.server.routes._sessions.helpers import _attach_native_spoken_summary

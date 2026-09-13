@@ -278,3 +278,30 @@ def test_the_voice_is_told_when_to_delegate():
     # The phrase detector and the keyboard fallback are both gone.
     assert "one for Claude" not in LIVE_VOICE_ROLE
     assert "type it" not in LIVE_VOICE_ROLE
+
+
+def test_narration_decisions_reach_the_server_log(client, caplog):
+    """Autoplay is decided in the browser; this is how the log learns why."""
+    with caplog.at_level(20, logger="omnigent.server.routes.live_voice"):
+        response = client.post(
+            "/v1/narration/decision",
+            json={
+                "path": "cross-session",
+                "decision": "too-old",
+                "session_id": "conv_a",
+                "item_id": "resp_1",
+                "detail": "1800s old",
+            },
+        )
+    assert response.status_code == 200
+    lines = [r.getMessage() for r in caplog.records if "narration " in r.getMessage()]
+    assert lines, "the decision never reached the log"
+    assert "session=conv_a" in lines[0]
+    assert "decision=too-old" in lines[0]
+    assert "1800s old" in lines[0]
+
+
+def test_narration_decisions_are_bounded(client):
+    """A page bug must not be able to write arbitrarily long log lines."""
+    response = client.post("/v1/narration/decision", json={"path": "p", "decision": "x" * 500})
+    assert response.status_code == 422

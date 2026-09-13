@@ -80,6 +80,23 @@ class LiveOfferResponse(BaseModel):
     speak: str | None = None
 
 
+class NarrationDecision(BaseModel):
+    """One autoplay decision the page made, for the server log.
+
+    Whether a summary is read aloud is decided entirely in the browser, so
+    without this the log can say a summary landed but never why it stayed
+    silent.
+    """
+
+    #: Which part of the page decided, e.g. ``"cross-session"``.
+    path: str = Field(min_length=1, max_length=40)
+    #: What happened, e.g. ``"too-old"`` or ``"handed-to-playback"``.
+    decision: str = Field(min_length=1, max_length=60)
+    session_id: str | None = Field(default=None, max_length=100)
+    item_id: str | None = Field(default=None, max_length=120)
+    detail: str | None = Field(default=None, max_length=300)
+
+
 def create_live_voice_router(
     *,
     auth_provider: AuthProvider | None = None,
@@ -142,6 +159,20 @@ def create_live_voice_router(
             sdp=answer,
             speak=frame_for_reading(body.text or "") if narrating else None,
         )
+
+    @router.post("/narration/decision")
+    async def narration_decision(request: Request, body: NarrationDecision) -> dict[str, bool]:
+        """Write one autoplay decision from the page to the server log."""
+        _require_user(request)
+        _logger.info(
+            "narration %s session=%s item=%s decision=%s detail=%s",
+            body.path,
+            body.session_id,
+            body.item_id,
+            body.decision,
+            body.detail,
+        )
+        return {"ok": True}
 
     @router.get("/live/test", response_class=HTMLResponse)
     async def live_test(request: Request) -> HTMLResponse:

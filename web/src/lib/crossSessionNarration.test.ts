@@ -147,6 +147,46 @@ describe("crossSessionNarration", () => {
 
     expect(fetchSessionItemsPage).not.toHaveBeenCalled();
   });
+
+  it("looks again for a summary that lands while an older one is being checked", async () => {
+    // The turn goes idle and a lookup starts, finding only the previous turn's
+    // summary -- too old to read. The new summary's update arrives while that
+    // lookup is still out, so it is not examined on its own: the running
+    // lookup has to go round again for it instead of stopping.
+    const speak = vi.spyOn(useSpeechPlaybackStore.getState(), "speakLiveSummary");
+    const old = summaryItem({
+      response_id: "resp_old",
+      created_at: NOW_S - NARRATE_WITHIN_MS / 1000 - 600,
+    });
+    let finishFirst: (page: unknown) => void = () => {};
+    fetchSessionItemsPage
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishFirst = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({
+        items: [old, summaryItem({ response_id: "resp_new" })],
+        hasMore: false,
+      });
+    startCrossSessionNarration(now);
+
+    frameListener?.({
+      type: "changed",
+      items: [{ id: "conv_other", status: "idle", updated_at: 10 }],
+    });
+    await vi.waitFor(() => expect(fetchSessionItemsPage).toHaveBeenCalledTimes(1));
+    // The summary lands while the first lookup is still out.
+    frameListener?.({
+      type: "changed",
+      items: [{ id: "conv_other", status: "idle", updated_at: 13 }],
+    });
+    finishFirst({ items: [old], hasMore: false });
+
+    await vi.waitFor(() => expect(speak).toHaveBeenCalledTimes(1));
+    expect(speak.mock.calls[0]?.[0]).toBe("resp_new");
+  });
 });
 
 describe("speech queue", () => {

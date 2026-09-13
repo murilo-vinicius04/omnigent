@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useChatStore } from "@/store/chatStore";
 import type { Bubble, RenderItem, ToolState } from "@/lib/renderItems";
 import { isMessageSpoken, markMessagesSpoken, useSpeechPlaybackStore } from "@/lib/speechPlayback";
+import { reportNarration } from "@/lib/narrationLog";
 import type { ActiveResponse } from "@/store/types";
 
 /**
@@ -212,6 +213,12 @@ export function useSpokenSummaryPlayback(
               summary!.audioFileId && sessionId
                 ? `/v1/sessions/${encodeURIComponent(sessionId)}/resources/files/${encodeURIComponent(summary!.audioFileId)}/content`
                 : undefined;
+            reportNarration({
+              path: "in-session",
+              decision: "handed-to-playback",
+              sessionId,
+              itemId: responseId,
+            });
             speakLiveSummary(responseId, summary!.text, summary!.lang, audioUrl, sessionId);
           } else if (
             isFinal &&
@@ -219,9 +226,28 @@ export function useSpokenSummaryPlayback(
               !isLatestTurn ||
               isResponseStale)
           ) {
+            // Only the newest turn is reported: loading history indexes dozens.
+            if (isLatestTurn) {
+              reportNarration({
+                path: "in-session",
+                decision: "indexed-as-history",
+                sessionId,
+                itemId: responseId,
+                detail: isResponseStale
+                  ? "another response is live, or this one aged out"
+                  : "not watched live and no fresh summary",
+              });
+            }
             // Settled history, non-tail turn, or a response past its live window:
             // queue for single-persist batch marking so it is never replayed later.
             toMarkSpoken.add(responseId);
+          } else if (isFinal && awaitingSummary) {
+            reportNarration({
+              path: "in-session",
+              decision: "waiting-for-summary",
+              sessionId,
+              itemId: responseId,
+            });
           }
         }
       }

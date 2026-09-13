@@ -8468,11 +8468,36 @@ async def _attach_native_spoken_summary(
     :returns: None.
     """
     if conversation_store is None or not response_id:
+        _logger.info(
+            "spoken summary skipped: session=%s reason=%s",
+            session_id,
+            "no store" if conversation_store is None else "no response id",
+        )
         return
     await _await_turn_settled(conversation_store, session_id, response_id)
     # The idle edge carries only the newest stored message; summarize the whole turn.
-    text = await _native_turn_text(conversation_store, session_id, response_id, text) or text
+    rebuilt = await _native_turn_text(conversation_store, session_id, response_id, text)
+    if not rebuilt:
+        # Nothing stored under this turn's id, and the edge carried no text of
+        # its own. The reply is on screen either way, so fall back to the
+        # session's newest assistant message rather than skipping in silence.
+        rebuilt = await asyncio.to_thread(
+            _latest_assistant_text_from_store, conversation_store, session_id
+        )
+        if rebuilt:
+            _logger.info(
+                "spoken summary: nothing stored under response=%s in session=%s; "
+                "falling back to the session's newest reply",
+                response_id,
+                session_id,
+            )
+    text = rebuilt or text
     if not text:
+        _logger.info(
+            "spoken summary skipped: session=%s response=%s reason=no text to summarize",
+            session_id,
+            response_id,
+        )
         return
     try:
         from omnigent.server.spoken_summary import (
@@ -8484,6 +8509,12 @@ async def _attach_native_spoken_summary(
         from omnigent.server.tts import tts_enabled
 
         if len(text.strip()) <= SPOKEN_SUMMARY_THRESHOLD_CHARS:
+            _logger.info(
+                "spoken summary skipped: session=%s response=%s reason=too short (%d chars)",
+                session_id,
+                response_id,
+                len(text.strip()),
+            )
             return
         enabled, language, conv = await resolve_spoken_summary_settings_async(
             session_id,
@@ -8496,6 +8527,12 @@ async def _attach_native_spoken_summary(
             deny_reason=None,
             enabled=enabled,
         ):
+            _logger.info(
+                "spoken summary skipped: session=%s response=%s reason=%s",
+                session_id,
+                response_id,
+                "narration is switched off for this session" if not enabled else "not eligible",
+            )
             return
         # Claimed here rather than on entry: an idle edge can arrive before the
         # turn's text is complete, and a claim taken before eligibility is
@@ -8503,6 +8540,11 @@ async def _attach_native_spoken_summary(
         # edge that actually had something to summarize. The check-and-set is
         # synchronous, so despite the awaits above only one edge can win it.
         if not _claim_summary_turn(session_id, response_id):
+            _logger.info(
+                "spoken summary skipped: session=%s response=%s reason=another edge has it",
+                session_id,
+                response_id,
+            )
             return
         pending = _pending_work_labels(background_task_count, background_tasks)
         asked = await _turn_user_questions(conversation_store, session_id)
@@ -8527,6 +8569,11 @@ async def _attach_native_spoken_summary(
         return
 
     if spoken_summary_part is None:
+        _logger.info(
+            "spoken summary skipped: session=%s response=%s reason=the rewriter returned nothing",
+            session_id,
+            response_id,
+        )
         return
 
     # A file the assistant attached is always shown: that judgement was made

@@ -15,6 +15,7 @@ import { fetchSessionItemsPage } from "@/lib/sessionsApi";
 import { sessionUpdatesSocket, type SessionUpdatesFrame } from "@/lib/sessionUpdatesSocket";
 import { spokenSummaryFromMessageContent } from "@/lib/blockStream";
 import { isMessageSpoken, useSpeechPlaybackStore } from "@/lib/speechPlayback";
+import { reportNarration } from "@/lib/narrationLog";
 
 /**
  * How late a summary may still be spoken, measured from the server's own
@@ -70,26 +71,32 @@ export async function narrateLatestSummary(
     // The summary lands moments after the turn goes idle, so a second update
     // usually arrives while this lookup is still running. Re-run for it rather
     // than dropping it: its revision is already recorded, so nothing else will.
+    // That holds whatever this lookup found -- an older summary it would not
+    // read says nothing about the one that just landed.
     // Sequential on purpose: each lookup must see the result of the one
     // before it, so running them together would race.
     let handled: string;
     do {
       handled = seenRevision.get(sessionId) ?? "";
       // eslint-disable-next-line no-await-in-loop
-      if (await speakIfSummaryReady(sessionId, now)) return;
+      if ((await speakIfSummaryReady(sessionId, now)) === "done") return;
     } while (handled !== (seenRevision.get(sessionId) ?? ""));
   } finally {
     inFlight.delete(sessionId);
   }
 }
 
+/** What one lookup found. Only "done" ends the search for this session. */
+type LookupOutcome = "done" | "already-spoken" | "too-old" | "no-summary" | "failed";
+
 /**
  * One lookup: speak the newest fresh, unspoken summary if there is one.
  *
- * @returns True when a summary was handed to playback (or was already spoken),
- *   so the caller can stop looking.
+ * @returns What it found. Anything but "done" leaves a newer revision free to
+ *   look again.
  */
-async function speakIfSummaryReady(sessionId: string, now: () => number): Promise<boolean> {
+async function speakIfSummaryReady(sessionId: string, now: () => number): Promise<LookupOutcome> {
+  const revision = seenRevision.get(sessionId) ?? "";
   try {
     const page = await fetchSessionItemsPage(sessionId, { limit: LOOKBACK_ITEMS });
     // Chronological: the newest summary is the last one that carries text.
@@ -103,9 +110,26 @@ async function speakIfSummaryReady(sessionId: string, now: () => number): Promis
       const summary = spokenSummaryFromMessageContent(item?.data?.content ?? item?.content);
       if (!summary) continue;
       const responseId = item.response_id;
-      if (!responseId || isMessageSpoken(responseId)) return true;
+      if (!responseId || isMessageSpoken(responseId)) {
+        reportNarration({
+          path: "cross-session",
+          decision: "already-spoken",
+          sessionId,
+          itemId: responseId,
+        });
+        return "already-spoken";
+      }
       const ageMs = item.created_at === undefined ? 0 : now() - item.created_at * 1000;
-      if (ageMs > NARRATE_WITHIN_MS) return true;
+      if (ageMs > NARRATE_WITHIN_MS) {
+        reportNarration({
+          path: "cross-session",
+          decision: "too-old",
+          sessionId,
+          itemId: responseId,
+          detail: `${Math.round(ageMs / 1000)}s old`,
+        });
+        return "too-old";
+      }
       const audioUrl = summary.audioFileId
         ? `/v1/sessions/${encodeURIComponent(sessionId)}/resources/files/${encodeURIComponent(
             summary.audioFileId,
@@ -118,13 +142,27 @@ async function speakIfSummaryReady(sessionId: string, now: () => number): Promis
       const spoke = useSpeechPlaybackStore
         .getState()
         .speakLiveSummary(responseId, summary.text, summary.lang, audioUrl, sessionId);
-      return spoke || Boolean(audioUrl);
+      reportNarration({
+        path: "cross-session",
+        decision: spoke ? "handed-to-playback" : "declined-by-playback",
+        sessionId,
+        itemId: responseId,
+      });
+      return spoke || Boolean(audioUrl) ? "done" : "no-summary";
     }
   } catch {
     // A failed lookup costs this one summary, never the stream.
-    return true;
+    reportNarration({ path: "cross-session", decision: "lookup-failed", sessionId });
+    return "failed";
   }
-  return false; // no summary yet: a later revision may carry one
+  // No summary yet: a later revision may carry one.
+  reportNarration({
+    path: "cross-session",
+    decision: "no-summary-yet",
+    sessionId,
+    itemId: `revision ${revision}`,
+  });
+  return "no-summary";
 }
 
 /**
