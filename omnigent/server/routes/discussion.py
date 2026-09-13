@@ -180,6 +180,52 @@ def create_discussion_router(
             forward=routing.forward, english=routing.english, answer=routing.answer
         )
 
+    @router.post("/discussion/{session_id}/delegate", response_model=RouteResponse)
+    async def discussion_delegate(
+        request: Request, session_id: str, body: RouteRequest
+    ) -> RouteResponse:
+        """Answer what the live voice delegated, or say Claude is needed.
+
+        GPT-Live raises a client delegation when it cannot answer; the
+        browser rebuilds what was asked from the transcript and posts it
+        here. The session's language setting governs the wording sent to
+        Claude, as for a typed message. Never fails the caller: anything
+        that goes wrong forwards, since the voice has already said it
+        cannot answer.
+        """
+        _require_user(request)
+        from omnigent.server.discussion import Restatement, Routing
+        from omnigent.server.inbound_translation import (
+            inbound_pass_enabled,
+            inbound_translation_enabled,
+        )
+        from omnigent.server.spoken_summary import resolve_spoken_summary_settings_async
+
+        restate: Restatement = "off"
+        try:
+            if conversation_store is not None:
+                _enabled, language, _conv = await resolve_spoken_summary_settings_async(
+                    session_id, conversation_store
+                )
+                if inbound_pass_enabled(language):
+                    restate = "translate" if inbound_translation_enabled(language) else "repair"
+            companion = await companions().get(session_id)
+            decision = await companion.delegate(body.text, restate=restate)
+        except Exception:  # noqa: BLE001 - the voice is waiting; Claude still gets it
+            _logger.warning("live delegation failed for %s", session_id, exc_info=True)
+            decision = Routing(forward=True)
+        _logger.info(
+            "live delegation session=%s forward=%s said=%r answer=%r sent=%r",
+            session_id,
+            decision.forward,
+            body.text,
+            decision.answer,
+            (decision.english or body.text) if decision.forward else None,
+        )
+        return RouteResponse(
+            forward=decision.forward, english=decision.english, answer=decision.answer
+        )
+
     @router.post("/discussion/{session_id}/prewarm")
     async def discussion_prewarm(request: Request, session_id: str) -> dict[str, Any]:
         """Start the process now so the first question is a warm one."""

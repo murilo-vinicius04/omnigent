@@ -207,6 +207,26 @@ finished asking yet.
 nothing to ask, is about the conversation itself: forward false.\
 """
 
+#: The turn behind a GPT-Live client delegation. The voice has already
+#: decided it cannot answer, so the only choice left is answering for it or
+#: sending the question to Claude.
+_DELEGATE_PROMPT: Final[str] = """\
+[The voice you work with could not answer this from its notes and asked you. \
+This is what the person said most recently.]
+{message}
+
+Reply with ONE line of JSON and nothing else:
+{{"forward": true, "english": {english_example}, "answer": ""}}
+
+{english_rule}
+- "answer": when what you know fully answers it, the reply to be spoken back \
+to them -- one or two plain sentences, no lists or code, in the language they \
+spoke. Empty otherwise.
+- "forward": true, with an empty answer, when it needs Claude: a fact you were \
+not told (in the code, the files, the data or the measurements), or something \
+to be done on their machine. Never answer those by guessing.\
+"""
+
 #: Restate the message in English. The reader is not writing English, so the
 #: harness would otherwise pay the tokenization premium on every turn.
 _RULE_TRANSLATE: Final[str] = (
@@ -770,6 +790,57 @@ class DiscussionSession:
             self._record("answer", decision.answer)
         return decision
 
+    async def delegate(
+        self,
+        text: str,
+        *,
+        restate: Restatement = "translate",
+        timeout_s: float | None = None,
+    ) -> Routing:
+        """Answer what the live voice delegated, or say it needs Claude.
+
+        GPT-Live's client delegation carries no task text, so *text* is what
+        the reader said, rebuilt from the transcript. Nothing is recorded: the
+        live client already notes both sides of the call.
+
+        :param text: What the reader said that the voice could not answer.
+        :param restate: What may happen to their words; see :meth:`route`.
+        :param timeout_s: Budget. The voice holds the conversation meanwhile,
+            so this uses the tight routing budget by default.
+        :returns: ``answer`` to be spoken back, or ``forward`` with ``english``.
+            Every failure forwards: the voice has already said it cannot answer.
+        """
+        message = text.strip()
+        if not message:
+            return Routing(forward=True)
+        budget = timeout_s if timeout_s is not None else route_timeout_s()
+        async with self._lock:
+            self._last_used = time.time()
+            try:
+                await self._ensure_process()
+                blocks = self._preamble()
+                prompt = _DELEGATE_PROMPT.format(
+                    message=message,
+                    english_rule=_RESTATEMENT_RULES[restate],
+                    english_example='"..."' if restate != "off" else '"<their words>"',
+                )
+                reply = await self._turn(
+                    "\n\n".join([*blocks, prompt]) if blocks else prompt,
+                    timeout_s=budget,
+                )
+            except DiscussionUnavailable as exc:
+                _logger.info("companion delegation unavailable, forwarding: %s", exc)
+                await self._kill()
+                return Routing(forward=True)
+            self._briefed = True
+            self._undelivered.clear()
+            self._last_used = time.time()
+
+        decision = _parse_routing(reply)
+        if restate == "off":
+            decision = Routing(forward=decision.forward, answer=decision.answer)
+        return decision
+
     async def _turn(self, message: str, *, timeout_s: float) -> str:
         """Run exactly one NDJSON turn against the warm process. Lock held.
 
@@ -1050,18 +1121,16 @@ LIVE_VOICE_ROLE: Final[str] = (
     "aloud -- name the thing instead and let them look. "
     "Expect to be interrupted; stop immediately when they start talking. "
     "You already know what Claude has done and what comes next: it is in the "
-    "notes below, with the latest update last. When they ask what is happening, "
-    "what was done, what you were doing or what comes next, answer straight away "
-    "from those notes -- 'you' and 'we' mean the work, not you personally. Never "
-    "say you will check, sort it out, look into it or get back to them, and "
-    "never say 'hold on' or 'one sec': you cannot act, and nothing follows. "
-    "If the notes truly do not cover it, say exactly: I don't have that, "
-    "that's one for Claude. That sentence is what gets the question to Claude, "
-    "so use it only then -- if the notes cover it, answer instead. Never guess: "
-    "you never see their screen or their files. "
-    "You have no tools and cannot run, read or change anything. "
-    "When they ask for work on the machine itself, neither refuse nor promise "
-    "it: say 'okay' and nothing more."
+    "notes below, with the latest update last. 'You' and 'we' mean the work, "
+    "not you personally. "
+    "Delegate to the backend when: they ask about something the notes do not "
+    "cover, such as a fact in the code, the files, the data or the measurements; "
+    "or they ask for something to be done on their machine. "
+    "Do not delegate when: the notes answer it, such as what is happening, what "
+    "was done or what comes next; or you need a brief clarification. "
+    "Do not guess the result while waiting, and never claim something is done "
+    "before the backend confirms it. When a result arrives, say it in your own "
+    "words. You never see their screen or their files."
 )
 
 

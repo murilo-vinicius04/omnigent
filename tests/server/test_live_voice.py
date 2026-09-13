@@ -102,8 +102,9 @@ def test_page_closes_the_session_when_the_tab_goes_away(client):
     assert "beforeunload" in body
 
 
-def test_reading_delegates_to_a_backend_and_conversing_does_not():
-    """Only responses delegation accepts text pushed in; conversing needs none."""
+def test_reading_delegates_to_openai_and_conversing_delegates_to_us():
+    """Reading runs OpenAI's backend; a conversation hands what it cannot
+    answer to this application, which asks the companion."""
     reading = live_voice.session_config(
         instructions="read it", model=None, voice=None, backend="gpt-4o-mini"
     )
@@ -112,7 +113,7 @@ def test_reading_delegates_to_a_backend_and_conversing_does_not():
         "responses": {"model": "gpt-4o-mini"},
     }
     talking = live_voice.session_config(instructions="chat", model=None, voice=None)
-    assert "delegation" not in talking
+    assert talking["delegation"] == {"type": "client"}
 
 
 def test_reader_model_is_overridable(monkeypatch):
@@ -263,21 +264,17 @@ def test_ledger_is_marked_as_background_not_instructions():
     assert "never recite it back" in prompt
 
 
-def test_the_voice_answers_from_the_notes_instead_of_deferring():
-    """Asked for next steps it had in its briefing, it said "one sec" and went quiet.
+def test_the_voice_is_told_when_to_delegate():
+    """It said "I need to sort that out, hold on" and nothing followed.
 
-    It also must not guess at a handoff it cannot see: it answered "I can't
-    talk to Claude" while the request was already being sent.
+    The session could delegate, but nothing said when to. The conditions
+    follow the GPT-Live prompting guide's delegate / do-not-delegate pattern.
     """
     from omnigent.server.discussion import LIVE_VOICE_ROLE
 
-    assert "answer straight away" in LIVE_VOICE_ROLE
-    assert "Never say you will check" in LIVE_VOICE_ROLE
-    assert "never say 'hold on'" in LIVE_VOICE_ROLE
-    # The client listens for this exact sentence to send the question on.
-    assert "that's one for Claude" in LIVE_VOICE_ROLE
-    assert "use it only then" in LIVE_VOICE_ROLE
-    assert "neither refuse nor promise" in LIVE_VOICE_ROLE
-    # Nothing can tell it: text pushed into a conversation is never voiced.
-    assert "you will be told" not in LIVE_VOICE_ROLE
+    assert "Delegate to the backend when" in LIVE_VOICE_ROLE
+    assert "Do not delegate when" in LIVE_VOICE_ROLE
+    assert "Do not guess the result while waiting" in LIVE_VOICE_ROLE
+    # The phrase detector and the keyboard fallback are both gone.
+    assert "one for Claude" not in LIVE_VOICE_ROLE
     assert "type it" not in LIVE_VOICE_ROLE

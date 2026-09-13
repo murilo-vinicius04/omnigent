@@ -403,6 +403,22 @@ Two runs settle it:
   spoken normally in a narration session, so the difference is a conversation
   that has already had an audio turn.
 
+> **Correction, 2026-09-13.** That push used `response.item.create` and
+> `response.create`, which belong to *responses* delegation. The documented
+> way to put another model's words into a live conversation is **client
+> delegation**: GPT-Live raises `session.delegation.created` (an id, no task
+> text), the application answers with `session.commentary.append` on that
+> delegation id, and the voice says it in its own words.
+> `session.thinking.append` adds facts without speaking them. Omitting
+> `delegation` at session start already selects client mode. See
+> [Delegation and tools in GPT-Live](https://developers.openai.com/api/docs/guides/live-delegation)
+> and [Managing GPT-Live sessions](https://developers.openai.com/api/docs/guides/live-conversations).
+> Live mode is now built on it: `answerDelegation` in
+> `web/src/lib/liveConversation.ts` and `DiscussionSession.delegate`. The
+> conclusion below that Gemini "cannot be the speaking voice mid-conversation"
+> is superseded -- it came from reading one wrong mechanism as a limit
+> instead of checking the docs.
+
 What this rules out: Gemini writing the words that come out of the voice
 *during a conversation*. What it leaves intact:
 

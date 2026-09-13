@@ -517,6 +517,49 @@ async def test_spoken_route_keeps_what_was_said_when_the_companion_is_broken(tmp
     assert list(broken.context) == []
 
 
+# --- GPT-Live client delegation: the companion answers, or Claude does ---
+
+
+async def test_a_delegation_gets_the_companions_answer_when_it_knows(session, monkeypatch):
+    seen: list[str] = []
+    reply = (
+        '{"forward": false, "english": "which link is which", '
+        '"answer": "The painted stencils run four to one."}'
+    )
+    monkeypatch.setattr(session, "_turn", _capturing_turn(seen, reply))
+    decision = await session.delegate("which link is which", restate="repair")
+    assert decision.forward is False
+    assert decision.answer == "The painted stencils run four to one."
+    assert "could not answer this from its notes" in seen[0]
+    # The live client notes both sides of the call; a second copy doubles the ledger.
+    assert list(session.context) == []
+
+
+async def test_a_delegation_goes_to_claude_when_the_companion_cannot_answer(session, monkeypatch):
+    monkeypatch.setattr(
+        session,
+        "_turn",
+        _fake_turn('{"forward": true, "english": "Which caliper reading is link three?"}'),
+    )
+    decision = await session.delegate("which caliper reading is link three", restate="repair")
+    assert decision.forward is True
+    assert decision.english == "Which caliper reading is link three?"
+    assert decision.answer is None
+
+
+async def test_a_broken_companion_sends_the_delegation_to_claude(tmp_path):
+    # The voice has already said it cannot answer, so Claude is the fallback.
+    broken = DiscussionSession("s", binary=str(tmp_path / "absent"))
+    assert (await broken.delegate("which link is which")).forward is True
+
+
+def test_the_delegation_route_forwards_what_the_companion_cannot_decide(client):
+    # The fake companion echoes its prompt back, which is not a decision.
+    body = client.post("/v1/discussion/r9/delegate", json={"text": "which link is which"}).json()
+    assert body["forward"] is True
+    assert body["answer"] is None
+
+
 def test_routing_is_on_unless_switched_off(monkeypatch):
     monkeypatch.delenv("OMNIGENT_COMPANION_ROUTING", raising=False)
     assert discussion.routing_enabled() is True

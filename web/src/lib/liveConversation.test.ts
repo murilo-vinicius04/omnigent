@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const openLiveConversation = vi.fn();
 
@@ -9,15 +9,17 @@ vi.mock("./liveVoice", () => ({
 }));
 vi.mock("./speechPlayback", () => ({ claimSpeechChannel: vi.fn() }));
 const noteCompanion = vi.fn(async (_sessionId: string, _kind: string, _text: string) => {});
-const routeSpoken = vi.fn(async (_sessionId: string, _text: string) => ({
+const delegateSpoken = vi.fn(async (_sessionId: string, _text: string) => ({
   forward: false,
   english: null as string | null,
   answer: null as string | null,
 }));
+const prewarmCompanion = vi.fn(async (_sessionId: string) => ({}));
 vi.mock("./companionApi", () => ({
   noteCompanion: (sessionId: string, kind: string, text: string) =>
     noteCompanion(sessionId, kind, text),
-  routeSpoken: (sessionId: string, text: string) => routeSpoken(sessionId, text),
+  delegateSpoken: (sessionId: string, text: string) => delegateSpoken(sessionId, text),
+  prewarmCompanion: (sessionId: string) => prewarmCompanion(sessionId),
 }));
 
 const send = vi.fn(async (_text: string, _agentId: string) => {});
@@ -39,15 +41,23 @@ function fakeConversation() {
   const stop = vi.fn(() => {
     settle();
   });
-  const untilQuiet = vi.fn(async () => {});
   return {
     stream: new MediaStream(),
     closed,
     elapsedS: () => 12,
     stop,
-    untilQuiet,
+    untilQuiet: vi.fn(async (_expectSpeech?: boolean) => {}),
+    commentary: vi.fn((_delegationId: string, _content: string) => {}),
+    thinking: vi.fn((_content: string) => {}),
     end: () => settle(),
   };
+}
+
+/** Give pending promise callbacks a moment to run. */
+function settleCallbacks(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, 20);
+  });
 }
 
 describe("the open spoken conversation", () => {
@@ -68,6 +78,12 @@ describe("the open spoken conversation", () => {
     await useLiveConversationStore.getState().start("conv_a");
     expect(openLiveConversation.mock.calls[0]?.[0]).toBe("conv_a");
     expect(useLiveConversationStore.getState().sessionId).toBe("conv_a");
+  });
+
+  it("warms the companion up as the call opens, before anything is delegated", async () => {
+    openLiveConversation.mockResolvedValue(fakeConversation());
+    await useLiveConversationStore.getState().start("conv_a");
+    expect(prewarmCompanion).toHaveBeenCalledWith("conv_a");
   });
 
   it("never opens a second one, which would be two voices and two meters", async () => {
@@ -153,51 +169,32 @@ describe("a conversation nobody is having", () => {
   });
 });
 
-describe("handing a spoken request to Claude", () => {
-  /** Drive one conversation and return its utterance callback. */
+interface ConversationOptions {
+  onUtterance?: (u: { who: string; text: string }) => void;
+  onDelegation?: (delegationId: string, asked: string) => void;
+}
+
+describe("answering what the voice delegates", () => {
+  /** Open one conversation and return its callbacks. */
   async function open(agentId: string | null = "agent_1") {
     const live = fakeConversation();
-    let emit: ((u: { who: string; text: string }) => void) | undefined;
-    let speaking: (() => void) | undefined;
-    openLiveConversation.mockImplementation(
-      (
-        _id: string,
-        opts: {
-          onUtterance?: (u: { who: string; text: string }) => void;
-          onReaderSpeaking?: () => void;
-        },
-      ) => {
-        emit = opts.onUtterance;
-        speaking = opts.onReaderSpeaking;
-        return Promise.resolve(live);
-      },
-    );
+    let opts: ConversationOptions = {};
+    openLiveConversation.mockImplementation((_id: string, given: ConversationOptions) => {
+      opts = given;
+      return Promise.resolve(live);
+    });
     await useLiveConversationStore.getState().start("conv_a", agentId);
-    // A leftover session from a previous test makes start() return early and
-    // the failure then shows up as "emit is not a function", which points at
-    // the wrong thing entirely.
-    if (!emit || !speaking) throw new Error("start() never opened a conversation");
-    return { live, emit, speaking };
+    // A leftover session from a previous test makes start() return early, and
+    // the failure then points at the wrong thing entirely.
+    const { onUtterance, onDelegation } = opts;
+    if (!onUtterance || !onDelegation) throw new Error("start() never opened a conversation");
+    return { live, say: onUtterance, delegate: onDelegation };
   }
-
-  it("waits while the reader is still talking, even past the settle window", async () => {
-    const { emit, speaking } = await open();
-    emit({ who: "reader", text: "hey, so now you can" });
-    await vi.advanceTimersByTimeAsync(2000);
-    speaking(); // the rest of the sentence has started arriving
-    await vi.advanceTimersByTimeAsync(2000);
-    expect(routeSpoken).not.toHaveBeenCalled();
-
-    emit({ who: "reader", text: "talk to Claude" });
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(routeSpoken).toHaveBeenCalledTimes(1);
-    expect(routeSpoken.mock.calls[0]?.[1]).toBe("hey, so now you can talk to Claude");
-  });
 
   beforeEach(() => {
     // A sibling describe, so the reset in the first one does not reach here.
     vi.clearAllMocks();
-    routeSpoken.mockResolvedValue({ forward: false, english: null, answer: null });
+    delegateSpoken.mockResolvedValue({ forward: false, english: null, answer: null });
     useLiveConversationStore.setState({
       sessionId: null,
       handedOff: null,
@@ -207,136 +204,102 @@ describe("handing a spoken request to Claude", () => {
     });
     vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
     vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
-    vi.useFakeTimers({ shouldAdvanceTime: true });
   });
 
-  afterEach(() => {
-    vi.useRealTimers();
+  it("has the voice say the companion's answer when it knows", async () => {
+    delegateSpoken.mockResolvedValueOnce({
+      forward: false,
+      english: null,
+      answer: "The painted stencils run four to one.",
+    });
+    const { live, delegate } = await open();
+    delegate("item_d1", "did we already identify which link is which");
+
+    await vi.waitFor(() => {
+      expect(live.commentary).toHaveBeenCalledWith(
+        "item_d1",
+        "The painted stencils run four to one.",
+      );
+    });
+    expect(delegateSpoken).toHaveBeenCalledWith(
+      "conv_a",
+      "did we already identify which link is which",
+    );
+    // Claude is not spent on what the companion already knows.
+    expect(send).not.toHaveBeenCalled();
+    expect(live.stop).not.toHaveBeenCalled();
   });
 
-  it("joins fragments instead of sending half a thought", async () => {
-    const { emit } = await open();
-    emit({ who: "reader", text: "can you run" });
-    await vi.advanceTimersByTimeAsync(1000); // a breath, not the end
-    emit({ who: "reader", text: "the migration tests" });
-    await vi.advanceTimersByTimeAsync(3000);
-
-    expect(routeSpoken).toHaveBeenCalledTimes(1);
-    expect(routeSpoken.mock.calls[0]?.[1]).toBe("can you run the migration tests");
-  });
-
-  it("sends to Claude and hangs up when it is work", async () => {
-    routeSpoken.mockResolvedValueOnce({
+  it("sends it to Claude and ends the call when the companion cannot answer", async () => {
+    delegateSpoken.mockResolvedValueOnce({
       forward: true,
-      english: "Run the migration tests.",
+      english: "Which caliper reading belongs to link three?",
       answer: null,
     });
-    const { live, emit } = await open();
-    emit({ who: "reader", text: "run the migration tests" });
-    await vi.advanceTimersByTimeAsync(3000);
+    const { live, delegate } = await open();
+    delegate("item_d2", "which caliper reading is link three");
 
-    // Forced past routing: it was already routed as speech.
-    expect(send).toHaveBeenCalledWith("Run the migration tests.", "agent_1", undefined, {
-      forceClaude: true,
+    await vi.waitFor(() => {
+      expect(live.stop).toHaveBeenCalled();
     });
-    // The meter must not run through however long the turn takes, but the
-    // voice finishes its sentence first rather than being cut off mid-word.
-    expect(live.untilQuiet).toHaveBeenCalledTimes(1);
-    expect(live.stop).toHaveBeenCalled();
+    expect(send).toHaveBeenCalledWith(
+      "Which caliper reading belongs to link three?",
+      "agent_1",
+      undefined,
+      { forceClaude: true },
+    );
+    // The voice says so through the delegation, then the meter stops.
+    expect(live.commentary.mock.calls[0]?.[0]).toBe("item_d2");
+    expect(live.commentary.mock.calls[0]?.[1]).toContain("sent that to Claude");
     expect(live.untilQuiet.mock.invocationCallOrder[0]).toBeLessThan(
       live.stop.mock.invocationCallOrder[0] ?? 0,
     );
   });
 
-  it("neither sends nor hangs up when the conversation keeps what was said", async () => {
-    const { live, emit } = await open();
-    emit({ who: "reader", text: "can't you ask Claude?" });
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(send).not.toHaveBeenCalled();
-    expect(live.untilQuiet).not.toHaveBeenCalled();
-    expect(live.stop).not.toHaveBeenCalled();
+  it("uses the reader's last sentence when the transcript has not caught up", async () => {
+    const { say, delegate } = await open();
+    say({ who: "reader", text: "what is the pitch of link three" });
+    say({ who: "voice", text: "Let me find out." });
+    delegate("item_d3", "");
+
+    await vi.waitFor(() => {
+      expect(delegateSpoken).toHaveBeenCalledWith("conv_a", "what is the pitch of link three");
+    });
   });
 
-  // The companion and the voice judge separately. Asked "you already identified
-  // which is which", the voice said it was one for Claude and the companion
-  // kept it, so nobody asked Claude. The voice is the one talking, so it wins.
-  it("sends a kept thought once the voice says it is one for Claude", async () => {
-    const { live, emit } = await open();
-    emit({ who: "reader", text: "and you already identified which is which" });
-    await vi.advanceTimersByTimeAsync(3000); // decided: kept
-    expect(send).not.toHaveBeenCalled();
-
-    emit({ who: "voice", text: "I don't have that, so that's one for Claude." });
-    await vi.advanceTimersByTimeAsync(100);
-    expect(send).toHaveBeenCalledWith(
-      "and you already identified which is which",
-      "agent_1",
-      undefined,
-      { forceClaude: true },
-    );
-    expect(live.stop).toHaveBeenCalled();
+  it("does nothing with a delegation that has nothing to go on", async () => {
+    const { live, delegate } = await open();
+    delegate("item_d4", "");
+    await settleCallbacks();
+    expect(delegateSpoken).not.toHaveBeenCalled();
+    expect(live.commentary).not.toHaveBeenCalled();
   });
 
-  it("sends when the voice defers before the companion has decided", async () => {
-    const { emit } = await open();
-    emit({ who: "reader", text: "which caliper reading is link three" });
-    emit({ who: "voice", text: "I don't have that, that's one for Claude." });
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(send.mock.calls[0]?.[0]).toBe("which caliper reading is link three");
-  });
+  it("tells the reader when there is nobody to send it to", async () => {
+    delegateSpoken.mockResolvedValueOnce({ forward: true, english: null, answer: null });
+    const { live, delegate } = await open(null);
+    delegate("item_d5", "run the tests");
 
-  it("does not send a thought the voice deferred on long after", async () => {
-    const { emit } = await open();
-    emit({ who: "reader", text: "what are the next steps" });
-    await vi.advanceTimersByTimeAsync(20_000);
-    emit({ who: "voice", text: "That's one for Claude." });
-    await vi.advanceTimersByTimeAsync(100);
-    expect(send).not.toHaveBeenCalled();
-  });
-
-  it("does not treat an answer that mentions Claude as a deferral", async () => {
-    const { emit } = await open();
-    emit({ who: "reader", text: "what is Claude doing" });
-    emit({ who: "voice", text: "Claude is making the A76 mesh watertight." });
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(send).not.toHaveBeenCalled();
-  });
-
-  it("keeps talking when the companion can answer", async () => {
-    const { live, emit } = await open();
-    emit({ who: "reader", text: "what did you change?" });
-    await vi.advanceTimersByTimeAsync(3000);
-
-    expect(send).not.toHaveBeenCalled();
-    expect(live.stop).not.toHaveBeenCalled();
-  });
-
-  it("never hands off twice", async () => {
-    routeSpoken.mockResolvedValue({ forward: true, english: null, answer: null });
-    const { emit } = await open();
-    emit({ who: "reader", text: "run the tests" });
-    await vi.advanceTimersByTimeAsync(3000);
-    emit({ who: "reader", text: "and the linter" });
-    await vi.advanceTimersByTimeAsync(3000);
-
-    expect(send).toHaveBeenCalledTimes(1);
-  });
-
-  it("stays open when there is no agent to send to", async () => {
-    routeSpoken.mockResolvedValueOnce({ forward: true, english: null, answer: null });
-    const { live, emit } = await open(null);
-    emit({ who: "reader", text: "run the tests" });
-    await vi.advanceTimersByTimeAsync(3000);
-
+    await vi.waitFor(() => {
+      expect(live.commentary).toHaveBeenCalledWith(
+        "item_d5",
+        expect.stringContaining("couldn't send"),
+      );
+    });
     // Hanging up without sending would lose the request entirely.
     expect(live.stop).not.toHaveBeenCalled();
   });
 
-  it("ignores what the voice itself says", async () => {
-    const { emit } = await open();
-    emit({ who: "voice", text: "sure, let me look at that" });
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(routeSpoken).not.toHaveBeenCalled();
+  it("never hands off twice", async () => {
+    delegateSpoken.mockResolvedValue({ forward: true, english: null, answer: null });
+    const { delegate } = await open();
+    delegate("item_d6", "run the tests");
+    delegate("item_d7", "and the linter");
+
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+    await settleCallbacks();
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });

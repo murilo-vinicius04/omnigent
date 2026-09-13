@@ -149,19 +149,22 @@ def session_config(
     ``model`` is required, ``instructions`` is accepted, the voice lives
     at ``audio.output.voice``, and unknown keys are rejected outright.
 
-    :param backend: Model to delegate turn content to. ``None`` leaves the
-        session in its default ``client`` delegation, where the live model
-        answers natively. Naming one switches it to ``responses``
-        delegation, the only mode that accepts text pushed in from here.
+    :param backend: Model to delegate turn content to. ``None`` selects
+        ``client`` delegation: the live model hands what it cannot answer to
+        this application as ``session.delegation.created``, and the result
+        goes back as ``session.commentary.append``. Naming one selects
+        ``responses`` delegation, where OpenAI runs that model instead.
     """
-    config: dict[str, Any] = {
+    return {
         "model": model or DEFAULT_MODEL,
         "instructions": instructions,
         "audio": {"output": {"voice": voice or DEFAULT_VOICE}},
+        "delegation": (
+            {"type": "responses", "responses": {"model": backend}}
+            if backend
+            else {"type": "client"}
+        ),
     }
-    if backend:
-        config["delegation"] = {"type": "responses", "responses": {"model": backend}}
-    return config
 
 
 async def open_session(

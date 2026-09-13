@@ -7,36 +7,19 @@
 
 import { create } from "zustand";
 import { openLiveConversation, type LiveConversation } from "./liveVoice";
-import { noteCompanion, routeSpoken } from "./companionApi";
+import { delegateSpoken, noteCompanion, prewarmCompanion } from "./companionApi";
 import { claimSpeechChannel } from "./speechPlayback";
 
 /** Billed rate, mirrored from the server so the meter can be shown. */
 export const USD_PER_MINUTE = 0.05;
 
-/**
- * How long the reader must stop talking before what they said is routed.
- *
- * Longer than the ledger's own flush, deliberately. A transcript settles
- * after a short pause, which is right for recording but too eager for
- * deciding: a breath in the middle of a sentence would send half a thought
- * to Claude. Fragments that arrive inside this window are joined instead.
- */
-const ROUTE_SETTLE_MS = 2500;
+/** Returned to the voice when a delegated question has gone to Claude. */
+const HANDED_OFF =
+  "I've sent that to Claude. Its answer will show up in the chat, so I'm ending the call now.";
 
-/**
- * Say out loud that a request went to Claude, once the call has ended.
- *
- * The live voice cannot be told: text pushed into a conversation is generated
- * but never voiced. The browser's own speech is free and needs no session.
- */
-function confirmHandoff(): void {
-  if (typeof speechSynthesis === "undefined") return;
-  try {
-    speechSynthesis.speak(new SpeechSynthesisUtterance("Sent to Claude."));
-  } catch {
-    // Nothing to say it with; the message appearing in the chat still shows it.
-  }
-}
+/** Returned to the voice when a question needed Claude but could not be sent. */
+const NOT_SENT =
+  "I couldn't send that to Claude from here, so it will need to be typed in the chat.";
 
 interface ConversationStoreState {
   /** Session whose conversation is open, or null when none is. */
@@ -82,22 +65,13 @@ async function handToClaude(text: string, agentId: string | null): Promise<boole
   if (!agentId) return false;
   try {
     const { useChatStore } = await import("@/store/chatStore");
-    // Already routed as speech; the typed-message pass could answer it instead.
+    // Already decided by the companion; the typed-message pass could answer it instead.
     await useChatStore.getState().send(text, agentId, undefined, { forceClaude: true });
     return true;
   } catch {
     return false;
   }
 }
-
-/**
- * What the voice says when its notes do not cover something. It is told to use
- * that sentence, and only then, so hearing it means it could not answer.
- */
-const VOICE_DEFERS = /\b(one|question) for claude\b/i;
-
-/** How long after a kept thought the voice's deferral still refers to it. */
-const DEFER_WINDOW_MS = 15_000;
 
 export const useLiveConversationStore = create<ConversationStoreState>((set, get) => ({
   sessionId: null,
@@ -110,52 +84,45 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
     // Opening a second would be two voices and two meters.
     if (get().sessionId || get().connecting) return;
     set({ connecting: true, error: null, handedOff: null });
+    // A delegation waits on the companion, and a cold one can spend most of
+    // the time the voice is holding the conversation. Warming it is free.
+    void prewarmCompanion(sessionId).catch(() => {
+      // Delegation still works against a cold companion, only slower.
+    });
 
-    // What the reader has said since they last stopped talking. Routed as
-    // one thought once they stay quiet, so a mid-sentence breath does not
-    // send half of it.
-    let pending = "";
-    let settle: ReturnType<typeof setTimeout> | undefined;
     let handedOff = false;
-    let deciding = false;
-    // The voice said "one for Claude" about the thought still being decided.
-    let voiceDeferred = false;
-    // The last thought the companion kept, in case the voice defers on it after.
-    let lastKept: { text: string; at: number } | null = null;
+    // The reader's last finished sentence, for a delegation that arrives before
+    // the transcript of the words it is about.
+    let lastReader = "";
 
-    const handOff = async (text: string): Promise<void> => {
-      if (handedOff) return;
-      // Claude is needed. Send it exactly as typing it would, then hang up:
-      // the meter must not run through however long the turn takes.
+    /**
+     * GPT-Live could not answer and delegated. The delegation names no task, so
+     * the question is what the reader just said. The companion answers it and
+     * the voice says that back; or Claude gets it, the voice says so, and the
+     * call ends so the meter does not run through Claude's turn.
+     */
+    const answerDelegation = async (delegationId: string, asked: string): Promise<void> => {
+      const question = asked || lastReader;
+      if (!question || handedOff) return;
+      const decision = await delegateSpoken(sessionId, question);
+      const current = active;
+      if (!current || handedOff) return;
+      if (!decision.forward && decision.answer) {
+        current.commentary(delegationId, decision.answer);
+        return;
+      }
       handedOff = true;
-      const sent = await handToClaude(text, agentId);
-      if (!sent) {
+      const text = decision.english ?? question;
+      if (!(await handToClaude(text, agentId))) {
+        // Hanging up without sending would lose the request entirely.
         handedOff = false;
+        current.commentary(delegationId, NOT_SENT);
         return;
       }
       set({ handedOff: text });
-      // Let the voice finish its sentence rather than cutting it off.
-      await active?.untilQuiet();
+      current.commentary(delegationId, HANDED_OFF);
+      await current.untilQuiet(true);
       get().stop();
-      confirmHandoff();
-    };
-
-    const decide = async (): Promise<void> => {
-      const said = pending.trim();
-      pending = "";
-      if (!said || handedOff) return;
-      deciding = true;
-      const routing = await routeSpoken(sessionId, said);
-      deciding = false;
-      const text = routing.english ?? said;
-      // The voice is the one answering: once it has said this is one for
-      // Claude, Claude gets it whatever the companion concluded.
-      if (routing.forward || voiceDeferred) {
-        voiceDeferred = false;
-        await handOff(text);
-        return;
-      }
-      lastKept = { text, at: Date.now() };
     };
 
     let live: LiveConversation;
@@ -166,30 +133,9 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
         // the next conversation opens knowing what the last one said.
         onUtterance: ({ who, text }) => {
           void noteCompanion(sessionId, who === "reader" ? "question" : "answer", text);
-          if (handedOff) return;
-          if (who === "voice") {
-            if (!VOICE_DEFERS.test(text)) return;
-            if (pending || deciding) {
-              voiceDeferred = true;
-            } else if (lastKept && Date.now() - lastKept.at < DEFER_WINDOW_MS) {
-              const kept = lastKept.text;
-              lastKept = null;
-              void handOff(kept);
-            }
-            return;
-          }
-          // A new thought: a deferral from now on is about this one.
-          if (!pending) lastKept = null;
-          pending = pending ? `${pending} ${text}` : text;
-          clearTimeout(settle);
-          settle = setTimeout(() => void decide(), ROUTE_SETTLE_MS);
+          if (who === "reader") lastReader = text;
         },
-        // Still talking: a thought already waiting is not finished yet.
-        onReaderSpeaking: () => {
-          if (!pending || handedOff) return;
-          clearTimeout(settle);
-          settle = setTimeout(() => void decide(), ROUTE_SETTLE_MS);
-        },
+        onDelegation: (delegationId, asked) => void answerDelegation(delegationId, asked),
       });
     } catch (error) {
       set({ connecting: false, error: String(error) });

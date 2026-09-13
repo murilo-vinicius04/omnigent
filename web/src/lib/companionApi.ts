@@ -158,29 +158,26 @@ export interface SpokenRouting {
 }
 
 /**
- * Ask the companion whether something said aloud is work for Claude.
+ * Hand the companion what the live voice delegated: it answers, or says
+ * Claude is needed.
  *
- * The spoken counterpart of pressing enter, and the same decision: the
- * session's language setting governs what may happen to the words, and only
- * the routing decision is unconditional.
- *
- * Keeps what was said on any failure. The voice is already answering it,
- * and forwarding failures sent small talk to Claude.
+ * GPT-Live raises a client delegation when it cannot answer from its notes.
+ * Any failure forwards, since the voice has already said it cannot answer.
  *
  * @param sessionId The session the reader is talking about.
- * @param text What they said.
+ * @param text What the reader said, rebuilt from the transcript.
  */
-export async function routeSpoken(sessionId: string, text: string): Promise<SpokenRouting> {
-  const kept: SpokenRouting = { forward: false, english: null, answer: null };
+export async function delegateSpoken(sessionId: string, text: string): Promise<SpokenRouting> {
+  const forward: SpokenRouting = { forward: true, english: null, answer: null };
   try {
-    const res = await authenticatedFetch(`${base(sessionId)}/route`, {
+    const res = await authenticatedFetch(`${base(sessionId)}/delegate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
     });
-    if (!res.ok) return kept;
+    if (!res.ok) return forward;
     return (await res.json()) as SpokenRouting;
   } catch {
-    return kept;
+    return forward;
   }
 }

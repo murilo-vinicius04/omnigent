@@ -287,10 +287,17 @@ export interface LiveConversation {
   readonly stop: () => void;
   /**
    * Resolve once the voice is not mid-sentence, so hanging up does not cut it
-   * off. Nothing can be pushed into a conversation for it to say: text sent
-   * after the first audio turn is generated but never voiced.
+   * off. With `expectSpeech`, wait for it to start first: an appended result
+   * is spoken shortly after it lands, not at once.
    */
-  readonly untilQuiet: () => Promise<void>;
+  readonly untilQuiet: (expectSpeech?: boolean) => Promise<void>;
+  /**
+   * Return a delegation's result for the voice to say in its own words
+   * (`session.commentary.append`).
+   */
+  readonly commentary: (delegationId: string, content: string) => void;
+  /** Give the voice something to know without saying it (`session.thinking.append`). */
+  readonly thinking: (content: string) => void;
 }
 
 /** The pause in the voice's words that marks a sentence as finished. */
@@ -298,6 +305,18 @@ const QUIET_GAP_MS = 1200;
 
 /** Never hold a hang-up longer than this waiting for the voice to stop. */
 const QUIET_MAX_MS = 4000;
+
+/** How long to wait for the voice to start saying an appended result. */
+const QUIET_FIRST_WORD_MS = 3000;
+
+/** The hang-up ceiling when the voice still has something to say. */
+const QUIET_EXPECT_MAX_MS = 10_000;
+
+/** How much of the reader's recent speech a delegation carries as its question. */
+const MAX_DELEGATED_CHARS = 1000;
+
+/** Each append takes at most 500 tokens; characters are a safe proxy. */
+const MAX_APPEND_CHARS = 1800;
 
 /**
  * Open a two-way conversation: it hears the microphone and answers aloud.
@@ -307,9 +326,10 @@ const QUIET_MAX_MS = 4000;
  * dollars an hour, whether anyone is talking or not -- so the only thing that
  * ends it is the reader, and the caller is expected to show them the meter.
  *
- * The model answers natively rather than through a backend: it is briefed
- * from the session's companion ledger when the session opens, which costs no
- * tokens at all and keeps the reply as fast as the model can talk.
+ * The model answers natively from a briefing built from the session's
+ * companion ledger. What that does not cover it delegates: GPT-Live's client
+ * delegation raises `session.delegation.created`, the caller answers through
+ * `commentary`, and the voice says the result.
  *
  * @param sessionId - Conversation whose ledger briefs the model.
  * @throws LiveVoiceUnavailable when the microphone or the session is refused.
@@ -318,8 +338,11 @@ export async function openLiveConversation(
   sessionId: string | null,
   options: {
     onUtterance?: (utterance: Utterance) => void;
-    /** Fires on every word the reader says, before an utterance settles. */
-    onReaderSpeaking?: () => void;
+    /**
+     * The voice delegated. `asked` is what the reader said since the last
+     * delegation, since the event itself carries no task text.
+     */
+    onDelegation?: (delegationId: string, asked: string) => void;
   } = {},
 ): Promise<LiveConversation> {
   if (typeof RTCPeerConnection === "undefined") {
@@ -416,11 +439,20 @@ export async function openLiveConversation(
   pc.addEventListener("connectionstatechange", () => {
     if (pc.connectionState === "failed" || pc.connectionState === "closed") stop();
   });
-  /** Set while an announcement waits for the voice to finish saying it. */
+  /** Set while waiting for the voice to finish what it is saying. */
   let voiceSpeaking: (() => void) | undefined;
+  // What the reader has said since the voice last delegated. A delegation
+  // carries no task text, so this is the question it is about.
+  let readerSinceDelegation = "";
+  let eventCount = 0;
 
   channel.addEventListener("message", (event) => {
-    let payload: { type?: string; delta?: string };
+    let payload: {
+      type?: string;
+      delta?: string;
+      delegation?: { id?: string };
+      error?: unknown;
+    };
     try {
       payload = JSON.parse(String(event.data));
     } catch {
@@ -428,12 +460,22 @@ export async function openLiveConversation(
     }
     if (payload.type === "session.input_transcript.delta") {
       touch();
-      options.onReaderSpeaking?.();
+      readerSinceDelegation = (readerSinceDelegation + (payload.delta ?? "")).slice(
+        -MAX_DELEGATED_CHARS,
+      );
       collect("reader", payload.delta ?? "");
     } else if (payload.type === "session.output_transcript.delta") {
       touch();
       voiceSpeaking?.();
       collect("voice", payload.delta ?? "");
+    } else if (payload.type === "session.delegation.created" && payload.delegation?.id) {
+      // The voice could not answer and handed the question to this application.
+      touch();
+      const asked = readerSinceDelegation.trim();
+      readerSinceDelegation = "";
+      options.onDelegation?.(payload.delegation.id, asked);
+    } else if (payload.type === "error") {
+      console.warn("live session error", payload.error);
     } else if (payload.type === "session.closed") {
       stop();
     }
@@ -466,7 +508,21 @@ export async function openLiveConversation(
     throw error instanceof LiveVoiceUnavailable ? error : new LiveVoiceUnavailable(String(error));
   }
 
-  const untilQuiet = (): Promise<void> =>
+  /** Send one context append, the documented way to feed a running session. */
+  const append = (type: string, delegationId: string | null, content: string): void => {
+    if (closed || channel.readyState !== "open") return;
+    eventCount += 1;
+    channel.send(
+      JSON.stringify({
+        type,
+        event_id: `omnigent_${eventCount}`,
+        delegation_id: delegationId,
+        content: content.slice(0, MAX_APPEND_CHARS),
+      }),
+    );
+  };
+
+  const untilQuiet = (expectSpeech = false): Promise<void> =>
     new Promise<void>((resolve) => {
       if (closed) {
         resolve();
@@ -479,13 +535,13 @@ export async function openLiveConversation(
         voiceSpeaking = undefined;
         resolve();
       };
-      const ceiling = setTimeout(done, QUIET_MAX_MS);
+      const ceiling = setTimeout(done, expectSpeech ? QUIET_EXPECT_MAX_MS : QUIET_MAX_MS);
       // Each word from the voice pushes the finish back; a pause ends it.
       voiceSpeaking = () => {
         clearTimeout(gap);
         gap = setTimeout(done, QUIET_GAP_MS);
       };
-      gap = setTimeout(done, QUIET_GAP_MS);
+      gap = setTimeout(done, expectSpeech ? QUIET_FIRST_WORD_MS : QUIET_GAP_MS);
       void closedPromise.then(done);
     });
 
@@ -495,5 +551,8 @@ export async function openLiveConversation(
     elapsedS: () => (Date.now() - startedAt) / 1000,
     stop,
     untilQuiet,
+    commentary: (delegationId, content) =>
+      append("session.commentary.append", delegationId, content),
+    thinking: (content) => append("session.thinking.append", null, content),
   };
 }
