@@ -274,7 +274,9 @@ def test_the_voice_answers_from_the_notes_instead_of_deferring():
     assert "answer straight away" in LIVE_VOICE_ROLE
     assert "Never say you will check" in LIVE_VOICE_ROLE
     assert "never say 'hold on'" in LIVE_VOICE_ROLE
-    assert "it is one for Claude" in LIVE_VOICE_ROLE
+    # The client listens for this exact sentence to send the question on.
+    assert "that's one for Claude" in LIVE_VOICE_ROLE
+    assert "use it only then" in LIVE_VOICE_ROLE
     assert "neither refuse nor promise" in LIVE_VOICE_ROLE
     # Nothing can tell it: text pushed into a conversation is never voiced.
     assert "you will be told" not in LIVE_VOICE_ROLE

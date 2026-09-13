@@ -90,6 +90,15 @@ async function handToClaude(text: string, agentId: string | null): Promise<boole
   }
 }
 
+/**
+ * What the voice says when its notes do not cover something. It is told to use
+ * that sentence, and only then, so hearing it means it could not answer.
+ */
+const VOICE_DEFERS = /\b(one|question) for claude\b/i;
+
+/** How long after a kept thought the voice's deferral still refers to it. */
+const DEFER_WINDOW_MS = 15_000;
+
 export const useLiveConversationStore = create<ConversationStoreState>((set, get) => ({
   sessionId: null,
   handedOff: null,
@@ -108,25 +117,45 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
     let pending = "";
     let settle: ReturnType<typeof setTimeout> | undefined;
     let handedOff = false;
-    const decide = async (): Promise<void> => {
-      const said = pending.trim();
-      pending = "";
-      if (!said || handedOff) return;
-      const routing = await routeSpoken(sessionId, said);
-      if (!routing.forward || handedOff) return;
+    let deciding = false;
+    // The voice said "one for Claude" about the thought still being decided.
+    let voiceDeferred = false;
+    // The last thought the companion kept, in case the voice defers on it after.
+    let lastKept: { text: string; at: number } | null = null;
+
+    const handOff = async (text: string): Promise<void> => {
+      if (handedOff) return;
       // Claude is needed. Send it exactly as typing it would, then hang up:
       // the meter must not run through however long the turn takes.
       handedOff = true;
-      const sent = await handToClaude(routing.english ?? said, agentId);
+      const sent = await handToClaude(text, agentId);
       if (!sent) {
         handedOff = false;
         return;
       }
-      set({ handedOff: routing.english ?? said });
+      set({ handedOff: text });
       // Let the voice finish its sentence rather than cutting it off.
       await active?.untilQuiet();
       get().stop();
       confirmHandoff();
+    };
+
+    const decide = async (): Promise<void> => {
+      const said = pending.trim();
+      pending = "";
+      if (!said || handedOff) return;
+      deciding = true;
+      const routing = await routeSpoken(sessionId, said);
+      deciding = false;
+      const text = routing.english ?? said;
+      // The voice is the one answering: once it has said this is one for
+      // Claude, Claude gets it whatever the companion concluded.
+      if (routing.forward || voiceDeferred) {
+        voiceDeferred = false;
+        await handOff(text);
+        return;
+      }
+      lastKept = { text, at: Date.now() };
     };
 
     let live: LiveConversation;
@@ -137,7 +166,20 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
         // the next conversation opens knowing what the last one said.
         onUtterance: ({ who, text }) => {
           void noteCompanion(sessionId, who === "reader" ? "question" : "answer", text);
-          if (who !== "reader" || handedOff) return;
+          if (handedOff) return;
+          if (who === "voice") {
+            if (!VOICE_DEFERS.test(text)) return;
+            if (pending || deciding) {
+              voiceDeferred = true;
+            } else if (lastKept && Date.now() - lastKept.at < DEFER_WINDOW_MS) {
+              const kept = lastKept.text;
+              lastKept = null;
+              void handOff(kept);
+            }
+            return;
+          }
+          // A new thought: a deferral from now on is about this one.
+          if (!pending) lastKept = null;
           pending = pending ? `${pending} ${text}` : text;
           clearTimeout(settle);
           settle = setTimeout(() => void decide(), ROUTE_SETTLE_MS);

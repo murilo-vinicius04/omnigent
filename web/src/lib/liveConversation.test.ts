@@ -257,6 +257,52 @@ describe("handing a spoken request to Claude", () => {
     expect(live.stop).not.toHaveBeenCalled();
   });
 
+  // The companion and the voice judge separately. Asked "you already identified
+  // which is which", the voice said it was one for Claude and the companion
+  // kept it, so nobody asked Claude. The voice is the one talking, so it wins.
+  it("sends a kept thought once the voice says it is one for Claude", async () => {
+    const { live, emit } = await open();
+    emit({ who: "reader", text: "and you already identified which is which" });
+    await vi.advanceTimersByTimeAsync(3000); // decided: kept
+    expect(send).not.toHaveBeenCalled();
+
+    emit({ who: "voice", text: "I don't have that, so that's one for Claude." });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(send).toHaveBeenCalledWith(
+      "and you already identified which is which",
+      "agent_1",
+      undefined,
+      { forceClaude: true },
+    );
+    expect(live.stop).toHaveBeenCalled();
+  });
+
+  it("sends when the voice defers before the companion has decided", async () => {
+    const { emit } = await open();
+    emit({ who: "reader", text: "which caliper reading is link three" });
+    emit({ who: "voice", text: "I don't have that, that's one for Claude." });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]?.[0]).toBe("which caliper reading is link three");
+  });
+
+  it("does not send a thought the voice deferred on long after", async () => {
+    const { emit } = await open();
+    emit({ who: "reader", text: "what are the next steps" });
+    await vi.advanceTimersByTimeAsync(20_000);
+    emit({ who: "voice", text: "That's one for Claude." });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("does not treat an answer that mentions Claude as a deferral", async () => {
+    const { emit } = await open();
+    emit({ who: "reader", text: "what is Claude doing" });
+    emit({ who: "voice", text: "Claude is making the A76 mesh watertight." });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("keeps talking when the companion can answer", async () => {
     const { live, emit } = await open();
     emit({ who: "reader", text: "what did you change?" });
