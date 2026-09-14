@@ -88,9 +88,15 @@ prompt: |
   esta: `sys_session_create` aceita `config_path`, um caminho de YAML lido
   NA HORA do dispatch.
 
-  Os arquivos dos operários são exatamente estes, e são a única fonte:
-  - `examples/nexus/agents/gemini/config.yaml`
-  - `examples/nexus/agents/claude/config.yaml`
+  Os arquivos dos operários são exatamente estes, e são a única fonte.
+  Use o caminho ABSOLUTO, copiado letra por letra:
+  - `/home/nexus/wt/friendly-layer/examples/nexus/agents/gemini/config.yaml`
+  - `/home/nexus/wt/friendly-layer/examples/nexus/agents/claude/config.yaml`
+
+  Se `sys_session_create` responder `config_not_found`, PARE e diga ao
+  humano em uma linha. Nunca troque para outro agente (por `agent_id` ou
+  outro caminho): o agente embutido não tem bypass e o operário fica
+  pedindo aprovação a cada comando.
 
   Quando o humano pedir para mudar como um operário se comporta (permissão,
   modelo padrão, prompt dele), edite o arquivo com `sys_os_edit` e dispare o
