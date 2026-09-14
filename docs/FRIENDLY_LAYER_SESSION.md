@@ -818,3 +818,49 @@ again (26GB free).
 afternoon of workarounds existed because client delegation was never read
 about), and reproduce a bug in a test before fixing it — every fix today that
 skipped that step was wrong.
+
+## Session state — 2026-09-13 late (nexus + agy worker)
+
+**Goal.** Save Claude plan quota: `nexus` agent = Claude brain plans and
+reviews, ONE cheap worker (Gemini via agy, on the Google plan) does the work.
+The voice layer stays as is. Keeping session-per-task is deliberate, since that
+isolation is how Omnigent is designed.
+
+**Done (all local commits, never pushed):**
+- `ae2b5b57d` UI: the context ring is the auto-compact control (threshold label
+  `omnigent.autocompact_pct`, state label `omnigent.autocompact_state`).
+- `examples/nexus/` now lives in the repo (`5ad33b178`, `99c93afdd`,
+  `e8352982a`). Workers are `gemini` (`permission_mode: bypassPermissions`; without
+  it agy's approval prompt appears only in its tmux pane, nothing in the UI) and
+  `claude`. opencode is removed: the binary exists but the user says it is not
+  set up. The brain writes English. The prompt tells it that worker YAMLs
+  dispatched via `sys_session_create(config_path=…)` take effect live.
+- `26f304aa4` fixes the reader. The cold start waits 20s for agy's RPC catalog, then
+  leaves an `agy_conv_*` placeholder, and nothing ever replaced it, so every
+  worker reply was invisible. `_resolve_cascade_id` now binds from
+  `<bridge>/agy-home/.gemini/antigravity-cli/conversations/<uuid>.db` (exactly
+  one UUID file required) and persists it. It was checked against three real failed
+  bridge dirs.
+
+**The trap that cost the evening.** Runner code is loaded by the
+`omnigent-host.service` **zygote**, not the server. It dated from Sep 11,
+so no Python change had loaded until the host was restarted at 22:53:03.
+Check with `ps -o pid,ppid,lstart -p $(pgrep -f omnigent.runner)`. Restarting
+the host interrupts every session's runner, so ask first. (Also in memory:
+`omnigent-server-runs-from-friendly-layer.md`.)
+
+**Measured:** agy did every delegated task correctly (3 of 3) once it had
+bypass; all failures were on Omnigent's side.
+
+**Open:**
+1. **Unverified:** a nexus dispatch after the host restart. It has not been observed
+   end to end yet. If it is still silent, read the runner log
+   `~/.omnigent/logs/runner/runner-<parent session>-*.log`.
+2. The bridge paste check (`_PASTE_COMMIT_TIMEOUT_S = 5.0` in
+   `antigravity_native_bridge.py`) fails when a task is pasted before agy's splash
+   has cleared, leaving the draft unsubmitted.
+3. The agent picker shows a stale nexus description (the DB column is not refreshed).
+4. The server unit is transient; use the `systemd-run` line in this doc's restart notes
+   with both `--agent` flags (debby, nexus).
+5. Still queued: progress updates (text in chat only, never a call held open),
+   permanent systemd units plus linger, rotate the OpenAI key.
