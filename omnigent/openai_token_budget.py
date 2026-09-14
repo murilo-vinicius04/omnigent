@@ -15,11 +15,11 @@ allowance, so it is counted in full.
 **The day.** The allowance is assumed to reset at 00:00 UTC, and the ledger
 buckets by UTC day.
 
-**Where tokens come from.** The server feeds this ledger from every usage
-delta it persists for a session, so any Omnigent session on an OpenAI model
-(codex, openai-agents, ...) is counted. Calls made outside Omnigent (a manual
-``curl``, a ``codex exec`` in a terminal) are not seen; record them with
-``python -m omnigent.openai_token_budget add``.
+**Where tokens come from.** Omnigent's OpenAI traffic goes through the
+budget proxy (:mod:`omnigent.server.routes.openai_budget_proxy`), which records
+each call's real usage here and refuses calls that could overrun a pool. Calls
+made outside Omnigent (a manual ``curl``, a ``codex exec`` in a terminal) are
+not seen; record them with ``python -m omnigent.openai_token_budget add``.
 
 The ledger is a small JSON file under the Omnigent state dir, guarded by an
 ``flock`` so the server and the CLI can both write to it.
@@ -60,48 +60,73 @@ _COUNTED_FIELDS = (
 
 @dataclass(frozen=True)
 class Pool:
-    """One daily allowance shared by a group of models."""
+    """One daily allowance shared by a group of models.
+
+    ``models`` maps each model family to the exact snapshot date OpenAI lists
+    as free, or ``None`` when the list names the undated id itself.
+    """
 
     id: str
     label: str
     daily_tokens: int
-    models: frozenset[str]
+    models: Mapping[str, str | None]
 
 
-#: Daily allowances. The 5.6 figures are what the user was told for their
-#: tier (not verified against OpenAI's help page, which blocks fetching); the
-#: older models are the groups OpenAI's own announcement listed.
+#: OpenAI's complimentary-token groups at usage tiers 1-2 (the user's tier),
+#: as listed on OpenAI's data-sharing help page on 2026-09-14. A request that
+#: crosses a pool's limit is billed in full, not just the overflow.
 POOLS: tuple[Pool, ...] = (
     Pool(
         id="small",
         label="Luna/Terra",
         daily_tokens=2_500_000,
-        models=frozenset(
-            {
-                "gpt-5.6-luna",
-                "gpt-5.6-terra",
-                "gpt-4.1-mini",
-                "gpt-4.1-nano",
-                "gpt-4o-mini",
-                "o1-mini",
-                "o3-mini",
-                "o4-mini",
-            }
-        ),
+        models={
+            "gpt-5.6-terra": None,
+            "gpt-5.6-luna": None,
+            "gpt-5.4-mini": "2026-03-17",
+            "gpt-5.4-nano": "2026-03-17",
+            "gpt-5.1-codex-mini": None,
+            "gpt-5-mini": "2025-08-07",
+            "gpt-5-nano": "2025-08-07",
+            "gpt-4.1-mini": "2025-04-14",
+            "gpt-4.1-nano": "2025-04-14",
+            "gpt-4o-mini": "2024-07-18",
+            "o4-mini": "2025-04-16",
+            "o1-mini": "2024-09-12",
+            "codex-mini-latest": None,
+        },
     ),
     Pool(
         id="large",
         label="Sol",
         daily_tokens=250_000,
-        models=frozenset({"gpt-5.6-sol", "gpt-4.1", "gpt-4o", "o1", "o3", "gpt-4.5-preview"}),
+        models={
+            "gpt-5.6-sol": None,
+            "gpt-5.5": "2026-04-23",
+            "gpt-5.4": "2026-03-05",
+            "gpt-5.2": "2025-12-11",
+            "gpt-5.1": "2025-11-13",
+            "gpt-5.1-codex": None,
+            "gpt-5-codex": None,
+            "gpt-5": "2025-08-07",
+            "gpt-5-chat-latest": None,
+            "gpt-4.1": "2025-04-14",
+            "gpt-4o": "2024-11-20",
+            "o3": "2025-04-16",
+            "o1-preview": "2024-09-12",
+            "o1": "2024-12-17",
+        },
     ),
 )
 
 #: Pool id for OpenAI models in no free pool: counted, but every token bills.
 UNLISTED = "unlisted"
 
-_DATE_SUFFIX = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+_DATE_SUFFIX = re.compile(r"-(\d{4}-\d{2}-\d{2})$")
 _OPENAI_MODEL = re.compile(r"^(gpt-|o\d|codex-|chatgpt-)")
+
+#: gpt-4o has three free snapshots; any of them is fine, the newest is sent.
+_EXTRA_FREE_SNAPSHOTS = {"gpt-4o": frozenset({"2024-05-13", "2024-08-06"})}
 
 
 def ledger_path() -> Path:
@@ -109,27 +134,54 @@ def ledger_path() -> Path:
     return state_dir() / "openai-token-ledger.json"
 
 
-def normalize_model(model: str) -> str:
-    """Reduce a model id to its family name.
-
-    :param model: Raw id, e.g. ``"openai/gpt-5.6-luna-2026-07-01"``.
-    :returns: The family, e.g. ``"gpt-5.6-luna"``.
-    """
+def _split_model(model: str) -> tuple[str, str | None]:
+    """Split ``"openai/gpt-5-mini-2025-08-07"`` into ``("gpt-5-mini", "2025-08-07")``."""
     name = model.strip().lower().rsplit("/", 1)[-1]
-    return _DATE_SUFFIX.sub("", name)
+    match = _DATE_SUFFIX.search(name)
+    if match is None:
+        return name, None
+    return name[: match.start()], match.group(1)
+
+
+def normalize_model(model: str) -> str:
+    """Reduce a model id to its family name, e.g. ``"gpt-5.6-luna"``."""
+    return _split_model(model)[0]
+
+
+def free_model_id(model: str) -> str | None:
+    """Return the exact id to send so the call draws from a free pool.
+
+    An undated alias is pinned to the listed snapshot, since an alias can move
+    to a newer snapshot that is not free. A dated id must be a listed snapshot.
+
+    :param model: Requested id, e.g. ``"gpt-5-mini"``.
+    :returns: e.g. ``"gpt-5-mini-2025-08-07"``, or ``None`` when no free
+        snapshot matches.
+    """
+    family, date = _split_model(model)
+    for pool in POOLS:
+        if family not in pool.models:
+            continue
+        listed = pool.models[family]
+        if listed is None:
+            return family if date is None else None
+        if date is None or date == listed or date in _EXTRA_FREE_SNAPSHOTS.get(family, ()):
+            return f"{family}-{date or listed}"
+        return None
+    return None
 
 
 def pool_for(model: str) -> str | None:
     """Return the pool id a model draws from.
 
-    :returns: A :data:`POOLS` id, :data:`UNLISTED` for an OpenAI model in no
-        free pool, or ``None`` for a model that is not OpenAI's at all.
+    :returns: A :data:`POOLS` id, :data:`UNLISTED` for an OpenAI model (or
+        snapshot) in no free pool, or ``None`` for a model that is not
+        OpenAI's at all.
     """
-    name = normalize_model(model)
-    for pool in POOLS:
-        if name in pool.models:
-            return pool.id
-    return UNLISTED if _OPENAI_MODEL.match(name) else None
+    if free_model_id(model) is not None:
+        family = normalize_model(model)
+        return next(pool.id for pool in POOLS if family in pool.models)
+    return UNLISTED if _OPENAI_MODEL.match(normalize_model(model)) else None
 
 
 def utc_day(now: datetime | None = None) -> str:
@@ -143,7 +195,7 @@ def next_reset(now: datetime | None = None) -> datetime:
     return datetime(current.year, current.month, current.day, tzinfo=UTC) + timedelta(days=1)
 
 
-def _token_count(value: object) -> int:
+def token_count(value: object) -> int:
     """Coerce one usage field to a non-negative int (junk reads as 0)."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
@@ -192,7 +244,7 @@ def record(
     """
     if pool_for(model) is None:
         return 0
-    counts = {field: _token_count(usage.get(field)) for field in _COUNTED_FIELDS}
+    counts = {field: token_count(usage.get(field)) for field in _COUNTED_FIELDS}
     total = sum(counts.values())
     if total == 0:
         return 0
@@ -205,29 +257,6 @@ def record(
         by_source = bucket.setdefault("by_source", {})
         by_source[source] = int(by_source.get(source, 0)) + total
     return total
-
-
-def record_usage_delta(delta: Mapping[str, object], *, source: str = "session") -> int:
-    """Record every OpenAI model bucket of a ``session_usage`` delta.
-
-    Never raises: the ledger must not break usage persistence.
-
-    :param delta: A delta with a ``by_model`` map, e.g.
-        ``{"by_model": {"gpt-5.6-luna": {"input_tokens": 10, ...}}}``.
-    :returns: Tokens recorded across all models.
-    """
-    by_model = delta.get("by_model")
-    if not isinstance(by_model, Mapping):
-        return 0
-    recorded = 0
-    for model, bucket in by_model.items():
-        if not isinstance(model, str) or not isinstance(bucket, Mapping):
-            continue
-        try:
-            recorded += record(model, bucket, source=source)
-        except Exception as exc:  # noqa: BLE001 - counting is best-effort
-            logger.warning("openai token ledger write failed for %s: %s", model, exc)
-    return recorded
 
 
 def read_day(day: str | None = None, *, path: Path | None = None) -> dict[str, dict[str, Any]]:
@@ -270,7 +299,7 @@ def pool_usage(now: datetime | None = None, *, path: Path | None = None) -> list
         pool_id = pool_for(model)
         if pool_id is None or not isinstance(bucket, dict):
             continue
-        tokens = _token_count(bucket.get("tokens"))
+        tokens = token_count(bucket.get("tokens"))
         rows[pool_id]["tokens"] += tokens
         rows[pool_id]["models"][model] = tokens
     return list(rows.values())

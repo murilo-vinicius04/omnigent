@@ -94,6 +94,7 @@ from omnigent.server.routes.extensions import create_extensions_router
 from omnigent.server.routes.harnesses import create_harnesses_router
 from omnigent.server.routes.imports import create_imports_router
 from omnigent.server.routes.live_voice import create_live_voice_router
+from omnigent.server.routes.openai_budget_proxy import create_openai_budget_proxy_router
 from omnigent.server.routes.plan_limits import create_plan_limits_router
 from omnigent.server.routes.policy_registry import create_policy_registry_router
 from omnigent.server.routes.projects import create_projects_router
@@ -2651,6 +2652,8 @@ def create_app(
         prefix="/v1",
         tags=["plan-limits"],
     )
+    # Own-token auth: harness model calls carry no user session.
+    app.include_router(create_openai_budget_proxy_router(), prefix="/v1")
     app.include_router(
         create_extensions_router(
             resolved_extension_state,

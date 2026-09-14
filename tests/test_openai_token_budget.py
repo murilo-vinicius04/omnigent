@@ -21,16 +21,31 @@ def _ledger(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return path
 
 
-def test_pools_follow_the_model_family() -> None:
+def test_pools_follow_openais_listed_snapshots() -> None:
     assert budget.pool_for("gpt-5.6-luna") == "small"
-    assert budget.pool_for("openai/gpt-5.6-terra-2026-07-01") == "small"
+    assert budget.pool_for("openai/gpt-5.6-terra") == "small"
     assert budget.pool_for("gpt-5.6-sol") == "large"
-    # OpenAI, but in no free pool: every token is billed.
-    assert budget.pool_for("gpt-5.5") == budget.UNLISTED
-    assert budget.pool_for("o4") == budget.UNLISTED
-    # Not OpenAI at all: never counted.
+    assert budget.pool_for("gpt-5-mini-2025-08-07") == "small"
+    assert budget.pool_for("gpt-5.5") == "large"
+    # A snapshot OpenAI does not list is billed, even in a free family.
+    assert budget.pool_for("gpt-5-mini-2025-10-01") == budget.UNLISTED
+    assert budget.pool_for("gpt-5.6-terra-2026-07-01") == budget.UNLISTED
+    # OpenAI, but in no free pool at all.
+    assert budget.pool_for("o3-mini") == budget.UNLISTED
+    assert budget.pool_for("gpt-5.3-codex") == budget.UNLISTED
+    # Not OpenAI: never counted.
     assert budget.pool_for("claude-opus-5") is None
     assert budget.pool_for("gemini-3-pro") is None
+
+
+def test_aliases_are_pinned_to_the_free_snapshot() -> None:
+    assert budget.free_model_id("gpt-5-mini") == "gpt-5-mini-2025-08-07"
+    assert budget.free_model_id("gpt-5.5") == "gpt-5.5-2026-04-23"
+    assert budget.free_model_id("gpt-5.6-luna") == "gpt-5.6-luna"
+    assert budget.free_model_id("gpt-4o-2024-08-06") == "gpt-4o-2024-08-06"
+    assert budget.free_model_id("gpt-4o") == "gpt-4o-2024-11-20"
+    assert budget.free_model_id("gpt-5-mini-2025-10-01") is None
+    assert budget.free_model_id("o3-mini") is None
 
 
 def test_every_token_counts_including_cached_and_cache_writes() -> None:
@@ -55,7 +70,7 @@ def test_pools_accumulate_across_models_and_calls() -> None:
     budget.record("gpt-5.6-terra", {"input_tokens": 10, "output_tokens": 5})
     budget.record("gpt-5.6-luna", {"output_tokens": 45})
     budget.record("gpt-5.6-sol", {"input_tokens": 1_000})
-    budget.record("gpt-5.5", {"output_tokens": 7})
+    budget.record("o3-mini", {"output_tokens": 7})
     rows = {row["id"]: row for row in budget.pool_usage()}
     assert rows["small"]["tokens"] == 210
     assert rows["small"]["models"] == {"gpt-5.6-luna": 195, "gpt-5.6-terra": 15}
@@ -80,27 +95,6 @@ def test_days_are_utc_and_do_not_carry_over() -> None:
     assert budget.next_reset(late) == datetime(2026, 9, 15, tzinfo=UTC)
 
 
-def test_usage_delta_records_only_openai_models() -> None:
-    delta = {
-        "input_tokens": 999,
-        "by_model": {
-            "gpt-5.6-terra": {"input_tokens": 40, "cache_read_input_tokens": 60},
-            "claude-opus-5": {"input_tokens": 1_000},
-            "broken": "not a bucket",
-        },
-    }
-    assert budget.record_usage_delta(delta) == 100
-    assert budget.record_usage_delta({"input_tokens": 5}) == 0
-
-
-def test_usage_delta_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    def explode(*_args: Any, **_kwargs: Any) -> int:
-        raise OSError("disk full")
-
-    monkeypatch.setattr(budget, "record", explode)
-    assert budget.record_usage_delta({"by_model": {"gpt-5.6-luna": {"input_tokens": 1}}}) == 0
-
-
 def test_manual_add_is_tagged_by_source(capsys: pytest.CaptureFixture[str]) -> None:
     assert budget._main(["add", "gpt-5.6-terra", "--cached", "37598", "--output", "2004"]) == 0
     bucket = budget.read_day()["gpt-5.6-terra"]
@@ -113,7 +107,7 @@ def test_plan_limits_row_shows_each_free_pool(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(plan_limits, "_cache", None)
     budget.record("gpt-5.6-luna", {"input_tokens": 1_000_000, "output_tokens": 250_000})
     budget.record("gpt-5.6-sol", {"output_tokens": 249_999})
-    budget.record("gpt-5.5", {"output_tokens": 12_000})
+    budget.record("o3-mini", {"output_tokens": 12_000})
 
     row = plan_limits._openai_provider()
 
