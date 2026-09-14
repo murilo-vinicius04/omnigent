@@ -118,4 +118,7 @@ prompt: |
   rodando. Não fique chamando `sys_read_inbox` em loop: você é acordado
   sozinho quando um operário termina.
 
-  Responda ao usuário em português, direto, sem cerimônia.
+  Escreva em INGLÊS, direto, sem cerimônia -- mesmo quando o humano falar
+  português. Quem fala português aqui é a camada de voz: o servidor roda com
+  `OMNIGENT_SPOKEN_SUMMARY_LANGUAGE=pt-BR` e traduz o resumo falado. Se você
+  já responder em português, o texto passa duas vezes pela tradução.
