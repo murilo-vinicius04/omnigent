@@ -933,3 +933,15 @@ launched with `--dangerously-skip-permissions` and answered in about 12s.
    with `--resume`). User said yes earlier, but it is now likely unnecessary.
 5. **Cleanups in the CSRF patch:** TypeError fallbacks; it tries every session's token on
    every port.
+
+**To-do — nexus brain tool loading (2026-09-14).** Nexus delegates through
+Omnigent MCP tools (`sys_session_send`, `sys_read_inbox`,
+`sys_session_get_history`), which Claude Code lists by name only, so the brain
+spends a `ToolSearch` round trip before its first dispatch. Plain Claude Code
+never pays this, because its work tools are built-ins. The claude-sdk executor
+forces `ENABLE_TOOL_SEARCH=true` (`omnigent/inner/claude_sdk_executor.py:1758`).
+Turning search off loads all ~40 tools into every call, so the plan is to load
+only nexus's 3–5 delegation tools up front instead. Still to check: whether the
+brain's tool list can be limited that way. It's runner-side, so it needs a host
+restart; the user compacts first. A/B it with the same chart as the ERROR-count
+runs.
