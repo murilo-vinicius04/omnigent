@@ -5852,6 +5852,7 @@ async def _persist_companion_answer(
             {
                 "type": "message",
                 "role": "assistant",
+                "agent": "companion",
                 "content": [
                     {"type": "output_text", "text": answer},
                     # Carries the question so the bubble's "ask Claude
