@@ -51,6 +51,7 @@ import json
 import logging
 import time
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,23 @@ CLAUDE_OAUTH_BETA = "oauth-2025-04-20"
 #: Last good Antigravity reading, replayed when no agy is running to query.
 ANTIGRAVITY_CACHE_PATH = state_dir() / "plan-limits-antigravity.json"
 
+#: Last good Claude reading, replayed during rate limit cooldowns.
+CLAUDE_CACHE_PATH = state_dir() / "plan-limits-claude.json"
+
+_claude_cache: dict[str, Any] | None = None
+_claude_cooldown_until: float = 0.0
+_claude_had_failure: bool = False
+_claude_fetch_counter: int = 0
+_last_claude_row: dict[str, Any] | None = None
+_claude_lock: asyncio.Lock | None = None
+
+
+def _get_claude_lock() -> asyncio.Lock:
+    global _claude_lock
+    if _claude_lock is None:
+        _claude_lock = asyncio.Lock()
+    return _claude_lock
+
 #: agy bucket-id prefix -> tray label. agy groups models that share a quota
 #: pool; the prefix is the stable machine key ("gemini-5h", "3p-weekly"), while
 #: the group's own ``displayName`` ("Claude and GPT models") is too long for a
@@ -97,7 +115,7 @@ _CACHE_TTL_SECONDS = 60.0
 #: hanging the tray on a slow network.
 _HTTP_TIMEOUT_SECONDS = 6.0
 
-_cache: tuple[float, dict[str, Any]] | None = None
+_cache: tuple[float, dict[str, Any], float] | tuple[float, dict[str, Any]] | None = None
 
 
 def _window(kind: str, label: str, payload: Any) -> dict[str, Any] | None:
@@ -146,50 +164,211 @@ def _read_claude_token() -> str | None:
     return token if isinstance(token, str) and token else None
 
 
+def _parse_retry_after(raw: str | None, default: float = 60.0) -> float:
+    """Parse a Retry-After header into a cooldown duration in seconds.
+
+    Supports integer/float seconds or HTTP-date (RFC 7231). Defaults to
+    ``default`` (60.0s) when missing, negative, or invalid.
+    """
+    if not raw:
+        return default
+    cleaned = raw.strip()
+    try:
+        val = float(cleaned)
+        if val >= 0:
+            return val
+        return default
+    except ValueError:
+        pass
+    try:
+        dt = parsedate_to_datetime(cleaned)
+        if dt is not None:
+            return max(0.0, dt.timestamp() - time.time())
+    except (ValueError, TypeError, OverflowError):
+        pass
+    return default
+
+
+def _read_claude_cache() -> dict[str, Any] | None:
+    """Return the persisted last-good Claude reading, or ``None``."""
+    try:
+        blob = json.loads(CLAUDE_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(blob, dict) or not isinstance(blob.get("windows"), list):
+        return None
+    return blob
+
+
+def _write_claude_cache(windows: list[dict[str, Any]]) -> None:
+    """Persist a fresh Claude reading for replay during rate-limit cooldowns."""
+    payload = {
+        "windows": windows,
+        "as_of": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }
+    try:
+        CLAUDE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CLAUDE_CACHE_PATH.write_text(json.dumps(payload), encoding="utf-8")
+    except OSError as exc:
+        logger.debug("claude plan-limit cache write failed: %s", exc)
+
+
+def _cached_reading_age(cached: dict[str, Any] | None) -> float | None:
+    """Calculate the age in seconds of a cached reading's as_of timestamp."""
+    if not cached:
+        return None
+    as_of_str = cached.get("as_of")
+    if not isinstance(as_of_str, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(as_of_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return max(0.0, time.time() - dt.timestamp())
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _build_claude_stale_or_rate_limited(
+    *,
+    cooldown_until: float | None = None,
+) -> dict[str, Any]:
+    """Build a Claude provider row from cache (stale) or error when none exists."""
+    global _claude_cache
+    if _claude_cache is None:
+        _claude_cache = _read_claude_cache()
+
+    row: dict[str, Any] = {"id": "claude", "label": "Claude", "windows": []}
+    if cooldown_until is not None:
+        row["retry_at"] = round(cooldown_until)
+        row["reason"] = "rate_limited"
+
+    if _claude_cache is not None:
+        row["windows"] = _claude_cache["windows"]
+        row["state"] = "stale"
+        row["as_of"] = _claude_cache.get("as_of")
+        return row
+
+    row["state"] = "error"
+    if cooldown_until is not None:
+        row["reason"] = "rate_limited"
+    return row
+
+
 async def _claude_provider(client: httpx.AsyncClient) -> dict[str, Any]:
     """Build the ``claude`` provider row from the plan-usage endpoint."""
-    row: dict[str, Any] = {"id": "claude", "label": "Claude", "windows": []}
+    global _claude_cache, _claude_cooldown_until, _claude_had_failure
+    global _claude_fetch_counter, _last_claude_row
+
     token = _read_claude_token()
     if token is None:
-        row["state"] = "signed-out"
+        return {"id": "claude", "label": "Claude", "windows": [], "state": "signed-out"}
+
+    now_wall = time.time()
+    if now_wall < _claude_cooldown_until:
+        return _build_claude_stale_or_rate_limited(cooldown_until=_claude_cooldown_until)
+
+    start_counter = _claude_fetch_counter
+    lock = _get_claude_lock()
+    async with lock:
+        now_wall = time.time()
+        if now_wall < _claude_cooldown_until:
+            return _build_claude_stale_or_rate_limited(cooldown_until=_claude_cooldown_until)
+
+        # If a concurrent fetch completed while waiting for the lock, share its result
+        if _claude_fetch_counter != start_counter and _last_claude_row is not None:
+            return _last_claude_row
+
+        try:
+            resp = await client.get(
+                CLAUDE_USAGE_URL,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "anthropic-beta": CLAUDE_OAUTH_BETA,
+                    "anthropic-version": "2023-06-01",
+                },
+            )
+        except httpx.HTTPError as exc:
+            logger.debug("claude plan-limit fetch failed: %s", exc)
+            _claude_had_failure = True
+            row = _build_claude_stale_or_rate_limited()
+            _claude_fetch_counter += 1
+            _last_claude_row = row
+            return row
+
+        if resp.status_code == 401:
+            # Access tokens are short-lived; Claude Code refreshes them on its own
+            # next run. Report signed-out rather than error so the tray stays quiet.
+            row = {"id": "claude", "label": "Claude", "windows": [], "state": "signed-out"}
+            _claude_fetch_counter += 1
+            _last_claude_row = row
+            return row
+
+        if resp.status_code == 429 or 500 <= resp.status_code < 600:
+            retry_after = _parse_retry_after(resp.headers.get("retry-after"), default=60.0)
+            _claude_cooldown_until = now_wall + retry_after
+            _claude_had_failure = True
+
+            cached = _claude_cache or _read_claude_cache()
+            age = _cached_reading_age(cached)
+            age_str = f"{round(age)}s" if age is not None else "none"
+            logger.warning(
+                "Claude plan-limit cooldown started: status=%d, retry_after=%.0fs, cached_age=%s",
+                resp.status_code,
+                retry_after,
+                age_str,
+            )
+            row = _build_claude_stale_or_rate_limited(cooldown_until=_claude_cooldown_until)
+            _claude_fetch_counter += 1
+            _last_claude_row = row
+            return row
+
+        if resp.status_code != 200:
+            _claude_had_failure = True
+            row = _build_claude_stale_or_rate_limited()
+            _claude_fetch_counter += 1
+            _last_claude_row = row
+            return row
+
+        try:
+            data = resp.json()
+        except ValueError:
+            _claude_had_failure = True
+            row = _build_claude_stale_or_rate_limited()
+            _claude_fetch_counter += 1
+            _last_claude_row = row
+            return row
+
+        windows = [
+            w
+            for w in (
+                _window("session", "5h", data.get("five_hour")),
+                _window("weekly", "week", data.get("seven_day")),
+            )
+            if w is not None
+        ]
+
+        row: dict[str, Any] = {"id": "claude", "label": "Claude", "windows": windows}
+        if not windows:
+            row["state"] = "unsupported"
+            _claude_fetch_counter += 1
+            _last_claude_row = row
+            return row
+
+        row["state"] = "ok"
+        _claude_cache = {
+            "windows": windows,
+            "as_of": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        }
+        _write_claude_cache(windows)
+
+        if _claude_had_failure:
+            logger.info("Claude plan-limit fetch recovered: status=200")
+            _claude_had_failure = False
+
+        _claude_fetch_counter += 1
+        _last_claude_row = row
         return row
-    try:
-        resp = await client.get(
-            CLAUDE_USAGE_URL,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "anthropic-beta": CLAUDE_OAUTH_BETA,
-                "anthropic-version": "2023-06-01",
-            },
-        )
-    except httpx.HTTPError as exc:
-        logger.debug("claude plan-limit fetch failed: %s", exc)
-        row["state"] = "error"
-        return row
-    if resp.status_code == 401:
-        # Access tokens are short-lived; Claude Code refreshes them on its own
-        # next run. Report signed-out rather than error so the tray stays quiet.
-        row["state"] = "signed-out"
-        return row
-    if resp.status_code != 200:
-        row["state"] = "error"
-        return row
-    try:
-        data = resp.json()
-    except ValueError:
-        row["state"] = "error"
-        return row
-    windows = [
-        w
-        for w in (
-            _window("session", "5h", data.get("five_hour")),
-            _window("weekly", "week", data.get("seven_day")),
-        )
-        if w is not None
-    ]
-    row["windows"] = windows
-    row["state"] = "ok" if windows else "unsupported"
-    return row
 
 
 def _antigravity_windows(summary: dict[str, Any]) -> list[dict[str, Any]]:
@@ -310,8 +489,11 @@ async def collect_plan_limits() -> dict[str, Any]:
     """
     global _cache
     now = time.monotonic()
-    if _cache is not None and now - _cache[0] < _CACHE_TTL_SECONDS:
-        return _cache[1]
+    if _cache is not None:
+        cached_time, cached_payload = _cache[:2]
+        ttl = _cache[2] if len(_cache) > 2 else _CACHE_TTL_SECONDS
+        if now - cached_time < ttl:
+            return cached_payload
 
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
         # Antigravity's lookup does blocking port discovery (lsof / procfs), so
@@ -324,7 +506,13 @@ async def collect_plan_limits() -> dict[str, Any]:
         providers = [claude_row, antigravity_row]
 
     payload = {"providers": providers, "fetched_at": time.time()}
-    _cache = (now, payload)
+
+    ttl = _CACHE_TTL_SECONDS
+    now_wall = time.time()
+    if _claude_cooldown_until > now_wall:
+        ttl = min(_CACHE_TTL_SECONDS, max(0.0, _claude_cooldown_until - now_wall))
+
+    _cache = (now, payload, ttl)
     return payload
 
 

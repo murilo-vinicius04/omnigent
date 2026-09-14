@@ -60,6 +60,8 @@ export interface PlanLimitProvider {
   tier?: string | null;
   /** ISO-8601 capture instant for ``stale`` rows. */
   as_of?: string | null;
+  /** Unix epoch seconds when the rate limit cooldown ends. */
+  retry_at?: number | null;
 }
 
 export interface PlanLimits {
@@ -94,11 +96,16 @@ export async function fetchPlanLimits(signal?: AbortSignal): Promise<PlanLimits 
  * ``stale`` counts as usable: a last-known plan figure is still decision-useful
  * (and is labelled as such in the tray), whereas hiding it would make the pill
  * appear and vanish as sub-agents start and stop.
+ *
+ * An ``error`` provider with reason ``rate_limited`` is also usable so the tray
+ * can show a muted retry indicator rather than flickering away.
  */
 export function usableProviders(limits: PlanLimits | null): PlanLimitProvider[] {
   if (!limits) return [];
   return limits.providers.filter(
-    (p) => (p.state === "ok" || p.state === "stale") && p.windows.length > 0,
+    (p) =>
+      ((p.state === "ok" || p.state === "stale") && p.windows.length > 0) ||
+      (p.state === "error" && p.reason === "rate_limited"),
   );
 }
 
@@ -106,7 +113,7 @@ export function usableProviders(limits: PlanLimits | null): PlanLimitProvider[] 
  * The window a provider should lead with: the one closest to its cap.
  *
  * The tray has room for one number per vendor, and the binding constraint is
- * whichever window is fullest — a 90%-consumed 5-hour window matters more than
+ * whichever window is closest to its cap — a 90%-consumed 5-hour window matters more than
  * a 10%-consumed weekly one, regardless of declaration order.
  */
 export function tightestWindow(provider: PlanLimitProvider): PlanLimitWindow | null {
@@ -117,14 +124,19 @@ export function tightestWindow(provider: PlanLimitProvider): PlanLimitWindow | n
 }
 
 /**
- * Format a reset instant as a short local time for the tooltip.
+ * Format a reset instant or epoch timestamp as a short local time for the tooltip.
  *
- * @param iso - ISO-8601 instant, or ``null``.
+ * @param iso - ISO-8601 instant or unix epoch seconds, or ``null``.
  * @returns A localized short form, or ``null`` when absent/unparseable.
  */
-export function formatResetAt(iso: string | null | undefined): string | null {
-  if (!iso) return null;
-  const at = new Date(iso);
+export function formatResetAt(iso: string | number | null | undefined): string | null {
+  if (iso === null || iso === undefined || iso === "") return null;
+  const at =
+    typeof iso === "number"
+      ? new Date(iso * 1000)
+      : !Number.isNaN(Number(iso))
+        ? new Date(Number(iso) * 1000)
+        : new Date(iso);
   if (Number.isNaN(at.getTime())) return null;
   const sameDay = at.toDateString() === new Date().toDateString();
   return at.toLocaleTimeString([], {

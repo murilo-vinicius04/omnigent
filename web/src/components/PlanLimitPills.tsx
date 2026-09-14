@@ -99,6 +99,33 @@ export function PlanLimitPills() {
   return (
     <>
       {providers.map((provider) => {
+        if (provider.state === "error" && provider.reason === "rate_limited") {
+          const retryTime = formatResetAt(provider.retry_at);
+          return (
+            <Tooltip key={provider.id}>
+              <TooltipTrigger asChild>
+                <span
+                  data-testid={`plan-limit-${provider.id}`}
+                  className="flex items-center gap-1.5 opacity-50 text-muted-foreground"
+                  aria-label={`${provider.label} rate limited${
+                    retryTime ? `, retrying at ${retryTime}` : ", retrying"
+                  }`}
+                >
+                  <span className="text-sm tabular-nums" aria-hidden="true">
+                    {provider.label} —
+                  </span>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-56 text-center text-sm">
+                <p className="font-medium">{provider.label}</p>
+                <p className="text-muted-foreground">
+                  Anthropic rate limit, retrying{retryTime ? ` at ${retryTime}` : ""}
+                </p>
+              </TooltipContent>
+            </Tooltip>
+          );
+        }
+
         const window = tightestWindow(provider);
         if (!window) return null;
         const resets = formatResetAt(window.resets_at);
@@ -139,7 +166,9 @@ export function PlanLimitPills() {
               ))}
               {stale && (
                 <p className="text-muted-foreground">
-                  last known{asOf ? ` · ${asOf}` : ""}
+                  {provider.id === "claude"
+                    ? `${asOf ? `as of ${asOf} — ` : ""}Anthropic rate limit, retrying`
+                    : `last known${asOf ? ` · ${asOf}` : ""}`}
                 </p>
               )}
             </TooltipContent>
