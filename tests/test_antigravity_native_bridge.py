@@ -1334,6 +1334,123 @@ def test_draft_in_input_region_matches_short_message_by_composer_change() -> Non
     assert not _mod._draft_in_input_region(pane_after_submit, "", baseline)
 
 
+# ---------------------------------------------------------------------------
+# Pane fixtures from production log excerpts (scrolled draft & task-row layout)
+# ---------------------------------------------------------------------------
+
+_SCROLLED_PANE_A = (
+    "● Read(~/wt/friendly-layer/omnigent/server/routes/plan_limits.py)\n"
+    "──────────────────────────────────────────────────────────────────────────────────\n"
+    "  contents. Get <version> from `claude --version`, and say whether that matches\n"
+    "  the UA you used earlier.\n"
+    "  3) Does _claude_provider log the non-200 status anywhere? Give path:line. Also\n"
+    "  grep the server log files under ~/.omnigent/logs/server/ for 'oauth/usage' or\n"
+    "  'plan_limits' warnings, and paste up to 10 lines with timestamps.\n"
+    "  4) Show with path:line whether this code ever set a User-Agent in earlier\n"
+    "  commits: `git -C /home/nexus/wt/friendly-layer log -p -S 'User-Agent' --\n"
+    "  omnigent/server/routes/plan_limits.py | head -60`.\n"
+    "  Done when you return: the 4-call table, a one-line verdict (H1, H2, or\n"
+    "  inconclusive) with the reason, then the outputs for 1, 3 and 4.\n"
+    "──────────────────────────────────────────────────────────────────────────────────\n"
+    "                                                           Gemini 3.8 Flash · high"
+)
+
+_LONG_DRAFT_CONTENT_A = (
+    "Good report, and the /v1/plan-limits curl output settles the WHAT. The WHY still "
+    "needs raw evidence, and your report ended up truncated in transport. Still "
+    "read-only: no edits, builds or restarts. Do NOT use ask_question or anything "
+    "that waits for a human.\n\n"
+    "1) Resend only the part of section C that came after 'Adjust `_CACHE_TTL_SECONDS`', "
+    "plus section D. Under 1500 characters.\n\n"
+    "2) Separate the two hypotheses: (H1) Anthropic's gateway filters on User-Agent; "
+    "(H2) the endpoint is genuinely rate limited, because polling every 60s exceeds its budget, "
+    "and the claude-code UA just lands in a different bucket or window. Run at most 4 calls to "
+    "https://api.anthropic.com/api/oauth/usage, spaced at least 15s apart, alternating the UA: "
+    "python-httpx/0.28.1, then claude-code/<version>, then python-httpx/0.28.1, then "
+    "claude-code/<version>. Use the same headers the server sends (plan_limits.py) plus the UA. "
+    "For each call paste ONLY: timestamp, UA used, HTTP status, the retry-after header and any "
+    "anthropic-ratelimit-* headers, and, on 200, just the two utilization numbers. "
+    "NEVER print the token, the Authorization header, or the credentials file contents. "
+    "Get <version> from `claude --version`, and say whether that matches the UA you "
+    "used earlier.\n\n"
+    "3) Does _claude_provider log the non-200 status anywhere? Give path:line. Also grep "
+    "the server log files under ~/.omnigent/logs/server/ for 'oauth/usage' or 'plan_limits' "
+    "warnings, and paste up to 10 lines with timestamps.\n\n"
+    "4) Show with path:line whether this code ever set a User-Agent in earlier commits: "
+    "`git -C /home/nexus/wt/friendly-layer log -p -S 'User-Agent' -- "
+    "omnigent/server/routes/plan_limits.py | head -60`.\n\n"
+    "Done when you return: the 4-call table, a one-line verdict (H1, H2, or inconclusive) "
+    "with the reason, then the outputs for 1, 3 and 4."
+)
+
+_TASK_ROW_PANE_B = (
+    "● Read(~/wt/friendly-layer/omni...er/routes/plan_limits.py) (ctrl+o to expand)\n"
+    "  Waiting for the background task to complete all 4 API calls...\n"
+    "────────────────────────────────────────────────────────────────────────────────\n"
+    "> Your background job (task-24) should be finished by now. Read its log, then\n"
+    "  finish steps 3 and 4, and return the final report: a table of the 4 calls, a\n"
+    "  one-line verdict (H1, H2, or inconclusive) with the reason, and the raw\n"
+    "  outputs for 1, 3 and 4. Do not start new API calls. Do not end your turn\n"
+    "  while waiting; if the job is still running, wait for it in this turn.\n"
+    "────────────────────────────────────────────────────────────────────────────────\n"
+    "  ● [09:05:35] python3 - << 'EOF' import json, pathlib, time, httpx f... running\n"
+    "────────────────────────────────────────────────────────────────────────────────\n"
+    "                                    Gemini 3.8 Flash · high · 1 task(s) · /tasks"
+)
+
+_DRAFT_CONTENT_B = (
+    "Your background job (task-24) should be finished by now. Read its log, then\n"
+    "finish steps 3 and 4, and return the final report: a table of the 4 calls, a\n"
+    "one-line verdict (H1, H2, or inconclusive) with the reason, and the raw\n"
+    "outputs for 1, 3 and 4. Do not start new API calls. Do not end your turn\n"
+    "while waiting; if the job is still running, wait for it in this turn."
+)
+
+_BASELINE_PANE_B = (
+    "────────────────────────────────────────────────────────────────────────────────\n"
+    ">\n"
+    "────────────────────────────────────────────────────────────────────────────────\n"
+    "  ● [09:05:35] python3 - << 'EOF' import json, pathlib, time, httpx f... running\n"
+    "────────────────────────────────────────────────────────────────────────────────\n"
+    "                                    Gemini 3.8 Flash · high · 1 task(s) · /tasks"
+)
+
+_TRANSCRIPT_ONLY_PANE_N = (
+    "● Read(~/wt/friendly-layer/omnigent/server/routes/plan_limits.py) (ctrl+o to expand)\n"
+    "> Your background job (task-24) should be finished by now. Read its log, then\n"
+    "  finish steps 3 and 4, and return the final report: a table of the 4 calls, a\n"
+    "  one-line verdict (H1, H2, or inconclusive) with the reason, and the raw\n"
+    "  outputs for 1, 3 and 4. Do not start new API calls. Do not end your turn\n"
+    "  while waiting; if the job is still running, wait for it in this turn.\n"
+    "────────────────────────────────────────────────────────────────────────────────\n"
+    ">\n"
+    "────────────────────────────────────────────────────────────────────────────────\n"
+    "  ● [09:05:35] python3 - << 'EOF' import json, pathlib, time, httpx f... running\n"
+    "────────────────────────────────────────────────────────────────────────────────\n"
+    "                                    Gemini 3.8 Flash · high · 1 task(s) · /tasks"
+)
+
+
+def test_draft_in_input_region_finds_long_scrolled_draft() -> None:
+    """(A) A long draft whose first line scrolled off-screen is found in the composer."""
+    baseline = "> "
+    needle = _mod._submit_needle(_LONG_DRAFT_CONTENT_A)
+    assert _mod._draft_in_input_region(_SCROLLED_PANE_A, needle, baseline)
+
+
+def test_draft_in_input_region_finds_draft_with_task_row_layout() -> None:
+    """(B) A 3-separator layout with a background task row extracts composer, finding draft."""
+    baseline = _mod._agy_input_region(_BASELINE_PANE_B)
+    needle = _mod._submit_needle(_DRAFT_CONTENT_B)
+    assert _mod._draft_in_input_region(_TASK_ROW_PANE_B, needle, baseline)
+
+
+def test_draft_in_input_region_ignores_message_in_transcript_only() -> None:
+    """(N) Message text appearing only in transcript history above composer is not found."""
+    needle = _mod._submit_needle(_DRAFT_CONTENT_B)
+    assert not _mod._draft_in_input_region(_TRANSCRIPT_ONLY_PANE_N, needle, "")
+
+
 def test_format_pane_debug_tail_redacts_email_and_secrets() -> None:
     """The diagnostic pane tail redacts emails and common secret shapes (#1598)."""
     pane = (

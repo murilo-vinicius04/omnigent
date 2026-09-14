@@ -1322,21 +1322,46 @@ def _paste_payload_bytes(text: str) -> bytes:
     return bytes(body)
 
 
+class _SubmitNeedle(str):
+    """A submit needle holding primary (head) and tail candidate strings.
+
+    Subclasses :class:`str` so callers expecting a single needle string
+    continue to see the first-line needle unchanged, while the input region
+    checker can match either the head or tail to tolerate composer scrolling.
+    """
+
+    needles: tuple[str, ...]
+
+    def __new__(cls, head: str, *extra_needles: str) -> _SubmitNeedle:
+        obj = super().__new__(cls, head)
+        needles = [head]
+        for extra in extra_needles:
+            stripped = extra.strip()
+            if stripped and stripped not in needles:
+                needles.append(stripped)
+        obj.needles = tuple(needles)
+        return obj
+
+
 def _submit_needle(content: str) -> str:
     """
     A stable single-line substring used to confirm the paste rendered in the pane.
 
     :param content: Message content.
-    :returns: Up to 24 chars of the first line with at least 4 non-space chars,
-        or ``""`` when no such line exists (the caller then skips the
-        paste-commit poll and submits after the settle pause).
+    :returns: Up to 24 chars of the first line with at least 4 non-space chars
+        (with tail candidates attached for multi-line or long drafts), or ``""``
+        when no such line exists (the caller then skips the paste-commit poll
+        and submits after the settle pause).
     """
-    for line in content.splitlines():
-        stripped = line.strip()
-        if len(stripped) >= 4:
-            return stripped[:24]
-    stripped = content.strip()
-    return stripped[:24] if len(stripped) >= 4 else ""
+    qualifying = [line.strip() for line in content.splitlines() if len(line.strip()) >= 4]
+    if not qualifying:
+        stripped = content.strip()
+        return stripped[:24] if len(stripped) >= 4 else ""
+    head = qualifying[0][:24]
+    last = qualifying[-1]
+    tail = last[-24:].strip()
+    tail_head = last[:24].strip()
+    return _SubmitNeedle(head, tail, tail_head)
 
 
 def _redact_pane_secrets(text: str) -> str:
@@ -1366,6 +1391,22 @@ def _format_pane_debug_tail(pane: str) -> str:
     return _redact_pane_secrets(tail) or "<empty pane>"
 
 
+def _is_agy_task_region(lines_slice: list[str]) -> bool:
+    """Return whether *lines_slice* represents a background task row below the composer.
+
+    agy renders background tasks below the editable composer, enclosed in their
+    own horizontal rule (e.g. ``  ● [09:05:35] python3 ... running``).
+    """
+    non_empty = [line.strip() for line in lines_slice if line.strip()]
+    if not non_empty:
+        return False
+    if any(line.startswith(">") for line in non_empty):
+        return False
+    return any("●" in line for line in non_empty) and all(
+        line.startswith("●") or "● [" in line for line in non_empty
+    )
+
+
 def _agy_input_region(pane: str) -> str:
     """
     Return agy's live bottom composer region, excluding transcript history.
@@ -1375,12 +1416,23 @@ def _agy_input_region(pane: str) -> str:
     above a fresh empty composer, so checking the full pane would falsely think
     the draft is still present. The last separator pair scopes matching to the
     currently editable input box, mirroring Kiro's input-region guard.
+
+    When agy renders background tasks below the composer, an extra separator-bounded
+    task row sits between the composer and status bar. Trailing task regions are
+    skipped so the slice returns the composer itself.
     """
     lines = pane.splitlines()
     separator_indexes = [index for index, line in enumerate(lines) if _agy_separator_line(line)]
     if len(separator_indexes) >= 2:
-        start = separator_indexes[-2] + 1
-        end = separator_indexes[-1]
+        end_idx = len(separator_indexes) - 1
+        start_idx = end_idx - 1
+        while start_idx > 0 and _is_agy_task_region(
+            lines[separator_indexes[start_idx] + 1 : separator_indexes[end_idx]]
+        ):
+            end_idx = start_idx
+            start_idx -= 1
+        start = separator_indexes[start_idx] + 1
+        end = separator_indexes[end_idx]
         return "\n".join(lines[start:end])
     return "\n".join(lines[-8:])
 
@@ -1420,15 +1472,32 @@ def _draft_in_input_region(pane: str, needle: str, baseline_region: str) -> bool
     # match; the placeholder itself IS the draft (see _AGY_PASTE_PLACEHOLDER_RE).
     if any(_AGY_PASTE_PLACEHOLDER_RE.search(line) for line in candidates):
         return True
-    normalized_needle = needle.strip() if needle else ""
-    if not normalized_needle:
+    if hasattr(needle, "needles"):
+        needles = list(needle.needles)
+    elif isinstance(needle, (tuple, list)):
+        needles = [str(n).strip() for n in needle if str(n).strip()]
+    elif needle and needle.strip():
+        needles = [needle.strip()]
+    else:
+        needles = []
+    if not needles:
         return bool(candidates)
-    return any(
-        line == normalized_needle
-        or line.startswith(normalized_needle)
-        or normalized_needle in line
-        for line in candidates
-    )
+    norm_lines = [" ".join(line.split()) for line in candidates]
+    norm_region = " ".join(norm_lines)
+    for n in needles:
+        norm_needle = " ".join(n.split())
+        if not norm_needle:
+            continue
+        if norm_needle in norm_region:
+            return True
+        if any(
+            line == norm_needle
+            or line.startswith(norm_needle)
+            or norm_needle in line
+            for line in norm_lines
+        ):
+            return True
+    return False
 
 
 def _agy_draft_candidate_lines(region: str) -> list[str]:
