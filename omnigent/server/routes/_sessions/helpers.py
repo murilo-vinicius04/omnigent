@@ -8105,6 +8105,46 @@ async def _await_turn_settled(
         await asyncio.sleep(_TURN_SETTLE_POLL_S)
 
 
+async def _resolve_edge_response_id(conversation_store: Any, session_id: str) -> str | None:
+    """Find the turn an idle edge ended when the edge named none.
+
+    The Stop edge can reach the server a moment before the turn's closing
+    message is stored, and then carries no response id. The turn it ended is
+    the one whose reply follows the newest user message, so poll briefly for it.
+
+    :param conversation_store: Store holding the session's items.
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :returns: The reply's response id, or ``None`` when no reply follows the
+        newest user message before the settle deadline.
+    """
+    deadline = time.monotonic() + _TURN_SETTLE_TIMEOUT_S
+    while True:
+        try:
+            page = await asyncio.to_thread(
+                conversation_store.list_items, session_id, 20, None, None, "desc", "message"
+            )
+        except Exception:  # noqa: BLE001 - cannot tell which turn, so name none
+            return None
+        for item in page.data:
+            data = item.data
+            if not isinstance(data, MessageData):
+                continue
+            if data.role == "user":
+                break
+            if data.role != "assistant" or data.is_meta:
+                continue
+            kinds = {
+                part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
+                for part in data.content or []
+            }
+            # A summary or companion answer rides on a turn; it is not the reply.
+            if "output_text" in kinds and not kinds & {"spoken_summary", "companion_answer"}:
+                return item.response_id
+        if time.monotonic() >= deadline:
+            return None
+        await asyncio.sleep(_TURN_SETTLE_POLL_S)
+
+
 async def _native_turn_text(
     conversation_store: Any,
     session_id: str,
@@ -8583,6 +8623,14 @@ async def _attach_native_spoken_summary(
         live-update monitor) out of it.
     :returns: None.
     """
+    if conversation_store is not None and not response_id:
+        response_id = await _resolve_edge_response_id(conversation_store, session_id)
+        if response_id:
+            _logger.info(
+                "spoken summary: idle edge named no turn for session=%s; using reply %s",
+                session_id,
+                response_id,
+            )
     if conversation_store is None or not response_id:
         _logger.info(
             "spoken summary skipped: session=%s reason=%s",

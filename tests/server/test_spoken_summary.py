@@ -2848,3 +2848,107 @@ We will deploy to staging next.
     assert "Deploy service to staging" not in captured_prompt
     assert "The migration has successfully completed" in captured_prompt
 
+
+class _StoreWithItems(_FakeConversationStore):
+    """Fake store that also lists stored items, newest first."""
+
+    def __init__(self, items: list[ConversationItem], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.items = items
+
+    def list_items(self, _session_id: str, *_args: Any, **_kwargs: Any) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(data=list(reversed(self.items)), has_more=False)
+
+
+def _message(response_id: str, role: str, *parts: dict[str, Any]) -> ConversationItem:
+    from omnigent.entities import MessageData
+
+    return ConversationItem(
+        id=f"item_{response_id}_{role}_{len(parts)}",
+        type="message",
+        response_id=response_id,
+        data=MessageData(
+            role=role, content=list(parts), agent="claude" if role == "assistant" else None
+        ),
+        created_at=1,
+        status="completed",
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_idle_edge_without_a_response_id_summarizes_the_reply_it_ended(
+    monkeypatch: Any,
+) -> None:
+    """The Stop edge beat the stored reply and named no turn, so the summary was skipped.
+
+    The turn it ended is the reply after the newest user message; earlier
+    turns and summaries riding on them must not be picked instead.
+    """
+    from omnigent.server.routes._sessions import helpers
+
+    clear_spoken_summary_cache()
+    reply = {"type": "output_text", "text": _LONG_RESPONSE_TEXT}
+    store = _StoreWithItems(
+        [
+            _message("resp_old", "assistant", {"type": "output_text", "text": "old reply"}),
+            _message("resp_old", "assistant", {"type": "spoken_summary", "text": "old"}),
+            _message("resp_user", "user", {"type": "input_text", "text": "but it's just codex?"}),
+            _message("resp_new", "assistant", reply),
+        ],
+        conversation=Conversation(
+            id="conv_edge_no_id",
+            root_conversation_id="conv_edge_no_id",
+            created_at=1,
+            updated_at=1,
+            parent_conversation_id=None,
+            kind="default",
+            project_id="proj_edge_no_id",
+        ),
+        project_config={"spoken_summary": {"enabled": True, "language": "en-US"}},
+    )
+    turns: list[str] = []
+
+    async def _settled(_store: Any, _session: str, response_id: str) -> None:
+        turns.append(response_id)
+
+    async def _turn_text(*_args: Any, **_kwargs: Any) -> str:
+        return _LONG_RESPONSE_TEXT
+
+    async def _fake_generate(text: str, **_kwargs: Any) -> tuple[dict[str, Any], None]:
+        return {"type": "spoken_summary", "text": "Resumo.", "lang": "en-US"}, None
+
+    monkeypatch.setattr(helpers, "_await_turn_settled", _settled)
+    monkeypatch.setattr(helpers, "_native_turn_text", _turn_text)
+    with patch("omnigent.server.spoken_summary.generate_spoken_summary", _fake_generate):
+        await helpers._attach_native_spoken_summary(
+            store,  # type: ignore[arg-type]
+            "conv_edge_no_id",
+            None,
+            None,
+        )
+
+    assert turns == ["resp_new"]
+    assert [item.response_id for item in store.appended] == ["resp_new"]
+
+
+@pytest.mark.asyncio
+async def test_an_idle_edge_without_a_reply_after_the_question_still_skips(
+    monkeypatch: Any,
+) -> None:
+    """With no reply stored after the newest question, no older turn is summarized."""
+    from omnigent.server.routes._sessions import helpers
+
+    reply = {"type": "output_text", "text": _LONG_RESPONSE_TEXT}
+    store = _StoreWithItems(
+        [
+            _message("resp_old", "assistant", reply),
+            _message("resp_user", "user", {"type": "input_text", "text": "and now?"}),
+        ]
+    )
+    monkeypatch.setattr(helpers, "_TURN_SETTLE_TIMEOUT_S", 0.0)
+
+    assert await helpers._resolve_edge_response_id(store, "conv_waiting") is None
+    await helpers._attach_native_spoken_summary(store, "conv_waiting", None, None)  # type: ignore[arg-type]
+    assert store.appended == []
