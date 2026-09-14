@@ -12,6 +12,12 @@ executor:
   type: omnigent
   config:
     harness: antigravity-native
+    # Sem isto o agy para na primeira ferramenta e pergunta "Run this command?"
+    # a um humano que não está olhando: o operário fica de pé, ocupado e mudo,
+    # e o nexus espera para sempre. `bypassPermissions` vira
+    # `--dangerously-skip-permissions` -- o único controle prévio que o agy
+    # aceita, e ele é tudo-ou-nada. O freio real aqui é a policy abaixo.
+    permission_mode: bypassPermissions
 
 prompt: |
   You are agy, Google Antigravity's CLI coding sub-agent, dispatched by the
