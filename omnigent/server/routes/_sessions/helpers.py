@@ -2748,6 +2748,119 @@ def _handle_external_session_todos(
     session_stream.publish(session_id, event.model_dump())
 
 
+def _update_session_todos_from_text(session_id: str, text: str) -> bool:
+    """Extract a to-do block from assistant text, updating cache and publishing SSE event.
+
+    If a to-do block is found, updates ``_session_todos_cache`` and publishes
+    a ``session.todos`` SSE event. If no block is found, leaves the previous
+    cached list untouched.
+
+    :param session_id: Session/conversation identifier.
+    :param text: Markdown text of the assistant message.
+    :returns: True if a to-do block was found and processed, False otherwise.
+    """
+    from omnigent.server.todo_extract import extract_todos
+
+    result = extract_todos(text)
+    if not result.found:
+        return False
+
+    todos: list[dict[str, Any]] = [
+        {
+            "content": t["content"],
+            "status": t["status"],
+            "activeForm": "",
+        }
+        for t in result.todos
+    ]
+    _session_todos_cache[session_id] = todos
+    event = SessionTodosEvent(
+        type="session.todos",
+        conversation_id=session_id,
+        todos=todos,
+    )
+    session_stream.publish(session_id, event.model_dump())
+    return True
+
+
+def _rebuild_session_todos_from_history(
+    session_id: str,
+    items: list[ConversationItem] | None = None,
+    conversation_store: ConversationStore | None = None,
+) -> list[dict[str, Any]]:
+    """Rebuild ``_session_todos_cache`` for a session by scanning backwards through history.
+
+    When the server restarts, the in-memory cache is empty. If a snapshot is
+    requested, this scans backwards through stored assistant messages for the
+    most recent to-do block and populates the cache.
+
+    :param session_id: Session/conversation identifier.
+    :param items: Committed items in chronological order, if already loaded.
+    :param conversation_store: Conversation store for fetching items if needed.
+    :returns: The rebuilt todo list, or an empty list if none found.
+    """
+    if session_id in _session_todos_cache:
+        return _session_todos_cache[session_id]
+
+    from omnigent.server.todo_extract import extract_todos
+
+    # 1. First scan backwards through the provided items list if available
+    if items:
+        for item in reversed(items):
+            data = item.data
+            if getattr(data, "role", None) != "assistant" or getattr(data, "is_meta", False):
+                continue
+            if getattr(data, "agent", None) == "spoken_summary":
+                continue
+            text = _message_text(getattr(data, "content", None) or [])
+            if not text:
+                continue
+            result = extract_todos(text)
+            if result.found:
+                todos: list[dict[str, Any]] = [
+                    {"content": t["content"], "status": t["status"], "activeForm": ""}
+                    for t in result.todos
+                ]
+                _session_todos_cache[session_id] = todos
+                return todos
+
+    # 2. If not found and conversation_store is available, query store in desc order
+    if conversation_store is not None:
+        try:
+            page = conversation_store.list_items(
+                session_id,
+                limit=100,
+                order="desc",
+                type="message",
+            )
+            for item in page.data:
+                data = item.data
+                if getattr(data, "role", None) != "assistant" or getattr(data, "is_meta", False):
+                    continue
+                if getattr(data, "agent", None) == "spoken_summary":
+                    continue
+                text = _message_text(getattr(data, "content", None) or [])
+                if not text:
+                    continue
+                result = extract_todos(text)
+                if result.found:
+                    todos = [
+                        {"content": t["content"], "status": t["status"], "activeForm": ""}
+                        for t in result.todos
+                    ]
+                    _session_todos_cache[session_id] = todos
+                    return todos
+        except Exception:  # noqa: BLE001
+            _logger.warning(
+                "Failed to scan conversation items for todos in session=%s",
+                session_id,
+                exc_info=True,
+            )
+
+    _session_todos_cache[session_id] = []
+    return []
+
+
 def _publish_external_conversation_item(
     session_id: str,
     item: ConversationItem,
@@ -7473,6 +7586,7 @@ async def _flush_relay_text(
     spoken_summary_usage: dict[str, Any] | None = None
     cancelled_exc: BaseException | None = None
     if is_terminal_completion and deny_reason is None:
+        _update_session_todos_from_text(session_id, text)
         try:
             from omnigent.server.spoken_summary import (
                 SPOKEN_SUMMARY_THRESHOLD_CHARS,
@@ -8501,6 +8615,7 @@ async def _attach_native_spoken_summary(
             response_id,
         )
         return
+    _update_session_todos_from_text(session_id, text)
     try:
         from omnigent.server.spoken_summary import (
             SPOKEN_SUMMARY_THRESHOLD_CHARS,
@@ -11786,6 +11901,7 @@ __all__ = [
     "_query_host_runner_status",
     "_read_state_entry",
     "_read_upload_capped",
+    "_rebuild_session_todos_from_history",
     "_record_daily_cost",
     "_registered_runner_id",
     "_reject_reserved_cost_control_label_seed",
@@ -11829,6 +11945,7 @@ __all__ = [
     "_targeted_elicitation_event",
     "_title_content_from_item",
     "_truncate_label",
+    "_update_session_todos_from_text",
     "_usage_by_model_for_display",
     "_utc_day",
     "_validate_external_reasoning_effort",

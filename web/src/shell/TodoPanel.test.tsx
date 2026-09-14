@@ -81,4 +81,32 @@ describe("TodoPanel", () => {
     render(<TodoPanel />);
     expect(screen.queryByText("Pending action")).toBeNull();
   });
+
+  describe("twoState mode", () => {
+    it("renders empty placeholder message when todo list is empty in twoState mode", () => {
+      h.todos = [];
+      render(<TodoPanel twoState />);
+      expect(screen.getByText("No to-do items yet.")).toBeInTheDocument();
+      expect(screen.getByText("0 items")).toBeInTheDocument();
+    });
+
+    it("renders header with completed count and items in pending/done states without activeForm subtitle", () => {
+      h.todos = [
+        { content: "Task 1", status: "pending", activeForm: "Doing Task 1" },
+        { content: "Task 2", status: "completed", activeForm: "Done Task 2" },
+      ];
+      render(<TodoPanel twoState />);
+      expect(screen.getByText("To-do")).toBeInTheDocument();
+      expect(screen.getByText("1/2 done")).toBeInTheDocument();
+
+      const task1 = screen.getByText("Task 1");
+      const task2 = screen.getByText("Task 2");
+      expect(task1.className).not.toContain("line-through");
+      expect(task2.className).toContain("line-through");
+
+      // In twoState mode, activeForm subtitle must not be rendered
+      expect(screen.queryByText("Doing Task 1")).toBeNull();
+      expect(screen.queryByText("Done Task 2")).toBeNull();
+    });
+  });
 });

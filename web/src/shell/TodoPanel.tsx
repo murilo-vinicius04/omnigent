@@ -8,8 +8,9 @@ interface TodoItem {
   activeForm: string;
 }
 
-interface TodoPanelProps {
+export interface TodoPanelProps {
   frameless?: boolean;
+  twoState?: boolean;
 }
 
 function TodoIcon({ status }: { status: TodoItem["status"] }) {
@@ -23,15 +24,74 @@ function TodoIcon({ status }: { status: TodoItem["status"] }) {
 }
 
 /**
- * Displays the active task list published by any harness.
+ * Displays the active task list published by any harness or parsed from
+ * assistant turn messages.
  *
  * Reads from `useChatStore.todos`, populated by the session snapshot and
- * `session.todos` SSE updates. Renders nothing while the list is empty.
+ * `session.todos` SSE updates.
  */
-export function TodoPanel({ frameless = false }: TodoPanelProps) {
+export function TodoPanel({ frameless = false, twoState = false }: TodoPanelProps) {
   const todos = useChatStore((s) => s.todos);
 
-  if (todos.length === 0) return null;
+  if (todos.length === 0 && !twoState) return null;
+
+  const completedCount = todos.filter((t) => t.status === "completed").length;
+
+  if (twoState) {
+    return (
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col bg-card",
+          !frameless && "border-t border-b border-border",
+        )}
+        data-testid="todo-panel"
+      >
+        <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+          <span className="text-ui font-medium">To-do</span>
+          <span className="text-xs text-muted-foreground">
+            {todos.length > 0 ? `${completedCount}/${todos.length} done` : "0 items"}
+          </span>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
+          {todos.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              No to-do items yet.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-1">
+              {todos.map((todo, i) => {
+                const isDone = todo.status === "completed";
+                return (
+                  <li
+                    // eslint-disable-next-line react/no-array-index-key
+                    key={i}
+                    className={cn(
+                      "flex items-center gap-2 rounded px-1.5 py-1 text-sm",
+                      isDone && "opacity-50",
+                    )}
+                  >
+                    {isDone ? (
+                      <CheckCircle2Icon className="h-3.5 w-3.5 shrink-0 text-green-500" />
+                    ) : (
+                      <CircleIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    )}
+                    <span
+                      className={cn(
+                        "min-w-0 block break-words leading-snug",
+                        isDone && "line-through",
+                      )}
+                    >
+                      {todo.content}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

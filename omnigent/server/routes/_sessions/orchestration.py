@@ -277,6 +277,7 @@ from omnigent.server.routes._sessions.helpers import (
     _publish_terminal_pending,
     _query_host_runner_status,
     _read_state_entry,
+    _rebuild_session_todos_from_history,
     _record_daily_cost,
     _reject_reserved_cost_control_label_seed,
     _reject_server_reserved_label_seed,
@@ -985,6 +986,7 @@ def _build_session_response(
     viewer_id: str | None = None,
     agent_store: AgentStore | None = None,
     agent_cache: AgentCache | None = None,
+    conversation_store: ConversationStore | None = None,
 ) -> SessionResponse:
     """
     Build a :class:`SessionResponse` from store-side entities.
@@ -1144,10 +1146,14 @@ def _build_session_response(
         workspace=conv.workspace,
         git_branch=conv.git_branch,
         archived=conv.archived,
-        # Replay the latest todo list for claude-native sessions.
-        # Populated by _handle_external_session_todos; empty list for
-        # non-claude-native sessions or before the first poll tick.
-        todos=_session_todos_cache.get(conv.id, []),
+        # Replay the latest todo list for sessions.
+        # Populated by _handle_external_session_todos or parsed from turn end;
+        # rebuilt from message history on cold cache miss.
+        todos=(
+            _session_todos_cache[conv.id]
+            if conv.id in _session_todos_cache
+            else _rebuild_session_todos_from_history(conv.id, items, conversation_store)
+        ),
         skills=skills or [],
         model_options=[
             NativeModelOption.model_validate(option) for option in (model_options or [])
@@ -10427,6 +10433,7 @@ async def _get_session_snapshot(
         viewer_id=viewer_id,
         agent_store=agent_store,
         agent_cache=agent_cache,
+        conversation_store=conv_store,
     )
 
 

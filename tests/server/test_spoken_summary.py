@@ -2802,3 +2802,49 @@ async def test_no_session_still_uses_the_one_shot(monkeypatch):
 
     await module.generate_spoken_summary(_LONG_RESPONSE_TEXT, language="en")
     assert ran_cold is True
+
+
+@pytest.mark.asyncio
+async def test_spoken_summary_omits_todo_block(monkeypatch) -> None:
+    """To-do block is stripped from the text handed to the rewriter so it is not spoken."""
+    from omnigent.server import spoken_summary as module
+
+    captured_prompt = None
+
+    async def fake_cold(prompt, *, timeout_s):
+        nonlocal captured_prompt
+        captured_prompt = prompt
+        return "Everything succeeded and tests pass."
+
+    monkeypatch.setattr(module, "run_agy_prompt", fake_cold)
+    monkeypatch.setattr(module, "use_agy_backend", lambda *_a, **_k: True)
+
+    text = """
+The migration has successfully completed. All unit tests and integration tests are green.
+
+## To-do, updated
+- [x] Run database migration
+- [ ] Deploy service to staging
+- [ ] Run end-to-end smoke test
+
+## Next Steps
+We will deploy to staging next.
+"""
+    # 1. Test strip_markdown_for_speech directly
+    cleaned = module.strip_markdown_for_speech(text)
+    assert "## To-do" not in cleaned
+    assert "Run database migration" not in cleaned
+    assert "Deploy service to staging" not in cleaned
+    assert "Run end-to-end smoke test" not in cleaned
+    assert "The migration has successfully completed" in cleaned
+    assert "Next Steps" in cleaned
+
+    # 2. Test generate_spoken_summary prompt
+    part, _usage = await module.generate_spoken_summary(text, language="en")
+    assert part is not None
+    assert captured_prompt is not None
+    assert "## To-do" not in captured_prompt
+    assert "Run database migration" not in captured_prompt
+    assert "Deploy service to staging" not in captured_prompt
+    assert "The migration has successfully completed" in captured_prompt
+

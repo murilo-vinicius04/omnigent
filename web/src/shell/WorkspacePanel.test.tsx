@@ -7,6 +7,7 @@ import type * as UseTerminalsModule from "@/hooks/useTerminals";
 import { useCreateTerminal, useTerminals } from "@/hooks/useTerminals";
 import type { ChangedSort } from "./FlatFileList";
 import type { RightRailTab } from "./railTabs";
+import { useChatStore } from "@/store/chatStore";
 import { WorkspacePanel } from "./WorkspacePanel";
 
 // The rail's content children are exercised by their own suites; stub them so
@@ -58,6 +59,7 @@ const useSessionAgentMock = vi.mocked(useSessionAgent);
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  useChatStore.setState({ todos: [] });
   useTerminalsMock.mockReturnValue({ terminals: [], isLoading: false, error: null });
   useCreateTerminalMock.mockReturnValue({
     mutate: vi.fn(),
@@ -718,5 +720,37 @@ describe("WorkspacePanel browser tab", () => {
     expect(screen.getByTestId("browser-pane-stub")).toBeInTheDocument();
     // And the file scope views are not mounted in that branch.
     expect(screen.queryByTestId("files-panel-stub")).toBeNull();
+  });
+});
+
+describe("WorkspacePanel To-do tab", () => {
+  it("presents the To-do tab next to Companion with accessible label and tooltip", async () => {
+    renderWorkspace();
+    const todoTab = screen.getByRole("tab", { name: "To-do" });
+    expect(todoTab).toBeInTheDocument();
+    fireEvent.pointerMove(todoTab.parentElement!, { pointerType: "mouse" });
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("To-do");
+  });
+
+  it("badges the To-do tab with pending count when pending todos exist", () => {
+    useChatStore.setState({
+      todos: [
+        { content: "Pending item", status: "pending", activeForm: "" },
+        { content: "Completed item", status: "completed", activeForm: "" },
+      ],
+    });
+    renderWorkspace();
+    expect(screen.getByRole("tab", { name: "To-do 1 pending" })).toBeInTheDocument();
+  });
+
+  it("switches to the To-do tab on click", () => {
+    const { onRightRailTabChange } = renderWorkspace();
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "To-do" }), { button: 0 });
+    expect(onRightRailTabChange).toHaveBeenCalledWith("todos");
+  });
+
+  it("mounts the TodoPanel when the To-do tab is selected", () => {
+    renderWorkspace({ rightRailTab: "todos" as RightRailTab });
+    expect(screen.getByTestId("todo-panel")).toBeInTheDocument();
   });
 });

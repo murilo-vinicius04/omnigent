@@ -11,7 +11,8 @@ export type RightRailTab =
   | "github"
   | "subagents"
   | "browser"
-  | "companion";
+  | "companion"
+  | "todos";
 
 /**
  * Count/status badge geometry. Fixed height with min-width == height keeps a

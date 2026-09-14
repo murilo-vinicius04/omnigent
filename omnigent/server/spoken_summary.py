@@ -220,7 +220,11 @@ def strip_markdown_for_speech(text: str) -> str:
     """
     if not text:
         return ""
-    # Strip fenced code blocks
+    from omnigent.server.todo_extract import strip_todo_block
+
+    text = strip_todo_block(text)
+    if not text:
+        return ""
     cleaned = re.sub(r"```[\s\S]*?```", " ", text)
     # Strip inline backticks
     cleaned = re.sub(r"`([^`]*)`", r"\1", cleaned)
@@ -1094,6 +1098,9 @@ async def generate_spoken_summary(
         one Gemini sees the whole exchange instead of three that never meet.
     :returns: (spoken_summary_content_part, usage_delta) or (None, None).
     """
+    from omnigent.server.todo_extract import strip_todo_block
+
+    text = strip_todo_block(text)
     cleaned_text = strip_markdown_for_speech(text)
     if not cleaned_text:
         return None, None

@@ -4,6 +4,7 @@ import {
   FolderTreeIcon,
   FileDiffIcon,
   GlobeIcon,
+  ListTodoIcon,
   Loader2Icon,
   MaximizeIcon,
   MessagesSquareIcon,
@@ -39,6 +40,8 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { BrowserPane } from "@/components/BrowserPane/BrowserPane";
 import { CompanionPanel } from "./CompanionPanel";
+import { TodoPanel } from "./TodoPanel";
+import { useChatStore } from "@/store/chatStore";
 import { useSessionAgent } from "@/hooks/useAgents";
 import type { SessionLiveness } from "@/hooks/useSessionLiveness";
 import { terminalTabKey, useCreateTerminal, useTerminals } from "@/hooks/useTerminals";
@@ -721,6 +724,8 @@ function WorkspacePanelImpl({
     },
     [terminals],
   );
+  const todos = useChatStore((s) => s.todos);
+  const pendingTodosCount = todos.filter((t) => t.status !== "completed").length;
   return (
     <aside
       aria-label="Workspace"
@@ -870,6 +875,23 @@ function WorkspacePanelImpl({
                 <span className="sr-only">Companion</span>
               </TabsTrigger>
             </WorkspaceTabTooltip>
+            <WorkspaceTabTooltip
+              label={pendingTodosCount > 0 ? `To-do (${pendingTodosCount})` : "To-do"}
+            >
+              <TabsTrigger
+                value="todos"
+                aria-label={
+                  pendingTodosCount > 0 ? `To-do ${pendingTodosCount} pending` : "To-do"
+                }
+                className="size-6 shrink-0 p-0 hover:border-1 hover:border-muted rounded-md!"
+              >
+                <ListTodoIcon />
+                <span className="sr-only">To-do</span>
+                {pendingTodosCount > 0 && (
+                  <span className="sr-only">{pendingTodosCount}</span>
+                )}
+              </TabsTrigger>
+            </WorkspaceTabTooltip>
             {showBrowserTab && (
               <WorkspaceTabTooltip label="Browser">
                 <TabsTrigger
@@ -998,6 +1020,8 @@ function WorkspacePanelImpl({
           <GithubPanel conversationId={conversationId} />
         ) : rightRailTab === "companion" ? (
           <CompanionPanel conversationId={conversationId} />
+        ) : rightRailTab === "todos" ? (
+          <TodoPanel frameless twoState />
         ) : rightRailTab === "subagents" && rootSessionId ? (
           <SubagentsPanel conversationId={conversationId} rootSessionId={rootSessionId} />
         ) : (
