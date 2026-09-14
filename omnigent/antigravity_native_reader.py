@@ -56,6 +56,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -67,8 +68,10 @@ from omnigent._native_post_delivery import post_session_event_with_retry
 from omnigent.antigravity_native_bridge import (
     ANTIGRAVITY_NATIVE_BRIDGE_ID_LABEL_KEY,
     AntigravityNativeBridgeState,
+    agy_gemini_dir,
     is_placeholder_conversation_id,
     read_bridge_state,
+    update_conversation_id,
     write_bridge_state,
 )
 from omnigent.antigravity_native_rpc import (
@@ -761,16 +764,69 @@ def _resolve_cascade_id(bridge_dir: Path) -> str | None:
     it is rejected here. agy uses one UUID for both the conversation and the
     cascade, so the resolved conversation id IS the cascade id.
 
+    When the placeholder is still there, agy's own conversation store is asked
+    instead — see :func:`_conversation_id_on_disk`. The runner's cold start
+    binds the id when agy answers RPC in time and otherwise leaves the
+    placeholder "for the reader to bind"; this is that binding. Without it a
+    slow cold boot is permanent: nothing else ever replaces the placeholder, so
+    the reader polls a conversation that does not exist and everything agy
+    produces is invisible to Omnigent.
+
     :param bridge_dir: Native Antigravity bridge directory.
-    :returns: The real cascade id, or ``None`` when bridge state is missing or
-        still holds the placeholder.
+    :returns: The real cascade id, or ``None`` when bridge state is missing, or
+        the placeholder still stands and agy has not written a conversation yet.
     """
     state = read_bridge_state(bridge_dir)
     if state is None:
         return None
-    if is_placeholder_conversation_id(state.conversation_id):
+    if not is_placeholder_conversation_id(state.conversation_id):
+        return state.conversation_id
+    adopted = _conversation_id_on_disk(bridge_dir)
+    if adopted is None:
         return None
-    return state.conversation_id
+    # Persist, so a reader restart starts bound rather than re-deriving, and so
+    # every other consumer of bridge state sees the real id too.
+    update_conversation_id(bridge_dir, adopted)
+    _logger.info(
+        "Antigravity reader: bound cascade %s from agy's conversation store "
+        "(the cold start left a placeholder)",
+        adopted,
+    )
+    return adopted
+
+
+#: agy names each conversation store after the cascade id it holds, so a
+#: canonical UUID stem is what identifies one. Anything else in that directory
+#: (indexes, summaries) is not a cascade.
+_AGY_CASCADE_NAME = re.compile(
+    r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z", re.IGNORECASE
+)
+
+
+def _conversation_id_on_disk(bridge_dir: Path) -> str | None:
+    """
+    Return the cascade id agy recorded in this session's isolated home.
+
+    A file, not a handshake: agy writes ``<cascade id>.db`` under its Gemini dir
+    once a turn creates the conversation, which is readable long after the
+    cold-start RPC window has closed.
+
+    Ambiguity is refused rather than guessed. The directory belongs to ONE
+    Omnigent session, so more than one cascade means something unmodelled
+    happened, and binding the wrong one would mirror a foreign transcript into
+    this conversation. Waiting costs a poll; guessing costs the transcript.
+
+    :param bridge_dir: Native Antigravity bridge directory.
+    :returns: The cascade id when exactly one is present, else ``None``.
+    """
+    store = agy_gemini_dir(bridge_dir) / "antigravity-cli" / "conversations"
+    try:
+        found = [path.stem for path in store.glob("*.db") if _AGY_CASCADE_NAME.match(path.stem)]
+    except OSError:
+        return None
+    if len(found) != 1:
+        return None
+    return found[0]
 
 
 def _resolve_rpc_port(cascade_id: str) -> int | None:

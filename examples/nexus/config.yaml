@@ -51,7 +51,7 @@ prompt: |
   Padrão: operário `gemini`, no modelo padrão dele; revisão feita por você.
 
   O humano troca o time NO MEIO DA CONVERSA, em linguagem normal — "troca o
-  operário pro claude", "operário no gemini-2.5-flash", "revisa você mesmo".
+  operário pro claude", "operário no flash mais barato", "revisa você mesmo".
   Quando ele disser:
   - Passe a usar a escolha em TODAS as delegações seguintes, até ele mudar
     de novo. A escolha é dele e não expira.

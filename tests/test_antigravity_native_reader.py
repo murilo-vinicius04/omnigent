@@ -58,6 +58,7 @@ from typing import Any, cast
 import httpx
 import pytest
 
+from omnigent import antigravity_native_bridge
 from omnigent import antigravity_native_reader as reader
 from omnigent.antigravity_native_bridge import read_bridge_state
 from omnigent.antigravity_native_rpc import AntigravityRpcError
@@ -4954,3 +4955,95 @@ async def test_subagent_idle_check_failure_keeps_mirroring(
 
     monkeypatch.setattr(reader, "get_all_cascade_trajectories", _raise)
     assert await reader._subagent_cascade_is_idle(4242, "child-aaa") is False
+
+
+# ---------------------------------------------------------------------------
+# Late binding after a cold-start timeout
+# ---------------------------------------------------------------------------
+#
+# The runner's cold start waits ~20s for agy to expose a model catalog and then
+# gives up, logging that it leaves "the placeholder conversation id for the
+# reader to bind once a turn creates the conversation". On a slow cold boot that
+# promise was never kept: nothing else writes the real id, so the reader polled
+# a conversation that does not exist and every reply agy produced was invisible
+# (observed 2026-09-13 — the worker did the work, Omnigent heard nothing).
+#
+# agy names its conversation store on disk after that id, which is a file, not a
+# race — so the reader can bind from it.
+
+
+def _placeholder_bridge_dir(tmp_path: Path) -> Path:
+    """A bridge dir whose state still holds the launcher's placeholder id."""
+    bridge_dir = tmp_path / "bridge"
+    bridge_dir.mkdir()
+    (bridge_dir / "state.json").write_text(
+        '{"session_id": "conv_sess", '
+        '"conversation_id": "agy_conv_11d57372b3424e5b8e775a6dd4528dbf", '
+        '"active_turn_id": null}',
+        encoding="utf-8",
+    )
+    return bridge_dir
+
+
+def _write_agy_conversation(bridge_dir: Path, cascade_id: str) -> None:
+    """Create the conversation store agy writes once a turn creates one."""
+    conversations = (
+        antigravity_native_bridge.agy_gemini_dir(bridge_dir) / "antigravity-cli" / "conversations"
+    )
+    conversations.mkdir(parents=True, exist_ok=True)
+    (conversations / f"{cascade_id}.db").write_bytes(b"sqlite-ish")
+
+
+def test_placeholder_alone_still_means_not_ready(tmp_path: Path) -> None:
+    """No conversation on disk yet — the reader must keep waiting, not guess."""
+    assert reader._resolve_cascade_id(_placeholder_bridge_dir(tmp_path)) is None
+
+
+def test_the_reader_binds_the_id_agy_wrote_to_disk(tmp_path: Path) -> None:
+    """The cold start gave up; agy then made its conversation. Bind to it."""
+    bridge_dir = _placeholder_bridge_dir(tmp_path)
+    real = "41f4c15a-e127-4b53-8024-474cf798d93f"
+    _write_agy_conversation(bridge_dir, real)
+    assert reader._resolve_cascade_id(bridge_dir) == real
+
+
+def test_a_bound_id_is_persisted_so_it_is_resolved_once(tmp_path: Path) -> None:
+    """Binding writes through to bridge state, so a restart starts bound."""
+    bridge_dir = _placeholder_bridge_dir(tmp_path)
+    real = "41f4c15a-e127-4b53-8024-474cf798d93f"
+    _write_agy_conversation(bridge_dir, real)
+    reader._resolve_cascade_id(bridge_dir)
+    state = antigravity_native_bridge.read_bridge_state(bridge_dir)
+    assert state is not None
+    assert state.conversation_id == real
+
+
+def test_a_real_id_in_state_is_never_second_guessed(tmp_path: Path) -> None:
+    """A resumed session already knows its id; disk must not override it."""
+    bridge_dir = tmp_path / "bridge"
+    bridge_dir.mkdir()
+    (bridge_dir / "state.json").write_text(
+        '{"session_id": "conv_sess", "conversation_id": "resumed-id", "active_turn_id": null}',
+        encoding="utf-8",
+    )
+    _write_agy_conversation(bridge_dir, "41f4c15a-e127-4b53-8024-474cf798d93f")
+    assert reader._resolve_cascade_id(bridge_dir) == "resumed-id"
+
+
+def test_several_conversations_on_disk_are_too_ambiguous_to_bind(tmp_path: Path) -> None:
+    """Binding the wrong one would mirror a foreign transcript. Keep waiting."""
+    bridge_dir = _placeholder_bridge_dir(tmp_path)
+    _write_agy_conversation(bridge_dir, "41f4c15a-e127-4b53-8024-474cf798d93f")
+    _write_agy_conversation(bridge_dir, "52a5d26b-f238-4c64-9135-585da809ea40")
+    assert reader._resolve_cascade_id(bridge_dir) is None
+
+
+def test_a_non_uuid_file_is_not_a_conversation(tmp_path: Path) -> None:
+    """agy keeps other files there; only a UUID name identifies a cascade."""
+    bridge_dir = _placeholder_bridge_dir(tmp_path)
+    conversations = (
+        antigravity_native_bridge.agy_gemini_dir(bridge_dir) / "antigravity-cli" / "conversations"
+    )
+    conversations.mkdir(parents=True, exist_ok=True)
+    (conversations / "index.db").write_bytes(b"not-a-cascade")
+    assert reader._resolve_cascade_id(bridge_dir) is None
