@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from fastapi import (
     APIRouter,
@@ -391,6 +391,7 @@ def _to_agent_object(agent: Agent, cache: AgentCache | None) -> AgentObject:
     policies: list[PolicySummary] = []
     skills: list[SkillSummary] = []
     terminals: list[str] = []
+    worker_choices: list[Any] = []
     # Harness/kind for the UI; None until the spec loads (mirrors the
     # GET /v1/agents catalog so both endpoints report it consistently).
     harness: str | None = None
@@ -410,6 +411,9 @@ def _to_agent_object(agent: Agent, cache: AgentCache | None) -> AgentObject:
             # Declared terminal names, in spec order — the Web UI
             # gates its "new terminal" affordance on this list.
             terminals = list(loaded.spec.terminals or {})
+            from omnigent.server.routes.builtin_agents import worker_choice_summaries
+
+            worker_choices = worker_choice_summaries(loaded.spec)
             # Bundled skills only (mirrors GET /v1/agents); the merged
             # bundled + host-discovered set lives on the session snapshot.
             skills = [
@@ -463,4 +467,5 @@ def _to_agent_object(agent: Agent, cache: AgentCache | None) -> AgentObject:
         policies=policies,
         skills=skills,
         terminals=terminals,
+        worker_choices=worker_choices,
     )

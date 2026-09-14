@@ -1358,6 +1358,34 @@ def _subagent_message_from_args(args: _JsonObject) -> str | None:
     return None
 
 
+async def _team_worker_pick(
+    *,
+    server_client: httpx.AsyncClient | None,
+    conversation_id: str | None,
+    sub_agent_name: str,
+    agent_spec: AgentSpec | None,
+) -> tuple[str | None, str | None]:
+    """Check a dispatch against the conversation's Worker control.
+
+    :returns: ``(error, model)`` from :func:`omnigent.team_worker.resolve_worker`;
+        ``(None, None)`` for a bundle without worker choices or when the
+        session cannot be read.
+    """
+    from omnigent.team_worker import resolve_worker, worker_choices
+
+    if not worker_choices(agent_spec) or server_client is None or not conversation_id:
+        return None, None
+    try:
+        resp = await server_client.get(f"/v1/sessions/{conversation_id}", timeout=10.0)
+    except (httpx.HTTPError, RuntimeError):
+        return None, None
+    if resp.status_code != 200:
+        return None, None
+    payload = _string_object_dict(resp.json())
+    labels = _string_object_dict(payload.get("labels")) if payload is not None else None
+    return resolve_worker(agent_spec, labels or {}, sub_agent_name)
+
+
 async def _session_turn_actor(
     *,
     server_client: httpx.AsyncClient,
@@ -2237,6 +2265,18 @@ async def _execute_subagent_tool(
     if not _has_subagent(sub_agent_name, agent_spec):
         return f"Error: sub-agent {sub_agent_name!r} not found in agent spec"
 
+    # The worker a person picked in the conversation's Worker control. Read
+    # fresh on every dispatch so a change mid-conversation applies to the next
+    # delegation, not the next session.
+    worker_error, worker_model = await _team_worker_pick(
+        server_client=server_client,
+        conversation_id=conversation_id,
+        sub_agent_name=sub_agent_name,
+        agent_spec=agent_spec,
+    )
+    if worker_error is not None:
+        return worker_error
+
     dispatch_created_by = await _session_turn_actor(
         server_client=server_client,
         conversation_id=conversation_id,
@@ -2378,6 +2418,8 @@ async def _execute_subagent_tool(
         session_model_pick = _runner_app.session_sub_agent_model(
             conversation_id, str(sub_agent_name)
         )
+        if worker_model is not None:
+            session_model_pick = worker_model
         child_harness = session_harness_pick or _subagent_harness(str(sub_agent_name), agent_spec)
         # Apply an allowlisted per-dispatch harness override. The sub-agent
         # spec must explicitly opt in via executor.config.allowed_harnesses,

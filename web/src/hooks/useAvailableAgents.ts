@@ -1,3 +1,4 @@
+import { type WorkerChoice, workerChoicesFromWire } from "@/lib/teamWorker";
 import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { authenticatedFetch } from "@/lib/identity";
@@ -39,6 +40,9 @@ export interface AvailableAgent {
     // harness's own default runs.
     model: string | null;
   }[];
+  // The Worker control's choices, for an orchestrator that delegates to one
+  // worker at a time (nexus). Absent for every other agent.
+  worker_choices?: WorkerChoice[];
   // Skills bundled in the agent spec (name + one-line description).
   // Feeds the landing composer's "/" menu before a session exists;
   // host-discovered skills only resolve once a runner is bound, so
@@ -124,6 +128,7 @@ interface BuiltinAgentWire {
     harness?: string | null;
     model?: string | null;
   }[];
+  worker_choices?: { name: string; label?: string; harness?: string | null; models?: string[] }[];
   skills?: { name: string; description: string }[];
   // True only for server-seeded built-ins (deterministic id). Absent on
   // older servers, where every catalog row degrades to a protected entry.
@@ -184,6 +189,9 @@ async function fetchBuiltinAgents(): Promise<AvailableAgent[]> {
             model: c.model ?? null,
           })),
         }
+      : {}),
+    ...(a.worker_choices?.length
+      ? { worker_choices: workerChoicesFromWire(a.worker_choices) }
       : {}),
     skills: a.skills ?? [],
     // Omit rather than set to undefined so toEqual comparisons aren't

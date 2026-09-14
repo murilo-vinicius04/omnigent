@@ -253,6 +253,23 @@ class SubAgentSummary(BaseModel):
     model: str | None = None
 
 
+class WorkerChoiceSummary(BaseModel):
+    """
+    One worker a person can pick for an orchestrator that delegates to one.
+
+    :param name: Declared sub-agent name, e.g. ``"codex"``.
+    :param label: What the Worker control shows, e.g. ``"Codex"``.
+    :param harness: The harness that sub-agent declares, e.g. ``"codex"``.
+    :param models: Models to offer when the host cannot list that harness's
+        catalog; empty means ask the host.
+    """
+
+    name: str
+    label: str
+    harness: str | None = None
+    models: list[str] = Field(default_factory=list)
+
+
 class AgentObject(BaseModel):
     """
     API representation of a registered agent.
@@ -324,6 +341,9 @@ class AgentObject(BaseModel):
     harness: str | None = None
     # The delegable team, in spec order. Empty for a single-agent bundle.
     sub_agents: list[SubAgentSummary] = Field(default_factory=list)
+    # The single worker a person picks, for a bundle whose brain declares
+    # ``executor.config.worker_choices``. Empty for every other agent.
+    worker_choices: list[WorkerChoiceSummary] = Field(default_factory=list)
     mcp_servers: list[MCPServerSummary] = Field(default_factory=list)
     mcp_servers_editable: bool = False
     policies: list[PolicySummary] = Field(default_factory=list)

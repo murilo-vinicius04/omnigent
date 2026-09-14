@@ -21,6 +21,7 @@ through session creation.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Query, Request
 
@@ -35,10 +36,28 @@ from omnigent.server.schemas import (
     PaginatedList,
     SkillSummary,
     SubAgentSummary,
+    WorkerChoiceSummary,
 )
 from omnigent.stores import AgentStore
+from omnigent.team_worker import worker_choices as _worker_choices
 
 _logger = logging.getLogger(__name__)
+
+
+def worker_choice_summaries(spec: Any) -> list[WorkerChoiceSummary]:
+    """Return the Worker control's choices for *spec*, or ``[]`` when it has none.
+
+    :param spec: A loaded :class:`~omnigent.spec.types.AgentSpec`.
+    """
+    return [
+        WorkerChoiceSummary(
+            name=choice.name,
+            label=choice.label,
+            harness=choice.harness,
+            models=list(choice.models),
+        )
+        for choice in _worker_choices(spec)
+    ]
 
 
 def _to_agent_object(agent: Agent, agent_cache: AgentCache) -> AgentObject:
@@ -61,6 +80,7 @@ def _to_agent_object(agent: Agent, agent_cache: AgentCache) -> AgentObject:
     terminals: list[str] = []
     harness: str | None = None
     sub_agents: list[SubAgentSummary] = []
+    worker_choices: list[WorkerChoiceSummary] = []
     # Prefer the stored entity's description; fall back to the spec's
     # top-level description when the stored value is unset (single-file
     # YAML agents don't persist it at registration today). Lets the
@@ -117,6 +137,7 @@ def _to_agent_object(agent: Agent, agent_cache: AgentCache) -> AgentObject:
             for child in loaded.spec.sub_agents
             if child.name
         ]
+        worker_choices = worker_choice_summaries(loaded.spec)
     except Exception:  # noqa: BLE001 — spec load failure must not break the list
         _logger.debug(
             "Failed to load spec for agent %s; mcp_servers/skills will be empty",
@@ -132,6 +153,7 @@ def _to_agent_object(agent: Agent, agent_cache: AgentCache) -> AgentObject:
         updated_at=agent.updated_at,
         harness=harness,
         sub_agents=sub_agents,
+        worker_choices=worker_choices,
         mcp_servers=mcp_servers,
         mcp_servers_editable=False,
         skills=skills,

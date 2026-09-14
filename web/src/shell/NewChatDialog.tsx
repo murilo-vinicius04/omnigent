@@ -1,3 +1,5 @@
+import { WorkerConfigRows } from "@/components/WorkerConfigRows";
+import { WORKER_LABEL, WORKER_MODEL_LABEL } from "@/lib/teamWorker";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "@/lib/routing";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -1639,6 +1641,14 @@ function BrainModelRow({
   );
 }
 
+/** The Worker control's pick, tagged with the agent it was made for. */
+interface PickedWorker {
+  agentId: string;
+  worker: string;
+  model: string;
+}
+const NO_WORKER_PICK: PickedWorker = { agentId: "", worker: "", model: "" };
+
 /** One row of the Configure dialog's "Delegates to" group: a head's harness
  *  and, beside it, the model that head runs.
  *
@@ -1900,6 +1910,8 @@ function HarnessConfigModal({
   pickedSubHarness,
   pickedSubModel,
   pickedSubEffort,
+  pickedWorker,
+  setPickedWorker,
   costControlMode,
   setPermissionMode,
   setApprovalMode,
@@ -1949,6 +1961,10 @@ function HarnessConfigModal({
   // legal depends on the harness the head is on, so the row offers the
   // server's vocabulary for the harness SELECTED here.
   pickedSubEffort: Record<string, string>;
+  // The Worker control's pick, for an orchestrator with worker choices (nexus).
+  // Tagged with the agent it was made for, so it never leaks onto another one.
+  pickedWorker: PickedWorker;
+  setPickedWorker: (pick: PickedWorker) => void;
   costControlMode: CostControlMode;
   setPermissionMode: (mode: string) => void;
   setApprovalMode: (mode: string) => void;
@@ -1992,6 +2008,10 @@ function HarnessConfigModal({
   const [draftSubHarness, setDraftSubHarness] = useState<Record<string, string>>(pickedSubHarness);
   const [draftSubModel, setDraftSubModel] = useState<Record<string, string>>(pickedSubModel);
   const [draftSubEffort, setDraftSubEffort] = useState<Record<string, string>>(pickedSubEffort);
+  const workerChoices = agent.worker_choices ?? [];
+  const pickedWorkerHere = pickedWorker.agentId === agent.id ? pickedWorker : NO_WORKER_PICK;
+  const [draftWorker, setDraftWorker] = useState(pickedWorkerHere.worker);
+  const [draftWorkerModel, setDraftWorkerModel] = useState(pickedWorkerHere.model);
   const [draftRouting, setDraftRouting] = useState<CostControlMode>(costControlMode);
 
   useEffect(() => {
@@ -2007,6 +2027,8 @@ function HarnessConfigModal({
     setDraftSubHarness(pickedSubHarness);
     setDraftSubModel(pickedSubModel);
     setDraftSubEffort(pickedSubEffort);
+    setDraftWorker(pickedWorkerHere.worker);
+    setDraftWorkerModel(pickedWorkerHere.model);
     setDraftRouting(costControlMode);
     // Seed once per open from the current live values.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2124,6 +2146,9 @@ function HarnessConfigModal({
     // declared brain and still retarget a head. Only entries that DIFFER from
     // what the bundle declares are kept, so leaving every row alone sends
     // nothing and the session tracks the spec.
+    if (workerChoices.length > 0) {
+      setPickedWorker({ agentId: agent.id, worker: draftWorker, model: draftWorkerModel });
+    }
     if ((agent.sub_agents ?? []).length > 0) {
       const declared = new Map((agent.sub_agents ?? []).map((c) => [c.name, c.harness ?? null]));
       const changed: Record<string, string> = {};
@@ -2507,7 +2532,22 @@ function HarnessConfigModal({
           the bundle DECLARED for that head. The name stays visible because it
           is what the choice is addressed by; the declared harness underneath
           is what makes a renamed-by-retarget head legible. */}
-          {(agent.sub_agents ?? []).length > 0 && brainEntries.length > 0 && (
+          {/* An orchestrator that delegates to ONE worker at a time gets one
+          Worker control instead of a row per declared sub-agent. */}
+          {workerChoices.length > 0 && (
+            <div className="flex flex-col gap-3 border-l border-border/60 pl-3">
+              <WorkerConfigRows
+                choices={workerChoices}
+                hostId={host?.host_id ?? null}
+                worker={draftWorker}
+                model={draftWorkerModel}
+                onWorkerChange={setDraftWorker}
+                onModelChange={setDraftWorkerModel}
+                testIdPrefix="new-chat-config"
+              />
+            </div>
+          )}
+          {workerChoices.length === 0 && (agent.sub_agents ?? []).length > 0 && brainEntries.length > 0 && (
             <div className="flex flex-col gap-3 border-l border-border/60 pl-3">
               <div className="text-sm text-muted-foreground">
                 Delegates to — harness and model per sub-agent
@@ -3079,6 +3119,8 @@ export function NewChatLandingScreen() {
   // Reasoning effort per sub-agent, forgotten between visits like the two
   // above.
   const [pickedSubEffort, setPickedSubEffort] = useState<Record<string, string>>({});
+  // The Worker control's pick (nexus), forgotten between visits like the team above.
+  const [pickedWorker, setPickedWorker] = useState<PickedWorker>(NO_WORKER_PICK);
   // Per-session model + reasoning effort for the claude-native model picker.
   // "" = unselected: nothing is checked and `model_override` / `reasoning_effort`
   // are omitted from the create, so Claude Code uses its own configured model.
@@ -3581,6 +3623,7 @@ export function NewChatLandingScreen() {
     supportsAgySkipPermissions ||
     supportsModelPicker ||
     smartRoutingEligible ||
+    (selectedAgent?.worker_choices?.length ?? 0) > 0 ||
     (selectedAgent?.harness != null && selectedAgent.harness in brainHarnessLabelsAll);
   // Label/value pairs summarizing the selected agent's current run-config, for
   // the gear icon's hover tooltip. Mirrors the modal's per-capability rows so a
@@ -4806,10 +4849,20 @@ export function NewChatLandingScreen() {
       // "Sessions" section while the search-indexed session list catches up to
       // the move. A `project_id` create needs no label: the row is born with
       // first-class membership (and a label would go stale on project rename).
-      const createLabels =
+      const projectLabels =
         selectedProject && createProjectId === null
           ? { ...(baseLabels ?? {}), [PROJECT_LABEL_KEY]: selectedProject }
           : baseLabels;
+      // The Worker control's pick rides the create as the labels the runner
+      // reads on every delegation, so the first task already goes to it.
+      const createLabels =
+        pickedWorker.agentId === effectiveAgentId && pickedWorker.worker
+          ? {
+              ...(projectLabels ?? {}),
+              [WORKER_LABEL]: pickedWorker.worker,
+              ...(pickedWorker.model ? { [WORKER_MODEL_LABEL]: pickedWorker.model } : {}),
+            }
+          : projectLabels;
 
       let data: { id: string };
 
@@ -5611,6 +5664,8 @@ export function NewChatLandingScreen() {
                     setPickedSubHarness={setPickedSubHarness}
                     setPickedSubModel={setPickedSubModel}
                     setPickedSubEffort={setPickedSubEffort}
+                    pickedWorker={pickedWorker}
+                    setPickedWorker={setPickedWorker}
                     brainHarnessLabels={brainHarnessLabels}
                     host={harnessWarningHost}
                     hideUnconfigured={hideUnconfiguredHarnesses}

@@ -63,6 +63,8 @@ import {
 } from "@/lib/permissionsApi";
 import { getCurrentAuthorId } from "@/lib/identity";
 import { retrySession } from "@/lib/sessionsApi";
+import type { WorkerControl } from "@/lib/teamWorker";
+import { WorkerConfigRows } from "@/components/WorkerConfigRows";
 import { codexEffortLevelsForModel, findNativeModelOption } from "@/lib/codexNativeModels";
 import { modelConfigurationSourceRows } from "@/lib/modelConfigurationSource";
 import {
@@ -141,6 +143,7 @@ import {
 } from "@/components/chat/chatBubbleParts";
 import GithubMono from "@lobehub/icons/es/Github/components/Mono";
 import { useSession } from "@/hooks/useSession";
+import { useWorkerControl } from "@/hooks/useWorkerControl";
 import { useGithubInfo } from "@/hooks/useGithub";
 import { useOpenGithubTab } from "@/shell/FileViewerContext";
 import { useSessionRunnerOnline } from "@/hooks/RunnerHealthProvider";
@@ -1471,6 +1474,8 @@ const MainAgentSurface = memo(function MainAgentSurfaceImpl({
   // including stopped/resumable sessions, and the connection indicator
   // remains below it for offline sessions.
   const showTerminal = shouldShowTerminalSurface(conversationId, terminalFirst, runnerOnline);
+  // The Worker control for an orchestrator that delegates to one worker (nexus).
+  const workerControl = useWorkerControl(conversationId);
 
   // All hook calls below must run on every render regardless of
   // `showTerminal` — Rules of Hooks. The single return at the bottom
@@ -1780,6 +1785,7 @@ const MainAgentSurface = memo(function MainAgentSurfaceImpl({
             subAgentLabel={subAgentLabel}
             wrapperLabel={wrapperLabel}
             onViewportShrinkPinScroll={pinScrollOnComposerGrowth}
+            workerControl={workerControl}
           />
 
           {/* Reconnect-or-fork banner when unreachable, nothing otherwise.
@@ -1951,6 +1957,8 @@ interface ComposerProps {
    * The callback itself decides whether the reader is bottom-locked.
    */
   onViewportShrinkPinScroll?: () => void;
+  /** The Worker control (nexus), or null when the agent offers no worker choices. */
+  workerControl?: WorkerControl | null;
 }
 
 /**
@@ -2496,6 +2504,7 @@ function ComposerImpl({
   subAgentLabel = null,
   wrapperLabel = null,
   onViewportShrinkPinScroll,
+  workerControl = null,
 }: ComposerProps) {
   const [value, setValue] = useState("");
   const [submitWithModEnter] = useState(() => readSubmitWithModEnter());
@@ -3773,6 +3782,7 @@ function ComposerImpl({
                 codexModelOptions={codexModelOptions}
                 costRoutingEligible={costRoutingEligible}
                 subagentRoutingEligible={subagentRoutingEligible}
+                workerControl={workerControl}
                 // Config changes persist server-side and apply on the next
                 // wake/turn (the runner forward is best-effort), so the gear
                 // stays live wherever a message could be sent — including
@@ -4295,7 +4305,9 @@ function SessionConfigModal({
   codexModelOptions,
   costRoutingEligible,
   subagentRoutingEligible,
+  workerControl = null,
 }: {
+  workerControl?: WorkerControl | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   harnessLabel: string | null;
@@ -4357,6 +4369,12 @@ function SessionConfigModal({
   const [pickedSubagentRouting, setPickedSubagentRouting] = useState<"on" | "off" | undefined>(
     undefined,
   );
+  // The Worker control (nexus): which one worker the orchestrator delegates to.
+  const workerChoices = workerControl?.choices ?? [];
+  const liveWorker = workerControl?.worker ?? "";
+  const liveWorkerModel = workerControl?.model ?? "";
+  const [draftWorker, setDraftWorker] = useState(liveWorker);
+  const [draftWorkerModel, setDraftWorkerModel] = useState(liveWorkerModel);
   useEffect(() => {
     if (!open) return;
     setDraftModelId(resolvedModelId);
@@ -4366,6 +4384,8 @@ function SessionConfigModal({
     setDraftApprovalMode(codexApprovalMode);
     approvalTouchedRef.current = false;
     setPickedSubagentRouting(undefined);
+    setDraftWorker(liveWorker);
+    setDraftWorkerModel(liveWorkerModel);
     // Nothing pushes a routing-switch change to the client (no SSE event, and
     // the session query never goes stale), so re-read them here — otherwise the
     // switches show whatever they were at bind time.
@@ -4497,6 +4517,12 @@ function SessionConfigModal({
           pickedSubagentRouting !== (store.subagentRoutingOverride ?? "off")
         )
           await store.setSubagentRouting(pickedSubagentRouting);
+        if (
+          workerControl &&
+          workerChoices.length > 0 &&
+          (draftWorker !== liveWorker || draftWorkerModel !== liveWorkerModel)
+        )
+          await workerControl.onSave(draftWorker || workerChoices[0]!.name, draftWorkerModel);
       } catch {
         // Individual setters already roll back their optimistic state; a failed
         // PATCH shouldn't wedge the modal open.
@@ -4675,6 +4701,17 @@ function SessionConfigModal({
           routing is a create-time choice. Two options — a session that started
           on Smart Routing was stamped "on" at create, so an unset value is
           Default and the trigger always shows what's stored. */}
+          {workerChoices.length > 0 && (
+            <WorkerConfigRows
+              choices={workerChoices}
+              hostId={workerControl?.hostId ?? null}
+              worker={draftWorker}
+              model={draftWorkerModel}
+              onWorkerChange={setDraftWorker}
+              onModelChange={setDraftWorkerModel}
+              testIdPrefix="composer-config"
+            />
+          )}
           {subagentRoutingEligible && (
             <ConfigRow label={SUBAGENT_ROUTING_LABEL} description={SUBAGENT_ROUTING_DESCRIPTION}>
               <Select
@@ -4744,7 +4781,9 @@ function ComposerConfigGear({
   subagentRoutingEligible,
   disabled,
   openNonce = 0,
+  workerControl = null,
 }: {
+  workerControl?: WorkerControl | null;
   harnessLabel: string | null;
   showModels: boolean;
   showEffort: boolean;
@@ -4777,8 +4816,11 @@ function ComposerConfigGear({
     codexModelOptions,
     costRoutingEligible,
   });
+  // A nexus session keeps its gear for the Worker control even with no other knob.
+  const hasWorkerChoices = (workerControl?.choices.length ?? 0) > 0;
 
   if (
+    !hasWorkerChoices &&
     !showModels &&
     !showEffort &&
     !costRoutingEligible &&
@@ -4849,6 +4891,7 @@ function ComposerConfigGear({
         codexModelOptions={codexModelOptions}
         costRoutingEligible={costRoutingEligible}
         subagentRoutingEligible={subagentRoutingEligible}
+        workerControl={workerControl}
       />
     </>
   );

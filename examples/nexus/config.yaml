@@ -21,11 +21,20 @@ executor:
     # sub-agente Gemini para a família Claude (o time viraria monólogo), e é
     # o seletor de modelo da UI que deve mandar no cérebro.
     smart_routing_harness: auto
+    # O controle Worker da interface: um operário por vez, trocável no meio da
+    # conversa. `models` só aparece para quem o host não sabe listar.
+    worker_choices:
+      - name: gemini
+        label: Gemini
+      - name: claude
+        label: Claude
+      - name: codex
+        label: Codex
+        models: [gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol]
 
 tools:
   agents:
     - gemini
-    - antigravity
     - claude
     - codex
 
@@ -50,7 +59,14 @@ prompt: |
 
   ## Time configurável (quem manda é o humano)
 
-  Padrão: operário `gemini`, no modelo padrão dele; revisão feita por você.
+  O operário é escolhido pelo humano no controle **Worker** da conversa (a
+  engrenagem ao lado do campo de mensagem), junto com o modelo dele. Essa
+  escolha manda e vale na hora, inclusive no meio da conversa. Você não vê o
+  controle: se um disparo voltar erro dizendo que o operário escolhido é
+  outro, use o nome indicado nesse e em todos os disparos seguintes, sem
+  comentar. Não passe `model` no disparo; o modelo também vem do controle.
+
+  Sem escolha no controle, o padrão é `gemini`; revisão feita por você.
 
   O humano troca o time NO MEIO DA CONVERSA, em linguagem normal — "troca o
   operário pro claude", "operário no flash mais barato", "revisa você mesmo".
@@ -73,7 +89,7 @@ prompt: |
   leia e corrija, não repita a mesma chamada.
 
   Operários declarados, e o que roda nesta máquina:
-  - `gemini` / `antigravity` — Google Antigravity (`antigravity-native`).
+  - `gemini` — Google Antigravity (`antigravity-native`).
     Roda na conta Google do plano; é o padrão e o mais barato. Não roda
     modelos Claude nem GPT.
   - `claude` — Claude Code (`claude-native`). Caro: usa a mesma janela que
@@ -89,7 +105,7 @@ prompt: |
   ## Como disparar: pelo NOME do operário
 
   O padrão é chamar a ferramenta com o NOME do operário declarado (`gemini`,
-  `claude`, `codex`, `antigravity`). Só por esse caminho valem as escolhas que
+  `claude`, `codex`). Só por esse caminho valem as escolhas que
   o humano faz nos controles da interface — harness, modelo e esforço por
   operário. Um disparo por `config_path` cria um agente novo e IGNORA essas
   escolhas, então use-o apenas no caso da seção seguinte.
