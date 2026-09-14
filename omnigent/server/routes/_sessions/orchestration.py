@@ -24,6 +24,7 @@ from fastapi import (
 from fastapi.responses import Response
 from pydantic import ValidationError
 
+from omnigent import openai_token_budget
 from omnigent.cli_invocation import cli_invocation
 from omnigent.db.utils import generate_agent_id, generate_task_id
 from omnigent.debug_logging import debug_event
@@ -1369,6 +1370,8 @@ def _accumulate_session_usage(
         delta["by_model"] = {llm_model: model_delta}
 
     new_current = conversation_store.increment_session_usage(session_id, delta)
+    # Our own count of OpenAI's free daily tokens (no-op for other models).
+    openai_token_budget.record_usage_delta(delta)
     # Per-user daily rollup (policy-gated; this is the per-turn delta).
     _record_daily_cost(conv, cost_delta, conversation_store)
     return _priced_cost_for_display(new_current)
@@ -1573,11 +1576,13 @@ def _persist_native_cumulative_usage(
     # cumulative total, so per-model buckets sum to the flat total across model
     # switches. Clamp >= 0 so a lowered report never claws a bucket back (flat
     # tokens are SET not clamped, so buckets can exceed them then — fail-safe).
+    growth: dict[str, int] = {}
     if isinstance(model_name, str) and model_name:
         bucket = _model_usage_bucket(current, model_name)
         for key in _MODEL_TOKEN_KEYS:
             if key in current:
-                bucket[key] = int(bucket.get(key, 0)) + max(0, int(current[key]) - old_tokens[key])
+                growth[key] = max(0, int(current[key]) - old_tokens[key])
+                bucket[key] = int(bucket.get(key, 0)) + growth[key]
         if "total_cost_usd" in current:
             bucket["total_cost_usd"] = float(bucket.get("total_cost_usd", 0.0)) + max(
                 0.0, float(current["total_cost_usd"]) - old_cost
@@ -1595,6 +1600,9 @@ def _persist_native_cumulative_usage(
         current["policy_cost_usd"] = max(old_policy_cost, float(policy_cost))
 
     conversation_store.set_session_usage(session_id, current)
+    if growth:
+        # Our own count of OpenAI's free daily tokens (no-op for other models).
+        openai_token_budget.record_usage_delta({"by_model": {model_name: growth}})
     # Per-user daily rollup. Native reports cumulative totals, so the turn's
     # delta is the increase in cumulative cost. Uses the authoritative
     # ``total_cost_usd`` (= statusLine S), NOT ``policy_cost_usd`` — the

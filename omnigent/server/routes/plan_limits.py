@@ -58,7 +58,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Request
 
-from omnigent import antigravity_native_rpc
+from omnigent import antigravity_native_rpc, openai_token_budget
 from omnigent.install_ledger import state_dir
 from omnigent.server.auth import AuthProvider
 from omnigent.server.routes._auth_helpers import require_user
@@ -94,6 +94,7 @@ def _get_claude_lock() -> asyncio.Lock:
     if _claude_lock is None:
         _claude_lock = asyncio.Lock()
     return _claude_lock
+
 
 #: agy bucket-id prefix -> tray label. agy groups models that share a quota
 #: pool; the prefix is the stable machine key ("gemini-5h", "3p-weekly"), while
@@ -480,6 +481,55 @@ def _antigravity_provider() -> dict[str, Any]:
     return row
 
 
+def _openai_provider() -> dict[str, Any]:
+    """Build the ``openai`` provider row from our own daily token ledger.
+
+    OpenAI exposes no reading of the complimentary daily token allowance to a
+    project key, so this row is not a provider meter like Claude's or
+    Antigravity's: it is :mod:`omnigent.openai_token_budget`'s count of every
+    token Omnigent sessions spent on OpenAI models today (UTC), against the
+    per-pool allowance. One window per free pool; tokens on models in no free
+    pool are billed from the first one, so they are called out in the tier line.
+    """
+    row: dict[str, Any] = {"id": "openai", "label": "OpenAI", "windows": []}
+    try:
+        pools = openai_token_budget.pool_usage()
+    except Exception as exc:  # noqa: BLE001 - decorative route; never 500 the tray
+        logger.debug("openai token ledger read failed: %s", exc)
+        row["state"] = "error"
+        row["reason"] = "token ledger unreadable"
+        return row
+
+    resets_at = (
+        openai_token_budget.next_reset().replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    tier = "Omnigent's own count"
+    for pool in pools:
+        tokens = int(pool["tokens"])
+        cap = pool["daily_tokens"]
+        if cap is None:
+            if tokens:
+                tier += f" · {openai_token_budget.format_tokens(tokens)} billed (not free)"
+            continue
+        row["windows"].append(
+            {
+                "kind": f"daily-{pool['id']}",
+                "label": (
+                    f"{pool['label']} {openai_token_budget.format_tokens(tokens)}"
+                    f"/{openai_token_budget.format_tokens(cap)} today"
+                ),
+                # Floor, not round: 99.6% must not read as a full 100% "safe"
+                # boundary, and any use at all should not read as 0% once
+                # past the first percent.
+                "percent": max(0, min(100, tokens * 100 // cap)),
+                "resets_at": resets_at,
+            }
+        )
+    row["tier"] = tier
+    row["state"] = "ok"
+    return row
+
+
 async def collect_plan_limits() -> dict[str, Any]:
     """Fetch every provider's plan windows, honoring the process-wide cache.
 
@@ -499,11 +549,12 @@ async def collect_plan_limits() -> dict[str, Any]:
         # Antigravity's lookup does blocking port discovery (lsof / procfs), so
         # it goes to a worker thread; running it concurrently with Claude's HTTP
         # call keeps the route's latency at the slower of the two, not the sum.
-        claude_row, antigravity_row = await asyncio.gather(
+        claude_row, antigravity_row, openai_row = await asyncio.gather(
             _claude_provider(client),
             asyncio.to_thread(_antigravity_provider),
+            asyncio.to_thread(_openai_provider),
         )
-        providers = [claude_row, antigravity_row]
+        providers = [claude_row, antigravity_row, openai_row]
 
     payload = {"providers": providers, "fetched_at": time.time()}
 
