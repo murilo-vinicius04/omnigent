@@ -952,3 +952,64 @@ task, Omnigent's stored `session_usage` for the Codex worker sessions read 16k
 for the same sessions, about 6× more. The stored figure likely keeps only part
 of each run, perhaps one turn's `tokenUsage.last` instead of the running total
 (unverified). Until it's fixed, measure Codex from `~/.omnigent/usage-history.jsonl`.
+
+## Session state — 2026-09-14 evening (harness A/B, worker control, attachments)
+
+**Why:** the user's Claude quota ran out repeatedly. The question being tested
+is whether nexus (Claude brain + a cheaper worker) actually spends less
+Claude than plain Claude Code, and at what cost in time.
+
+**Commits today (local, never pushed):**
+- **OpenAI free pool:** `46a0c437a` added the token counter, `032b7d9af` the
+  blocking budget proxy (`/v1/openai-budget/v1`), `9e4ba046c` the codex worker.
+- **Summaries:** `401528e54` handles an idle edge that arrives with no response id.
+- **Worker picker:** `8a79fe36e` merged the per-sub-agent pickers; `998986ccb`
+  added `~/.omnigent/usage-history.jsonl` (plan readings and OpenAI calls, for
+  debugging).
+- **Nexus:** `cd95fa590` dispatches workers by name; `494ff328a` adds the
+  **Worker control** (labels `team.worker`, `team.worker_model`, read on every
+  dispatch by `omnigent/team_worker.py`); `1dfecf757` trims per-task overhead
+  (one ToolSearch, no preflight, no model listing).
+- **Attachments:** `4e5ed53b2` and `a5b9c5955` make SendUserFile attach files.
+  `attach_assistant_file` never had a caller before this; the forwarder posts
+  `{item_type, item_data, response_id}`.
+
+**Measured (one run each, exact tokens):**
+
+| Task | Setup | Claude | Worker | Time |
+|---|---|---|---|---|
+| Count ERROR lines | plain Claude | 131k | — | 20s |
+| Count ERROR lines | nexus before trim | 199k | 126k Gemini | 138s |
+| Count ERROR lines | nexus trimmed | 60k | 82k Gemini | 45s |
+| Inventory (7 bugs + feature) | plain Claude | 219k | — | 59s |
+| Inventory | nexus + Gemini high | 111k | 275k | 204s |
+| Inventory | nexus + Gemini low | 96k | 134k | 83s |
+| Inventory | nexus + Codex Luna low | 80k | 104k | 62s |
+| Inventory | nexus + Codex Terra low | 81k | 124k | 84s |
+
+- **Quality:** all inventory runs passed the hidden grader.
+- **Codex effort** was low: `~/.codex/config.toml` sets
+  `model_reasoning_effort="low"` and is copied into every worker. Gemini "low"
+  is the model id `gemini-3.8-flash-low`.
+- **Quota:** host restarts cost 17–23% of the Claude 5h window within minutes
+  (charts: `ab-comparison.png`, `ab-long-effort.png`, `quota-over-time.png` in
+  the session scratchpad).
+
+**Scripts and fixtures** (scratchpad `/tmp/claude-1000/-home-nexus/d9653808-*/scratchpad/`):
+`ab/`, `ab-long/{template,check.py}`, `ab_long5_plot.py`. Measure plain
+Claude from its `~/.claude/projects/*/<external_session_id>.jsonl`, nexus from
+`omnigent_conversation_metadata.session_usage` (2-byte header, then zstd), and
+Codex from the proxy log, never from session_usage.
+
+**Open, in order:**
+1. **SWE-bench run.** Instance `pytest-dev__pytest-7490` ("15 min – 1 hour"
+   human estimate). Setups: plain Claude vs nexus + Luna low vs nexus + Gemini
+   low. Grade with the official SWE-bench Docker image (Docker 29.1.5 is here),
+   then compare with public per-instance results in `SWE-bench/experiments`.
+   Waiting on the user's go.
+2. **Default worker model:** set `gemini-3.8-flash-low` in
+   `examples/nexus/agents/gemini/config.yaml`. The user leans toward Luna; not done.
+3. **Nexus tool loading:** load only its delegation tools up front (runner-side,
+   so a host restart; compact first).
+4. **Codex usage undercount** in session_usage (6× low).
+5. **Leftovers:** show blocks have never produced an image.
