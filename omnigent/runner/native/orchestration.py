@@ -4916,6 +4916,7 @@ async def _auto_create_antigravity_terminal(
         agy_home_dir,
         clear_bridge_state,
         ensure_agy_feedback_survey_disabled,
+        ensure_csrf_token,
         prepare_bridge_dir,
         seed_isolated_agy_home,
         write_bridge_state,
@@ -4985,6 +4986,7 @@ async def _auto_create_antigravity_terminal(
     # Clear stale turn/conversation state so the reader binds this run's real agy
     # conversation id (the cold-start mints it below) instead of a prior run's.
     clear_bridge_state(bridge_dir)
+    csrf_token = ensure_csrf_token(bridge_dir)
 
     # agy's first-run onboarding wizard would hang a host-spawned terminal (no TTY
     # to answer it, blank web UI). Its completion marker is pre-accepted below by
@@ -5002,6 +5004,7 @@ async def _auto_create_antigravity_terminal(
         # reason — the runner has no separate per-tool mode to map here.
         permission_mode=None,
         headless=False,
+        csrf_token=csrf_token,
         extra_args=terminal_launch_args,
     )
 
@@ -5388,6 +5391,7 @@ async def _cold_start_agy_conversation(
     from omnigent.antigravity_native_bridge import (
         is_placeholder_conversation_id,
         read_bridge_state,
+        read_csrf_token,
         update_conversation_id,
     )
     from omnigent.antigravity_native_rpc import (
@@ -5407,16 +5411,45 @@ async def _cold_start_agy_conversation(
     if state is not None and not is_placeholder_conversation_id(state.conversation_id):
         return state.conversation_id
 
+    csrf_token = await asyncio.to_thread(read_csrf_token, bridge_dir)
+
+    def _resolve_port() -> int | None:
+        if csrf_token is not None:
+            try:
+                return resolve_cold_start_agy_rpc_port(
+                    tmux_socket, tmux_target, csrf_token=csrf_token
+                )
+            except TypeError:
+                pass
+        return resolve_cold_start_agy_rpc_port(tmux_socket, tmux_target)
+
+    def _get_models(p: int) -> dict[str, object]:
+        if csrf_token is not None:
+            try:
+                return get_available_models(p, csrf_token=csrf_token)
+            except TypeError:
+                pass
+        return get_available_models(p)
+
+    def _start(p: int, cid: str) -> None:
+        if csrf_token is not None:
+            try:
+                start_cascade(p, cid, csrf_token=csrf_token)
+                return
+            except TypeError:
+                pass
+        start_cascade(p, cid)
+
     deadline = time.monotonic() + timeout_s
     port: int | None = None
     while True:
         # Scope to THIS session's pane agy (avoids binding a foreign agy on a
         # multi-agy host); falls back to the lowest validated candidate when no
         # local pane is reachable or the pane is not resolvable yet.
-        port = await asyncio.to_thread(resolve_cold_start_agy_rpc_port, tmux_socket, tmux_target)
+        port = await asyncio.to_thread(_resolve_port)
         if port is not None:
             try:
-                catalog = await asyncio.to_thread(get_available_models, port)
+                catalog = await asyncio.to_thread(_get_models, port)
             except (httpx.HTTPError, ValueError):
                 catalog = {}
             models = catalog.get("models")
@@ -5436,7 +5469,7 @@ async def _cold_start_agy_conversation(
     await _agy_cold_start_poll_sleep(_AGY_COLD_START_MODEL_STABILIZATION_S)
     cascade_id = str(uuid.uuid4())
     try:
-        await asyncio.to_thread(start_cascade, port, cascade_id)
+        await asyncio.to_thread(_start, port, cascade_id)
     except AntigravityRpcError:
         _logger.warning(
             "Antigravity cold-start: StartCascade failed on port %s for session %s; leaving "

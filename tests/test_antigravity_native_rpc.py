@@ -199,6 +199,53 @@ def test_heartbeat_ok_false_on_transport_error(monkeypatch: pytest.MonkeyPatch) 
     assert rpc._heartbeat_ok(52548) is False
 
 
+def test_heartbeat_ok_attaches_csrf_token_and_caches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Heartbeat attaches x-codeium-csrf-token header and caches token on HTTP 200.
+    """
+    rpc.clear_port_csrf_tokens()
+    seen: dict[str, object] = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen["csrf_token"] = request.headers.get("x-codeium-csrf-token")
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr(rpc, "_HTTP_TRANSPORT", httpx.MockTransport(_handler))
+    assert rpc._heartbeat_ok(52548, csrf_token="test-csrf-token-123") is True
+    assert seen["csrf_token"] == "test-csrf-token-123"
+    assert rpc._PORT_CSRF_TOKENS[52548] == "test-csrf-token-123"
+
+    # Subsequent call without explicit token uses cached token
+    headers = rpc._rpc_headers(52548)
+    assert headers.get("x-codeium-csrf-token") == "test-csrf-token-123"
+    rpc.clear_port_csrf_tokens()
+
+
+def test_heartbeat_ok_retries_with_candidates_on_401(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Heartbeat retries with candidate CSRF tokens if initial probe receives HTTP 401.
+    """
+    rpc.clear_port_csrf_tokens()
+    attempts: list[str | None] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        tok = request.headers.get("x-codeium-csrf-token")
+        attempts.append(tok)
+        if tok == "valid-token":
+            return httpx.Response(200, json={})
+        return httpx.Response(401, json={"error": "unauthorized"})
+
+    monkeypatch.setattr(rpc, "_HTTP_TRANSPORT", httpx.MockTransport(_handler))
+    monkeypatch.setattr(
+        rpc, "_candidate_csrf_tokens", lambda explicit=None: ["wrong-token", "valid-token"]
+    )
+
+    assert rpc._heartbeat_ok(52548) is True
+    assert attempts == ["wrong-token", "valid-token"]
+    assert rpc._PORT_CSRF_TOKENS[52548] == "valid-token"
+    rpc.clear_port_csrf_tokens()
+
+
 def test_conversation_matches_true(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     ``_conversation_matches`` is True when metadata echoes the requested id.

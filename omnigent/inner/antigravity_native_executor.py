@@ -68,6 +68,7 @@ from omnigent.antigravity_native_bridge import (
     inject_user_message_via_tui,
     is_placeholder_conversation_id,
     read_bridge_state,
+    read_csrf_token,
 )
 from omnigent.antigravity_native_rpc import (
     cancel_cascade_steps,
@@ -178,14 +179,33 @@ class AntigravityNativeExecutor(Executor):
         # ``agy_conv_*`` placeholder.
         if is_placeholder_conversation_id(cascade_id):
             return False
-        port = await asyncio.to_thread(resolve_language_server_port, cascade_id)
+        csrf_token = await asyncio.to_thread(read_csrf_token, self._bridge_dir)
+
+        def _resolve() -> int | None:
+            if csrf_token is not None:
+                try:
+                    return resolve_language_server_port(cascade_id, csrf_token=csrf_token)
+                except TypeError:
+                    pass
+            return resolve_language_server_port(cascade_id)
+
+        port = await asyncio.to_thread(_resolve)
         if port is None:
             _logger.warning(
                 "antigravity native interrupt: no connect-RPC port for conversation=%s",
                 cascade_id,
             )
             return False
-        cancelled = await asyncio.to_thread(cancel_cascade_steps, port, cascade_id)
+
+        def _cancel() -> bool:
+            if csrf_token is not None:
+                try:
+                    return cancel_cascade_steps(port, cascade_id, csrf_token=csrf_token)
+                except TypeError:
+                    pass
+            return cancel_cascade_steps(port, cascade_id)
+
+        cancelled = await asyncio.to_thread(_cancel)
         _logger.info(
             "antigravity native interrupt via CancelCascadeSteps: conversation=%s accepted=%s",
             cascade_id,

@@ -14,6 +14,8 @@ Environment=PATH=/home/nexus/.local/bin:/home/nexus/.pixi/bin:/home/nexus/.kimi-
 ExecStart=/home/nexus/wt/friendly-layer/.venv/bin/omni host --server http://127.0.0.1:6767
 Restart=on-failure
 RestartSec=5
+# Session runners can ignore SIGTERM; don't let a restart hang for 90s.
+TimeoutStopSec=15
 
 [Install]
 WantedBy=default.target

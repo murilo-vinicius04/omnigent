@@ -204,6 +204,85 @@ def _rpc_url(port: int, method: str) -> str:
     return f"https://{_LOOPBACK}:{port}/{_LS_SERVICE}/{method}"
 
 
+# HTTP header for connect-RPC CSRF authentication (agy 1.2.2+).
+_HEADER_CSRF_TOKEN = "x-codeium-csrf-token"
+
+# In-memory mapping from validated connect-RPC port to the CSRF token that unlocked it.
+_PORT_CSRF_TOKENS: dict[int, str] = {}
+
+
+def clear_port_csrf_tokens() -> None:
+    """Clear the cached port-to-CSRF-token mappings (used for test isolation)."""
+    _PORT_CSRF_TOKENS.clear()
+
+
+def _candidate_csrf_tokens(explicit: str | None = None) -> list[str | None]:
+    """
+    Return candidate CSRF tokens to probe agy connect-RPC with, ordered by priority.
+
+    agy 1.2.2+ requires an ``x-codeium-csrf-token`` HTTP header matching the token
+    passed via ``--csrf_token`` / ``ANTIGRAVITY_CSRF_TOKEN``. Probing tries:
+    1. Explicitly supplied *explicit* token (if any).
+    2. Active bridge directory tokens from ``~/.omnigent/antigravity-native/*/csrf_token``
+       (newest modified first).
+    3. Ambient ``ANTIGRAVITY_CSRF_TOKEN`` from the process environment.
+    4. ``None`` (no header) for backward compatibility with older agy versions or mock tests.
+
+    :param explicit: Optional token to prioritize.
+    :returns: Deduplicated candidate tokens (including ``None``).
+    """
+    tokens: list[str | None] = []
+    if explicit:
+        tokens.append(explicit)
+    bridge_root = Path.home() / ".omnigent" / "antigravity-native"
+    if bridge_root.is_dir():
+        try:
+            candidates = sorted(
+                bridge_root.glob("*/csrf_token"),
+                key=lambda p: p.stat().st_mtime if p.exists() else 0,
+                reverse=True,
+            )
+            for path in candidates:
+                try:
+                    tok = path.read_text(encoding="utf-8").strip()
+                    if tok and tok not in tokens:
+                        tokens.append(tok)
+                except OSError:
+                    continue
+        except OSError:
+            pass
+    env_tok = os.environ.get("ANTIGRAVITY_CSRF_TOKEN")
+    if env_tok and env_tok not in tokens:
+        tokens.append(env_tok)
+    tokens.append(None)
+    return tokens
+
+
+def _rpc_headers(
+    port: int,
+    content_type: str = "application/json",
+    csrf_token: str | None = None,
+) -> dict[str, str]:
+    """
+    Build HTTP headers for an agy connect-RPC request, attaching CSRF token if known.
+
+    :param port: agy connect-RPC port.
+    :param content_type: Request Content-Type (default ``application/json``).
+    :param csrf_token: Explicit CSRF token override, or ``None`` to resolve from cache/bridge.
+    :returns: Headers dict.
+    """
+    headers = {"Content-Type": content_type}
+    tok = csrf_token or _PORT_CSRF_TOKENS.get(port)
+    if not tok:
+        for cand in _candidate_csrf_tokens():
+            if cand:
+                tok = cand
+                break
+    if tok:
+        headers[_HEADER_CSRF_TOKEN] = tok
+    return headers
+
+
 # httpx transport seam. ``None`` (production) lets httpx use its real loopback
 # TLS transport with cert verification disabled (agy's cert is self-signed and
 # the endpoint is loopback-only). Tests set this to an ``httpx.MockTransport``
@@ -415,7 +494,7 @@ def _list_loopback_listen_ports() -> list[int]:
     return sorted(ports)
 
 
-def _heartbeat_ok(port: int) -> bool:
+def _heartbeat_ok(port: int, csrf_token: str | None = None) -> bool:
     """
     Return whether a port answers the connect-RPC ``Heartbeat`` with HTTP 200.
 
@@ -424,24 +503,54 @@ def _heartbeat_ok(port: int) -> bool:
     (it 404s, or the TLS handshake fails). Any transport/TLS error counts as
     "not it".
 
+    On agy 1.2.2+, connect-RPC requires ``x-codeium-csrf-token``. When a probe
+    succeeds with a token, that token is recorded in ``_PORT_CSRF_TOKENS[port]``
+    so subsequent RPC calls to *port* automatically reuse it.
+
     :param port: Candidate loopback port, e.g. ``52548``.
+    :param csrf_token: Optional explicit CSRF token to probe first.
     :returns: ``True`` only when ``Heartbeat`` returns HTTP 200.
     """
     url = _rpc_url(port, _METHOD_HEARTBEAT)
     _assert_loopback_url(url)
-    try:
-        with _sync_client(_PROBE_TIMEOUT_S) as client:
-            response = client.post(
-                url,
-                headers={"Content-Type": "application/json"},
-                content=b"{}",
-            )
-    except httpx.HTTPError:
+
+    cached_tok = _PORT_CSRF_TOKENS.get(port)
+    candidates: list[str | None] = []
+    if csrf_token is not None:
+        candidates.append(csrf_token)
+    elif cached_tok is not None:
+        candidates.append(cached_tok or None)
+    for c in _candidate_csrf_tokens(explicit=csrf_token):
+        if c not in candidates:
+            candidates.append(c)
+
+    for tok in candidates:
+        headers = {"Content-Type": "application/json"}
+        if tok:
+            headers[_HEADER_CSRF_TOKEN] = tok
+        try:
+            with _sync_client(_PROBE_TIMEOUT_S) as client:
+                response = client.post(
+                    url,
+                    headers=headers,
+                    content=b"{}",
+                )
+        except httpx.HTTPError:
+            return False
+        if response.status_code == 200:
+            _PORT_CSRF_TOKENS[port] = tok or ""
+            return True
+        if response.status_code == 401:
+            continue
         return False
-    return response.status_code == 200
+    return False
 
 
-def _conversation_matches(port: int, conversation_id: str) -> bool:
+def _conversation_matches(
+    port: int,
+    conversation_id: str,
+    csrf_token: str | None = None,
+) -> bool:
     """
     Return whether the agy on ``port`` owns ``conversation_id``.
 
@@ -462,6 +571,7 @@ def _conversation_matches(port: int, conversation_id: str) -> bool:
     :param port: Validated connect-RPC port, e.g. ``52548``.
     :param conversation_id: agy conversation id to look for, e.g.
         ``"90468e33-..."``.
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: ``True`` only when the server confirms it hosts ``conversation_id``
         (200 + ``metadata.rootConversationId == conversation_id``).
     """
@@ -471,7 +581,7 @@ def _conversation_matches(port: int, conversation_id: str) -> bool:
         with _sync_client(_PROBE_TIMEOUT_S) as client:
             response = client.post(
                 url,
-                headers={"Content-Type": "application/json"},
+                headers=_rpc_headers(port, csrf_token=csrf_token),
                 content=json.dumps({"conversationId": conversation_id}).encode("utf-8"),
             )
     except httpx.HTTPError:
@@ -490,7 +600,72 @@ def _conversation_matches(port: int, conversation_id: str) -> bool:
     return metadata.get("rootConversationId") == conversation_id
 
 
-def get_trajectory_steps(port: int, cascade_id: str) -> list[dict[str, object]]:
+def _probe_heartbeat(port: int, csrf_token: str | None = None) -> bool:
+    """Invoke _heartbeat_ok, safely falling back to 1 positional arg if monkeypatched."""
+    if csrf_token is not None:
+        try:
+            return _heartbeat_ok(port, csrf_token=csrf_token)
+        except TypeError:
+            pass
+    return _heartbeat_ok(port)
+
+
+def _probe_conversation_matches(
+    port: int,
+    conversation_id: str,
+    csrf_token: str | None = None,
+) -> bool:
+    """Invoke _conversation_matches, safely falling back to 2 positional args if monkeypatched."""
+    if csrf_token is not None:
+        try:
+            return _conversation_matches(port, conversation_id, csrf_token=csrf_token)
+        except TypeError:
+            pass
+    return _conversation_matches(port, conversation_id)
+
+
+def _get_candidate_agy_rpc_ports(csrf_token: str | None = None) -> list[int]:
+    """Invoke _candidate_agy_rpc_ports, safely falling back to 0 args if monkeypatched."""
+    if csrf_token is not None:
+        try:
+            return _candidate_agy_rpc_ports(csrf_token=csrf_token)
+        except TypeError:
+            pass
+    return _candidate_agy_rpc_ports()
+
+
+def _probe_discover_language_server_port(
+    pid: int,
+    csrf_token: str | None = None,
+) -> int | None:
+    """Invoke discover_language_server_port, falling back to 1 arg if monkeypatched."""
+    if csrf_token is not None:
+        try:
+            return discover_language_server_port(pid, csrf_token=csrf_token)
+        except TypeError:
+            pass
+    return discover_language_server_port(pid)
+
+
+def _probe_resolve_pane_agy_rpc_port_state(
+    socket_path: Path,
+    tmux_target: str,
+    csrf_token: str | None = None,
+) -> PaneAgyResolution:
+    """Invoke resolve_pane_agy_rpc_port_state, falling back to 2 args if monkeypatched."""
+    if csrf_token is not None:
+        try:
+            return resolve_pane_agy_rpc_port_state(socket_path, tmux_target, csrf_token=csrf_token)
+        except TypeError:
+            pass
+    return resolve_pane_agy_rpc_port_state(socket_path, tmux_target)
+
+
+def get_trajectory_steps(
+    port: int,
+    cascade_id: str,
+    csrf_token: str | None = None,
+) -> list[dict[str, object]]:
     """
     Return the trajectory steps for ``cascade_id`` from the agy on ``port``.
 
@@ -500,6 +675,7 @@ def get_trajectory_steps(port: int, cascade_id: str) -> list[dict[str, object]]:
 
     :param port: Validated connect-RPC port, e.g. ``52548``.
     :param cascade_id: agy cascade id (equal to the conversation id) to query.
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: List of step dicts, each containing at least ``stepIndex`` and
         ``status`` (may be empty when no steps have been recorded yet).
     :raises httpx.HTTPError: On transport errors or non-2xx responses; the
@@ -514,7 +690,7 @@ def get_trajectory_steps(port: int, cascade_id: str) -> list[dict[str, object]]:
     with _sync_client(_RPC_CALL_TIMEOUT_S) as client:
         response = client.post(
             url,
-            headers={"Content-Type": "application/json"},
+            headers=_rpc_headers(port, csrf_token=csrf_token),
             content=json.dumps({"cascadeId": cascade_id}).encode("utf-8"),
         )
     # Raises httpx.HTTPStatusError (subclass of httpx.HTTPError) on non-2xx so
@@ -525,7 +701,7 @@ def get_trajectory_steps(port: int, cascade_id: str) -> list[dict[str, object]]:
     return list(steps) if isinstance(steps, list) else []
 
 
-def retrieve_user_quota_summary() -> dict[str, object] | None:
+def retrieve_user_quota_summary(csrf_token: str | None = None) -> dict[str, object] | None:
     """
     Return the signed-in Antigravity account's plan quota, or ``None``.
 
@@ -555,18 +731,19 @@ def retrieve_user_quota_summary() -> dict[str, object] | None:
     candidate port and an exhausted list returns ``None``. The caller renders a
     tray widget, so "no answer" must degrade to "no row", never to an error.
 
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: The ``response`` object (``{"groups": [...], "description": ...}``)
         from the first agy that answers with a non-empty group list, or ``None``
         when no running agy could supply it (commonly: no agy running at all).
     """
-    for port in _candidate_agy_rpc_ports():
+    for port in _get_candidate_agy_rpc_ports(csrf_token=csrf_token):
         url = _rpc_url(port, _METHOD_RETRIEVE_USER_QUOTA_SUMMARY)
         _assert_loopback_url(url)
         try:
             with _sync_client(_QUOTA_TIMEOUT_S) as client:
                 response = client.post(
                     url,
-                    headers={"Content-Type": "application/json"},
+                    headers=_rpc_headers(port, csrf_token=csrf_token),
                     content=b"{}",
                 )
             if response.status_code != 200:
@@ -584,7 +761,11 @@ def retrieve_user_quota_summary() -> dict[str, object] | None:
     return None
 
 
-def cancel_cascade_steps(port: int, cascade_id: str) -> bool:
+def cancel_cascade_steps(
+    port: int,
+    cascade_id: str,
+    csrf_token: str | None = None,
+) -> bool:
     """
     Request cancellation of the active cascade steps for ``cascade_id``.
 
@@ -595,6 +776,7 @@ def cancel_cascade_steps(port: int, cascade_id: str) -> bool:
 
     :param port: Validated connect-RPC port, e.g. ``52548``.
     :param cascade_id: agy cascade id (equal to the conversation id) to cancel.
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: ``True`` when the server accepted the cancel (HTTP < 400),
         ``False`` on any error or rejection.
     """
@@ -604,7 +786,7 @@ def cancel_cascade_steps(port: int, cascade_id: str) -> bool:
         with _sync_client(_RPC_CALL_TIMEOUT_S) as client:
             response = client.post(
                 url,
-                headers={"Content-Type": "application/json"},
+                headers=_rpc_headers(port, csrf_token=csrf_token),
                 content=json.dumps({"cascadeId": cascade_id}).encode("utf-8"),
             )
     except Exception:  # deliberate fail-open: ssl.SSLError etc. outside httpx hierarchy
@@ -624,7 +806,12 @@ class AntigravityRpcError(Exception):
     """
 
 
-def _post_rpc_raising(port: int, method: str, body: dict[str, object]) -> None:
+def _post_rpc_raising(
+    port: int,
+    method: str,
+    body: dict[str, object],
+    csrf_token: str | None = None,
+) -> None:
     """
     POST a JSON body to a functional connect-RPC method, raising on any failure.
 
@@ -641,6 +828,7 @@ def _post_rpc_raising(port: int, method: str, body: dict[str, object]) -> None:
     :param method: LanguageServerService method name, e.g.
         ``"SendUserCascadeMessage"``.
     :param body: The request object to JSON-encode and POST.
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: ``None`` on success (HTTP < 400).
     :raises AntigravityRpcError: On a transport error (wrapped) or any HTTP
         status >= 400 (message is the raw response body text).
@@ -651,7 +839,7 @@ def _post_rpc_raising(port: int, method: str, body: dict[str, object]) -> None:
         with _sync_client(_RPC_CALL_TIMEOUT_S) as client:
             response = client.post(
                 url,
-                headers={"Content-Type": "application/json"},
+                headers=_rpc_headers(port, csrf_token=csrf_token),
                 content=json.dumps(body).encode("utf-8"),
             )
     except httpx.HTTPError as e:
@@ -667,6 +855,7 @@ def handle_user_interaction(
     trajectory_id: str,
     step_index: int,
     payload: dict[str, object],
+    csrf_token: str | None = None,
 ) -> None:
     """
     Deliver an interaction answer (question response / approval) to agy.
@@ -687,6 +876,7 @@ def handle_user_interaction(
     :param step_index: Step index the interaction targets.
     :param payload: Variant dict, e.g. ``{"permission": {"allow": True}}`` or
         ``{"askQuestion": {...}}``.
+    :param csrf_token: Optional explicit CSRF token override.
     :raises AntigravityRpcError: On transport errors (e.g. connection refused)
         or any HTTP status >= 400. Transport errors are wrapped so the bridge
         has one exception type to catch, regardless of whether the failure was
@@ -698,7 +888,7 @@ def handle_user_interaction(
         "cascadeId": cascade_id,
         "interaction": {"trajectoryId": trajectory_id, "stepIndex": step_index, **payload},
     }
-    _post_rpc_raising(port, _METHOD_HANDLE_CASCADE_USER_INTERACTION, body)
+    _post_rpc_raising(port, _METHOD_HANDLE_CASCADE_USER_INTERACTION, body, csrf_token=csrf_token)
 
 
 def send_user_cascade_message(
@@ -707,6 +897,7 @@ def send_user_cascade_message(
     text: str,
     *,
     plan_model: str,
+    csrf_token: str | None = None,
 ) -> None:
     """
     Send a user turn to agy via connect-RPC (replaces tmux send-keys).
@@ -736,6 +927,7 @@ def send_user_cascade_message(
         :func:`get_available_models` or echoed from the read-side
         ``userInput.userConfig.plannerConfig.requestedModel.model``. Must not
         be empty or omitted.
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: ``None`` on success (HTTP 200).
     :raises AntigravityRpcError: On transport errors (e.g. connection refused)
         or any HTTP status >= 400. Transport errors are wrapped so the executor
@@ -749,7 +941,7 @@ def send_user_cascade_message(
         "items": [{"text": text}],
         "cascadeConfig": {"plannerConfig": {"planModel": plan_model}},
     }
-    _post_rpc_raising(port, _METHOD_SEND_USER_CASCADE_MESSAGE, body)
+    _post_rpc_raising(port, _METHOD_SEND_USER_CASCADE_MESSAGE, body, csrf_token=csrf_token)
 
 
 def start_cascade(
@@ -757,6 +949,7 @@ def start_cascade(
     cascade_id: str,
     *,
     source: str = "CORTEX_TRAJECTORY_SOURCE_CLI",
+    csrf_token: str | None = None,
 ) -> None:
     """
     Cold-start (create) an agy conversation over connect-RPC.
@@ -783,6 +976,7 @@ def start_cascade(
     :param source: agy trajectory-source enum string. Defaults to
         ``"CORTEX_TRAJECTORY_SOURCE_CLI"`` (the headless-CLI source); kept a
         parameter so a future enum rename is a one-line caller change.
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: ``None`` on success (HTTP 200).
     :raises AntigravityRpcError: On transport errors (e.g. connection refused) or
         any HTTP status >= 400. Transport errors are wrapped so the runner has one
@@ -791,10 +985,10 @@ def start_cascade(
         error verbatim. Mirrors :func:`send_user_cascade_message`.
     """
     body: dict[str, object] = {"cascadeId": cascade_id, "source": source}
-    _post_rpc_raising(port, _METHOD_START_CASCADE, body)
+    _post_rpc_raising(port, _METHOD_START_CASCADE, body, csrf_token=csrf_token)
 
 
-def get_available_models(port: int) -> dict[str, object]:
+def get_available_models(port: int, csrf_token: str | None = None) -> dict[str, object]:
     """
     Return the agy model catalog from ``GetAvailableModels``.
 
@@ -833,6 +1027,7 @@ def get_available_models(port: int) -> dict[str, object]:
     when no prior model is available.
 
     :param port: Validated connect-RPC port, e.g. ``52548``.
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: The unwrapped catalog (a dict, at minimum ``{"models": {...}}``):
         ``body["response"]`` when the 200 body is a dict carrying a dict under
         ``"response"``; otherwise the body itself (defensive, for a future agy
@@ -850,7 +1045,7 @@ def get_available_models(port: int) -> dict[str, object]:
     with _sync_client(_RPC_CALL_TIMEOUT_S) as client:
         response = client.post(
             url,
-            headers={"Content-Type": "application/json"},
+            headers=_rpc_headers(port, csrf_token=csrf_token),
             content=b"{}",
         )
     # Raises httpx.HTTPStatusError (subclass of httpx.HTTPError) on non-2xx so
@@ -866,7 +1061,7 @@ def get_available_models(port: int) -> dict[str, object]:
     return inner if isinstance(inner, dict) else body
 
 
-def get_all_cascade_trajectories(port: int) -> dict[str, object]:
+def get_all_cascade_trajectories(port: int, csrf_token: str | None = None) -> dict[str, object]:
     """
     Return agy's cascade-trajectory summaries from ``GetAllCascadeTrajectories``.
 
@@ -908,6 +1103,7 @@ def get_all_cascade_trajectories(port: int) -> dict[str, object]:
     these summaries; this function only fetches them.
 
     :param port: Validated connect-RPC port, e.g. ``52548``.
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: The parsed response body (at minimum ``{"trajectorySummaries":
         {...}}``), or ``{}`` when the 200 body is not a dict (guards against a
         future agy returning a non-object 200).
@@ -923,7 +1119,7 @@ def get_all_cascade_trajectories(port: int) -> dict[str, object]:
     with _sync_client(_RPC_CALL_TIMEOUT_S) as client:
         response = client.post(
             url,
-            headers={"Content-Type": "application/json"},
+            headers=_rpc_headers(port, csrf_token=csrf_token),
             content=b"{}",
         )
     # Raises httpx.HTTPStatusError (subclass of httpx.HTTPError) on non-2xx so
@@ -981,7 +1177,9 @@ def _connect_trailer_error(payload: bytes) -> object | None:
 
 
 async def stream_agent_state_updates(
-    port: int, conversation_id: str
+    port: int,
+    conversation_id: str,
+    csrf_token: str | None = None,
 ) -> AsyncIterator[dict[str, object]]:
     """
     Stream agent-state updates for ``conversation_id`` over connect server-stream.
@@ -1028,6 +1226,7 @@ async def stream_agent_state_updates(
     :param port: Validated connect-RPC port, e.g. ``52548``.
     :param conversation_id: agy conversation id (equal to the cascade id) to
         stream updates for.
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: An async iterator over DATA frames' parsed JSON dicts, in arrival
         order, ending when the trailer frame is seen or the stream closes.
     :raises AntigravityRpcError: On a non-2xx HTTP status (httpx ``stream()`` does
@@ -1046,7 +1245,9 @@ async def stream_agent_state_updates(
         client.stream(
             "POST",
             url,
-            headers={"Content-Type": "application/connect+json"},
+            headers=_rpc_headers(
+                port, content_type="application/connect+json", csrf_token=csrf_token
+            ),
             content=body,
         ) as response,
     ):
@@ -1164,7 +1365,7 @@ def _list_agy_pids_from_proc() -> list[int]:
     return pids
 
 
-def discover_language_server_port(pid: int) -> int | None:
+def discover_language_server_port(pid: int, csrf_token: str | None = None) -> int | None:
     """
     Resolve the connect-RPC (TLS) port for a known agy pid.
 
@@ -1175,13 +1376,14 @@ def discover_language_server_port(pid: int) -> int | None:
     assuming the two ports are exactly adjacent.
 
     :param pid: agy process id, e.g. ``72753``.
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: The validated connect-RPC port, or ``None`` when the process has
         no loopback listeners or none answer ``Heartbeat`` (e.g. agy has exited
         or has not finished binding).
     """
     ports = _pid_listen_ports(pid)
     for port in ports:
-        if _heartbeat_ok(port):
+        if _probe_heartbeat(port, csrf_token=csrf_token):
             _logger.debug("agy connect-RPC port resolved: pid=%s port=%s", pid, port)
             return port
     return None
@@ -1367,7 +1569,11 @@ class PaneAgyResolution(NamedTuple):
     port: int | None
 
 
-def resolve_pane_agy_rpc_port_state(socket_path: Path, tmux_target: str) -> PaneAgyResolution:
+def resolve_pane_agy_rpc_port_state(
+    socket_path: Path,
+    tmux_target: str,
+    csrf_token: str | None = None,
+) -> PaneAgyResolution:
     """
     Resolve THIS session's own agy connect-RPC port via its tmux pane (3-state).
 
@@ -1398,6 +1604,7 @@ def resolve_pane_agy_rpc_port_state(socket_path: Path, tmux_target: str) -> Pane
 
     :param socket_path: Private tmux socket path for this session's terminal.
     :param tmux_target: Tmux target (session name), e.g. ``"main"``.
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: The :class:`PaneAgyResolution` for the three states above.
     """
     pane_pid = _pane_pid(socket_path, tmux_target)
@@ -1412,7 +1619,7 @@ def resolve_pane_agy_rpc_port_state(socket_path: Path, tmux_target: str) -> Pane
             tmux_target,
         )
         return PaneAgyResolution(agy_found=False, port=None)
-    port = discover_language_server_port(agy_pid)
+    port = _probe_discover_language_server_port(agy_pid, csrf_token=csrf_token)
     if port is not None:
         _logger.info(
             "agy connect-RPC port scoped to pane: target=%s agy_pid=%s port=%s",
@@ -1423,7 +1630,11 @@ def resolve_pane_agy_rpc_port_state(socket_path: Path, tmux_target: str) -> Pane
     return PaneAgyResolution(agy_found=True, port=port)
 
 
-def resolve_pane_agy_rpc_port(socket_path: Path, tmux_target: str) -> int | None:
+def resolve_pane_agy_rpc_port(
+    socket_path: Path,
+    tmux_target: str,
+    csrf_token: str | None = None,
+) -> int | None:
     """
     Resolve THIS session's own agy connect-RPC port via its tmux pane.
 
@@ -1432,15 +1643,19 @@ def resolve_pane_agy_rpc_port(socket_path: Path, tmux_target: str) -> int | None
 
     :param socket_path: Private tmux socket path for this session's terminal.
     :param tmux_target: Tmux target (session name), e.g. ``"main"``.
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: The pane agy's validated connect-RPC port, or ``None`` when it
         cannot be scoped.
     """
-    return resolve_pane_agy_rpc_port_state(socket_path, tmux_target).port
+    return _probe_resolve_pane_agy_rpc_port_state(
+        socket_path, tmux_target, csrf_token=csrf_token
+    ).port
 
 
 def resolve_cold_start_agy_rpc_port(
     tmux_socket: Path | None,
     tmux_target: str | None,
+    csrf_token: str | None = None,
 ) -> int | None:
     """
     Pick the connect-RPC port a cold-start should ``StartCascade`` onto.
@@ -1480,11 +1695,14 @@ def resolve_cold_start_agy_rpc_port(
     :param tmux_socket: This session's tmux socket path, or ``None`` when no local
         pane is reachable (remote runner).
     :param tmux_target: This session's tmux target, or ``None`` as above.
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: The port to ``StartCascade`` onto, or ``None`` when the port is not
         resolvable yet (the caller keeps polling until its deadline).
     """
     if tmux_socket is not None and tmux_target is not None:
-        resolution = resolve_pane_agy_rpc_port_state(tmux_socket, tmux_target)
+        resolution = _probe_resolve_pane_agy_rpc_port_state(
+            tmux_socket, tmux_target, csrf_token=csrf_token
+        )
         if resolution.port is not None:
             return resolution.port  # state 1: our agy, scoped port
         if not resolution.agy_found:
@@ -1516,7 +1734,7 @@ def resolve_cold_start_agy_rpc_port(
             "candidate scan — safe only while this host runs a single agy",
             tmux_target,
         )
-    candidates = _candidate_agy_rpc_ports()
+    candidates = _get_candidate_agy_rpc_ports(csrf_token=csrf_token)
     if not candidates:
         return None
     port = candidates[0]
@@ -1550,7 +1768,7 @@ def _can_attribute_any_agy_port() -> bool:
     return any(_pid_listen_ports(pid) for pid in _list_agy_pids())
 
 
-def _candidate_agy_rpc_ports() -> list[int]:
+def _candidate_agy_rpc_ports(csrf_token: str | None = None) -> list[int]:
     """
     Return every live agy connect-RPC port, validated by ``Heartbeat``.
 
@@ -1573,6 +1791,7 @@ def _candidate_agy_rpc_ports() -> list[int]:
     listeners fail the probe). Callers additionally confirm conversation
     ownership before injecting, so a stray non-agy port can never be written to.
 
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: Sorted connect-RPC ports that answer ``Heartbeat`` with HTTP 200.
     """
     agy_pids = _list_agy_pids()
@@ -1591,10 +1810,14 @@ def _candidate_agy_rpc_ports() -> list[int]:
             )
             loopback = loopback[:_MAX_FALLBACK_PROBE_PORTS]
         ports.update(loopback)
-    return [port for port in sorted(ports) if _heartbeat_ok(port)]
+    return [port for port in sorted(ports) if _probe_heartbeat(port, csrf_token=csrf_token)]
 
 
-def conversation_id_owned_by_pid(pid: int, candidate_ids: Iterable[str]) -> str | None:
+def conversation_id_owned_by_pid(
+    pid: int,
+    candidate_ids: Iterable[str],
+    csrf_token: str | None = None,
+) -> str | None:
     """
     Return which candidate conversation id a specific agy pid owns.
 
@@ -1633,6 +1856,7 @@ def conversation_id_owned_by_pid(pid: int, candidate_ids: Iterable[str]) -> str 
     :param pid: agy process id whose conversation to resolve, e.g. ``72753``.
     :param candidate_ids: agy conversation ids to test (e.g. the in-window
         brain-dir names).
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: The candidate id this pid's connect-RPC server confirms it hosts
         when exactly one matches; ``None`` when the port cannot be resolved (agy
         not bound yet / exited), no candidate matches, or — refusing to guess —
@@ -1644,15 +1868,17 @@ def conversation_id_owned_by_pid(pid: int, candidate_ids: Iterable[str]) -> str 
     # back to every live agy connect-RPC port: the conversation id is globally
     # unique, so a candidate is confirmed only by the port that actually hosts
     # it — the binding stays correct without the pid scoping.
-    scoped = discover_language_server_port(pid)
-    ports = [scoped] if scoped is not None else _candidate_agy_rpc_ports()
+    scoped = _probe_discover_language_server_port(pid, csrf_token=csrf_token)
+    ports = [scoped] if scoped is not None else _get_candidate_agy_rpc_ports(csrf_token=csrf_token)
     if not ports:
         _logger.debug("agy pid=%s has no resolvable connect-RPC port yet", pid)
         return None
     matched = [
         candidate
         for candidate in candidates
-        if any(_conversation_matches(port, candidate) for port in ports)
+        if any(
+            _probe_conversation_matches(port, candidate, csrf_token=csrf_token) for port in ports
+        )
     ]
     if len(matched) == 1:
         _logger.info(
@@ -1681,7 +1907,10 @@ def conversation_id_owned_by_pid(pid: int, candidate_ids: Iterable[str]) -> str 
     return None
 
 
-def resolve_language_server_port(conversation_id: str) -> int | None:
+def resolve_language_server_port(
+    conversation_id: str,
+    csrf_token: str | None = None,
+) -> int | None:
     """
     Resolve agy's connect-RPC port for a conversation by validated discovery.
 
@@ -1702,11 +1931,12 @@ def resolve_language_server_port(conversation_id: str) -> int | None:
     :param conversation_id: agy conversation id the turn targets, e.g.
         ``"90468e33-..."``. Used to disambiguate when multiple agy processes
         run.
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: A validated connect-RPC port that hosts ``conversation_id``, or
         ``None`` when no running agy could be resolved.
     """
-    for port in _candidate_agy_rpc_ports():
-        if _conversation_matches(port, conversation_id):
+    for port in _get_candidate_agy_rpc_ports(csrf_token=csrf_token):
+        if _probe_conversation_matches(port, conversation_id, csrf_token=csrf_token):
             _logger.info(
                 "agy connect-RPC port resolved by conversation match: port=%s conversation=%s",
                 port,

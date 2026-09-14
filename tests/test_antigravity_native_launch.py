@@ -339,6 +339,30 @@ class TestBuildAgyLaunch:
         )
         assert argv.count(_SKIP_FLAG) == 1
 
+    def test_csrf_token_flag_and_env(self, fake_agy: str) -> None:
+        """When csrf_token is passed, both --csrf_token and ANTIGRAVITY_CSRF_TOKEN are set."""
+        argv, env = build_agy_launch(
+            conversation_id=None,
+            model=None,
+            resume=False,
+            csrf_token="secret-token-123",
+        )
+        assert "--csrf_token" in argv
+        idx = argv.index("--csrf_token")
+        assert argv[idx + 1] == "secret-token-123"
+        assert env["ANTIGRAVITY_CSRF_TOKEN"] == "secret-token-123"
+
+    def test_csrf_token_omitted_when_none(self, fake_agy: str) -> None:
+        """When csrf_token is None, neither CLI flag nor env is set."""
+        argv, env = build_agy_launch(
+            conversation_id=None,
+            model=None,
+            resume=False,
+            csrf_token=None,
+        )
+        assert not any(arg.startswith("--csrf_token") for arg in argv)
+        assert "ANTIGRAVITY_CSRF_TOKEN" not in env
+
 
 # ---------------------------------------------------------------------------
 # should_skip_permissions

@@ -99,9 +99,11 @@ from omnigent.antigravity_native_bridge import (
     bridge_dir_for_bridge_id,
     clear_bridge_state,
     ensure_agy_feedback_survey_disabled,
+    ensure_csrf_token,
     is_placeholder_conversation_id,
     prepare_bridge_dir,
     read_bridge_state,
+    read_csrf_token,
     seed_isolated_agy_home,
     update_conversation_id,
     write_bridge_state,
@@ -983,6 +985,7 @@ async def _launch_and_record(
     # Clear stale turn/conversation state so a fresh launch rediscovers this run's
     # real agy conversation id instead of binding to the previous run's.
     await asyncio.to_thread(clear_bridge_state, bridge_dir)
+    csrf_token = await asyncio.to_thread(ensure_csrf_token, bridge_dir)
     # agy's first-run onboarding wizard has no TTY to answer it on a headless /
     # detached launch, so its completion marker is pre-accepted below by
     # ``seed_isolated_agy_home`` — in the isolated dir agy actually reads under
@@ -994,6 +997,7 @@ async def _launch_and_record(
         resume=resume,
         permission_mode=permission_mode,
         headless=headless,
+        csrf_token=csrf_token,
         extra_args=antigravity_args,
     )
     # Scope agy to a per-session isolated Gemini dir, exactly as the runner-owned
@@ -1281,13 +1285,34 @@ async def _cold_start_agy_conversation(
         # resumed id, defeating --resume.
         return
 
+    csrf_token = await asyncio.to_thread(read_csrf_token, bridge_dir)
+
+    def _resolve_port() -> int | None:
+        if csrf_token is not None:
+            try:
+                return resolve_cold_start_agy_rpc_port(
+                    tmux_socket, tmux_target, csrf_token=csrf_token
+                )
+            except TypeError:
+                pass
+        return resolve_cold_start_agy_rpc_port(tmux_socket, tmux_target)
+
+    def _start(p: int, cid: str) -> None:
+        if csrf_token is not None:
+            try:
+                start_cascade(p, cid, csrf_token=csrf_token)
+                return
+            except TypeError:
+                pass
+        start_cascade(p, cid)
+
     deadline = time.monotonic() + timeout_s
     port: int | None = None
     while True:
         # Scope to THIS session's pane agy (avoids binding a foreign agy on a
         # multi-agy host); falls back to the lowest validated candidate when no
         # local pane is reachable or the pane is not resolvable yet.
-        port = await asyncio.to_thread(resolve_cold_start_agy_rpc_port, tmux_socket, tmux_target)
+        port = await asyncio.to_thread(_resolve_port)
         if port is not None:
             break
         if time.monotonic() >= deadline:
@@ -1303,7 +1328,7 @@ async def _cold_start_agy_conversation(
 
     cascade_id = str(uuid.uuid4())
     try:
-        await asyncio.to_thread(start_cascade, port, cascade_id)
+        await asyncio.to_thread(_start, port, cascade_id)
     except AntigravityRpcError:
         _logger.warning(
             "Antigravity cold-start: StartCascade failed on port %s for session %s; leaving "

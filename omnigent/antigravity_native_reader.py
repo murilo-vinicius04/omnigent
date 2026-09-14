@@ -71,6 +71,7 @@ from omnigent.antigravity_native_bridge import (
     agy_gemini_dir,
     is_placeholder_conversation_id,
     read_bridge_state,
+    read_csrf_token,
     update_conversation_id,
     write_bridge_state,
 )
@@ -829,7 +830,7 @@ def _conversation_id_on_disk(bridge_dir: Path) -> str | None:
     return found[0]
 
 
-def _resolve_rpc_port(cascade_id: str) -> int | None:
+def _resolve_rpc_port(cascade_id: str, csrf_token: str | None = None) -> int | None:
     """
     Return the agy connect-RPC port that hosts ``cascade_id``, or ``None``.
 
@@ -840,11 +841,26 @@ def _resolve_rpc_port(cascade_id: str) -> int | None:
     echo this id.
 
     :param cascade_id: agy cascade id (equal to the conversation id) to locate.
+    :param csrf_token: Optional explicit CSRF token override.
     :returns: A validated connect-RPC port hosting ``cascade_id``, or ``None``
         when no running agy could be matched yet.
     """
-    for port in _candidate_agy_rpc_ports():
-        if _conversation_matches(port, cascade_id):
+    if csrf_token is not None:
+        try:
+            candidates = _candidate_agy_rpc_ports(csrf_token=csrf_token)
+        except TypeError:
+            candidates = _candidate_agy_rpc_ports()
+    else:
+        candidates = _candidate_agy_rpc_ports()
+    for port in candidates:
+        if csrf_token is not None:
+            try:
+                matched = _conversation_matches(port, cascade_id, csrf_token=csrf_token)
+            except TypeError:
+                matched = _conversation_matches(port, cascade_id)
+        else:
+            matched = _conversation_matches(port, cascade_id)
+        if matched:
             return port
     return None
 
@@ -876,9 +892,10 @@ async def _discover(
         fired before discovery completed.
     """
     while True:
+        csrf_token = await asyncio.to_thread(read_csrf_token, bridge_dir)
         cascade_id = await asyncio.to_thread(_resolve_cascade_id, bridge_dir)
         if cascade_id is not None:
-            port = await asyncio.to_thread(_resolve_rpc_port, cascade_id)
+            port = await asyncio.to_thread(_resolve_rpc_port, cascade_id, csrf_token)
             if port is not None:
                 _logger.info(
                     "agy RPC reader bound: bridge_dir=%s cascade=%s port=%s",

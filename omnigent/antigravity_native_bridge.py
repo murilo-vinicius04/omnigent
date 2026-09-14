@@ -30,6 +30,7 @@ _STATE_FILE = "state.json"
 # the tmux/TUI section at the end of this module). Written by the runner after
 # the agy terminal launches; read by the executor's first-turn bootstrap.
 _TMUX_FILE = "tmux.json"
+_CSRF_FILE = "csrf_token"
 _BRIDGE_ROOT = Path.home() / ".omnigent" / "antigravity-native"
 
 # Prefix of the launcher-minted placeholder conversation id (see
@@ -854,6 +855,57 @@ def _seed_isolated_agy_workspace_trust(iso_gemini: Path, workspace: Path) -> Non
     os.replace(tmp, settings_path)
 
 
+def ensure_csrf_token(bridge_dir: Path) -> str:
+    """
+    Return the existing CSRF token for *bridge_dir*, or mint and persist a fresh one.
+
+    agy 1.2.2+ enforces connect-RPC CSRF protection via an ``x-codeium-csrf-token``
+    header matching the token passed to ``--csrf_token`` / ``ANTIGRAVITY_CSRF_TOKEN``.
+    Persisting it in the bridge directory allows both the launcher and the RPC
+    reader/executor to share the same token.
+
+    :param bridge_dir: Native Antigravity bridge directory.
+    :returns: A 32-byte hex token string.
+    """
+    path = bridge_dir / _CSRF_FILE
+    if path.is_file():
+        try:
+            tok = path.read_text(encoding="utf-8").strip()
+            if tok:
+                return tok
+        except OSError:
+            pass
+    token = secrets.token_hex(32)
+    bridge_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f"{_CSRF_FILE}.", dir=str(bridge_dir))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(token + "\n")
+        os.replace(tmp_name, path)
+    finally:
+        if os.path.exists(tmp_name):
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+    return token
+
+
+def read_csrf_token(bridge_dir: Path) -> str | None:
+    """
+    Read the persisted CSRF token for *bridge_dir*, if present.
+
+    :param bridge_dir: Native Antigravity bridge directory.
+    :returns: The CSRF token string, or ``None`` if absent or empty.
+    """
+    path = bridge_dir / _CSRF_FILE
+    if not path.is_file():
+        return None
+    try:
+        tok = path.read_text(encoding="utf-8").strip()
+        return tok or None
+    except OSError:
+        return None
+
+
 def write_bridge_state(bridge_dir: Path, state: AntigravityNativeBridgeState) -> None:
     """
     Persist shared native Antigravity state atomically.
@@ -900,7 +952,7 @@ def clear_bridge_state(bridge_dir: Path) -> None:
     :param bridge_dir: Native Antigravity bridge directory.
     :returns: None.
     """
-    for runtime_file in (_STATE_FILE, _TMUX_FILE):
+    for runtime_file in (_STATE_FILE, _TMUX_FILE, _CSRF_FILE):
         with contextlib.suppress(FileNotFoundError):
             (bridge_dir / runtime_file).unlink()
 

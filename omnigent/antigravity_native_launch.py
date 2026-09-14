@@ -198,6 +198,7 @@ def build_agy_launch(
     resume: bool,
     permission_mode: str | None = None,
     headless: bool = False,
+    csrf_token: str | None = None,
     extra_args: tuple[str, ...] = (),
 ) -> tuple[list[str], dict[str, str]]:
     """Build the argv and environment overrides for an agy launch.
@@ -228,9 +229,7 @@ def build_agy_launch(
 
     In both modes auth is inherited from the ambient environment / agy state,
     and the workspace is the agy process cwd (set by the terminal spec), so no
-    ``--add-dir`` is emitted. No env overrides are produced: agy ignores
-    ``ANTIGRAVITY_SIDECAR_WEB_PORT`` / ``ANTIGRAVITY_CONVERSATION_ID`` /
-    ``ANTIGRAVITY_EXECUTABLE_DATA_DIR`` for the host process.
+    ``--add-dir`` is emitted.
 
     :param conversation_id: agy's real conversation id to resume, e.g.
         ``"68caaeac-..."``. Required (non-``None``) when ``resume=True``;
@@ -246,12 +245,15 @@ def build_agy_launch(
         TUI (sandbox / autonomous / server-spawned / detached). Forces the
         bypass flag so agy does not hang waiting for a ``request-review``
         answer. See :func:`should_skip_permissions`.
+    :param csrf_token: Optional CSRF token for agy 1.2.2+ connect-RPC. When
+        provided, passed as ``--csrf_token <token>`` and injected as
+        ``ANTIGRAVITY_CSRF_TOKEN``.
     :param extra_args: Additional raw CLI args appended after all generated
         flags, e.g. ``("--print-timeout", "30")``.
     :returns: A ``(argv, env_overrides)`` tuple where *argv* is the full
         command list starting with the agy binary path and *env_overrides*
         is a dict of env variables to layer on top of the process
-        environment (always empty for the agy host process).
+        environment.
     :raises ValueError: When ``resume=True`` but *conversation_id* is ``None``
         or empty (agy needs a real id to resume).
     """
@@ -269,9 +271,15 @@ def build_agy_launch(
         _SKIP_PERMISSIONS_FLAG not in extra_args
     ):
         argv.append(_SKIP_PERMISSIONS_FLAG)
+    if (
+        csrf_token is not None
+        and "--csrf_token" not in extra_args
+        and not any(a.startswith("--csrf_token=") for a in extra_args)
+    ):
+        argv.extend(["--csrf_token", csrf_token])
     argv.extend(extra_args)
 
-    # agy ignores every env knob we tried (sidecar port, conversation id, data
-    # dir) for the host process, so there is nothing to inject.
     env_overrides: dict[str, str] = {}
+    if csrf_token is not None:
+        env_overrides["ANTIGRAVITY_CSRF_TOKEN"] = csrf_token
     return argv, env_overrides
