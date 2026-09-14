@@ -880,3 +880,56 @@ false answer. Edit the unit files, then re-run the script.
 Auto-compaction now waits for the turn's spoken summary, plus an 8s grace
 period, before starting its turn. Starting the turn earlier made the page file
 the reply as history, so the summary was never narrated.
+
+## Session state — 2026-09-14 morning (nexus worker working; OpenAI next)
+
+**Deployment is now reproducible.** Both services are permanent user units in
+`~/.config/systemd/user/` (sources in `deploy/systemd/`), running from this
+checkout. The host has `TimeoutStopSec=15`. `sudo loginctl enable-linger nexus`
+is **still not done**, so units don't start at boot without a login.
+- Runner code loads only on `systemctl --user restart omnigent-host.service`,
+  which interrupts every session's runner, so ask first. Server-only changes
+  need just `omnigent-server.service`.
+- Another agent (Antigravity IDE) also edits this checkout and restarts units.
+  Check `git log`/`git status` and `journalctl --user` before assuming a change was mine.
+
+**Commits this morning:**
+- `33bcef56f` — agy 1.2.2 requires a CSRF token (`--csrf_token`,
+  `x-codeium-csrf-token`); without it every RPC returned 401, which was the real
+  reason workers were silent. Written by the IDE agent; lint-fixed and tested here.
+- `c11fd9fda` — the companion's own reply lacked `agent`, so every message the
+  companion answered itself 500'd. Test: `tests/server/test_companion_answer.py`.
+- `f7377dcc5` — `config_path` resolves against the session cwd (`/home/nexus`),
+  so the nexus prompt now uses absolute worker paths and forbids falling back to
+  the builtin `antigravity-native-ui` agent, which has no bypass and prompts on
+  every command.
+- `cd634b6c7` — auto-compaction waits for the turn's summary.
+
+**Verified live:** a gemini worker spawned with
+`/home/nexus/wt/friendly-layer/examples/nexus/agents/gemini/config.yaml`
+launched with `--dangerously-skip-permissions` and answered in about 12s.
+
+**Not verified:** a nexus conversation actually following the v8 prompt.
+- A running conversation keeps its spec until its runner is torn down.
+- **Stop → Reconnect** should reload the latest version with history replayed (read
+  from `runner/app.py:4402`, `_entry.py:1232`); not yet tried.
+
+**Open, in order:**
+1. **The Gemini quota is exhausted, so add an OpenAI worker to nexus.**
+   - Plan: `harness: openai-agents` (reads `OPENAI_API_KEY`, no CLI needed; codex and pi are not
+     installed, opencode is not set up) with a mini model.
+   - Blocked on the user:
+     - rotate the compromised key in `~/.omnigent/openai-key`;
+     - confirm the dashboard shows data-sharing free-tier eligibility, their usage tier and the model group;
+     - confirm auto-recharge is off, so spend is capped at prepaid credit.
+   - Free daily tokens (secondary sources): tier 1–2 get 250k/day on big models or
+     2.5M/day on mini; tier 3+ get 1M or 10M. Overage is believed to be billed.
+   - The key gets 403 on usage and cost endpoints, so usage can't be checked from code.
+2. **The runner could reload a changed agent version** on the next message by itself, instead of
+   needing Stop → Reconnect (the user dislikes new conversations). Offered, not started.
+3. **Every agy worker logs "agent instructions not delivered"**: the worker YAML prompt never
+   reaches agy.
+4. **Possible mid-session bypass switch** for plain antigravity sessions (relaunch
+   with `--resume`). User said yes earlier, but it is now likely unnecessary.
+5. **Cleanups in the CSRF patch:** TypeError fallbacks; it tries every session's token on
+   every port.
