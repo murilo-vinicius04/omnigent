@@ -673,6 +673,35 @@ def missing_harness_cli(harness: str) -> HarnessInstallSpec | None:
     return spec
 
 
+def missing_harness_package(harness: str) -> str | None:
+    """Return the install command for a harness whose PYTHON package is absent.
+
+    The sibling :func:`missing_harness_cli` only knows binaries, so an
+    SDK-backed harness passes its check and then fails inside the worker with
+    an ``ImportError`` the dispatcher never sees -- the orchestrator gets a
+    generic "turn failed" and may re-dispatch into the same wall. That is what
+    ``antigravity`` does: it is an in-process harness needing the
+    ``google-antigravity`` SDK, which no PATH probe can find.
+
+    :param harness: An executor harness identifier, e.g. ``"antigravity"``.
+    :returns: The command that would install it (e.g.
+        ``"pip install 'omnigent[antigravity]'"``), or ``None`` when the
+        harness needs no extra package or already has it.
+    """
+    from omnigent.harness_aliases import canonicalize_harness
+
+    # ``antigravity-native`` is deliberately absent: it drives the agy CLI, so
+    # its requirement is a binary and belongs to the probe above.
+    if (canonicalize_harness(harness) or harness) != "antigravity":
+        return None
+    from omnigent.onboarding.antigravity_auth import ANTIGRAVITY_EXTRA, antigravity_sdk_installed
+    from omnigent.onboarding.extra_install import extra_install_display
+
+    if antigravity_sdk_installed():
+        return None
+    return extra_install_display(ANTIGRAVITY_EXTRA)
+
+
 def harness_setup_hint(harness: str | None) -> str:
     """Return actionable remediation when *harness* can't launch on a machine.
 

@@ -2795,6 +2795,29 @@ class HostProcess:
         routable = [row["id"] for row in rows if isinstance(row.get("id"), str) and row["id"]]
         return ModelOptionsResult(models=rows, routable_models=routable)
 
+    async def _probed_antigravity_model_options(self) -> ModelOptionsResult | None:
+        """
+        Store-backed ``agy models`` listing, or ``None`` on failure.
+
+        agy's own catalog lives behind the connect-RPC port of a RUNNING
+        session, which a pre-launch picker has none of; the CLI answers the
+        same question without launching anything. See
+        :mod:`omnigent.antigravity_native_catalog`.
+
+        :returns: The catalog listing, or ``None`` when unavailable.
+        """
+        from omnigent.antigravity_native_catalog import antigravity_launch_catalog
+
+        try:
+            rows = await antigravity_launch_catalog()
+        except Exception:  # noqa: BLE001 — no catalog, never a crash
+            _logger.warning("Antigravity model catalog unavailable", exc_info=True)
+            return None
+        if rows is None:
+            return None
+        routable = [row["id"] for row in rows if isinstance(row.get("id"), str) and row["id"]]
+        return ModelOptionsResult(models=rows, routable_models=routable)
+
     async def _probed_claude_model_options(self) -> ModelOptionsResult | None:
         """
         Store-backed harness-truth Claude listing, or ``None`` on failure.
@@ -2851,6 +2874,28 @@ class HostProcess:
                 status="ok",
                 models=[],
                 error="the codex model probe failed — see the host log",
+            )
+
+        # Both spellings: ``antigravity-native`` wraps the agy TUI and
+        # ``antigravity`` is the in-process SDK, and the picker offers the
+        # latter. They are two clients of the same Antigravity service on the
+        # same account, so the ids agy lists are the ids either one accepts --
+        # and the CLI is the only one of the two that will enumerate them. A
+        # host without agy answers no rows rather than guessing.
+        if harness in ("antigravity", "antigravity-native"):
+            probed_agy = await self._probed_antigravity_model_options()
+            if probed_agy is None:
+                return HostModelOptionsResultFrame(
+                    request_id=frame.request_id,
+                    status="ok",
+                    models=[],
+                    error="the agy model listing failed — see the host log",
+                )
+            return HostModelOptionsResultFrame(
+                request_id=frame.request_id,
+                status="ok",
+                models=with_source(probed_agy.models),
+                routable_models=probed_agy.routable_models,
             )
 
         if harness == "pi-native":

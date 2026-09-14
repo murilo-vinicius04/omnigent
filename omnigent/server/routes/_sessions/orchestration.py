@@ -308,6 +308,9 @@ from omnigent.server.routes._sessions.helpers import (
     _validated_harness_override,
     _validated_harness_override_executor_type,
     _validated_spec_smart_routing_harness,
+    _validated_sub_effort_override,
+    _validated_sub_harness_override,
+    _validated_sub_model_override,
     _validated_subagent_routing_override,
     _wait_for_managed_runner_tunnel,
     _wait_for_runner_client,
@@ -1111,6 +1114,9 @@ def _build_session_response(
             agent_cache=agent_cache,
         ),
         model_override=conv.model_override,
+        sub_harness_override=conv.sub_harness_override,
+        sub_model_override=conv.sub_model_override,
+        sub_effort_override=conv.sub_effort_override,
         cost_control_mode_override=conv.cost_control_mode_override,
         subagent_routing_override=conv.subagent_routing_override,
         context_window=context_window,
@@ -5331,6 +5337,19 @@ async def _forward_event_to_runner(
     _effective_harness = _routed_harness or conv.harness_override
     if _effective_harness is not None and _effective_harness != "auto":
         runner_body["harness_override"] = _effective_harness
+    # The session's per-sub-agent picks, same lifetime and same reason as the
+    # brain override above: create-time only, the persisted column is the
+    # source. Forwarded as the stored JSON string so an older runner carries
+    # it untouched. The runner reads them when the brain dispatches a child,
+    # which can happen many turns in, so every message carries them rather
+    # than only the first -- matching how model_override and the effort are
+    # re-sent above.
+    if conv.sub_harness_override:
+        runner_body["sub_harness_override"] = conv.sub_harness_override
+    if conv.sub_model_override:
+        runner_body["sub_model_override"] = conv.sub_model_override
+    if conv.sub_effort_override:
+        runner_body["sub_effort_override"] = conv.sub_effort_override
 
     # The runner's sessions-native POST returns 202 immediately
     # and starts the turn as a background task. No streaming
@@ -8901,6 +8920,18 @@ async def _create_session_from_existing_agent(
         harness_override = await asyncio.to_thread(
             _validated_harness_override, body.harness_override, agent
         )
+    # The heads, independent of the brain: a bundle can keep its declared
+    # brain and still retarget who it delegates to, so this is resolved
+    # outside the branch above rather than alongside the brain override.
+    sub_harness_override = await asyncio.to_thread(
+        _validated_sub_harness_override, body.sub_harness_override, agent
+    )
+    sub_model_override = await asyncio.to_thread(
+        _validated_sub_model_override, body.sub_model_override, agent
+    )
+    sub_effort_override = await asyncio.to_thread(
+        _validated_sub_effort_override, body.sub_effort_override, agent
+    )
 
     # Inherit runner affinity from the parent session so the child
     # is assigned to the same runner (sub-agent co-location).
@@ -9136,20 +9167,34 @@ async def _create_session_from_existing_agent(
         or cost_control_mode_override is not None
         or subagent_routing_override is not None
         or harness_override is not None
+        or sub_harness_override is not None
+        or sub_model_override is not None
+        or sub_effort_override is not None
     ):
         # ``create_conversation`` has no override params; reuse the
         # PATCH path's store write before the runner reads the snapshot
         # (the first turn / terminal launch happens only after this
         # create returns and the caller posts a message event).
-        updated_conv = await asyncio.to_thread(
-            conversation_store.update_conversation,
-            conv.id,
-            model_override=model_override,
-            reasoning_effort=reasoning_effort,
-            cost_control_mode_override=cost_control_mode_override,
-            subagent_routing_override=subagent_routing_override,
-            harness_override=harness_override,
-        )
+        try:
+            updated_conv = await asyncio.to_thread(
+                conversation_store.update_conversation,
+                conv.id,
+                model_override=model_override,
+                reasoning_effort=reasoning_effort,
+                cost_control_mode_override=cost_control_mode_override,
+                subagent_routing_override=subagent_routing_override,
+                harness_override=harness_override,
+                sub_harness_override=sub_harness_override,
+                sub_model_override=sub_model_override,
+                sub_effort_override=sub_effort_override,
+            )
+        except ValueError as exc:
+            # The packed overrides do not fit their column -- reachable with a
+            # large team and all three per-sub-agent picks set. A 400 naming
+            # the limit, not a 500: the caller can drop a pick and retry. The
+            # session row survives with no overrides, which is the same state
+            # every un-configured session starts in.
+            raise OmnigentError(str(exc), code=ErrorCode.INVALID_INPUT) from exc
         if updated_conv is None:
             raise OmnigentError(
                 f"Session {conv.id!r} disappeared while persisting session overrides",

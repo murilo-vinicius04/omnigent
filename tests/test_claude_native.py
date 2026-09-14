@@ -10007,6 +10007,163 @@ async def test_probe_claude_model_options_runs_bare(
     assert probe.default_model is None
 
 
+async def test_probe_falls_back_to_launching_candidates_when_nothing_enumerates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Headless Claude Code refuses ``/model`` — candidates carry the catalog.
+
+    On CLI 2.1.178 a ``claude -p "/model"`` run answers "/model isn't
+    available in this environment", so the alias list parses empty. On an
+    API-keyed login the endpoint listing covers that; on a subscription login
+    nothing else enumerates, and the catalog used to collapse to the single
+    model the probe run itself happened to use.
+
+    Each candidate is LAUNCHED, and the model that served it comes from the
+    run's own ``modelUsage`` — so the owned candidate table supplies names to
+    try and never a picker row: ``fable`` here is refused and does not appear,
+    and ``opus`` appears as what it actually resolved to.
+    """
+    # Own the catalog store. These answers are cached across probes (they cost
+    # real turns in production), so without this the assertion depends on
+    # whether some earlier test — or the developer's own machine — already
+    # wrote one, and it passes alone while failing in a full run.
+    monkeypatch.setattr("omnigent.model_catalog_store._data_dir", lambda: tmp_path)
+    launched: list[str] = []
+
+    class _FakeProcess:
+        def __init__(self, stdout: bytes, returncode: int = 0) -> None:
+            self._stdout = stdout
+            self.returncode = returncode
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (self._stdout, b"")
+
+    async def _fake_exec(command: str, *args: str, **kwargs: Any) -> _FakeProcess:
+        if "--model" not in args:
+            # The enumeration run: the CLI refuses the slash command.
+            return _FakeProcess(
+                json.dumps(
+                    {
+                        "type": "result",
+                        "result": "/model isn't available in this environment.",
+                    }
+                ).encode()
+                + b"\n"
+            )
+        model = args[args.index("--model") + 1]
+        launched.append(model)
+        if model == "fable":
+            # The account cannot serve it: a 404 before any tokens are spent.
+            return _FakeProcess(
+                json.dumps({"type": "result", "is_error": True, "api_error_status": 404}).encode(),
+                returncode=1,
+            )
+        served = {"opus": "claude-opus-4-8", "sonnet": "claude-sonnet-4-6"}.get(model, model)
+        return _FakeProcess(
+            json.dumps(
+                {"type": "result", "is_error": False, "modelUsage": {served: {"inputTokens": 1}}}
+            ).encode()
+        )
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_exec)
+
+    probe = await claude_native.probe_claude_model_options(None)
+
+    assert probe is not None
+    rows = {row["id"]: row["model"] for row in probe.alias_rows}
+    assert rows["opus"] == "claude-opus-4-8", (
+        "an alias must report what the run resolved it to, not the alias itself"
+    )
+    assert rows["sonnet"] == "claude-sonnet-4-6"
+    assert "fable" not in rows, "a candidate the API refused must not reach the picker"
+    assert "fable" in launched, "every candidate is tried; only the refusal excludes it"
+    # One run per candidate: the enumeration's own refusal is not re-probed
+    # for a resolution, since the launch already reported the served model.
+    assert len(launched) == len(set(launched))
+
+
+async def test_candidate_verification_is_not_repaid_on_every_probe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The launches happen once per (launch shape, candidate table).
+
+    These are the only probes in this module that cost tokens, and the model
+    catalog re-probes in the background once an hour — so without a store key
+    of their own, every stale read would spend a completion per candidate to
+    re-learn something that had not changed.
+    """
+    monkeypatch.setattr("omnigent.model_catalog_store._data_dir", lambda: tmp_path)
+    launched: list[str] = []
+
+    class _FakeProcess:
+        returncode = 0
+
+        def __init__(self, stdout: bytes) -> None:
+            self._stdout = stdout
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (self._stdout, b"")
+
+    async def _fake_exec(command: str, *args: str, **kwargs: Any) -> _FakeProcess:
+        if "--model" in args:
+            model = args[args.index("--model") + 1]
+            launched.append(model)
+            return _FakeProcess(
+                json.dumps(
+                    {"type": "result", "is_error": False, "modelUsage": {model: {}}}
+                ).encode()
+            )
+        return _FakeProcess(b'{"type":"result","result":"/model isn\'t available here."}\n')
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_exec)
+
+    first = await claude_native.probe_claude_model_options(None)
+    after_first = list(launched)
+    second = await claude_native.probe_claude_model_options(None)
+
+    assert first is not None and second is not None
+    assert after_first, "the first probe must actually launch its candidates"
+    assert launched == after_first, "the second probe re-launched candidates it had already tried"
+    assert [row["id"] for row in second.alias_rows] == [row["id"] for row in first.alias_rows]
+
+
+async def test_probe_keeps_the_harness_enumeration_when_it_answers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A CLI that still lists aliases never reaches the candidate table.
+
+    The fallback exists for the headless refusal alone; on a build where
+    ``/model`` answers, the harness's own list stays the only source.
+    """
+    monkeypatch.setattr("omnigent.model_catalog_store._data_dir", lambda: tmp_path)
+    launched: list[str] = []
+
+    class _FakeProcess:
+        returncode = 0
+
+        def __init__(self, stdout: bytes) -> None:
+            self._stdout = stdout
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (self._stdout, b"")
+
+    async def _fake_exec(command: str, *args: str, **kwargs: Any) -> _FakeProcess:
+        if "--model" in args:
+            launched.append(args[args.index("--model") + 1])
+            return _FakeProcess(b"")
+        return _FakeProcess(b"Usage: /model <name>. Available: sonnet, opus.\n")
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_exec)
+
+    probe = await claude_native.probe_claude_model_options(None)
+
+    assert probe is not None
+    assert [row["id"] for row in probe.alias_rows] == ["sonnet", "opus"]
+    assert set(launched) == {"sonnet", "opus"}, (
+        "only the enumerated aliases are resolved; no candidate was launched"
+    )
+
+
 async def test_probe_claude_model_options_resolves_each_alias_via_the_harness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

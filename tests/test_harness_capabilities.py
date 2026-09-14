@@ -151,6 +151,10 @@ def test_optional_bench_capabilities_default_to_unknown() -> None:
         "elicitation": "none",
         "resume": "cold-only",
         "effort": "none",
+        # The vocabulary a picker may offer, beside the family the value is
+        # validated against. Empty here because the family is NONE; also empty
+        # for a harness that validates an effort and ignores it.
+        "efforts": [],
         "model_family": "multi",
         "auth": "own-auth",
         "subagents": False,
@@ -200,9 +204,15 @@ def test_catalog_rows_include_capabilities() -> None:
     for row in rows:
         if row["id"] in caps:
             assert "capabilities" in row, row["id"]
-            # JSON-serializable: values are primitives, not enums.
+            # JSON-serializable: values are primitives, not enums. A list is
+            # allowed (``efforts`` is one) as long as it holds primitives too,
+            # which is the property this guards — an enum member would
+            # serialize as its repr and reach the web as a broken string.
             for value in row["capabilities"].values():
-                assert value is None or isinstance(value, (str, bool))
+                if isinstance(value, list):
+                    assert all(isinstance(item, str) for item in value), row["id"]
+                else:
+                    assert value is None or isinstance(value, (str, bool))
 
 
 def test_catalog_includes_hermes() -> None:

@@ -1587,6 +1587,90 @@ _subagent_recovery_locks: dict[str, asyncio.Lock] = {}
 _subagent_ordinal_counters: dict[tuple[str, str], int] = {}
 
 
+# The session's per-sub-agent harness and model picks, as the server forwards
+# them on the session-init envelope and on every message. Module-level rather
+# than a factory closure because the reader is ``tool_dispatch``, which sees
+# only this module -- and it reads them at DISPATCH time, which can be many
+# turns after the session started.
+#
+# Applied when the child session is CREATED (its ``harness_override`` in the
+# create body), not when its turn is resolved: that way the pre-dispatch CLI
+# probe, the model-family check and the server's own validation all judge the
+# harness the child will actually run.
+_session_sub_harness_overrides: dict[str, dict[str, str]] = {}
+_session_sub_model_overrides: dict[str, dict[str, str]] = {}
+_session_sub_effort_overrides: dict[str, dict[str, str]] = {}
+
+
+def note_session_sub_agent_overrides(
+    session_id: str,
+    *,
+    harnesses: dict[str, str] | None,
+    models: dict[str, str] | None,
+    efforts: dict[str, str] | None = None,
+) -> None:
+    """Record a session's per-sub-agent picks for later dispatches.
+
+    Absent values are ignored rather than cleared: a forward that omits the
+    field means "unchanged", and the server omits it for every session that
+    never set one. Only an explicit empty mapping could mean "cleared", and
+    the server never sends that -- the picks are create-time only.
+
+    :param session_id: Parent session id, e.g. ``"conv_abc123"``.
+    :param harnesses: Sub-agent name -> harness, or ``None`` when unset.
+    :param models: Sub-agent name -> model id, or ``None`` when unset.
+    :param efforts: Sub-agent name -> reasoning effort, or ``None``.
+    :returns: None.
+    """
+    if harnesses:
+        _session_sub_harness_overrides[session_id] = dict(harnesses)
+    if models:
+        _session_sub_model_overrides[session_id] = dict(models)
+    if efforts:
+        _session_sub_effort_overrides[session_id] = dict(efforts)
+
+
+def session_sub_agent_harness(session_id: str, sub_agent_name: str) -> str | None:
+    """Return the harness this session picked for *sub_agent_name*, if any.
+
+    :param session_id: Parent session id, e.g. ``"conv_abc123"``.
+    :param sub_agent_name: Declared sub-agent name, e.g. ``"gpt"``.
+    :returns: The picked harness, or ``None`` to use the spec's.
+    """
+    return _session_sub_harness_overrides.get(session_id, {}).get(sub_agent_name)
+
+
+def session_sub_agent_model(session_id: str, sub_agent_name: str) -> str | None:
+    """Return the model this session picked for *sub_agent_name*, if any.
+
+    :param session_id: Parent session id, e.g. ``"conv_abc123"``.
+    :param sub_agent_name: Declared sub-agent name, e.g. ``"gpt"``.
+    :returns: The picked model id, or ``None`` to use the harness default.
+    """
+    return _session_sub_model_overrides.get(session_id, {}).get(sub_agent_name)
+
+
+def session_sub_agent_effort(session_id: str, sub_agent_name: str) -> str | None:
+    """Return the reasoning effort this session picked for *sub_agent_name*.
+
+    :param session_id: Parent session id, e.g. ``"conv_abc123"``.
+    :param sub_agent_name: Declared sub-agent name, e.g. ``"claude"``.
+    :returns: The picked effort, or ``None`` to use the spec's / harness's.
+    """
+    return _session_sub_effort_overrides.get(session_id, {}).get(sub_agent_name)
+
+
+def forget_session_sub_agent_overrides(session_id: str) -> None:
+    """Drop a finished session's picks.
+
+    :param session_id: Parent session id, e.g. ``"conv_abc123"``.
+    :returns: None.
+    """
+    _session_sub_harness_overrides.pop(session_id, None)
+    _session_sub_model_overrides.pop(session_id, None)
+    _session_sub_effort_overrides.pop(session_id, None)
+
+
 def next_subagent_ordinal(parent_session_id: str, agent_type: str) -> int:
     """Return the next ordinal for a (parent, agent_type) pair and bump the counter."""
     key = (parent_session_id, agent_type)
@@ -3422,6 +3506,15 @@ def create_runner_app(
             _session_sub_agent_names[session_id] = envelope.sub_agent_name
         if snapshot.reasoning_effort:
             _session_reasoning_effort[session_id] = snapshot.reasoning_effort
+        # Learn the session's per-sub-agent picks at session start too, not
+        # only from a message forward: a resumed session's first dispatch can
+        # precede any new message.
+        note_session_sub_agent_overrides(
+            session_id,
+            harnesses=_parse_sub_harness_override(snapshot.sub_harness_override),
+            models=_parse_sub_harness_override(snapshot.sub_model_override),
+            efforts=_parse_sub_harness_override(snapshot.sub_effort_override),
+        )
         _session_init_envelopes[session_id] = (time.monotonic(), envelope)
         return _SessionInitContext(envelope=envelope)
 
@@ -3731,7 +3824,29 @@ def create_runner_app(
                     spec_entry = _sub_entry
                     spec = _unwrap_resolved_spec(_sub_entry)
                     _session_sub_agent_resolved[session_id] = True
-            harness_name = spec.executor.config.get("harness") or spec.executor.type
+            # The session's own harness pick outranks what the bundle declares,
+            # for exactly the reason its model does (read a few lines below): the
+            # bundle's team was fixed at authoring time, and a human choosing a
+            # harness in the config dialog is choosing it for THIS session. Read
+            # from the same init-envelope snapshot as ``model_override`` so the
+            # two picks cannot disagree about which session they describe --
+            # honoring one and not the other is what let a head whose pick said
+            # ``antigravity-native`` boot the spec's ``codex`` and die on a
+            # missing CLI, with the picked model applied on the way down.
+            #
+            # ``"auto"`` is Smart Routing's "not decided yet" sentinel rather
+            # than a harness name, so it defers to the spec here and the
+            # first-message router replaces it (see routing_class_from_snapshot).
+            _harness_override = (
+                init_context.envelope.snapshot.harness_override
+                if init_context.envelope is not None
+                else None
+            )
+            if _harness_override == "auto":
+                _harness_override = None
+            harness_name = (
+                _harness_override or spec.executor.config.get("harness") or spec.executor.type
+            )
             harness_name = canonicalize_harness(harness_name) or harness_name
 
             _start_verdict = await _evaluate_agent_start_gate(spec, harness_name)
@@ -4401,6 +4516,7 @@ def create_runner_app(
 
         _session_spec_cache.pop(session_id, None)
         _session_harness_overrides.pop(session_id, None)
+        forget_session_sub_agent_overrides(session_id)
         _session_skills_cache.pop(session_id, None)
         _session_cursor_model_names.pop(session_id, None)
         _drop_session_claude_launch_config(session_id)
@@ -7713,6 +7829,17 @@ def create_runner_app(
             dispatch.spawn_env if dispatch else cast(dict[str, str] | None, body.get("spawn_env"))
         )
         _note_session_harness_override(conv_id, cast(str | None, body.get("harness_override")))
+        # Same for the per-sub-agent picks, and for the same reason: the
+        # forward is the only place the runner learns them, and a dispatch
+        # can happen on any later turn.
+        note_session_sub_agent_overrides(
+            conv_id,
+            harnesses=_parse_sub_harness_override(
+                cast(str | None, body.get("sub_harness_override"))
+            ),
+            models=_parse_sub_harness_override(cast(str | None, body.get("sub_model_override"))),
+            efforts=_parse_sub_harness_override(cast(str | None, body.get("sub_effort_override"))),
+        )
         # Shared agent-switch invalidation for both dispatch paths.
         _ds_agent_id = dispatch.agent_id if dispatch else cast(str | None, body.get("agent_id"))
         _ds_prior = _session_agent_ids.get(conv_id)
@@ -7732,6 +7859,12 @@ def create_runner_app(
                     session_id=conv_id,
                     model_override=cast(str | None, body.get("model_override")),
                     harness_override=cast(str | None, body.get("harness_override")),
+                    sub_harness_override=_parse_sub_harness_override(
+                        cast(str | None, body.get("sub_harness_override"))
+                    ),
+                    sub_model_override=_parse_sub_harness_override(
+                        cast(str | None, body.get("sub_model_override"))
+                    ),
                     sub_agent_name=_sub_agent_name,
                     cwd=await _session_runtime_cwd(conv_id),
                 )
@@ -10889,6 +11022,7 @@ def create_runner_app(
         _session_spec_cache.pop(session_id, None)
         _session_agent_ids.pop(session_id, None)
         _session_harness_overrides.pop(session_id, None)
+        forget_session_sub_agent_overrides(session_id)
         # Bump so any in-flight fill discards its write rather than reinstating it.
         _session_cache_generations[session_id] = _session_cache_generations.get(session_id, 0) + 1
         _session_snapshot_cache.pop(session_id, None)
@@ -11630,6 +11764,32 @@ def create_runner_app_from_env() -> FastAPI:
     return create_runner_app(server_client=server_client)
 
 
+def _parse_sub_harness_override(raw: str | None) -> dict[str, str] | None:
+    """Parse the stored ``{"name": "harness"}`` blob the server forwards.
+
+    Travels as a string so an older runner round-trips it untouched and the
+    wire shape matches the stored column exactly.
+
+    Never raises: a malformed blob means this session falls back to the
+    bundle's declared team, which is the behaviour before the field existed.
+    Refusing to spawn over an unreadable preference would be worse than
+    ignoring it.
+
+    :param raw: The JSON string, or ``None``.
+    :returns: Sub-agent name -> harness, or ``None`` when absent/unusable.
+    """
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        _logger.warning("ignoring unparseable sub_harness_override: %r", raw[:120])
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return {str(k): str(v) for k, v in parsed.items() if isinstance(v, str)}
+
+
 async def _resolve_harness_config(
     *,
     agent_id: str | None,
@@ -11637,6 +11797,8 @@ async def _resolve_harness_config(
     session_id: str | None = None,
     model_override: str | None = None,
     harness_override: str | None = None,
+    sub_harness_override: dict[str, str] | None = None,
+    sub_model_override: dict[str, str] | None = None,
     sub_agent_name: str | None = None,
     cwd: Path | None = None,
 ) -> tuple[str, dict[str, str] | None]:
@@ -11688,14 +11850,33 @@ async def _resolve_harness_config(
                 else:
                     spec = _unwrap_resolved_spec(sub_entry)
                     workdir = _resolved_spec_workdir(sub_entry)
-            harness = harness_override or spec.executor.config.get("harness") or spec.executor.type
+            # Precedence, most specific first: a harness picked for THIS
+            # sub-agent, then the session's brain override, then what the
+            # resolved spec declares. The per-child pick wins over the brain
+            # override because it names one head explicitly, while the brain
+            # override is about the orchestrator and reaches children only as
+            # a side effect.
+            child_harness = (sub_harness_override or {}).get(sub_agent_name or "")
+            harness = (
+                child_harness
+                or harness_override
+                or spec.executor.config.get("harness")
+                or spec.executor.type
+            )
             harness = canonicalize_harness(harness) or harness
+            # A model picked for THIS head wins over the session-wide one,
+            # for the same reason its harness does: the session-wide value is
+            # about the orchestrator and reaches children as a side effect,
+            # while this names one head. Not validated against a catalog here
+            # -- a model id only means something next to the harness that
+            # runs it, and each harness resolves its own catalog below.
+            child_model = (sub_model_override or {}).get(sub_agent_name or "")
             spawn_env = _build_spawn_env_from_spec(
                 spec,
                 harness,
                 cwd=cwd,
                 workdir=workdir,
-                model_override=model_override,
+                model_override=child_model or model_override,
                 session_id=session_id,
             )
             return harness, spawn_env

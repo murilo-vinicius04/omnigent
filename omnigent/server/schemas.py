@@ -225,6 +225,34 @@ class PolicySummary(BaseModel):
     description: str | None = None
 
 
+class SubAgentSummary(BaseModel):
+    """
+    One delegable sub-agent of a multi-agent bundle.
+
+    Exposed so a client can see, and let a person change, WHICH model
+    does which job. Before this the catalog reported a single
+    ``harness`` -- the orchestrator's brain -- so a bundle like polly or
+    debby looked like one agent, and the UI's Configure dialog could
+    only offer the brain. The team was legible only by reading the
+    bundle's YAML off disk.
+
+    :param name: The sub-agent's declared name, e.g. ``"gemini"``.
+    :param description: Its declared description, or ``None``.
+    :param harness: The harness it currently runs on, e.g.
+        ``"antigravity-native"``. ``None`` when the child spec declares
+        no executor kind.
+    :param model: The model the child spec pins, e.g.
+        ``"grok-4.5"``. ``None`` when it declares none and the harness's
+        own default runs -- which is the common case, so a client must
+        render the absence rather than inventing a name for it.
+    """
+
+    name: str
+    description: str | None = None
+    harness: str | None = None
+    model: str | None = None
+
+
 class AgentObject(BaseModel):
     """
     API representation of a registered agent.
@@ -294,6 +322,8 @@ class AgentObject(BaseModel):
     created_at: int
     updated_at: int | None = None
     harness: str | None = None
+    # The delegable team, in spec order. Empty for a single-agent bundle.
+    sub_agents: list[SubAgentSummary] = Field(default_factory=list)
     mcp_servers: list[MCPServerSummary] = Field(default_factory=list)
     mcp_servers_editable: bool = False
     policies: list[PolicySummary] = Field(default_factory=list)
@@ -1463,6 +1493,15 @@ class _SessionCreateRequestBase(BaseModel):
         the spec's declared harness. Create-time only — there is no
         PATCH path, since the harness process spawns on the first
         turn.
+    :param sub_harness_override: Per-session harness override for the
+        bundle's SUB-agents, e.g. ``{"gpt": "antigravity-native"}``.
+        Keyed by each sub-agent's declared name. ``harness_override``
+        pins the brain and nothing pinned the heads, so a multi-agent
+        bundle's team was fixed at authoring time -- ``examples/debby``
+        fans out to a Claude head and a GPT head and predates the
+        Antigravity harness. ``None`` leaves the team as declared.
+        Rejected for a name the bound agent does not declare, so a typo
+        fails at create rather than silently running the old team.
     :param smart_routing_message: The user's first-message text, used to
         route the harness at create time. Only read on the top-level
         Smart Routing path (``harness_override: "auto"`` on a native
@@ -1494,6 +1533,20 @@ class _SessionCreateRequestBase(BaseModel):
     cost_control_mode_override: str | None = None
     subagent_routing_override: str | None = None
     harness_override: str | None = None
+    # The bundle's heads, as ``{"name": "harness"}``. ``harness_override``
+    # above pins the brain; this pins who it delegates to. Keyed by each
+    # sub-agent's declared name. Create-time only, like its sibling: the
+    # spawn reads it, so it must be settled before the first turn.
+    sub_harness_override: dict[str, str] | None = None
+    # And the model each head runs. Separate from the harness pick because the
+    # two are chosen independently: a head can keep its harness and change
+    # model, or the reverse.
+    sub_model_override: dict[str, str] | None = None
+    # And its reasoning effort. Not validated here against a vocabulary: which
+    # values a head accepts depends on the harness it ends up on, which this
+    # same request may be changing, so the dispatch checks it where that is
+    # settled and says which values that harness takes.
+    sub_effort_override: dict[str, str] | None = None
     smart_routing_message: str | None = None
 
     @model_validator(mode="after")
@@ -2121,6 +2174,14 @@ class SessionResponse(BaseModel):
     llm_model: str | None = None
     harness: str | None = None
     model_override: str | None = None
+    # The session's per-sub-agent picks, as the compact ``{"name": "value"}``
+    # JSON strings the server stores. Echoed back so a client can show what a
+    # running session actually chose -- ``harness`` above is the BRAIN's, and
+    # nothing else in this response names a head. Three independent knobs: a
+    # head can change any one and keep the others.
+    sub_harness_override: str | None = None
+    sub_model_override: str | None = None
+    sub_effort_override: str | None = None
     cost_control_mode_override: str | None = None
     subagent_routing_override: str | None = None
     context_window: int | None = None

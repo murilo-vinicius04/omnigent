@@ -139,6 +139,21 @@ class Conversation:
         Mutable via ``PATCH /v1/sessions/{id}`` at any time; read per
         spawn by the route-subagent relay, so a change takes effect on
         the next spawn.
+    :param sub_harness_override: Per-session harness override for the
+        bundle's SUB-agents, as a compact ``{"name":"harness"}`` JSON
+        string, e.g. ``'{"gpt":"antigravity-native"}'``. Keyed by each
+        sub-agent's declared name. ``harness_override`` pins the brain
+        and this pins the heads; unset leaves the team as the bundle
+        declared it. Read when a sub-agent is spawned, so it applies to
+        every spawn after it is set.
+    :param sub_model_override: Per-session model for the bundle's
+        SUB-agents, as a compact ``{"name":"model"}`` JSON string.
+        Read at spawn, beside :attr:`sub_harness_override`.
+    :param sub_effort_override: Per-session reasoning effort for the
+        bundle's SUB-agents, as a compact ``{"name":"effort"}`` JSON
+        string. Read at spawn, beside the two above. The value a given
+        head accepts depends on the harness it ends up on, so it is
+        validated where that is known -- at dispatch, not here.
     :param harness_override: Per-session harness override for the
         bound agent's brain, e.g. ``"pi"`` or ``"openai-agents"``.
         ``None`` means use the harness declared in the agent spec
@@ -237,6 +252,9 @@ class Conversation:
     cost_control_mode_override: str | None = None
     subagent_routing_override: str | None = None
     harness_override: str | None = None
+    sub_harness_override: str | None = None
+    sub_model_override: str | None = None
+    sub_effort_override: str | None = None
     sub_agent_name: str | None = None
     task_summary: str | None = None
     external_session_id: str | None = None
