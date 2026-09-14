@@ -61,7 +61,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 from omnigent.onboarding import harness_install
@@ -129,16 +128,17 @@ def gemini_auth_has_credential(creds_path: Path | None = None) -> bool:
     usable token — so a logged-in user is recognized on both macOS
     (``oauth_creds.json``) and Linux
     (``antigravity-cli/antigravity-oauth-token``). When no file carries a token
-    and the host is macOS, falls back to asking the CLI itself
+    falls back to asking the CLI itself
     (:func:`omnigent.onboarding.harness_install.harness_cli_logged_in`, which
-    runs ``agy models``), because agy 1.1.7+ keeps the credential in the
-    Keychain and writes no token file. With *creds_path* set, checks only that
-    file — the caller named the signal it wants, so no CLI fallback runs.
+    runs ``agy models``), because agy keeps the credential where no known path
+    looks — the Keychain on macOS since 1.1.7, and somewhere outside both paths
+    on Linux. With *creds_path* set, checks only that file — the caller named
+    the signal it wants, so no CLI fallback runs.
 
     A file counts as a completed login when it parses as a JSON object with a
     non-empty ``access_token`` / ``refresh_token`` string, flat or nested under
-    ``token``. The file check cannot detect server-side revocation; the macOS
-    CLI fallback can.
+    ``token``. The file check cannot detect server-side revocation; the CLI
+    fallback can.
 
     Never raises — an unreadable file or home directory, a missing ``agy``
     binary, and a hung or failing ``agy models`` all read as ``False``.
@@ -155,11 +155,25 @@ def gemini_auth_has_credential(creds_path: Path | None = None) -> bool:
     paths = (creds_path,) if creds_path is not None else GEMINI_OAUTH_CRED_PATHS
     if any(_file_carries_token(path) for path in paths):
         return True
-    if creds_path is not None or sys.platform != "darwin":
+    if creds_path is not None:
         return False
-    # agy 1.1.7+ on macOS keeps OAuth in the Keychain and writes no token file,
-    # so only the CLI can see the login. Resolved through the module so a test
-    # can monkeypatch it without this call site caching the old function.
+    # No token file, so ask the CLI where it really keeps the credential.
+    #
+    # This used to run on macOS alone, because agy 1.1.7+ moved OAuth into the
+    # Keychain there. That reasoning was too narrow: on Linux with agy signed
+    # in, NEITHER known path exists (no ``~/.gemini/oauth_creds.json``, no
+    # ``antigravity-cli/antigravity-oauth-token``) while ``agy models`` lists
+    # models over the network — proof of a login the file check cannot see. The
+    # platform gate therefore reported "needs setup" for the one Antigravity
+    # harness that actually runs on such a host.
+    #
+    # ``harness_cli_logged_in`` says it plainly: the status command "reads
+    # wherever the CLI actually stored the credential, so this is correct on
+    # every platform". It caches positive verdicts and never caches negatives,
+    # so the subprocess runs only while a login genuinely cannot be seen.
+    #
+    # Resolved through the module so a test can monkeypatch it without this
+    # call site caching the old function.
     try:
         return harness_install.harness_cli_logged_in(GEMINI_FAMILY)
     except (OSError, ValueError, subprocess.SubprocessError):
@@ -180,8 +194,8 @@ def gemini_login_detected() -> bool:
     :returns: ``True`` when ``GEMINI_API_KEY`` is non-empty, a token file
         (macOS ``~/.gemini/oauth_creds.json``, Linux
         ``~/.gemini/antigravity-cli/antigravity-oauth-token``) carries a
-        usable credential, or — on macOS only, where agy 1.1.7+ stores OAuth in
-        the Keychain — ``agy models`` reports a signed-in CLI; ``False``
-        otherwise.
+        usable credential, or ``agy models`` reports a signed-in CLI (agy keeps
+        OAuth outside those paths on macOS since 1.1.7, and on Linux too);
+        ``False`` otherwise.
     """
     return gemini_auth_has_credential()

@@ -175,16 +175,15 @@ def test_default_checks_both_platform_paths(
 # ---------------------------------------------------------------------------
 
 
-def test_macos_keychain_login_detected_via_cli(monkeypatch: pytest.MonkeyPatch) -> None:
-    """On macOS with no token file, a signed-in CLI counts as logged in.
+def test_keychain_login_detected_via_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no token file, a signed-in CLI counts as logged in — any platform.
 
     agy 1.1.7+ puts the OAuth credential in the Keychain and writes neither
     ``oauth_creds.json`` nor ``antigravity-oauth-token``, so a file-only check
     reported ``antigravity-native`` as unconfigured and refused to launch it for
-    a user who was in fact signed in. ``agy models`` reads the Keychain, so it
-    sees the login the files cannot.
+    a user who was in fact signed in. ``agy models`` reads the credential
+    wherever it lives, so it sees the login the files cannot.
     """
-    monkeypatch.setattr(ga.sys, "platform", "darwin")
     seen_keys: list[str] = []
 
     def _fake_logged_in(key: str) -> bool:
@@ -208,7 +207,6 @@ def test_omnigent_written_settings_json_is_not_a_login(
     credential would leave the launch gate permanently satisfied for a user who
     never signed in. Only the CLI verdict may decide.
     """
-    monkeypatch.setattr(ga.sys, "platform", "darwin")
     _write(
         tmp_path / "gemini-home" / "antigravity-cli" / "settings.json",
         {"showFeedbackSurvey": False},
@@ -217,27 +215,32 @@ def test_omnigent_written_settings_json_is_not_a_login(
     assert ga.gemini_login_detected() is False
 
 
-def test_non_darwin_never_runs_cli_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Off macOS the fallback never runs — detection stays file-only.
+def test_cli_fallback_runs_off_macos_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A signed-in agy is a login on Linux as much as on macOS.
 
-    Linux writes a real token file, so its absence is a true negative. Running
-    the fallback there would only add a subprocess and weaken a signal that
-    already works. The stub raises if called, so any non-darwin invocation fails.
+    THE REGRESSION THIS PINS. The fallback used to be gated on
+    ``sys.platform == "darwin"``, on the reasoning that Linux always writes a
+    token file so its absence is a true negative. That is not what a signed-in
+    Linux host looks like: NEITHER known path exists while ``agy models``
+    lists models over the network. The gate therefore badged
+    ``antigravity-native`` "needs setup" — the one Antigravity harness that can
+    actually run on a host without the SDK's package and glibc floor.
     """
-    monkeypatch.setattr(ga.sys, "platform", "linux")
+    seen_keys: list[str] = []
 
-    def _must_not_call(key: str) -> bool:
-        raise AssertionError(f"CLI fallback must not run off macOS (key={key!r})")
+    def _fake_logged_in(key: str) -> bool:
+        seen_keys.append(key)
+        return True
 
-    monkeypatch.setattr(harness_install, "harness_cli_logged_in", _must_not_call)
-    assert ga.gemini_login_detected() is False
+    monkeypatch.setattr(harness_install, "harness_cli_logged_in", _fake_logged_in)
+    assert ga.gemini_login_detected() is True
+    assert seen_keys == ["gemini"]
 
 
 def test_token_file_short_circuits_cli_fallback(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A usable token file wins on macOS without paying for a subprocess."""
-    monkeypatch.setattr(ga.sys, "platform", "darwin")
+    """A usable token file wins without paying for a subprocess."""
     macos = _write(tmp_path / "oauth_creds.json", {"access_token": "ya29.macos"})
     monkeypatch.setattr(ga, "GEMINI_OAUTH_CRED_PATHS", (macos,))
 
@@ -257,7 +260,6 @@ def test_explicit_creds_path_skips_cli_fallback(
     file it explicitly asked about. Pinned because the carve-out is load-bearing
     for the documented semantics and for test isolation.
     """
-    monkeypatch.setattr(ga.sys, "platform", "darwin")
 
     def _must_not_call(key: str) -> bool:
         raise AssertionError(f"explicit creds_path must not invoke the CLI (key={key!r})")
@@ -311,7 +313,6 @@ def test_cli_fallback_failure_reads_as_no_credential(
     and a timeout; this pins the outer contract so a future change there cannot
     turn a probe failure into a crashed readiness poll.
     """
-    monkeypatch.setattr(ga.sys, "platform", "darwin")
 
     def _raise(key: str) -> bool:
         raise error
