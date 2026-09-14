@@ -7744,19 +7744,44 @@ async def _run_auto_compaction(
     )
 
 
+#: Longest a compaction step waits for the turn's summary before going ahead.
+_AUTO_COMPACT_SUMMARY_WAIT_S = 120.0
+
+#: Pause after the summary lands, so the page receives it and starts reading it
+#: before the next turn begins. A turn that starts first makes the page treat
+#: the reply as settled history and the summary is never spoken.
+_AUTO_COMPACT_AFTER_SUMMARY_GRACE_S = 8.0
+
+
 def _spawn_auto_compaction(
     session_id: str,
     conversation_store: ConversationStore,
     runner_router: RunnerRouter | None,
+    *,
+    after: asyncio.Future[Any] | None = None,
 ) -> None:
     """Run the auto-compaction step for a finished turn, without holding it up.
+
+    Both steps start a new turn in the session, and they used to fire the
+    instant the old one ended, about 3s before its spoken summary landed. The
+    page then filed the reply as history and never narrated it (observed twice
+    on 2026-09-13). So the step waits for the summary first.
 
     :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
     :param conversation_store: Store used to read the session's labels.
     :param runner_router: Router used to reach the session's runner.
+    :param after: The turn's summary task. The step waits for it (bounded by
+        :data:`_AUTO_COMPACT_SUMMARY_WAIT_S`), then a short grace period.
     :returns: None.
     """
-    task = asyncio.create_task(_run_auto_compaction(session_id, conversation_store, runner_router))
+
+    async def _run() -> None:
+        if after is not None:
+            await asyncio.wait({after}, timeout=_AUTO_COMPACT_SUMMARY_WAIT_S)
+            await asyncio.sleep(_AUTO_COMPACT_AFTER_SUMMARY_GRACE_S)
+        await _run_auto_compaction(session_id, conversation_store, runner_router)
+
+    task = asyncio.create_task(_run())
     _detached_auto_compaction.add(task)
     task.add_done_callback(_detached_auto_compaction.discard)
 

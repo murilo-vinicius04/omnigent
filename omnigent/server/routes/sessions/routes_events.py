@@ -1323,7 +1323,7 @@ def register_events_routes(
             if status == "idle":
                 # Detached: the summary waits for the turn's final message to
                 # be stored, and the runner must not wait along with it.
-                _spawn_native_spoken_summary(
+                summary_task = _spawn_native_spoken_summary(
                     conversation_store,
                     session_id,
                     response_id,
@@ -1333,9 +1333,11 @@ def register_events_routes(
                     background_task_count=bg_count,
                     background_tasks=bg_tasks,
                 )
-                # A turn end is also where a full context is noticed: ask for
-                # the write-up now, and compact when that turn ends.
-                _spawn_auto_compaction(session_id, conversation_store, runner_router)
+                # A turn end is also where a full context is noticed. The step
+                # starts a new turn, so it waits for this turn's summary first.
+                _spawn_auto_compaction(
+                    session_id, conversation_store, runner_router, after=summary_task
+                )
             forward_body = body.model_dump()
             forward_body["data"] = data
             runner_result = await _forward_session_change_to_runner(

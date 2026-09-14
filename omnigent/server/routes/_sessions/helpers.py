@@ -8293,14 +8293,15 @@ def _spawn_native_spoken_summary(
     response_id: str | None,
     text: str | None,
     **kwargs: Any,
-) -> None:
+) -> asyncio.Task[None]:
     """Summarize a native turn without holding up its idle edge.
 
     The summary waits for the turn's final message to be stored; the edge
     itself has to reach the runner now. Arguments are those of
     :func:`_attach_native_spoken_summary`.
 
-    :returns: None.
+    :returns: The detached task, so work that must not start before the
+        summary lands (auto-compaction) can wait on it.
     """
 
     async def _run() -> None:
@@ -8313,6 +8314,7 @@ def _spawn_native_spoken_summary(
     task = asyncio.create_task(_run())
     _detached_native_summaries.add(task)
     task.add_done_callback(_detached_native_summaries.discard)
+    return task
 
 
 #: Conversation label naming the voice a session is read in. Written by the

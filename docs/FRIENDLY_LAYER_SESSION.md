@@ -864,3 +864,19 @@ bypass; all failures were on Omnigent's side.
    with both `--agent` flags (debby, nexus).
 5. Still queued: progress updates (text in chat only, never a call held open),
    permanent systemd units plus linger, rotate the OpenAI key.
+
+### Deploy: permanent units (2026-09-13)
+
+`deploy/systemd/install.sh` installs `omnigent-server.service` and
+`omnigent-host.service` as permanent user units, both running from this
+worktree's `.venv`. The host was previously a transient unit started in
+`/home/nexus/omnigent-fork`, whose editable install imports **that** tree's
+`omnigent`, so no runner-side change made here had ever run. To check what a
+runner imports, run from a neutral directory with `-P`:
+`cd /tmp && <venv>/bin/python -P -c 'import omnigent; print(omnigent.__file__)'`.
+Running it from inside a checkout puts that checkout on the path and gives a
+false answer. Edit the unit files, then re-run the script.
+
+Auto-compaction now waits for the turn's spoken summary, plus an 8s grace
+period, before starting its turn. Starting the turn earlier made the page file
+the reply as history, so the summary was never narrated.

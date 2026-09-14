@@ -119,3 +119,57 @@ def test_the_prompt_names_the_share_and_asks_for_a_file() -> None:
     assert "compacted" in text
     # The point of compacting early: the notes outlive the summary.
     assert "docs" in text or "notes" in text
+
+
+async def test_compaction_waits_for_the_turns_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both steps start a new turn. Started before the summary lands, the page
+    files the reply as history and never narrates it (seen twice, 2026-09-13)."""
+    import asyncio
+
+    from omnigent.server.routes._sessions import orchestration
+
+    ran: list[str] = []
+
+    async def _fake_run(session_id: str, *_args: object) -> None:
+        ran.append(session_id)
+
+    monkeypatch.setattr(orchestration, "_run_auto_compaction", _fake_run)
+    monkeypatch.setattr(orchestration, "_AUTO_COMPACT_AFTER_SUMMARY_GRACE_S", 0.0)
+
+    summary: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    orchestration._spawn_auto_compaction("conv_a", object(), None, after=summary)  # type: ignore[arg-type]
+    await asyncio.sleep(0.05)
+    assert ran == [], "compaction started before the summary landed"
+
+    summary.set_result(None)
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if ran:
+            break
+    assert ran == ["conv_a"]
+
+
+async def test_a_summary_that_never_lands_does_not_block_compaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from omnigent.server.routes._sessions import orchestration
+
+    ran: list[str] = []
+
+    async def _fake_run(session_id: str, *_args: object) -> None:
+        ran.append(session_id)
+
+    monkeypatch.setattr(orchestration, "_run_auto_compaction", _fake_run)
+    monkeypatch.setattr(orchestration, "_AUTO_COMPACT_SUMMARY_WAIT_S", 0.05)
+    monkeypatch.setattr(orchestration, "_AUTO_COMPACT_AFTER_SUMMARY_GRACE_S", 0.0)
+
+    never: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    orchestration._spawn_auto_compaction("conv_b", object(), None, after=never)  # type: ignore[arg-type]
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if ran:
+            break
+    assert ran == ["conv_b"]
+    never.cancel()
