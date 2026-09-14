@@ -58,7 +58,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Request
 
-from omnigent import antigravity_native_rpc, openai_token_budget
+from omnigent import antigravity_native_rpc, openai_token_budget, usage_history
 from omnigent.install_ledger import state_dir
 from omnigent.server.auth import AuthProvider
 from omnigent.server.routes._auth_helpers import require_user
@@ -557,6 +557,9 @@ async def collect_plan_limits() -> dict[str, Any]:
         providers = [claude_row, antigravity_row, openai_row]
 
     payload = {"providers": providers, "fetched_at": time.time()}
+    # Debug history: what each provider read, throttled to one line per
+    # provider every few minutes (every tab polls this route).
+    usage_history.append_plan_limits(providers, now=time.monotonic())
 
     ttl = _CACHE_TTL_SECONDS
     now_wall = time.time()

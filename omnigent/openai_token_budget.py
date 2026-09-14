@@ -41,6 +41,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from omnigent import usage_history
 from omnigent.install_ledger import state_dir
 
 logger = logging.getLogger(__name__)
@@ -256,6 +257,14 @@ def record(
         bucket["tokens"] = int(bucket.get("tokens", 0)) + total
         by_source = bucket.setdefault("by_source", {})
         by_source[source] = int(by_source.get(source, 0)) + total
+    usage_history.append(
+        "openai_call",
+        model=normalize_model(model),
+        pool=pool_for(model),
+        tokens=total,
+        source=source,
+        **counts,
+    )
     return total
 
 
