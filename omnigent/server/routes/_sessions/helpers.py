@@ -7934,6 +7934,92 @@ async def _flush_relay_text(
         raise cancelled_exc
 
 
+#: Harness tool a model calls to put a file in front of the reader.
+SEND_USER_FILE_TOOL = "SendUserFile"
+
+#: Attachment ceiling; a larger file is skipped rather than read into memory.
+_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
+#: Tool calls already attached, so a re-mirrored item cannot duplicate them.
+_attached_tool_calls: set[str] = set()
+
+
+async def attach_files_from_tool_call(
+    data: Any,
+    *,
+    conversation_store: ConversationStore | None,
+    file_store: Any | None,
+    artifact_store: Any | None,
+    session_id: str,
+    workspace: str | None = None,
+) -> list[str]:
+    """
+    Attach the files a mirrored ``SendUserFile`` tool call names.
+
+    The harness's own tool answers the model and stops there, so a chart or a
+    screenshot it "sent" never reached the reader. The mirrored tool call is
+    where the server learns about it, so the attachment is made here.
+
+    Never raises: a failed attachment leaves the turn untouched.
+
+    :param data: The mirrored item's data, e.g.
+        ``{"name": "SendUserFile", "arguments": "{\"files\": [\"/tmp/a.png\"]}"}``.
+    :param workspace: Session workspace a relative path resolves against.
+    :returns: Stored file ids, in the order they were attached.
+    """
+    if not isinstance(data, dict) or data.get("name") != SEND_USER_FILE_TOOL:
+        return []
+    call_id = str(data.get("call_id") or data.get("id") or "")
+    if call_id and call_id in _attached_tool_calls:
+        return []
+    raw = data.get("arguments")
+    try:
+        args = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        _logger.warning("SendUserFile arguments were not JSON for session=%s", session_id)
+        return []
+    if not isinstance(args, dict):
+        return []
+    paths = args.get("files")
+    if isinstance(paths, str):
+        paths = [paths]
+    if not isinstance(paths, list):
+        return []
+    caption = args.get("caption")
+    response_id = data.get("response_id")
+    attached: list[str] = []
+    for raw_path in paths[:10]:
+        if not isinstance(raw_path, str) or not raw_path:
+            continue
+        path = Path(raw_path)
+        if not path.is_absolute() and workspace:
+            path = Path(workspace) / path
+        try:
+            if path.stat().st_size > _MAX_ATTACHMENT_BYTES:
+                _logger.warning("Attachment %s is too large to show; skipped", path)
+                continue
+        except OSError as exc:
+            _logger.warning("Could not stat attachment %s: %s", path, exc)
+            continue
+        file_id = await attach_assistant_file(
+            conversation_store,
+            file_store,
+            artifact_store,
+            session_id,
+            response_id if isinstance(response_id, str) and response_id else None,
+            path,
+            # The caption describes the send, so it rides the first file only.
+            caption=caption if not attached else None,
+        )
+        if file_id:
+            attached.append(file_id)
+    if call_id and attached:
+        if len(_attached_tool_calls) > 512:
+            _attached_tool_calls.clear()
+        _attached_tool_calls.add(call_id)
+    return attached
+
+
 async def attach_assistant_file(
     conversation_store: ConversationStore | None,
     file_store: Any | None,

@@ -1174,6 +1174,19 @@ def register_events_routes(
                 created_by=created_by,
                 background_title_coordinator=background_title_coordinator,
             )
+            # A mirrored SendUserFile call is the only place the server learns
+            # the model wanted to show a file; the harness tool itself only
+            # answers the model.
+            from omnigent.server.routes._sessions.helpers import attach_files_from_tool_call
+
+            await attach_files_from_tool_call(
+                body.data,
+                conversation_store=conversation_store,
+                file_store=file_store,
+                artifact_store=artifact_store,
+                session_id=session_id,
+                workspace=getattr(conv, "workspace", None),
+            )
             return {"queued": False, "item_id": item_id}
         if body.type == _EXTERNAL_OUTPUT_TEXT_DELTA_TYPE:
             _publish_external_output_text_delta(session_id, body)
