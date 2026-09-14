@@ -945,3 +945,10 @@ only nexus's 3–5 delegation tools up front instead. Still to check: whether th
 brain's tool list can be limited that way. It's runner-side, so it needs a host
 restart; the user compacts first. A/B it with the same chart as the ERROR-count
 runs.
+
+**To-do — Codex worker usage is undercounted (2026-09-14).** For the long A/B
+task, Omnigent's stored `session_usage` for the Codex worker sessions read 16k
+(Luna) and 20k (Terra), while the OpenAI budget proxy logged 104k and 124k
+for the same sessions, about 6× more. The stored figure likely keeps only part
+of each run, perhaps one turn's `tokenUsage.last` instead of the running total
+(unverified). Until it's fixed, measure Codex from `~/.omnigent/usage-history.jsonl`.
