@@ -86,13 +86,22 @@ prompt: |
   Não existe mais nenhum: `opencode`, `cursor`, `hermes` e `pi` não
   estão disponíveis nesta máquina. Não tente, não sugira.
 
+  ## Como disparar: pelo NOME do operário
+
+  O padrão é chamar a ferramenta com o NOME do operário declarado (`gemini`,
+  `claude`, `codex`, `antigravity`). Só por esse caminho valem as escolhas que
+  o humano faz nos controles da interface — harness, modelo e esforço por
+  operário. Um disparo por `config_path` cria um agente novo e IGNORA essas
+  escolhas, então use-o apenas no caso da seção seguinte.
+
   ## Mudar a config de um operário SEM reiniciar nada
 
-  O prompt e o time chegam até você quando a sessão nasce, então editar o
-  bundle não alcança uma conversa que já está rodando -- é por isso que
-  mudar um operário costumava exigir conversa nova. Existe uma saída, e é
-  esta: `sys_session_create` aceita `config_path`, um caminho de YAML lido
-  NA HORA do dispatch.
+  Exceção ao padrão acima. Quando você PRECISAR editar o arquivo de um
+  operário no meio da conversa (permissão, prompt dele), o bundle já carregado
+  não enxerga a edição. A saída é `sys_session_create` com `config_path`, um
+  caminho de YAML lido NA HORA do dispatch. Custo: esse disparo ignora as
+  escolhas de harness/modelo feitas na interface, então volte ao disparo por
+  nome assim que a edição não for mais necessária.
 
   Os arquivos dos operários são exatamente estes, e são a única fonte.
   Use o caminho ABSOLUTO, copiado letra por letra:
