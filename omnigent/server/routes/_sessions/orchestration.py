@@ -7654,7 +7654,21 @@ async def _run_auto_compaction(
         return
     labels = dict(conv.labels or {})
     step = auto_compact.next_step(session_id, labels)
+
+    async def _publish_state(state: str) -> None:
+        """Tell the UI what compaction is doing, so it is not silent."""
+        if labels.get(auto_compact.STATE_LABEL, "") == state:
+            return
+        await asyncio.to_thread(
+            conversation_store.set_labels,
+            session_id,
+            {auto_compact.STATE_LABEL: state},
+        )
+
     if step is None:
+        # This turn end carries a fresh measurement, so a "compacted" badge
+        # from the previous one has served its purpose.
+        await _publish_state("")
         return
     share = auto_compact.context_share_pct(labels) or 0.0
 
@@ -7703,6 +7717,7 @@ async def _run_auto_compaction(
                 exc_info=True,
             )
             return
+        await _publish_state(auto_compact.state_for(step))
         _logger.info(
             "auto-compaction: asked session=%s to write its context down at %.0f%%",
             session_id,
@@ -7717,11 +7732,15 @@ async def _run_auto_compaction(
         timeout_s=_TUI_INJECT_FORWARD_TIMEOUT_S,
     )
     status = result.status_code if result is not None else None
+    compacted = status in (200, 204)
+    # The percentage beside the badge stays at its pre-compaction value until
+    # the next turn end measures again; the badge is what says why.
+    await _publish_state(auto_compact.state_for(step) if compacted else "")
     _logger.info(
         "auto-compaction: compacting session=%s at %.0f%% -> %s",
         session_id,
         share,
-        "done" if status in (200, 204) else f"failed ({status or 'no runner'})",
+        "done" if compacted else f"failed ({status or 'no runner'})",
     )
 
 

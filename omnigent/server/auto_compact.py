@@ -47,6 +47,19 @@ RETRY_AFTER_S: Final[float] = 600.0
 _TOKENS_LABEL: Final[str] = "omnigent.last_context_tokens"
 _WINDOW_LABEL: Final[str] = "omnigent.last_context_window"
 
+#: Where the UI reads what compaction is doing right now. Without it a
+#: compaction is invisible: the work happens inside a turn, and the context
+#: percentage beside it only changes when the NEXT turn ends -- so the reader
+#: sees the old number and concludes nothing happened.
+STATE_LABEL: Final[str] = "omnigent.autocompact_state"
+
+#: The write-up was asked for; the session is answering it now.
+STATE_WRITING_NOTES: Final[str] = "writing-notes"
+
+#: Compacted, but the percentage beside it is still the pre-compaction
+#: measurement until the next turn ends.
+STATE_COMPACTED: Final[str] = "compacted"
+
 #: What the reader's session is asked to write before it loses the detail.
 DOCUMENTATION_PROMPT: Final[str] = (
     "[Omnigent] This session is at {pct}% of its context window, so it will be "
@@ -138,6 +151,19 @@ def next_step(
         return None
     _ASKED[session_id] = moment
     return "write-notes"
+
+
+def state_for(step: Step | None) -> str:
+    """Return what the UI should say about compaction after this turn end.
+
+    :param step: The step this turn end is taking, from :func:`next_step`.
+    :returns: A value for :data:`STATE_LABEL`; ``""`` clears the label.
+    """
+    if step == "write-notes":
+        return STATE_WRITING_NOTES
+    if step == "compact":
+        return STATE_COMPACTED
+    return ""
 
 
 def forget(session_id: str) -> None:

@@ -102,6 +102,17 @@ def test_a_compaction_that_freed_nothing_does_not_ask_again_immediately() -> Non
     )
 
 
+def test_the_state_a_turn_end_should_publish() -> None:
+    # The reader watched a compaction happen with nothing on screen saying so,
+    # and then read a stale percentage and thought it had failed. Each step
+    # names what the UI should say.
+    assert auto_compact.state_for("write-notes") == auto_compact.STATE_WRITING_NOTES
+    assert auto_compact.state_for("compact") == auto_compact.STATE_COMPACTED
+    # Nothing to do: whatever the badge said, the turn that just ended has a
+    # fresh measurement, so the badge is cleared.
+    assert auto_compact.state_for(None) == ""
+
+
 def test_the_prompt_names_the_share_and_asks_for_a_file() -> None:
     text = auto_compact.DOCUMENTATION_PROMPT.format(pct=62)
     assert "62%" in text
