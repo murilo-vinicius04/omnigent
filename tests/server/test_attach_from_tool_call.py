@@ -20,7 +20,14 @@ def _recorder(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
 
     async def _attach(_store, _files, _artifacts, session_id, response_id, path, *, caption=None):
-        calls.append({"session": session_id, "response_id": response_id, "path": str(path), "caption": caption})
+        calls.append(
+            {
+                "session": session_id,
+                "response_id": response_id,
+                "path": str(path),
+                "caption": caption,
+            }
+        )
         return f"file_{len(calls)}"
 
     monkeypatch.setattr(helpers, "attach_assistant_file", _attach)
@@ -30,20 +37,33 @@ def _recorder(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
 async def _run(data: Any, **kwargs: Any) -> list[str]:
     return await helpers.attach_files_from_tool_call(
-        data, conversation_store=object(), file_store=object(), artifact_store=object(),
-        session_id="conv_x", **kwargs,
+        data,
+        conversation_store=object(),
+        file_store=object(),
+        artifact_store=object(),
+        session_id="conv_x",
+        **kwargs,
     )
 
 
 def _call(files: list[str], **extra: Any) -> dict[str, Any]:
-    return {"name": "SendUserFile", "call_id": "call_1", "response_id": "resp_1",
-            "arguments": json.dumps({"files": files, **extra})}
+    """The shape the claude-native forwarder actually posts: the item, wrapped."""
+    return {
+        "item_type": "function_call",
+        "response_id": "resp_1",
+        "item_data": {
+            "name": "SendUserFile",
+            "call_id": "call_1",
+            "arguments": json.dumps({"files": files, **extra}),
+        },
+    }
 
 
 @pytest.mark.asyncio
 async def test_each_named_file_is_attached_to_the_turn(tmp_path: Path, _recorder) -> None:
     a, b = tmp_path / "chart.png", tmp_path / "second.png"
-    a.write_bytes(b"x"); b.write_bytes(b"y")
+    a.write_bytes(b"x")
+    b.write_bytes(b"y")
 
     ids = await _run(_call([str(a), str(b)], caption="both charts"))
 
@@ -56,7 +76,8 @@ async def test_each_named_file_is_attached_to_the_turn(tmp_path: Path, _recorder
 
 @pytest.mark.asyncio
 async def test_a_re_mirrored_call_does_not_attach_twice(tmp_path: Path, _recorder) -> None:
-    f = tmp_path / "chart.png"; f.write_bytes(b"x")
+    f = tmp_path / "chart.png"
+    f.write_bytes(b"x")
     assert await _run(_call([str(f)])) == ["file_1"]
     assert await _run(_call([str(f)])) == []
     assert len(_recorder) == 1
@@ -64,18 +85,22 @@ async def test_a_re_mirrored_call_does_not_attach_twice(tmp_path: Path, _recorde
 
 @pytest.mark.asyncio
 async def test_other_tool_calls_and_junk_are_ignored(tmp_path: Path, _recorder) -> None:
-    f = tmp_path / "chart.png"; f.write_bytes(b"x")
-    assert await _run({"name": "Bash", "arguments": json.dumps({"files": [str(f)]})}) == []
-    assert await _run({"name": "SendUserFile", "arguments": "not json"}) == []
+    f = tmp_path / "chart.png"
+    f.write_bytes(b"x")
+    assert await _run({"item_data": {"name": "Bash", "arguments": "{}"}}) == []
+    assert await _run({"item_data": {"name": "SendUserFile", "arguments": "not json"}}) == []
     assert await _run({"name": "SendUserFile", "arguments": json.dumps({"files": "oops"})}) == []
     assert await _run(None) == []
     assert _recorder == []
 
 
 @pytest.mark.asyncio
-async def test_missing_and_oversized_files_are_skipped(tmp_path: Path, monkeypatch, _recorder) -> None:
+async def test_missing_and_oversized_files_are_skipped(
+    tmp_path: Path, monkeypatch, _recorder
+) -> None:
     big, ok = tmp_path / "big.bin", tmp_path / "ok.png"
-    big.write_bytes(b"x"); ok.write_bytes(b"y")
+    big.write_bytes(b"x")
+    ok.write_bytes(b"y")
     monkeypatch.setattr(helpers, "_MAX_ATTACHMENT_BYTES", 0)
     assert await _run(_call([str(big), str(tmp_path / "gone.png")])) == []
     monkeypatch.setattr(helpers, "_MAX_ATTACHMENT_BYTES", 25 * 1024 * 1024)

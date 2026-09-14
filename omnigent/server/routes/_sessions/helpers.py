@@ -7967,12 +7967,18 @@ async def attach_files_from_tool_call(
     :param workspace: Session workspace a relative path resolves against.
     :returns: Stored file ids, in the order they were attached.
     """
-    if not isinstance(data, dict) or data.get("name") != SEND_USER_FILE_TOOL:
+    if not isinstance(data, dict):
         return []
-    call_id = str(data.get("call_id") or data.get("id") or "")
+    # The forwarder wraps the item: {"item_type", "item_data", "response_id"}.
+    # Accept the bare item too, so a caller holding one needs no unwrapping.
+    inner = data.get("item_data")
+    item = inner if isinstance(inner, dict) else data
+    if item.get("name") != SEND_USER_FILE_TOOL:
+        return []
+    call_id = str(item.get("call_id") or item.get("id") or "")
     if call_id and call_id in _attached_tool_calls:
         return []
-    raw = data.get("arguments")
+    raw = item.get("arguments")
     try:
         args = json.loads(raw) if isinstance(raw, str) else raw
     except ValueError:
@@ -7986,7 +7992,7 @@ async def attach_files_from_tool_call(
     if not isinstance(paths, list):
         return []
     caption = args.get("caption")
-    response_id = data.get("response_id")
+    response_id = data.get("response_id") or item.get("response_id")
     attached: list[str] = []
     for raw_path in paths[:10]:
         if not isinstance(raw_path, str) or not raw_path:

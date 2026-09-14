@@ -56,7 +56,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -184,6 +186,23 @@ _QUIESCENT_TICKS_TO_CLOSE = 2
 # closes on a model/turn ERROR so the web UI shows the turn FAILED instead of a
 # clean idle with a silent empty reply (#6).
 _STATUS_FAILED = "failed"
+
+# Default seconds to wait with background tasks in flight and no new steps before
+# closing the turn as stranded and logging a warning naming stuck tasks.
+_DEFAULT_TASK_WAIT_TIMEOUT_S = 600.0
+
+
+def _task_wait_timeout_s() -> float:
+    """Return the task wait timeout in seconds from the environment, else default 600.0s."""
+    raw = os.environ.get("OMNIGENT_AGY_TASK_WAIT_TIMEOUT")
+    if raw:
+        try:
+            val = float(raw)
+            if val >= 0:
+                return val
+        except ValueError:
+            pass
+    return _DEFAULT_TASK_WAIT_TIMEOUT_S
 
 # RPC step type/status constants needed for the status-transition heuristic. The
 # item-mapping constants live in the mapper; the driver only needs the few it
@@ -666,7 +685,118 @@ def _is_assistant_text_close_step(step: dict[str, object]) -> bool:
     return not (isinstance(tool_calls, list) and tool_calls)
 
 
-def _is_turn_close_step(step: dict[str, object]) -> bool:
+_RE_TASK_START = re.compile(
+    r"(?:background task with task id:\s*|task id:\s*)([^\s\n\"']+)",
+    re.IGNORECASE,
+)
+_RE_TASK_FINISH = re.compile(
+    r'Task id\s*["\']([^"\']+)["\']\s*(?:finished|killed|cancelled|terminated)',
+    re.IGNORECASE,
+)
+_RE_SENDER_TASK = re.compile(r"sender=([^\s\n]+)")
+
+
+def _all_step_texts(step: dict[str, object]) -> list[str]:
+    """Gather all textual fields from a step dict."""
+    texts: list[str] = []
+    content = step.get("content")
+    if isinstance(content, str):
+        texts.append(content)
+    rc = step.get("runCommand")
+    if isinstance(rc, dict):
+        comb = rc.get("combinedOutput")
+        if isinstance(comb, dict):
+            full = comb.get("full")
+            if isinstance(full, str):
+                texts.append(full)
+    generic = step.get("generic")
+    if isinstance(generic, dict):
+        res = generic.get("result")
+        if isinstance(res, dict):
+            r = res.get("result")
+            if isinstance(r, str):
+                texts.append(r)
+        elif isinstance(res, str):
+            texts.append(res)
+    sys_msg = step.get("systemMessage")
+    if isinstance(sys_msg, dict):
+        msg = sys_msg.get("message")
+        if isinstance(msg, str):
+            texts.append(msg)
+        agent_msg = sys_msg.get("agentMessage")
+        if isinstance(agent_msg, dict):
+            c = agent_msg.get("content")
+            if isinstance(c, str):
+                texts.append(c)
+    return texts
+
+
+def _extract_task_start_id(step: dict[str, object]) -> str | None:
+    """
+    Extract a background task ID if this step launched a background task.
+
+    Checks:
+    1. Explicit ``taskDetails.id`` in the RPC step dict.
+    2. "background task with task id: <id>" in any text field of the step.
+    """
+    td = step.get("taskDetails")
+    if isinstance(td, dict):
+        tid = td.get("id")
+        if isinstance(tid, str) and tid.strip():
+            return tid.strip()
+    for text in _all_step_texts(step):
+        if any(w in text.lower() for w in ("finished", "killed", "cancelled", "terminated", "sender=")):
+            continue
+        m = _RE_TASK_START.search(text)
+        if m:
+            tid = m.group(1).strip()
+            if "/task-" in tid or tid.startswith("task-"):
+                return tid
+    return None
+
+
+def _extract_task_finish_id(step: dict[str, object]) -> str | None:
+    """
+    Extract a background task ID if this step reports a completed background task.
+
+    Checks:
+    1. ``systemMessage.agentMessage.sender`` in an agy systemMessage step.
+    2. ``<SYSTEM_MESSAGE> ... sender=<task_id>`` or ``Task id "<task_id>" finished`` text.
+    """
+    sys_msg = step.get("systemMessage")
+    if isinstance(sys_msg, dict):
+        agent_msg = sys_msg.get("agentMessage")
+        if isinstance(agent_msg, dict):
+            sender = agent_msg.get("sender")
+            if isinstance(sender, str) and ("/task-" in sender or sender.startswith("task-")):
+                return sender.strip()
+    for text in _all_step_texts(step):
+        m = _RE_TASK_FINISH.search(text)
+        if m:
+            return m.group(1).strip()
+        if any(w in text.lower() for w in ("finished", "killed", "cancelled", "terminated")):
+            m_sender = _RE_SENDER_TASK.search(text)
+            if m_sender:
+                s = m_sender.group(1).strip()
+                if "/task-" in s or s.startswith("task-"):
+                    return s
+    return None
+
+
+def _drop_running_task(running_tasks: set[str], finished_id: str) -> None:
+    """Remove a finished task ID from running_tasks (matches exact or suffix task-N)."""
+    to_remove = {
+        t for t in running_tasks
+        if t == finished_id or t.split("/")[-1] == finished_id.split("/")[-1]
+    }
+    running_tasks.difference_update(to_remove)
+
+
+def _is_turn_close_step(
+    step: dict[str, object],
+    *,
+    running_tasks: set[str] | None = None,
+) -> bool:
     """
     Return whether a step ends the current turn (fire the IDLE edge).
 
@@ -677,6 +807,10 @@ def _is_turn_close_step(step: dict[str, object]) -> bool:
       (:func:`_is_assistant_text_close_step`) — agy answered and stopped; and
     * a terminal-ERROR PLANNER_RESPONSE — agy's model step failed, so no tool
       result or recovery planner follows.
+
+    **Task in flight guard**: When background tasks are currently running
+    (``running_tasks`` non-empty), turn close is suppressed so intermediate model
+    stubs (e.g. "Waiting for task-N notification.") do not close the turn early.
 
     **Assistant text is the close signal, not the absence of ``toolCalls``.**
     Text is the one discriminator that holds in BOTH RPC shapes: a planner that
@@ -697,8 +831,11 @@ def _is_turn_close_step(step: dict[str, object]) -> bool:
     recovery/answer planner; closing on it would pre-empt that planner).
 
     :param step: One RPC step dict.
+    :param running_tasks: In-flight background task IDs, if any.
     :returns: ``True`` when this step ends the turn.
     """
+    if running_tasks:
+        return False
     if _is_assistant_text_close_step(step):
         return True
     if step.get("type") != _TYPE_PLANNER_RESPONSE:
@@ -1144,6 +1281,16 @@ async def supervise_reader(
         # step costs one detector interval instead of stranding the session.
         if not state.turn_active:
             return
+        if state.running_task_ids:
+            # While background tasks are running, agy cascade status is IDLE between steps.
+            # Do NOT close turn as stranded unless the task wait timeout has elapsed.
+            await _check_task_wait_timeout(
+                client=client,
+                session_id=session_id,
+                cascade_id=cascade_id,
+                state=state,
+            )
+            return
         state.turn_active = False
         _logger.info(
             "agy reader closing a turn agy reports finished but Omnigent still had "
@@ -1370,6 +1517,46 @@ class _ReaderState:
     surfaced_elicitations: dict[_StepKey, str] = field(default_factory=dict)
     interaction_rescans: set[asyncio.Task[None]] = field(default_factory=set)
     subagent_mirrors: dict[str, asyncio.Task[None]] = field(default_factory=dict)
+    running_task_ids: set[str] = field(default_factory=set)
+    last_step_time: float = field(default_factory=time.monotonic)
+    observed_step_fingerprints: set[tuple[_StepKey, str | None]] = field(default_factory=set)
+
+
+async def _check_task_wait_timeout(
+    *,
+    client: httpx.AsyncClient,
+    session_id: str,
+    cascade_id: str,
+    state: _ReaderState,
+    now: float | None = None,
+) -> bool:
+    """
+    Close turn with a warning if tasks are in flight and no new step has arrived for OMNIGENT_AGY_TASK_WAIT_TIMEOUT.
+
+    :returns: ``True`` when the turn was closed due to a timeout.
+    """
+    if not state.running_task_ids or not state.turn_active:
+        return False
+    current_time = time.monotonic() if now is None else now
+    timeout = _task_wait_timeout_s()
+    elapsed = current_time - state.last_step_time
+    if elapsed < timeout:
+        return False
+
+    stuck_tasks = sorted(state.running_task_ids)
+    _logger.warning(
+        "agy background task wait timeout (elapsed=%.1fs, limit=%.1fs); "
+        "closing turn with stuck task ids: %s; session=%s cascade=%s",
+        elapsed,
+        timeout,
+        stuck_tasks,
+        session_id,
+        cascade_id,
+    )
+    state.running_task_ids.clear()
+    state.turn_active = False
+    await _post_event(client, session_id, _status_event(_STATUS_IDLE))
+    return True
 
 
 async def _poll_loop(
@@ -1432,14 +1619,24 @@ async def _poll_loop(
             await _sleep(poll_interval_s)
             continue
 
+        new_step_seen = False
         for step in steps:
-            await _process_committed_step(
+            if await _process_committed_step(
                 step,
                 client=client,
                 session_id=session_id,
                 cascade_id=cascade_id,
                 state=state,
                 on_pending_interaction=on_pending_interaction,
+            ):
+                new_step_seen = True
+
+        if not new_step_seen:
+            await _check_task_wait_timeout(
+                client=client,
+                session_id=session_id,
+                cascade_id=cascade_id,
+                state=state,
             )
 
         await _sleep(poll_interval_s)
@@ -1507,19 +1704,34 @@ async def _stream_loop(
             # which lists every live root cascade); on detection ``supervise_reader``
             # flips this loop's ``stop`` and returns the new cascade id so
             # :func:`run_reader_with_bridge` rotates the Omnigent session + rebinds.
+            new_step_seen = False
             for step in _frame_steps(frame):
-                await _process_stream_step(
+                if await _process_stream_step(
                     step,
                     client=client,
                     session_id=session_id,
                     cascade_id=cascade_id,
                     state=state,
                     on_pending_interaction=on_pending_interaction,
+                ):
+                    new_step_seen = True
+            if not new_step_seen:
+                await _check_task_wait_timeout(
+                    client=client,
+                    session_id=session_id,
+                    cascade_id=cascade_id,
+                    state=state,
                 )
         # Backoff before re-opening the stream so an immediate clean trailer
         # (no frames) cannot busy-spin re-POSTing at zero delay. Skipped when
         # asked to stop so a shutdown is not delayed by the settle backoff.
         if not stop():
+            await _check_task_wait_timeout(
+                client=client,
+                session_id=session_id,
+                cascade_id=cascade_id,
+                state=state,
+            )
             await _sleep(_STREAM_REENTRY_BACKOFF_S)
 
 
@@ -1579,9 +1791,35 @@ async def _process_committed_step(
     :param cascade_id: agy cascade id (namespaces ids).
     :param state: Per-run shared trackers.
     :param on_pending_interaction: Async callback for a distinct interaction.
-    :returns: None.
+    :returns: ``True`` when this step represents a new observation.
     """
     key = _step_key(step)
+    status = step.get("status")
+    status_str = status if isinstance(status, str) else None
+    fingerprint = (key, status_str)
+    new_observation = fingerprint not in state.observed_step_fingerprints
+    if new_observation:
+        state.observed_step_fingerprints.add(fingerprint)
+        state.last_step_time = time.monotonic()
+
+    # Track background tasks: start & finish
+    start_id = _extract_task_start_id(step)
+    if start_id and start_id not in state.running_task_ids:
+        state.running_task_ids.add(start_id)
+        _logger.info(
+            "agy background task started: %s (in-flight: %s)",
+            start_id,
+            state.running_task_ids,
+        )
+    finish_id = _extract_task_finish_id(step)
+    if finish_id:
+        _drop_running_task(state.running_task_ids, finish_id)
+        _logger.info(
+            "agy background task finished: %s (in-flight: %s)",
+            finish_id,
+            state.running_task_ids,
+        )
+
     if key not in state.seen:
         if _is_settled(step):
             state.seen.add(key)
@@ -1604,6 +1842,7 @@ async def _process_committed_step(
             session_id=session_id,
             cascade_id=cascade_id,
             turn_active=state.turn_active,
+            running_tasks=state.running_task_ids,
         )
         # Telemetry: model-change detection on USER_INPUT (design §10.4).
         await _maybe_emit_model_change(
@@ -1650,6 +1889,7 @@ async def _process_committed_step(
         cascade_id=cascade_id,
         state=state,
     )
+    return new_observation
 
 
 def _subagent_pairs(step: dict[str, object]) -> list[tuple[dict[str, object], str]]:
@@ -1992,7 +2232,7 @@ async def _process_stream_step(
     cascade_id: str,
     state: _ReaderState,
     on_pending_interaction: OnPendingInteraction,
-) -> None:
+) -> bool:
     """
     Emit one streamed step: incremental deltas, then committed items on DONE.
 
@@ -2016,9 +2256,10 @@ async def _process_stream_step(
     :param cascade_id: agy cascade id (namespaces ids + message ids).
     :param state: Per-run shared trackers (incl. the per-step prefix trackers).
     :param on_pending_interaction: Async callback for a distinct interaction.
-    :returns: None.
+    :returns: ``True`` when this step represents a new observation.
     """
     if _is_generating_planner(step):
+        state.last_step_time = time.monotonic()
         # Reasoning precedes the response (§10.2), so emit its delta first.
         await _emit_partial_reasoning_delta(
             step,
@@ -2034,11 +2275,11 @@ async def _process_stream_step(
             prefixes=state.prefixes,
             delta_chunks=state.delta_chunks,
         )
-        return
+        return True
 
     # ``_process_committed_step`` closes the live block before committing, on
     # both this path and the poll loop's.
-    await _process_committed_step(
+    new_observation = await _process_committed_step(
         step,
         client=client,
         session_id=session_id,
@@ -2054,6 +2295,7 @@ async def _process_stream_step(
         state.prefixes.pop(idx, None)
         state.delta_chunks.pop(idx, None)
         state.reasoning_prefixes.pop(idx, None)
+    return new_observation
 
 
 def _committed_planner_text(step: dict[str, object]) -> str | None:
@@ -2342,6 +2584,7 @@ async def _emit_step(
     session_id: str,
     cascade_id: str,
     turn_active: bool,
+    running_tasks: set[str] | None = None,
 ) -> bool:
     """
     Emit one new step's status edges + mapped conversation items.
@@ -2356,6 +2599,7 @@ async def _emit_step(
     :param session_id: Omnigent conversation id to mirror into.
     :param cascade_id: agy cascade id (namespaces response/call ids).
     :param turn_active: Whether a turn is currently considered open on entry.
+    :param running_tasks: In-flight background task IDs, if any.
     :returns: The updated ``turn_active`` flag after this step.
     """
     if _is_user_turn_step(step) and not turn_active:
@@ -2365,7 +2609,7 @@ async def _emit_step(
     for event in map_step_to_events(step, conversation_id=cascade_id):
         await _post_event(client, session_id, event)
 
-    if _is_turn_close_step(step) and turn_active:
+    if _is_turn_close_step(step, running_tasks=running_tasks) and turn_active:
         turn_active = False
         # An ERROR planner closes the turn as FAILED, not a clean idle: a model /
         # safety-policy / rate-limit / provider-overload error must surface as a

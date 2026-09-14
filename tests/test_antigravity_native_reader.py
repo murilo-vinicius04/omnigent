@@ -5047,3 +5047,415 @@ def test_a_non_uuid_file_is_not_a_conversation(tmp_path: Path) -> None:
     conversations.mkdir(parents=True, exist_ok=True)
     (conversations / "index.db").write_bytes(b"not-a-cascade")
     assert reader._resolve_cascade_id(bridge_dir) is None
+
+
+# ---------------------------------------------------------------------------
+# Background task tracking & premature turn termination prevention
+# ---------------------------------------------------------------------------
+
+
+def _step_538_start() -> dict[str, Any]:
+    return {
+        "type": "CORTEX_STEP_TYPE_RUN_COMMAND",
+        "status": "CORTEX_STEP_STATUS_DONE",
+        "metadata": {
+            "sourceTrajectoryStepInfo": {
+                "trajectoryId": "082f0bb4-b1be-4a42-83df-f3059bf91286",
+                "stepIndex": 538,
+            }
+        },
+        "taskDetails": {
+            "id": "082f0bb4-b1be-4a42-83df-f3059bf91286/task-538",
+            "description": 'cd web && node_modules/.bin/tsc -b; echo "EXIT=$?"',
+        },
+        "runCommand": {
+            "commandLine": 'cd web && node_modules/.bin/tsc -b; echo "EXIT=$?"',
+            "combinedOutput": {"full": "EXIT=0\r\n"},
+        },
+    }
+
+
+def _step_539_stub() -> dict[str, Any]:
+    return {
+        "type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+        "status": "CORTEX_STEP_STATUS_DONE",
+        "metadata": {
+            "sourceTrajectoryStepInfo": {
+                "trajectoryId": "082f0bb4-b1be-4a42-83df-f3059bf91286",
+                "stepIndex": 539,
+            }
+        },
+        "plannerResponse": {
+            "modifiedResponse": 'Running `cd web && node_modules/.bin/tsc -b; echo "EXIT=$?"` and waiting for completion.',
+            "response": 'Running `cd web && node_modules/.bin/tsc -b; echo "EXIT=$?"` and waiting for completion.',
+        },
+    }
+
+
+def _step_541_stub() -> dict[str, Any]:
+    return {
+        "type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+        "status": "CORTEX_STEP_STATUS_DONE",
+        "metadata": {
+            "sourceTrajectoryStepInfo": {
+                "trajectoryId": "082f0bb4-b1be-4a42-83df-f3059bf91286",
+                "stepIndex": 541,
+            }
+        },
+        "plannerResponse": {
+            "modifiedResponse": "Waiting for `tsc -b` task-538 notification.",
+            "response": "Waiting for `tsc -b` task-538 notification.",
+        },
+    }
+
+
+def _step_542_finish() -> dict[str, Any]:
+    return {
+        "type": "CORTEX_STEP_TYPE_SYSTEM_MESSAGE",
+        "status": "CORTEX_STEP_STATUS_DONE",
+        "metadata": {
+            "sourceTrajectoryStepInfo": {
+                "trajectoryId": "082f0bb4-b1be-4a42-83df-f3059bf91286",
+                "stepIndex": 542,
+            }
+        },
+        "systemMessage": {
+            "message": (
+                "[Message] timestamp=2026-09-14T13:48:11Z sender=082f0bb4-b1be-4a42-83df-f3059bf91286/task-538 "
+                'priority=MESSAGE_PRIORITY_HIGH content=Task id "082f0bb4-b1be-4a42-83df-f3059bf91286/task-538" '
+                "finished with result:\n\nThe command exited with code 0.\nOutput:\nEXIT=0\r\n"
+            ),
+            "eventType": "task_notification",
+            "agentMessage": {
+                "sender": "082f0bb4-b1be-4a42-83df-f3059bf91286/task-538",
+                "content": (
+                    'Task id "082f0bb4-b1be-4a42-83df-f3059bf91286/task-538" finished with result:\n\n'
+                    "The command exited with code 0.\nOutput:\nEXIT=0\r\n"
+                ),
+            },
+        },
+    }
+
+
+def _step_543_report() -> dict[str, Any]:
+    return {
+        "type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+        "status": "CORTEX_STEP_STATUS_DONE",
+        "metadata": {
+            "sourceTrajectoryStepInfo": {
+                "trajectoryId": "082f0bb4-b1be-4a42-83df-f3059bf91286",
+                "stepIndex": 543,
+            }
+        },
+        "plannerResponse": {
+            "modifiedResponse": "### (1) `git -C /home/nexus/wt/friendly-layer status -s`\n\n```\n M omnigent/server/routes/_sessions/helpers.py\n```",
+            "response": "### (1) `git -C /home/nexus/wt/friendly-layer status -s`\n\n```\n M omnigent/server/routes/_sessions/helpers.py\n```",
+        },
+    }
+
+
+def _step_24_start() -> dict[str, Any]:
+    return {
+        "type": "CORTEX_STEP_TYPE_RUN_COMMAND",
+        "status": "CORTEX_STEP_STATUS_DONE",
+        "metadata": {
+            "sourceTrajectoryStepInfo": {
+                "trajectoryId": "016140c0-3730-40e4-b08d-b75346a4a826",
+                "stepIndex": 24,
+            }
+        },
+        "taskDetails": {
+            "id": "016140c0-3730-40e4-b08d-b75346a4a826/task-24",
+            "description": "python3 - << 'EOF'\nimport json, pathlib, time, httpx...",
+        },
+        "runCommand": {
+            "commandLine": "python3 script.py",
+            "combinedOutput": {"full": "--- Call 1 ---\n"},
+        },
+    }
+
+
+def _step_25_stub() -> dict[str, Any]:
+    return {
+        "type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+        "status": "CORTEX_STEP_STATUS_DONE",
+        "metadata": {
+            "sourceTrajectoryStepInfo": {
+                "trajectoryId": "016140c0-3730-40e4-b08d-b75346a4a826",
+                "stepIndex": 25,
+            }
+        },
+        "plannerResponse": {
+            "modifiedResponse": "I have launched the 4 test calls to `https://api.anthropic.com/api/oauth/usage` in the background and am waiting for the results.",
+            "response": "I have launched the 4 test calls to `https://api.anthropic.com/api/oauth/usage` in the background and am waiting for the results.",
+        },
+    }
+
+
+def _step_29_stub() -> dict[str, Any]:
+    return {
+        "type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+        "status": "CORTEX_STEP_STATUS_DONE",
+        "metadata": {
+            "sourceTrajectoryStepInfo": {
+                "trajectoryId": "016140c0-3730-40e4-b08d-b75346a4a826",
+                "stepIndex": 29,
+            }
+        },
+        "plannerResponse": {
+            "modifiedResponse": "Waiting for the background task to complete all 4 API calls...",
+            "response": "Waiting for the background task to complete all 4 API calls...",
+        },
+    }
+
+
+def _step_30_finish() -> dict[str, Any]:
+    return {
+        "type": "CORTEX_STEP_TYPE_SYSTEM_MESSAGE",
+        "status": "CORTEX_STEP_STATUS_DONE",
+        "metadata": {
+            "sourceTrajectoryStepInfo": {
+                "trajectoryId": "016140c0-3730-40e4-b08d-b75346a4a826",
+                "stepIndex": 30,
+            }
+        },
+        "systemMessage": {
+            "message": (
+                "[Message] timestamp=2026-09-14T12:06:24Z sender=016140c0-3730-40e4-b08d-b75346a4a826/task-24 "
+                'priority=MESSAGE_PRIORITY_HIGH content=Task id "016140c0-3730-40e4-b08d-b75346a4a826/task-24" '
+                "finished with result:\n\nThe command exited with code 0.\nOutput:\n--- Call 1 ---\r\n"
+            ),
+            "eventType": "task_notification",
+            "agentMessage": {
+                "sender": "016140c0-3730-40e4-b08d-b75346a4a826/task-24",
+                "content": (
+                    'Task id "016140c0-3730-40e4-b08d-b75346a4a826/task-24" finished with result:\n\n'
+                    "The command exited with code 0.\nOutput:\n--- Call 1 ---\r\n"
+                ),
+            },
+        },
+    }
+
+
+def _step_31_report() -> dict[str, Any]:
+    return {
+        "type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+        "status": "CORTEX_STEP_STATUS_DONE",
+        "metadata": {
+            "sourceTrajectoryStepInfo": {
+                "trajectoryId": "016140c0-3730-40e4-b08d-b75346a4a826",
+                "stepIndex": 31,
+            }
+        },
+        "plannerResponse": {
+            "modifiedResponse": "### Test Results\n\n| Call | Time (UTC) | User-Agent | HTTP Status |\n| :--- | :--- | :--- | :--- |\n| 1 | 2026-09-14 12:05:35 UTC | python-httpx/0.28.1 | 429 |",
+            "response": "### Test Results\n\n| Call | Time (UTC) | User-Agent | HTTP Status |\n| :--- | :--- | :--- | :--- |\n| 1 | 2026-09-14 12:05:35 UTC | python-httpx/0.28.1 | 429 |",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_task_in_flight_stub_does_not_close_turn_082f0bb4(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patched_discovery: None,
+) -> None:
+    """An intermediate assistant stub emitted while task-538 is in flight must NOT close the turn."""
+    user = _load("user_input")
+    s538 = _step_538_start()
+    s539 = _step_539_stub()
+    s541 = _step_541_stub()
+    script = _StepScript(
+        [
+            [user],
+            [user, s538],
+            [user, s538, s539],
+            [user, s538, s539, s541],
+        ]
+    )
+    sink = _PostSink()
+
+    await _run(
+        bridge_dir=_bridge_dir(tmp_path),
+        sink=sink,
+        steps=script,
+        monkeypatch=monkeypatch,
+        iterations=4,
+    )
+
+    # Turn opened on user_input (running); stub while task in flight must NOT emit idle!
+    assert sink.statuses() == ["running"]
+
+
+@pytest.mark.asyncio
+async def test_task_in_flight_stub_does_not_close_turn_016140c0(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patched_discovery: None,
+) -> None:
+    """An intermediate assistant stub emitted while task-24 is in flight must NOT close the turn."""
+    user = _load("user_input")
+    s24 = _step_24_start()
+    s25 = _step_25_stub()
+    s29 = _step_29_stub()
+    script = _StepScript(
+        [
+            [user],
+            [user, s24],
+            [user, s24, s25],
+            [user, s24, s25, s29],
+        ]
+    )
+    sink = _PostSink()
+
+    await _run(
+        bridge_dir=_bridge_dir(tmp_path),
+        sink=sink,
+        steps=script,
+        monkeypatch=monkeypatch,
+        iterations=4,
+    )
+
+    # Turn opened on user_input (running); stub while task in flight must NOT emit idle!
+    assert sink.statuses() == ["running"]
+
+
+@pytest.mark.asyncio
+async def test_task_completion_closes_turn_with_final_report_082f0bb4(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patched_discovery: None,
+) -> None:
+    """When task-538 completes (<SYSTEM_MESSAGE>), the later real final message closes the turn."""
+    user = _load("user_input")
+    s538 = _step_538_start()
+    s541 = _step_541_stub()
+    s542 = _step_542_finish()
+    s543 = _step_543_report()
+    script = _StepScript(
+        [
+            [user],
+            [user, s538, s541],
+            [user, s538, s541, s542],
+            [user, s538, s541, s542, s543],
+            [user, s538, s541, s542, s543],
+        ]
+    )
+    sink = _PostSink()
+
+    await _run(
+        bridge_dir=_bridge_dir(tmp_path),
+        sink=sink,
+        steps=script,
+        monkeypatch=monkeypatch,
+        iterations=5,
+    )
+
+    # RUNNING then IDLE once the real final report arrives (after task finished).
+    assert sink.statuses() == ["running", "idle"]
+
+
+@pytest.mark.asyncio
+async def test_task_completion_closes_turn_with_final_report_016140c0(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patched_discovery: None,
+) -> None:
+    """When task-24 completes (<SYSTEM_MESSAGE>), the later real final message closes the turn."""
+    user = _load("user_input")
+    s24 = _step_24_start()
+    s29 = _step_29_stub()
+    s30 = _step_30_finish()
+    s31 = _step_31_report()
+    script = _StepScript(
+        [
+            [user],
+            [user, s24, s29],
+            [user, s24, s29, s30],
+            [user, s24, s29, s30, s31],
+            [user, s24, s29, s30, s31],
+        ]
+    )
+    sink = _PostSink()
+
+    await _run(
+        bridge_dir=_bridge_dir(tmp_path),
+        sink=sink,
+        steps=script,
+        monkeypatch=monkeypatch,
+        iterations=5,
+    )
+
+    # RUNNING then IDLE once the real final report arrives (after task finished).
+    assert sink.statuses() == ["running", "idle"]
+
+
+@pytest.mark.asyncio
+async def test_task_wait_timeout_closes_turn_with_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patched_discovery: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """If tasks are in flight but no new step arrives for OMNIGENT_AGY_TASK_WAIT_TIMEOUT, close turn with warning."""
+    user = _load("user_input")
+    s538 = _step_538_start()
+    s541 = _step_541_stub()
+    script = _StepScript(
+        [
+            [user],
+            [user, s538, s541],
+            [user, s538, s541],
+        ]
+    )
+    sink = _PostSink()
+
+    monkeypatch.setenv("OMNIGENT_AGY_TASK_WAIT_TIMEOUT", "0.0")
+
+    with caplog.at_level(logging.WARNING):
+        await _run(
+            bridge_dir=_bridge_dir(tmp_path),
+            sink=sink,
+            steps=script,
+            monkeypatch=monkeypatch,
+            iterations=4,
+        )
+
+    # Timed out: turn closed with IDLE edge
+    assert sink.statuses() == ["running", "idle"]
+    # Warning logged naming the stuck task
+    assert any(
+        "082f0bb4-b1be-4a42-83df-f3059bf91286/task-538" in record.message
+        or "task-538" in record.message
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+    )
+
+
+@pytest.mark.asyncio
+async def test_normal_no_task_turn_closes_immediately_as_before(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patched_discovery: None,
+) -> None:
+    """Hard rule: suppression applies ONLY while task in flight. A normal text-only turn closes immediately."""
+    user = _load("user_input")
+    text = _load("planner_response_text")
+    script = _StepScript(
+        [
+            [user],
+            [user, text],
+            [user, text],
+        ]
+    )
+    sink = _PostSink()
+
+    await _run(
+        bridge_dir=_bridge_dir(tmp_path),
+        sink=sink,
+        steps=script,
+        monkeypatch=monkeypatch,
+        iterations=3,
+    )
+
+    assert sink.statuses() == ["running", "idle"]
