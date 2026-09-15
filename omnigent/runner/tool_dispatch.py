@@ -1362,12 +1362,11 @@ async def _team_worker_pick(
     *,
     server_client: httpx.AsyncClient | None,
     conversation_id: str | None,
-    sub_agent_name: str,
     agent_spec: AgentSpec | None,
 ) -> tuple[str | None, str | None]:
-    """Check a dispatch against the conversation's Worker control.
+    """Read the worker a person chose in the conversation's Worker control.
 
-    :returns: ``(error, model)`` from :func:`omnigent.team_worker.resolve_worker`;
+    :returns: ``(worker, model)`` from :func:`omnigent.team_worker.resolve_worker`;
         ``(None, None)`` for a bundle without worker choices or when the
         session cannot be read.
     """
@@ -1383,7 +1382,7 @@ async def _team_worker_pick(
         return None, None
     payload = _string_object_dict(resp.json())
     labels = _string_object_dict(payload.get("labels")) if payload is not None else None
-    return resolve_worker(agent_spec, labels or {}, sub_agent_name)
+    return resolve_worker(agent_spec, labels or {})
 
 
 async def _session_turn_actor(
@@ -2261,21 +2260,20 @@ async def _execute_subagent_tool(
     # name below.
     session_name: str | None = llm_title_hint if llm_title_hint else None
 
+    # The worker a person picked in the conversation's Worker control wins over
+    # the name dispatched. Read fresh on every dispatch so a change
+    # mid-conversation applies to the next delegation, not the next session.
+    picked_worker, worker_model = await _team_worker_pick(
+        server_client=server_client,
+        conversation_id=conversation_id,
+        agent_spec=agent_spec,
+    )
+    if picked_worker is not None:
+        sub_agent_name = picked_worker
+
     # Verify the sub-agent exists in the parent spec.
     if not _has_subagent(sub_agent_name, agent_spec):
         return f"Error: sub-agent {sub_agent_name!r} not found in agent spec"
-
-    # The worker a person picked in the conversation's Worker control. Read
-    # fresh on every dispatch so a change mid-conversation applies to the next
-    # delegation, not the next session.
-    worker_error, worker_model = await _team_worker_pick(
-        server_client=server_client,
-        conversation_id=conversation_id,
-        sub_agent_name=sub_agent_name,
-        agent_spec=agent_spec,
-    )
-    if worker_error is not None:
-        return worker_error
 
     dispatch_created_by = await _session_turn_actor(
         server_client=server_client,
@@ -7727,8 +7725,15 @@ async def _drain_inbox(
                 )
                 items.append(f"[System: malformed terminal_idle inbox item ignored — {exc}]")
             continue
+        from omnigent.runner.worker_evidence import attach_worker_evidence
+
+        # Evidence goes through the same result policy as the worker's own output;
+        # a retry re-queues the original so it is never attached twice.
+        reviewed = await attach_worker_evidence(
+            payload, server_client=server_client, child_id=_subagent_child_id(payload)
+        )
         evaluation = await _evaluate_subagent_inbox_output(
-            payload,
+            reviewed,
             server_client=server_client,
             conversation_id=conversation_id,
         )

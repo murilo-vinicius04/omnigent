@@ -287,6 +287,31 @@ def test_antigravity_native_mode_spelling_boundary(mode: str, expected: list[str
     assert _derive_terminal_launch_args_from_spec(spec) == expected
 
 
+def test_hermes_native_defaults_to_yolo_flag() -> None:
+    """
+    A headless hermes-native worker defaults to ``--yolo``.
+
+    Without it the worker parks on Hermes' dangerous-command panel, which no
+    headless pane answers.
+    """
+    spec = _spec_with_config({"harness": "hermes-native"})
+    assert _derive_terminal_launch_args_from_spec(spec) == ["--yolo"]
+
+
+def test_hermes_native_yolo_false_opts_out() -> None:
+    """``yolo: false`` keeps a hermes-native worker prompting."""
+    spec = _spec_with_config({"harness": "hermes-native", "yolo": "False"})
+    assert _derive_terminal_launch_args_from_spec(spec) is None
+
+
+def test_hermes_native_without_headless_defaults_needs_explicit_yolo() -> None:
+    """An interactive hermes session bypasses only when the spec says so."""
+    bare = _spec_with_config({"harness": "hermes-native"})
+    opted_in = _spec_with_config({"harness": "hermes-native", "yolo": "True"})
+    assert _derive_terminal_launch_args_from_spec(bare, headless_defaults=False) is None
+    assert _derive_terminal_launch_args_from_spec(opted_in, headless_defaults=False) == ["--yolo"]
+
+
 def test_antigravity_native_without_permission_mode_returns_none() -> None:
     """antigravity-native bypass is opt-IN: absent mode leaves args unset."""
     spec = _spec_with_config({"harness": "antigravity-native"})

@@ -172,6 +172,7 @@ from omnigent.server.routes._sessions.common import (  # noqa: F401
     _ELICITATION_MODE,
     _EXTERNAL_STATUS_ASSISTANT_SCAN_LIMIT,
     _FORK_HISTORY_NATIVE_HARNESSES,
+    _HERMES_NATIVE_HARNESS,
     _HOOK_ELICITATION_ID_RE,
     _HOST_LAUNCH_RESULT_TIMEOUT_S,
     _KIMI_NATIVE_HARNESS,
@@ -10615,6 +10616,9 @@ def _derive_terminal_launch_args_from_spec(
       to ``auto`` or ``auto-review``, emit ``["--auto-review"]`` instead
       (Smart Auto) so a bundle can choose Claude-style auto without full
       yolo.
+    - hermes-native -> ``["--yolo"]`` by DEFAULT, like cursor-native: a
+      headless Hermes worker otherwise parks on its dangerous-command panel.
+      ``executor.config.yolo: false`` opts back out.
     - kimi-native + ``executor.config.yolo: true`` -> ``["--yolo"]``
       (kimi's auto-approve-tools flag; ``--auto`` full autonomy is NOT
       mapped). Opt-IN: absent / false leaves args unset.
@@ -10693,6 +10697,14 @@ def _derive_terminal_launch_args_from_spec(
         mode_norm = str(mode).strip().lower()
         if mode_norm in ("auto", "auto-review"):
             return _validate_terminal_launch_args(["--auto-review"])
+        if _spec_config_flag_explicitly_disabled(spec, "yolo"):
+            return None
+        if not headless_defaults and not _spec_config_flag_explicitly_enabled(spec, "yolo"):
+            return None
+        return _validate_terminal_launch_args(["--yolo"])
+    if harness == _HERMES_NATIVE_HARNESS:
+        # Headless default like cursor: nobody answers Hermes' dangerous-command
+        # panel. ``yolo: false`` keeps it prompting.
         if _spec_config_flag_explicitly_disabled(spec, "yolo"):
             return None
         if not headless_defaults and not _spec_config_flag_explicitly_enabled(spec, "yolo"):

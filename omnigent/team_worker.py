@@ -87,16 +87,18 @@ def worker_choices(spec: AgentSpec | None) -> list[WorkerChoice]:
 
 
 def resolve_worker(
-    spec: AgentSpec | None, labels: Mapping[str, object], sub_agent_name: str
+    spec: AgentSpec | None, labels: Mapping[str, object]
 ) -> tuple[str | None, str | None]:
-    """Check a delegation against the person's worker choice.
+    """Return the person's worker choice, which every delegation goes to.
+
+    The orchestrator cannot see the Worker control, so a dispatch naming
+    another worker is sent to the chosen one rather than refused: a refusal
+    costs a full orchestrator turn just to repeat the dispatch.
 
     :param spec: The orchestrator's spec.
     :param labels: The orchestrator session's labels.
-    :param sub_agent_name: The sub-agent the orchestrator is dispatching to.
-    :returns: ``(error, model)``. ``error`` refuses a dispatch to any other
-        sub-agent than the chosen one; ``model`` is the chosen worker's model,
-        or ``None`` for its default. Both ``None`` when nothing was chosen.
+    :returns: ``(worker, model)``: the chosen sub-agent and its model, or
+        ``None`` for its default model. Both ``None`` when nothing was chosen.
     """
     choices = worker_choices(spec)
     if not choices:
@@ -104,13 +106,5 @@ def resolve_worker(
     picked = labels.get(WORKER_LABEL)
     if not isinstance(picked, str) or picked not in {c.name for c in choices}:
         return None, None
-    if sub_agent_name != picked:
-        return (
-            f"Error: the person chose {picked!r} as the worker in this "
-            f"conversation's Worker control, so {sub_agent_name!r} is not "
-            f"dispatched. Send this and every following task to {picked!r}. "
-            "If a different worker is really needed, ask them to change the control.",
-            None,
-        )
     model = labels.get(WORKER_MODEL_LABEL)
-    return None, model.strip() if isinstance(model, str) and model.strip() else None
+    return picked, model.strip() if isinstance(model, str) and model.strip() else None
