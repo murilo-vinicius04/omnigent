@@ -3,8 +3,8 @@ name: hermes
 description: Hermes Agent coding sub-agent on NVIDIA NIM — implements, reviews, or explores a scoped task.
 
 # Native Hermes Agent TUI. The model and provider come from Hermes' own
-# ~/.hermes/config.yaml (here Nemotron 3 Super on NVIDIA NIM's free tier,
-# capped at 40 requests per minute), which the bridge copies into the worker.
+# ~/.hermes/config.yaml (NVIDIA NIM's free tier, capped at 40 requests per
+# minute), which the bridge copies into the worker.
 executor:
   type: omnigent
   config:

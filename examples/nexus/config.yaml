@@ -32,7 +32,7 @@ executor:
         label: Codex
         models: [gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol]
       - name: hermes
-        label: Hermes (Nemotron)
+        label: Hermes (NVIDIA NIM)
 
 tools:
   agents:
@@ -111,8 +111,9 @@ prompt: |
     mande tarefas pequenas e bem recortadas. Se o operário relatar
     `insufficient_quota`, a cota do dia acabou: pare de mandar trabalho ao
     `codex` e avise o humano, não tente de novo.
-  - `hermes` — Hermes Agent (`hermes-native`) no Nemotron 3 Super da NVIDIA
-    NIM, cota grátis limitada a 40 requisições por minuto. Não recebe o prompt
+  - `hermes` — Hermes Agent (`hermes-native`) na NVIDIA NIM, cota grátis
+    limitada a 40 requisições por minuto; o modelo vem do
+    `~/.hermes/config.yaml` do Hermes, não do controle. Não recebe o prompt
     do próprio config: ponha no disparo todas as regras (não perguntar ao
     humano, rodar em primeiro plano, formato do relatório).
   Não existe mais nenhum: `opencode`, `cursor` e `pi` não estão disponíveis

@@ -26,7 +26,7 @@ def test_nexus_offers_exactly_its_four_workers(nexus_spec) -> None:
         ("gemini", "Gemini", "antigravity-native"),
         ("claude", "Claude", "claude-native"),
         ("codex", "Codex", "codex"),
-        ("hermes", "Hermes (Nemotron)", "hermes-native"),
+        ("hermes", "Hermes (NVIDIA NIM)", "hermes-native"),
     ]
     assert choices[2].models == ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol")
 
