@@ -359,6 +359,25 @@ def test_write_policy_hook_config_merges_user_model(tmp_path, monkeypatch) -> No
     assert config["hooks_auto_accept"] is True
 
 
+def test_write_policy_hook_config_carries_user_reasoning_effort(tmp_path, monkeypatch) -> None:
+    bridge_dir = tmp_path / "bridge"
+    bridge_dir.mkdir()
+    user_hermes = tmp_path / ".hermes"
+    user_hermes.mkdir()
+
+    import yaml
+
+    (user_hermes / "config.yaml").write_text(
+        yaml.dump({"model": {"provider": "nvidia"}, "agent": {"reasoning_effort": "low"}})
+    )
+
+    monkeypatch.setattr(b.Path, "home", staticmethod(lambda: tmp_path))
+
+    hermes_home = b.write_policy_hook_config(bridge_dir, "http://localhost:6767", "s3")
+    config = json.loads((hermes_home / "config.yaml").read_text())
+    assert config["agent"] == {"reasoning_effort": "low"}
+
+
 def test_read_hermes_home_returns_path_when_exists(tmp_path) -> None:
     (tmp_path / "hermes_home").mkdir()
     assert b.read_hermes_home(tmp_path) == tmp_path / "hermes_home"

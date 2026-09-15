@@ -267,9 +267,11 @@ def build_hermes_native_spawn_env(session_id: str) -> dict[str, str]:
 
 
 # Keys from the user's ``~/.hermes/config.yaml`` that the per-session
-# HERMES_HOME needs in order to authenticate with the inference provider.
+# HERMES_HOME needs to authenticate and to run the model the way the user set
+# it up (``agent`` carries ``reasoning_effort``).
 _USER_CONFIG_KEYS = frozenset(
     {
+        "agent",
         "model",
         "providers",
         "fallback_providers",
