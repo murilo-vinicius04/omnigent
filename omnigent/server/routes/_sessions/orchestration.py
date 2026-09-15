@@ -76,6 +76,8 @@ from omnigent.runner.subagent_routing import (
 )
 from omnigent.runner.transports.ws_tunnel.registry import TunnelRegistry
 from omnigent.runtime import (
+    get_artifact_store,
+    get_file_store,
     get_policy_store,
     inflight_text,
     pending_elicitations,
@@ -6826,6 +6828,8 @@ async def _relay_runner_stream_once(
                             # output policies over the final assistant text.
                             evaluate_response_phase=_deny_reason is None,
                             is_terminal_completion=(evt_type == "response.completed"),
+                            file_store=get_file_store(),
+                            artifact_store=get_artifact_store(),
                         )
                         # A failed append leaves text_acc intact for a retry
                         # at a later flush — re-arm the marker so the retry

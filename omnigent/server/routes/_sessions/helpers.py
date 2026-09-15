@@ -7675,6 +7675,8 @@ async def _flush_relay_text(
     spoken_summary_language: str | None = None,
     spoken_summary_model: str | None = None,
     llm_client: Any | None = None,
+    file_store: Any | None = None,
+    artifact_store: Any | None = None,
 ) -> None:
     """
     Persist buffered assistant text as a message item and clear the buffer.
@@ -7741,6 +7743,8 @@ async def _flush_relay_text(
     :param spoken_summary_language: Optional override for spoken summary target language.
     :param spoken_summary_model: Optional override for spoken summary LLM model.
     :param llm_client: Optional pre-configured LLM client instance.
+    :param file_store: Store that mints audio file ids for summary playback.
+    :param artifact_store: Store that holds summary audio bytes.
     """
     if not text_acc:
         return
@@ -7847,15 +7851,25 @@ async def _flush_relay_text(
             if cur_task is not None and hasattr(cur_task, "uncancel"):
                 cur_task.uncancel()
 
+    import uuid
+
+    turn_response_id = response_id or f"turn_{uuid.uuid4().hex}"
+    spoken_summary_part, _spawn_audio_cb = await _schedule_summary_audio_if_enabled(
+        conversation_store,
+        file_store,
+        artifact_store,
+        session_id,
+        turn_response_id,
+        spoken_summary_part,
+    )
+
     content: list[dict[str, Any]] = [{"type": "output_text", "text": text}]
     if spoken_summary_part is not None:
         content.append(spoken_summary_part)
 
-    import uuid
-
     item = NewConversationItem(
         type="message",
-        response_id=response_id or f"turn_{uuid.uuid4().hex}",
+        response_id=turn_response_id,
         data=parse_item_data(
             "message",
             {
@@ -7914,6 +7928,8 @@ async def _flush_relay_text(
         item=persisted[0].to_api_dict(),
     )
     session_stream.publish(session_id, done_event.model_dump())
+
+    _spawn_audio_cb()
 
     if spoken_summary_usage and cancelled_exc is None:
         try:
@@ -8787,6 +8803,52 @@ async def _reads_through_live_voice(conversation_store: Any, session_id: str) ->
     return str(labels.get(_VOICE_BACKEND_LABEL, "")).strip().lower() == "live"
 
 
+async def _schedule_summary_audio_if_enabled(
+    conversation_store: Any,
+    file_store: Any,
+    artifact_store: Any,
+    session_id: str,
+    response_id: str,
+    spoken_summary_part: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, Callable[[], None]]:
+    """Gate summary audio synthesis and return decorated summary part + spawn callback.
+
+    Both native harnesses and runner-relayed harnesses (claude-sdk) use this to
+    ensure audio synthesis is scheduled with identical gating and identical
+    IDs linking the audio recording to the summary.
+    """
+    if spoken_summary_part is None:
+        return None, lambda: None
+    from omnigent.server.tts import tts_enabled
+
+    speak_it = (
+        tts_enabled()
+        and file_store is not None
+        and artifact_store is not None
+        # A session reading through the live voice never plays this recording:
+        # that voice speaks the text itself. Synthesizing it anyway spends
+        # tens of seconds of GPU on a file nobody opens.
+        and not await _reads_through_live_voice(conversation_store, session_id)
+    )
+    if not speak_it:
+        return spoken_summary_part, lambda: None
+    decorated_part = {**spoken_summary_part, "audio_pending": True}
+
+    def _spawn() -> None:
+        _spawn_summary_audio(
+            conversation_store,
+            file_store,
+            artifact_store,
+            session_id,
+            response_id,
+            str(decorated_part.get("text") or ""),
+            str(decorated_part.get("lang") or "pt-BR"),
+            show=list(decorated_part.get("show") or []) or None,
+        )
+
+    return decorated_part, _spawn
+
+
 def _spawn_summary_audio(
     conversation_store: ConversationStore,
     file_store: Any,
@@ -8957,7 +9019,6 @@ async def _attach_native_spoken_summary(
             resolve_spoken_summary_settings_async,
             should_generate_spoken_summary,
         )
-        from omnigent.server.tts import tts_enabled
 
         if len(text.strip()) <= SPOKEN_SUMMARY_THRESHOLD_CHARS:
             _logger.info(
@@ -9044,18 +9105,15 @@ async def _attach_native_spoken_summary(
     # while a finished answer waits to be read. ``audio_pending`` tells the
     # reader's play control that a recording is on its way, so it can say so
     # rather than falling back to the robotic host voice.
-    speak_it = (
-        tts_enabled()
-        and file_store is not None
-        and artifact_store is not None
-        # A session reading through the live voice never plays this recording:
-        # that voice speaks the text itself. Synthesizing it anyway spends
-        # tens of seconds of GPU on a file nobody opens.
-        and not await _reads_through_live_voice(conversation_store, session_id)
+    spoken_summary_part, _spawn_audio_cb = await _schedule_summary_audio_if_enabled(
+        conversation_store,
+        file_store,
+        artifact_store,
+        session_id,
+        response_id,
+        spoken_summary_part,
     )
-    if speak_it:
-        spoken_summary_part = {**spoken_summary_part, "audio_pending": True}
-    content: list[dict[str, Any]] = [spoken_summary_part]
+    content: list[dict[str, Any]] = [spoken_summary_part]  # type: ignore[list-item]
 
     item = NewConversationItem(
         type="message",
@@ -9088,17 +9146,7 @@ async def _attach_native_spoken_summary(
         ).model_dump(),
     )
 
-    if speak_it:
-        _spawn_summary_audio(
-            conversation_store,
-            file_store,
-            artifact_store,
-            session_id,
-            response_id,
-            str(spoken_summary_part.get("text") or ""),
-            str(spoken_summary_part.get("lang") or "pt-BR"),
-            show=list(spoken_summary_part.get("show") or []) or None,
-        )
+    _spawn_audio_cb()
 
     if spoken_summary_usage:
         try:

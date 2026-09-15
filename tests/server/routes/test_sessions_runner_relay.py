@@ -1319,3 +1319,124 @@ async def test_relay_does_not_fail_turn_during_server_shutdown(
         sessions_module._runner_relay_tasks.clear()
         sessions_module._session_status_cache.pop(session_id, None)
         session_stream.close(session_id)
+
+
+@pytest.mark.asyncio
+async def test_runner_relay_turn_end_passes_file_and_artifact_stores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The runner relay stream must pass file_store and artifact_store to _flush_relay_text."""
+    from unittest.mock import MagicMock
+
+    from omnigent.runtime import session_stream
+    from omnigent.server.routes import sessions as sessions_module
+
+    session_id = "test_relay_audio_wiring_123"
+    sessions_module._runner_relay_tasks.clear()
+
+    class _TurnScriptedStreamResponse:
+        def __init__(self, release: asyncio.Event) -> None:
+            self._release = release
+
+        async def __aenter__(self) -> _TurnScriptedStreamResponse:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            pass
+
+        async def aiter_text(self) -> AsyncIterator[str]:
+            yield 'data: {"type": "session.heartbeat"}\n\n'
+            await self._release.wait()
+            yield (
+                'data: {"type": "response.in_progress", "response": '
+                '{"id": "resp_turn_1", "model": "test-agent"}}\n\n'
+            )
+            yield (
+                'data: {"type": "response.output_text.delta", '
+                '"delta": "Hello from runner relay"}\n\n'
+            )
+            yield (
+                'data: {"type": "response.completed", "response": '
+                '{"id": "resp_turn_1", "model": "test-agent"}}\n\n'
+            )
+            yield "data: [DONE]\n\n"
+
+    class _TurnScriptedRunnerClient:
+        def __init__(self, release: asyncio.Event) -> None:
+            self._release = release
+
+        def stream(self, method: str, path: str, *, timeout: Any) -> _TurnScriptedStreamResponse:
+            return _TurnScriptedStreamResponse(self._release)
+
+    release = asyncio.Event()
+    fake_runner = _TurnScriptedRunnerClient(release)
+    store = _RecordingLabelStore(live_status="running")
+    store.get_conversation = lambda cid: SimpleNamespace(  # type: ignore[method-assign]
+        id=cid,
+        root_conversation_id=cid,
+        parent_conversation_id=None,
+        labels=dict(store.labels.get(cid, {})),
+        live_status=store.live_status,
+        agent_id=None,
+        session_usage={},
+    )
+    store.list_conversations_in_tree = (  # type: ignore[attr-defined]
+        lambda cid: [store.get_conversation(cid)]
+    )
+    store.list_conversations = lambda **kwargs: SimpleNamespace(  # type: ignore[attr-defined]
+        data=[store.get_conversation(session_id)],
+        has_more=False,
+        last_id=None,
+    )
+
+    mock_file_store = MagicMock()
+    mock_artifact_store = MagicMock()
+    monkeypatch.setattr(
+        "omnigent.server.routes._sessions.orchestration.get_file_store",
+        lambda: mock_file_store,
+    )
+    monkeypatch.setattr(
+        "omnigent.server.routes._sessions.orchestration.get_artifact_store",
+        lambda: mock_artifact_store,
+    )
+
+    captured_calls: list[dict[str, Any]] = []
+
+    async def _mock_flush_relay_text(*args: Any, **kwargs: Any) -> None:
+        captured_calls.append({"args": args, "kwargs": kwargs})
+
+    monkeypatch.setattr(
+        "omnigent.server.routes._sessions.orchestration._flush_relay_text",
+        _mock_flush_relay_text,
+    )
+
+    try:
+        handle = await sessions_module._ensure_runner_relay_ready(
+            session_id,
+            "runner_audio_wiring",
+            fake_runner,  # type: ignore[arg-type]
+            conversation_store=store,  # type: ignore[arg-type]
+        )
+        assert handle is not None
+        release.set()
+        await asyncio.wait_for(handle.task, timeout=2.0)
+
+        assert len(captured_calls) == 1, "terminal flush was not called"
+        call_kwargs = captured_calls[0]["kwargs"]
+        assert call_kwargs.get("file_store") is mock_file_store, (
+            f"expected file_store to reach flush, got {call_kwargs.get('file_store')!r}"
+        )
+        assert call_kwargs.get("artifact_store") is mock_artifact_store, (
+            f"expected artifact_store to reach flush, got {call_kwargs.get('artifact_store')!r}"
+        )
+    finally:
+        release.set()
+        handle = sessions_module._runner_relay_tasks.get(session_id)
+        if handle is not None and not handle.task.done():
+            handle.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
+                await asyncio.wait_for(handle.task, timeout=1.0)
+        sessions_module._runner_relay_tasks.clear()
+        sessions_module._session_status_cache.pop(session_id, None)
+        session_stream.close(session_id)
+

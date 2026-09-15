@@ -2952,3 +2952,220 @@ async def test_an_idle_edge_without_a_reply_after_the_question_still_skips(
     assert await helpers._resolve_edge_response_id(store, "conv_waiting") is None
     await helpers._attach_native_spoken_summary(store, "conv_waiting", None, None)  # type: ignore[arg-type]
     assert store.appended == []
+
+
+@pytest.mark.asyncio
+async def test_relay_turn_end_with_tts_enabled_schedules_audio_synthesis() -> None:
+    """Relay turn end with TTS enabled and stores present sets audio_pending and spawns audio."""
+    from unittest.mock import MagicMock
+
+    from omnigent.server.routes._sessions import helpers
+
+    clear_spoken_summary_cache()
+    conv = Conversation(
+        id="conv_relay_audio",
+        root_conversation_id="conv_relay_audio",
+        created_at=1,
+        updated_at=1,
+        parent_conversation_id=None,
+        kind="default",
+        project_id="proj_relay",
+    )
+    store = _FakeConversationStore(
+        conversation=conv,
+        project_config={"spoken_summary": {"enabled": True, "language": "pt-BR"}},
+    )
+    mock_file_store = MagicMock()
+    mock_artifact_store = MagicMock()
+
+    async def _fake_generate(text: str, **kwargs: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        return (
+            {"type": "spoken_summary", "text": "Resumo do relay.", "lang": "pt-BR"},
+            {"input_tokens": 10, "output_tokens": 5},
+        )
+
+    spawned_calls: list[dict[str, Any]] = []
+
+    def _fake_spawn_summary_audio(
+        conversation_store: Any,
+        file_store: Any,
+        artifact_store: Any,
+        session_id: str,
+        response_id: str,
+        text: str,
+        language: str,
+        show: list[dict[str, Any]] | None = None,
+    ) -> None:
+        spawned_calls.append({
+            "conversation_store": conversation_store,
+            "file_store": file_store,
+            "artifact_store": artifact_store,
+            "session_id": session_id,
+            "response_id": response_id,
+            "text": text,
+            "language": language,
+            "show": show,
+        })
+
+    text_acc = [_LONG_RESPONSE_TEXT]
+    with (
+        patch("omnigent.server.spoken_summary.generate_spoken_summary", _fake_generate),
+        patch("omnigent.server.tts.tts_enabled", return_value=True),
+        patch.object(helpers, "_spawn_summary_audio", _fake_spawn_summary_audio),
+    ):
+        await _flush_relay_text(
+            store,  # type: ignore[arg-type]
+            "conv_relay_audio",
+            text_acc,
+            "resp_relay_1",
+            "test-agent",
+            is_terminal_completion=True,
+            file_store=mock_file_store,
+            artifact_store=mock_artifact_store,
+        )
+
+    assert len(store.appended) == 1
+    item = store.appended[0]
+    assert item.response_id == "resp_relay_1"
+    content = item.data.content
+    assert len(content) == 2
+    assert content[0]["type"] == "output_text"
+    summary_part = content[1]
+    assert summary_part["type"] == "spoken_summary"
+    assert summary_part["text"] == "Resumo do relay."
+    assert summary_part.get("audio_pending") is True
+
+    assert len(spawned_calls) == 1
+    call = spawned_calls[0]
+    assert call["conversation_store"] is store
+    assert call["file_store"] is mock_file_store
+    assert call["artifact_store"] is mock_artifact_store
+    assert call["session_id"] == "conv_relay_audio"
+    assert call["response_id"] == "resp_relay_1"
+    assert call["text"] == "Resumo do relay."
+    assert call["language"] == "pt-BR"
+    assert call["show"] is None
+
+
+@pytest.mark.asyncio
+async def test_relay_turn_end_with_backend_live_skips_audio_scheduling() -> None:
+    """Relay turn end with backend live sets no audio_pending and schedules nothing."""
+    from unittest.mock import MagicMock
+
+    from omnigent.server.routes._sessions import helpers
+
+    clear_spoken_summary_cache()
+    conv = Conversation(
+        id="conv_relay_live",
+        root_conversation_id="conv_relay_live",
+        created_at=1,
+        updated_at=1,
+        parent_conversation_id=None,
+        kind="default",
+        project_id="proj_relay",
+        labels={"voice_backend": "live"},
+    )
+    store = _FakeConversationStore(
+        conversation=conv,
+        project_config={"spoken_summary": {"enabled": True, "language": "pt-BR"}},
+    )
+    mock_file_store = MagicMock()
+    mock_artifact_store = MagicMock()
+
+    async def _fake_generate(text: str, **kwargs: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        return (
+            {"type": "spoken_summary", "text": "Resumo ao vivo.", "lang": "pt-BR"},
+            {"input_tokens": 10, "output_tokens": 5},
+        )
+
+    spawned_calls: list[dict[str, Any]] = []
+
+    def _fake_spawn_summary_audio(*args: Any, **kwargs: Any) -> None:
+        spawned_calls.append({"args": args, "kwargs": kwargs})
+
+    text_acc = [_LONG_RESPONSE_TEXT]
+    with (
+        patch("omnigent.server.spoken_summary.generate_spoken_summary", _fake_generate),
+        patch("omnigent.server.tts.tts_enabled", return_value=True),
+        patch.object(helpers, "_spawn_summary_audio", _fake_spawn_summary_audio),
+    ):
+        await _flush_relay_text(
+            store,  # type: ignore[arg-type]
+            "conv_relay_live",
+            text_acc,
+            "resp_relay_live",
+            "test-agent",
+            is_terminal_completion=True,
+            file_store=mock_file_store,
+            artifact_store=mock_artifact_store,
+        )
+
+    assert len(store.appended) == 1
+    content = store.appended[0].data.content
+    assert len(content) == 2
+    summary_part = content[1]
+    assert summary_part["type"] == "spoken_summary"
+    assert "audio_pending" not in summary_part
+    assert len(spawned_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_relay_turn_end_with_tts_disabled_skips_audio_scheduling() -> None:
+    """Relay turn end with TTS disabled sets no audio_pending and schedules nothing."""
+    from unittest.mock import MagicMock
+
+    from omnigent.server.routes._sessions import helpers
+
+    clear_spoken_summary_cache()
+    conv = Conversation(
+        id="conv_relay_notts",
+        root_conversation_id="conv_relay_notts",
+        created_at=1,
+        updated_at=1,
+        parent_conversation_id=None,
+        kind="default",
+        project_id="proj_relay",
+    )
+    store = _FakeConversationStore(
+        conversation=conv,
+        project_config={"spoken_summary": {"enabled": True, "language": "pt-BR"}},
+    )
+    mock_file_store = MagicMock()
+    mock_artifact_store = MagicMock()
+
+    async def _fake_generate(text: str, **kwargs: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        return (
+            {"type": "spoken_summary", "text": "Resumo sem TTS.", "lang": "pt-BR"},
+            {"input_tokens": 10, "output_tokens": 5},
+        )
+
+    spawned_calls: list[dict[str, Any]] = []
+
+    def _fake_spawn_summary_audio(*args: Any, **kwargs: Any) -> None:
+        spawned_calls.append({"args": args, "kwargs": kwargs})
+
+    text_acc = [_LONG_RESPONSE_TEXT]
+    with (
+        patch("omnigent.server.spoken_summary.generate_spoken_summary", _fake_generate),
+        patch("omnigent.server.tts.tts_enabled", return_value=False),
+        patch.object(helpers, "_spawn_summary_audio", _fake_spawn_summary_audio),
+    ):
+        await _flush_relay_text(
+            store,  # type: ignore[arg-type]
+            "conv_relay_notts",
+            text_acc,
+            "resp_relay_notts",
+            "test-agent",
+            is_terminal_completion=True,
+            file_store=mock_file_store,
+            artifact_store=mock_artifact_store,
+        )
+
+    assert len(store.appended) == 1
+    content = store.appended[0].data.content
+    assert len(content) == 2
+    summary_part = content[1]
+    assert summary_part["type"] == "spoken_summary"
+    assert "audio_pending" not in summary_part
+    assert len(spawned_calls) == 0
+
