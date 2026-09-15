@@ -684,18 +684,15 @@ def _read_new_items(
     # Hermes schemas; only filter on it when present.
     cols = _table_columns(con, "messages")
     active_filter = " AND active = 1" if "active" in cols else ""
-    # ``reasoning_content`` / ``reasoning`` were added in newer schemas; SELECT
-    # them only when present so a v11 (or other older) DB does not raise
-    # ``no such column``.
-    reasoning_cols = ""
-    if "reasoning_content" in cols:
-        reasoning_cols += ", reasoning_content"
-    if "reasoning" in cols:
-        reasoning_cols += ", reasoning"
+    # ``reasoning_content`` / ``reasoning`` and the bookkeeping markers were added
+    # in newer schemas; SELECT them only when present so a v11 (or other older) DB
+    # does not raise ``no such column``.
+    optional = [c for c in ("reasoning_content", "reasoning", *_BOOKKEEPING_COLUMNS) if c in cols]
+    optional_sql = "".join(f", {c}" for c in optional)
     try:
         rows = con.execute(
             "SELECT id, role, content, tool_calls, tool_call_id, tool_name "
-            f"{reasoning_cols} "
+            f"{optional_sql} "
             "FROM messages "
             f"WHERE session_id = ? AND id > ?{active_filter} ORDER BY id",
             (hermes_session_id, last_id),
@@ -707,21 +704,31 @@ def _read_new_items(
         con.close()
     items: list[_MirrorItem] = []
     for row in rows:
-        # The trailing reasoning_content / reasoning columns are present
-        # only when the live schema carries them; unpack positionally.
         msg_id, role, content, tool_calls_json, tool_call_id, tool_name_val = row[:6]
-        reasoning_content = row[6] if len(row) > 6 and "reasoning_content" in cols else None
-        reasoning = row[-1] if len(row) > 6 and "reasoning" in cols else None
-        converted = _message_to_items(
-            msg_id,
-            role,
-            content,
-            tool_calls_json,
-            tool_call_id,
-            tool_name_val,
-            reasoning_content,
-            reasoning,
-            agent_name,
+        extra = dict(zip(optional, row[6:], strict=True))
+        # A compaction summary or hidden empty step is not the model's answer:
+        # never mirror it as a reply, and never let it close the turn.
+        bookkeeping = (
+            role == "assistant"
+            and not _assistant_row_has_tool_calls(tool_calls_json)
+            and _is_bookkeeping_row(
+                content, extra.get("_compressed_summary"), extra.get("display_kind")
+            )
+        )
+        converted = (
+            []
+            if bookkeeping
+            else _message_to_items(
+                msg_id,
+                role,
+                content,
+                tool_calls_json,
+                tool_call_id,
+                tool_name_val,
+                extra.get("reasoning_content"),
+                extra.get("reasoning"),
+                agent_name,
+            )
         )
         if converted:
             items.extend(converted)
@@ -735,7 +742,7 @@ def _read_new_items(
                     item_type="",
                     item_data={},
                     response_id="",
-                    role=role if isinstance(role, str) else None,
+                    role=None if bookkeeping or not isinstance(role, str) else role,
                 )
             )
     return items
@@ -885,13 +892,38 @@ def _assistant_row_has_tool_calls(tool_calls: object) -> bool:
     return isinstance(calls, list) and len(calls) > 0
 
 
+#: Content prefixes of the summary Hermes writes when it compacts its context.
+_COMPACTION_SUMMARY_PREFIXES = ("[CONTEXT COMPACTION", "[CONTEXT SUMMARY")
+
+#: Optional ``messages`` columns that mark a row as Hermes bookkeeping.
+_BOOKKEEPING_COLUMNS = ("_compressed_summary", "display_kind")
+
+
+def _is_bookkeeping_row(
+    content: object, compressed_summary: object = None, display_kind: object = None
+) -> bool:
+    """Whether an assistant row is Hermes bookkeeping rather than the model's answer.
+
+    A compaction writes its summary as an assistant row without tool calls, and an
+    interrupted step leaves a hidden empty one. Both look like a final answer, so
+    counting them told a parent orchestrator the worker had finished mid-task.
+    The content prefix covers schemas that lack the marker columns.
+    """
+    if compressed_summary not in (None, 0, "0", ""):
+        return True
+    if display_kind == "hidden":
+        return True
+    return isinstance(content, str) and content.lstrip().startswith(_COMPACTION_SUMMARY_PREFIXES)
+
+
 def _count_completed_turns(
     db_path: Path, hermes_session_id: str, max_id: int | None = None
 ) -> int:
     """Count completed turns for *hermes_session_id* (0 on unreadable/empty).
 
     A completed turn is an ``assistant`` row with no ``tool_calls`` — the agentic
-    loop's terminal step (see :func:`_assistant_row_has_tool_calls`). Rows are
+    loop's terminal step (see :func:`_assistant_row_has_tool_calls`) — that is not
+    Hermes bookkeeping (see :func:`_is_bookkeeping_row`). Rows are
     counted regardless of the ``active`` flag: Hermes soft-deletes on compaction
     (sets ``active = 0``) rather than deleting rows, so ignoring it keeps the
     count monotonic and append-only — the dedup baseline can then only grow, never
@@ -905,7 +937,9 @@ def _count_completed_turns(
     con = _connect_ro(db_path)
     if con is None:
         return 0
-    query = "SELECT tool_calls FROM messages WHERE session_id = ? AND role = 'assistant'"
+    marker_cols = [c for c in _BOOKKEEPING_COLUMNS if c in _table_columns(con, "messages")]
+    select = ", ".join(["tool_calls", "content", *marker_cols])
+    query = f"SELECT {select} FROM messages WHERE session_id = ? AND role = 'assistant'"
     params: tuple[object, ...] = (hermes_session_id,)
     if max_id is not None:
         query += " AND id <= ?"
@@ -917,7 +951,17 @@ def _count_completed_turns(
         return 0
     finally:
         con.close()
-    return sum(1 for (tool_calls,) in rows if not _assistant_row_has_tool_calls(tool_calls))
+    completed = 0
+    for row in rows:
+        markers = dict(zip(marker_cols, row[2:], strict=True))
+        if _assistant_row_has_tool_calls(row[0]):
+            continue
+        if _is_bookkeeping_row(
+            row[1], markers.get("_compressed_summary"), markers.get("display_kind")
+        ):
+            continue
+        completed += 1
+    return completed
 
 
 async def _post_external_session_status(

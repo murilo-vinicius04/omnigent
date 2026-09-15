@@ -1000,6 +1000,87 @@ def test_count_completed_turns_respects_max_id(tmp_path: Path) -> None:
     assert f._count_completed_turns(db, "s1") == 2
 
 
+_SUMMARY = (
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below."
+)
+
+
+def _seed_mid_task_compaction(path: Path, *, with_markers: bool) -> None:
+    """A worker compacts mid-task, then answers: the shape a real Glimmer run wrote."""
+    con = sqlite3.connect(path)
+    con.executescript(_SCHEMA)
+    if with_markers:
+        con.execute("ALTER TABLE messages ADD COLUMN _compressed_summary INTEGER DEFAULT 0")
+        con.execute("ALTER TABLE messages ADD COLUMN display_kind TEXT")
+    con.execute(
+        "INSERT INTO sessions(id, source, cwd, started_at) VALUES (?,?,?,?)",
+        ("s1", "cli", str(path.parent), 1000.0),
+    )
+    tc = json.dumps(
+        [{"id": "c1", "call_id": "c1", "function": {"name": "read_file", "arguments": "{}"}}]
+    )
+    # (role, content, tool_call_id, tool_calls, tool_name, _compressed_summary, display_kind)
+    rows = [
+        ("user", "implement it", None, None, None, 0, None),
+        ("assistant", "", None, tc, None, 0, None),
+        ("tool", "file text", "c1", None, "read_file", 0, None),
+        ("assistant", _SUMMARY, None, None, None, 1, None),
+    ]
+    if with_markers:
+        rows.append(("assistant", "", None, None, None, 0, "hidden"))
+    rows.append(("assistant", "done: tests pass", None, None, None, 0, None))
+    for role, content, call_id, calls, tool, summary, kind in rows:
+        if with_markers:
+            con.execute(
+                "INSERT INTO messages(session_id, role, content, tool_call_id, tool_calls,"
+                " tool_name, _compressed_summary, display_kind) VALUES (?,?,?,?,?,?,?,?)",
+                ("s1", role, content, call_id, calls, tool, summary, kind),
+            )
+        else:
+            con.execute(
+                "INSERT INTO messages(session_id, role, content, tool_call_id, tool_calls,"
+                " tool_name) VALUES (?,?,?,?,?,?)",
+                ("s1", role, content, call_id, calls, tool),
+            )
+    con.commit()
+    con.close()
+
+
+def test_count_completed_turns_skips_compaction_summary_and_hidden_rows(tmp_path: Path) -> None:
+    """A summary or hidden empty step mid-task must not report the worker as finished."""
+    db = tmp_path / "state.db"
+    _seed_mid_task_compaction(db, with_markers=True)
+    assert f._count_completed_turns(db, "s1", max_id=5) == 0
+    assert f._count_completed_turns(db, "s1") == 1
+
+
+def test_count_completed_turns_skips_summary_by_prefix_without_marker_columns(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "state.db"
+    _seed_mid_task_compaction(db, with_markers=False)
+    assert f._count_completed_turns(db, "s1", max_id=4) == 0
+    assert f._count_completed_turns(db, "s1") == 1
+
+
+def test_bookkeeping_rows_are_not_mirrored_and_do_not_close_the_turn(tmp_path: Path) -> None:
+    db = tmp_path / "state.db"
+    _seed_mid_task_compaction(db, with_markers=True)
+    items = f._read_new_items(db, "s1", 0, "hermes")
+    replies = [
+        block["text"]
+        for it in items
+        if it.item_type == "message" and it.item_data.get("role") == "assistant"
+        for block in it.item_data["content"]
+    ]
+    assert replies == ["done: tests pass"]
+    actions, active = f._annotate_turn_actions(items, None)
+    still_open = {a.msg_id: a.turn_id_after for a in actions if a.kind == "item" and a.last_of_row}
+    assert still_open[4] is not None and still_open[5] is not None
+    assert still_open[6] is None
+    assert active is None
+
+
 def test_hermes_status_posted_count_roundtrip_and_clear(tmp_path: Path) -> None:
     bridge = tmp_path / "b"
     assert hstatus.read_posted_count(bridge) == 0
