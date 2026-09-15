@@ -4,10 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
+import subprocess
+from pathlib import Path
 
 import httpx
+import pytest
 
-from omnigent.runner.worker_evidence import HEADER, attach_worker_evidence, extract_evidence
+from omnigent.runner.worker_evidence import (
+    HEADER,
+    attach_worker_evidence,
+    extract_evidence,
+    git_changes,
+    worker_dirs,
+)
 
 
 def _user(text: str) -> dict:
@@ -136,3 +146,63 @@ def test_attach_never_blocks_a_result() -> None:
     assert _run_attach(running, lambda _r: httpx.Response(200, json={"data": []})) == running
     task = {"type": "async_task", "status": "completed", "output": "x"}
     assert _run_attach(task, lambda _r: httpx.Response(200, json={"data": []})) == task
+
+
+def test_a_compaction_restatement_does_not_start_a_new_turn() -> None:
+    """Hermes re-injects the task as user messages when it compacts; earlier work still counts."""
+    items = [
+        _user("write the tests"),
+        _call("1", "patch", path="/w/tests/test_a.py"),
+        _call("2", "terminal", command="pytest tests/test_a.py"),
+        _out("2", "1 failed, 2 passed"),
+        _user("[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted..."),
+        _user("[STILL IN PROGRESS — this is the active request, restated...] write the tests"),
+        _call("3", "terminal", command="ls"),
+    ]
+    evidence = extract_evidence(items)
+    assert evidence is not None
+    assert "Files edited (1): /w/tests/test_a.py" in evidence
+    assert "1 failed, 2 passed" in evidence
+
+
+def test_worker_dirs_come_from_cd_working_dirs_and_edited_files() -> None:
+    items = [
+        _user("go"),
+        _call("1", "terminal", command="cd /repo && python3 - << 'PY'\nopen('a.py','w')\nPY"),
+        _call("2", "terminal", command="cd '/other dir' && ls"),
+        _call("3", "run_command", CommandLine="pytest", Cwd="/agy/project"),
+        _call("4", "patch", path="/edited/pkg/mod.py"),
+        _call("5", "terminal", command="cd /repo && git diff"),
+    ]
+    assert worker_dirs(items) == ["/repo", "/agy/project", "/edited/pkg"]
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_files_written_through_the_shell_show_up_from_git(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "a.py").write_text("old\n")
+    subprocess.run([*git, "add", "a.py"], check=True)
+    subprocess.run([*git, "commit", "-qm", "init"], check=True)
+    (repo / "a.py").write_text("new\n")
+    (repo / "b.py").write_text("x\n")
+    items_desc = list(
+        reversed(
+            [
+                _user("go"),
+                _call("1", "terminal", command=f"cd {repo} && python3 - << 'PY'\nwrite\nPY"),
+                _out("1", json.dumps({"output": ""})),
+            ]
+        )
+    )
+    payload = {"type": "sub_agent", "status": "completed", "output": "done"}
+    result = _run_attach(payload, lambda _r: httpx.Response(200, json={"data": items_desc}))
+    assert "Files edited (0): none" in result["output"]
+    assert f"Uncommitted changes in {repo.resolve()}" in result["output"]
+    assert "M a.py" in result["output"] and "?? b.py" in result["output"]
+
+
+def test_directories_outside_git_add_nothing(tmp_path: Path) -> None:
+    assert asyncio.run(git_changes([str(tmp_path), "/does/not/exist"])) == []
