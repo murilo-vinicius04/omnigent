@@ -82,8 +82,10 @@ BOTH the snapshot and the queue and render twice.
 from __future__ import annotations
 
 import copy
+import logging
 import threading
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -143,6 +145,15 @@ class _InFlightTurn:
 # by ``snapshot_for`` from ``subscribe``'s ``pre_ready_snapshot`` hook.
 _inflight: dict[str, _InFlightTurn] = {}
 _lock = threading.Lock()
+
+_publish_observer: Callable[[str, dict[str, Any]], None] | None = None
+_logger = logging.getLogger(__name__)
+
+
+def set_publish_observer(observer: Callable[[str, dict[str, Any]], None] | None) -> None:
+    """Register the cheap observer for events passing through the SSE path."""
+    global _publish_observer
+    _publish_observer = observer
 
 
 @dataclass
@@ -321,6 +332,12 @@ def record_publish(conversation_id: str, event: dict[str, Any]) -> dict[str, Any
     :returns: The event to broadcast, which may carry a rewritten aggregate
         delta, or ``None`` when the event should be suppressed.
     """
+    observer = _publish_observer
+    if observer is not None:
+        try:
+            observer(conversation_id, event)
+        except Exception:
+            _logger.debug("publish observer failed", exc_info=True)
     event_type = event.get("type")
 
     if event_type == "response.created" or event_type == "response.in_progress":

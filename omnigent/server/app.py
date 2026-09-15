@@ -1382,6 +1382,10 @@ def create_app(
             conversation_store,
             runner_router,
         )
+        from omnigent.server.routes.sessions import configure_subagent_loop_notifier
+        _uninstall_subagent_loop_notifier = configure_subagent_loop_notifier(
+            conversation_store, runner_router
+        )
 
         from omnigent.runner.resource_registry import (
             SessionResourceRegistry,
@@ -1555,6 +1559,7 @@ def create_app(
             await cancel_managed_launch_tasks()
             await background_title_coordinator.shutdown()
             _uninstall_subagent_block_notifier()
+            _uninstall_subagent_loop_notifier()
             set_resource_registry(None)
             set_runner_ws_factory(None)
             set_runner_direct_attach_resolver(None)

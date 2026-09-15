@@ -983,3 +983,26 @@ def create_sessions_router(
     )
 
     return router
+
+
+def configure_subagent_loop_notifier(conversation_store, runner_router):
+    """Install the repeated-tool-call parent wake on the SSE publish path."""
+    from omnigent.runtime import inflight_text
+    from omnigent.runtime.subagent_loop_notifier import SubagentLoopNotifier
+
+    async def _wake_dispatch(parent_id, child, notice):
+        return await _wake_parent_for_blocked_child(
+            parent_id, child, notice,
+            conversation_store=conversation_store, runner_router=runner_router,
+        )
+
+    notifier = SubagentLoopNotifier(
+        conversation_store, _wake_dispatch, asyncio.get_running_loop()
+    )
+    inflight_text.set_publish_observer(notifier.observe)
+
+    def _uninstall():
+        inflight_text.set_publish_observer(None)
+        notifier.close()
+
+    return _uninstall
