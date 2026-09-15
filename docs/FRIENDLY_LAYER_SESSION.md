@@ -1013,3 +1013,87 @@ Codex from the proxy log, never from session_usage.
    so a host restart; compact first).
 4. **Codex usage undercount** in session_usage (6× low).
 5. **Leftovers:** show blocks have never produced an image.
+
+## Session state — 2026-09-15 (hermes worker on NVIDIA NIM; the hard-task A/B)
+
+**Why:** nexus needed a free worker. Hermes runs on NVIDIA NIM's free tier
+(40 req/min), so it costs no Claude and no Google quota. The open question was
+whether a free worker can do a *hard* task, not just a small one.
+
+**Commits today (local, never pushed, on `feat/friendly-layer`):**
+- `c1bc33a15` — hermes joins nexus (`examples/nexus/agents/hermes/`,
+  `hermes-native`, headless `--yolo` by default); a Worker-control pick now
+  **redirects** any named dispatch instead of refusing it (the refusal cost a
+  full brain turn every task); `omnigent/runner/worker_evidence.py` appends the
+  worker's real edited files + last test command/output to its inbox result.
+- `f0519521a` — label the worker by provider, not by a model it may not run.
+- `58616c501` — **a Hermes compaction no longer reads as "worker finished".**
+  Its summary row (`_compressed_summary`) and hidden empty steps
+  (`display_kind='hidden'`) are bookkeeping, not the model's answer.
+- `b5558744e` — evidence also runs `git status` per repo the worker touched
+  (it writes files via shell heredocs, which no edit-tool list sees), and a
+  compaction restatement no longer cuts the turn and hides earlier work.
+- `906ccd979` — the per-session HERMES_HOME now copies the user's `agent`
+  section, so `agent.reasoning_effort` finally reaches the worker.
+
+**Outside this repo (uncommitted, a Hermes update would overwrite it):**
+`/home/nexus/reference/hermes-agent/plugins/model-providers/nvidia/__init__.py`
+now sends a top-level `reasoning_effort` to NIM. NIM rejects OpenRouter's
+`reasoning: {effort}` object with HTTP 400. `~/.hermes/config.yaml` holds
+`model.default` (currently `z-ai/glm-5.3`) and `agent.reasoning_effort: low`.
+
+**NIM model latency, one probe each (it swings hour to hour).** Usable:
+GLM 5.3 (0.6s), Muse Glimmer 30B (0.9s), Nemotron 3 Super (1.2s), gpt-oss-20b
+(1.5s), Lightning (1.6s). Not usable: Nemotron Ultra (74s), Gemma 4 (77s),
+Kimi K3 (114s), GLM 5.3 Flash / Laguna (timeout), Kimi K2.6 / Mistral Large 2
+(404). Muse Glimmer answers ~14 req/min under load — two implementers fit in
+the 40/min cap, a third only if it is short-lived.
+
+**The hard task:** reproduce commit `c546baafc` (give claude-sdk spoken
+summaries local audio) in a detached worktree at its parent `0ddf534a2`:
+`scratchpad/glimmer-hard`. Graded by swapping the real commit's own test files
+in at their real paths (a copy under `.hidden-tests/` loses the `db_uri`
+fixture and errors). Reference: Gemini Flash low did the whole task in 28 min.
+
+| Worker | Tool calls | Repeated | Longest identical run | Result |
+|---|---|---|---|---|
+| Gemini Flash low | 499 | 45% | 86 | shipped as `c546baafc` |
+| Muse Glimmer (3 attempts) | ~500 per attempt | 41% | 1 (cycles A,B,C,A) | **0 edits**, gave up |
+| **GLM 5.3, effort low** | **156** | **0%** | **1** | **119/119 hidden tests pass** |
+
+- GLM at *default* effort stalls: one call spent 22,780 output tokens on
+  reasoning, hit the cap, and Hermes gave up after 4 continuation attempts.
+  Low effort cut per-call output to ~100–1,100 tokens. **Always set it.**
+- Glimmer's failure was deciding to start: it restated "we need to add 3 tests"
+  26 times in its own reasoning and kept reading. Hermes compacts at 98,304
+  tokens (75% of an assumed 131,072 window), wiping what it read.
+- Cost of the winning run: brain 665,086 Claude tokens (221,132 cost-weighted),
+  worker 6,654,415 GLM tokens (free). ~26 min of worker time; 53 min wall,
+  23 of which was a Claude limit pause.
+- **The review paid for itself:** nexus caught a bug all 119 tests miss —
+  with `response_id=None`, GLM keyed the audio to `""` but the item to a fresh
+  `turn_{uuid}`, unlinking them. The real commit computes `turn_response_id`
+  once and passes it to both. Nothing tests a flush without a response id.
+
+**Runner code does NOT need a host restart.** The zygote stamps every `.py` at
+boot and refuses to fork a mixed-version runner ("omnigent changed on disk…"),
+so the host relaunches a fresh one. But a *child* session reuses its parent's
+runner: to pick up runner changes, create a **top-level** session with
+`POST /v1/sessions` carrying `host_id` + `workspace` (both from this
+conversation's session row), then PATCH `labels.team.worker`. Child sessions of
+this conversation silently ran the old code for several attempts.
+
+**Open:**
+1. **Nexus is waiting on a decision** (session `62e9943ba96640d39451ddf57ae27cc5`):
+   its one-line `response_id` fix failed twice on Hermes terminal init (no code
+   touched). Retry on Hermes, hand to another worker, or document as known.
+2. **A Hermes turn that ends with no final message never wakes nexus** — the
+   forwarder only counts a final assistant row. Low effort makes it rare, not
+   impossible. Needs a second end-of-turn signal (the log says "truncated after
+   N continuation attempts").
+3. The loop watchdog only fires on 5 *consecutive* identical calls; Glimmer
+   cycled A,B,C and never tripped it. Widen to a window (5 repeats in 20).
+4. Nexus sends every dispatch twice (same session id, one worker runs) and
+   posts each status message again in Portuguese.
+5. Routing rule not yet written into `examples/nexus/config.yaml`: free worker
+   for 1–2 file tasks with named locations; Luna/Gemini for anything bigger.
