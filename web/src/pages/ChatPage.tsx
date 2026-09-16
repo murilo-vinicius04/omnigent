@@ -4375,6 +4375,8 @@ function SessionConfigModal({
   const liveWorkerModel = workerControl?.model ?? "";
   const [draftWorker, setDraftWorker] = useState(liveWorker);
   const [draftWorkerModel, setDraftWorkerModel] = useState(liveWorkerModel);
+  const liveWorkerEffort = workerControl?.effort ?? "";
+  const [draftWorkerEffort, setDraftWorkerEffort] = useState(liveWorkerEffort);
   useEffect(() => {
     if (!open) return;
     setDraftModelId(resolvedModelId);
@@ -4386,6 +4388,7 @@ function SessionConfigModal({
     setPickedSubagentRouting(undefined);
     setDraftWorker(liveWorker);
     setDraftWorkerModel(liveWorkerModel);
+    setDraftWorkerEffort(liveWorkerEffort);
     // Nothing pushes a routing-switch change to the client (no SSE event, and
     // the session query never goes stale), so re-read them here — otherwise the
     // switches show whatever they were at bind time.
@@ -4520,9 +4523,15 @@ function SessionConfigModal({
         if (
           workerControl &&
           workerChoices.length > 0 &&
-          (draftWorker !== liveWorker || draftWorkerModel !== liveWorkerModel)
+          (draftWorker !== liveWorker ||
+            draftWorkerModel !== liveWorkerModel ||
+            draftWorkerEffort !== liveWorkerEffort)
         )
-          await workerControl.onSave(draftWorker || workerChoices[0]!.name, draftWorkerModel);
+          await workerControl.onSave(
+            draftWorker || workerChoices[0]!.name,
+            draftWorkerModel,
+            draftWorkerEffort,
+          );
       } catch {
         // Individual setters already roll back their optimistic state; a failed
         // PATCH shouldn't wedge the modal open.
@@ -4707,8 +4716,10 @@ function SessionConfigModal({
               hostId={workerControl?.hostId ?? null}
               worker={draftWorker}
               model={draftWorkerModel}
+              effort={draftWorkerEffort}
               onWorkerChange={setDraftWorker}
               onModelChange={setDraftWorkerModel}
+              onEffortChange={setDraftWorkerEffort}
               testIdPrefix="composer-config"
             />
           )}

@@ -7,7 +7,7 @@
 // fetches the full `AgentObject` for a single session via
 // `GET /v1/sessions/{sessionId}/agent`.
 
-import { type WorkerChoice, workerChoicesFromWire } from "@/lib/teamWorker";
+import { type WorkerChoice, type WorkerChoiceWire, workerChoicesFromWire } from "@/lib/teamWorker";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { authenticatedFetch } from "@/lib/identity";
 
@@ -133,7 +133,7 @@ interface AgentObjectWire {
   mcp_servers_editable?: boolean;
   policies?: PolicySummary[];
   terminals?: string[];
-  worker_choices?: { name: string; label?: string; harness?: string | null; models?: string[] }[];
+  worker_choices?: WorkerChoiceWire[];
 }
 
 /**

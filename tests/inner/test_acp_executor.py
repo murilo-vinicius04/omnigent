@@ -1235,6 +1235,70 @@ async def test_model_override_falls_back_to_request_when_no_option_echoed() -> N
 # ---------------------------------------------------------------------------
 
 
+def _effort_option(current: str) -> dict:
+    """A ``config_option_update`` payload advertising a settable reasoning effort."""
+    return {
+        "sessionUpdate": "config_option_update",
+        "configOptions": [
+            {"id": "reasoning_effort", "currentValue": current},
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_is_set_via_set_config_option() -> None:
+    """
+    An advertised ``reasoning_effort`` option is set with a plain string value.
+
+    **What breaks if this fails**: a worker picked at ``low`` keeps running at the
+    agent's own default (Grok Build defaults to ``high``).
+    """
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    ex._handle_session_update(_effort_option("high"))
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_rpc(method, params, timeout=30.0):
+        calls.append((method, params))
+        return {
+            "result": {
+                "configOptions": [{"id": "reasoning_effort", "currentValue": params["value"]}]
+            }
+        }
+
+    ex._rpc = fake_rpc  # type: ignore[assignment]
+    await ex._apply_reasoning_effort("s1", "low")
+    # Already live: no second request.
+    await ex._apply_reasoning_effort("s1", "low")
+
+    assert calls == [
+        (
+            "session/set_config_option",
+            {"sessionId": "s1", "configId": "reasoning_effort", "value": "low"},
+        )
+    ]
+    assert ex._active_effort == "low"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_skipped_without_the_option_and_rejection_is_not_fatal() -> None:
+    """
+    An agent that never advertised the option is not asked; a rejection keeps the old level.
+
+    **What breaks if this fails**: generic ACP agents get an unknown config id on
+    every turn, or ``xhigh`` on a model lacking it fails the whole turn.
+    """
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    ex._handle_session_update(_model_option("m1"))
+    ex._rpc = AsyncMock()  # type: ignore[assignment]
+    await ex._apply_reasoning_effort("s1", "low")
+    ex._rpc.assert_not_awaited()
+
+    ex._handle_session_update(_effort_option("high"))
+    ex._rpc = AsyncMock(return_value={"error": {"code": -32602, "message": "Invalid params"}})  # type: ignore[assignment]
+    await ex._apply_reasoning_effort("s1", "xhigh")
+    assert ex._active_effort == "high"
+
+
 @pytest.mark.asyncio
 async def test_interrupt_sends_session_cancel() -> None:
     ex = AcpExecutor(AcpAgentConfig(command="x"))

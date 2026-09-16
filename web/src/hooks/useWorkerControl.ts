@@ -4,7 +4,12 @@ import { useCallback, useMemo } from "react";
 import { useSessionAgent } from "@/hooks/useAgents";
 import { useSession } from "@/hooks/useSession";
 import { updateSession } from "@/lib/sessionsApi";
-import { WORKER_LABEL, WORKER_MODEL_LABEL, type WorkerControl } from "@/lib/teamWorker";
+import {
+  WORKER_EFFORT_LABEL,
+  WORKER_LABEL,
+  WORKER_MODEL_LABEL,
+  type WorkerControl,
+} from "@/lib/teamWorker";
 
 /**
  * The Worker control for a running conversation: the choices its agent offers,
@@ -19,13 +24,18 @@ export function useWorkerControl(sessionId: string | null | undefined): WorkerCo
   const choices = agent?.worker_choices;
   const worker = session?.labels?.[WORKER_LABEL] ?? "";
   const model = session?.labels?.[WORKER_MODEL_LABEL] ?? "";
+  const effort = session?.labels?.[WORKER_EFFORT_LABEL] ?? "";
   const hostId = session?.hostId ?? null;
 
   const onSave = useCallback(
-    async (nextWorker: string, nextModel: string) => {
+    async (nextWorker: string, nextModel: string, nextEffort: string) => {
       if (!id) return;
       await updateSession(id, {
-        labels: { [WORKER_LABEL]: nextWorker, [WORKER_MODEL_LABEL]: nextModel },
+        labels: {
+          [WORKER_LABEL]: nextWorker,
+          [WORKER_MODEL_LABEL]: nextModel,
+          [WORKER_EFFORT_LABEL]: nextEffort,
+        },
       });
       await queryClient.invalidateQueries({ queryKey: ["session", id] });
     },
@@ -34,7 +44,7 @@ export function useWorkerControl(sessionId: string | null | undefined): WorkerCo
 
   return useMemo(
     () =>
-      choices && choices.length > 0 ? { choices, worker, model, hostId, onSave } : null,
-    [choices, worker, model, hostId, onSave],
+      choices && choices.length > 0 ? { choices, worker, model, effort, hostId, onSave } : null,
+    [choices, worker, model, effort, hostId, onSave],
   );
 }

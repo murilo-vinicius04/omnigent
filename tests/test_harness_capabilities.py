@@ -124,6 +124,18 @@ def test_pi_harnesses_declare_the_pi_effort_family() -> None:
     assert PI_EFFORTS == EFFORT_VALUES
 
 
+def test_grok_declares_its_effort_ladder_and_takes_a_model_override() -> None:
+    """Grok Build sets both over ACP session config options."""
+    from omnigent.model_override import harness_supports_model_override
+    from omnigent.reasoning_effort import GROK_EFFORTS, efforts_for_harness
+
+    assert harness_capabilities()["grok"].effort is EffortFamily.GROK
+    assert efforts_for_harness("grok") == GROK_EFFORTS
+    assert harness_supports_model_override("grok")
+    # The generic ACP row keeps no effort knob.
+    assert harness_capabilities()["acp"].effort is EffortFamily.NONE
+
+
 def test_optional_bench_capabilities_default_to_unknown() -> None:
     capability = HarnessCapabilities(
         IntegrationMode.SDK_IN_PROCESS,

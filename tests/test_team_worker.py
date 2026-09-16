@@ -10,7 +10,13 @@ import pytest
 
 from omnigent.runner.tool_dispatch import _team_worker_pick
 from omnigent.spec import load
-from omnigent.team_worker import WORKER_LABEL, WORKER_MODEL_LABEL, resolve_worker, worker_choices
+from omnigent.team_worker import (
+    WORKER_EFFORT_LABEL,
+    WORKER_LABEL,
+    WORKER_MODEL_LABEL,
+    resolve_worker,
+    worker_choices,
+)
 
 NEXUS = Path(__file__).resolve().parents[1] / "examples" / "nexus"
 
@@ -20,41 +26,53 @@ def nexus_spec():
     return load(NEXUS)
 
 
-def test_nexus_offers_exactly_its_four_workers(nexus_spec) -> None:
+def test_nexus_offers_exactly_its_five_workers(nexus_spec) -> None:
     choices = worker_choices(nexus_spec)
     assert [(c.name, c.label, c.harness) for c in choices] == [
         ("gemini", "Gemini", "antigravity-native"),
         ("claude", "Claude", "claude-native"),
         ("codex", "Codex", "codex"),
         ("hermes", "Hermes (NVIDIA NIM)", "hermes-native"),
+        ("grok", "Grok Build", "grok"),
     ]
     assert choices[2].models == ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol")
+    assert choices[2].efforts == ()
+
+
+def test_grok_offers_models_and_efforts_and_defaults_to_4_6_low(nexus_spec) -> None:
+    grok = worker_choices(nexus_spec)[4]
+    assert grok.models == ("grok-4.6", "grok-4.5")
+    assert grok.efforts == ("low", "medium", "high", "xhigh")
+    assert (grok.default_model, grok.default_effort) == ("grok-4.6", "low")
 
 
 def test_a_bundle_without_worker_choices_is_untouched(nexus_spec) -> None:
     nexus_spec.executor.config.pop("worker_choices")
     assert worker_choices(nexus_spec) == []
-    assert resolve_worker(nexus_spec, {WORKER_LABEL: "codex"}) == (None, None)
+    assert resolve_worker(nexus_spec, {WORKER_LABEL: "codex"}) == (None, None, None)
     # Runner tests stand in a bare namespace for the spec; that must not crash.
     assert worker_choices(object()) == []  # type: ignore[arg-type]
 
 
 def test_nothing_picked_lets_the_orchestrator_choose() -> None:
     spec = load(NEXUS)
-    assert resolve_worker(spec, {}) == (None, None)
+    assert resolve_worker(spec, {}) == (None, None, None)
     # A label naming no offered worker is ignored rather than blocking everything.
-    assert resolve_worker(spec, {WORKER_LABEL: "cursor"}) == (None, None)
+    assert resolve_worker(spec, {WORKER_LABEL: "cursor"}) == (None, None, None)
 
 
 def test_the_picked_worker_and_model_win() -> None:
     spec = load(NEXUS)
     labels = {WORKER_LABEL: "codex", WORKER_MODEL_LABEL: "gpt-5.6-terra"}
-    assert resolve_worker(spec, labels) == ("codex", "gpt-5.6-terra")
+    assert resolve_worker(spec, labels) == ("codex", "gpt-5.6-terra", None)
     # An empty model means the worker's own default.
     assert resolve_worker(spec, {WORKER_LABEL: "codex", WORKER_MODEL_LABEL: " "}) == (
         "codex",
         None,
+        None,
     )
+    picked = {WORKER_LABEL: "grok", WORKER_MODEL_LABEL: "", WORKER_EFFORT_LABEL: "medium"}
+    assert resolve_worker(spec, picked) == ("grok", None, "medium")
 
 
 def test_dispatch_reads_the_pick_from_the_live_session() -> None:
@@ -65,7 +83,7 @@ def test_dispatch_reads_the_pick_from_the_live_session() -> None:
         seen.append(request.url.path)
         return httpx.Response(200, json={"id": "conv_x", "labels": {WORKER_LABEL: "claude"}})
 
-    async def run() -> tuple[str | None, str | None]:
+    async def run() -> tuple[str | None, str | None, str | None]:
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(respond), base_url="http://server"
         ) as client:
@@ -75,14 +93,14 @@ def test_dispatch_reads_the_pick_from_the_live_session() -> None:
                 agent_spec=spec,
             )
 
-    assert asyncio.run(run()) == ("claude", None)
+    assert asyncio.run(run()) == ("claude", None, None)
     assert seen == ["/v1/sessions/conv_x"]
 
 
 def test_dispatch_never_blocks_when_the_session_cannot_be_read() -> None:
     spec = load(NEXUS)
 
-    async def run() -> tuple[str | None, str | None]:
+    async def run() -> tuple[str | None, str | None, str | None]:
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(lambda _r: httpx.Response(503)),
             base_url="http://server",
@@ -93,4 +111,4 @@ def test_dispatch_never_blocks_when_the_session_cannot_be_read() -> None:
                 agent_spec=spec,
             )
 
-    assert asyncio.run(run()) == (None, None)
+    assert asyncio.run(run()) == (None, None, None)

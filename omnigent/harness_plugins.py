@@ -687,6 +687,13 @@ _BUILTIN_CAPABILITIES["devin"] = dataclasses.replace(
     subagents=DEVIN_ACP_EXTENSION.surfaces_subagents,
 )
 
+# Grok Build exposes ``reasoning_effort`` as a standard ACP session config
+# option, which the generic executor sets before each prompt.
+_BUILTIN_CAPABILITIES["grok"] = dataclasses.replace(
+    _BUILTIN_CAPABILITIES["acp"],
+    effort=EffortFamily.GROK,
+)
+
 
 _BUILTIN_CONTRIBUTION = HarnessContribution(
     name="omnigent",
@@ -830,6 +837,9 @@ _BUILTIN_CONTRIBUTION = HarnessContribution(
         "copilot": "HARNESS_COPILOT_MODEL",
         "cursor": "HARNESS_CURSOR_MODEL",
         "goose": "HARNESS_GOOSE_MODEL",
+        # Grok's ACP session accepts a ``model`` config option; the generic
+        # executor warm-switches to this id before the first prompt.
+        "grok": "HARNESS_ACP_MODEL",
         "hermes": "HARNESS_HERMES_MODEL",
         "kimi": "HARNESS_KIMI_MODEL",
         "openai-agents": "HARNESS_OPENAI_AGENTS_MODEL",

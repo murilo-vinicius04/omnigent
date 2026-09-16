@@ -3,10 +3,13 @@ name: grok
 description: xAI Grok Build coding sub-agent — implements, cross-vendor reviews, or explores a scoped task.
 
 # Grok Build (xAI's `grok` CLI) over ACP (`grok agent stdio`). It owns its own
-# auth (`grok login`, a grok.com account) and its own default model, so no
-# provider credential is wired here.
+# auth (`grok login`, a grok.com account), so no provider credential is wired
+# here. Model and effort are pinned because Grok's own defaults are grok-4.6 at
+# HIGH effort; the Worker control's model and effort override both.
 executor:
   type: omnigent
+  model: grok-4.6
+  reasoning_effort: low
   config:
     harness: grok
     # Headless: nobody answers the approval card, and without this every tool

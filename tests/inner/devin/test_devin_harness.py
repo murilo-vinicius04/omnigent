@@ -7,6 +7,8 @@ shared ACP code and is covered by ``tests/inner/test_acp_executor.py``.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from omnigent.harness_plugins import harness_capabilities, harness_modules
@@ -81,6 +83,6 @@ def test_declared_capability_is_derived_from_the_extension() -> None:
     """
     caps = harness_capabilities()
     assert caps["devin"].subagents is DEVIN_ACP_EXTENSION.surfaces_subagents is True
-    # Only Devin diverges from the shared generic ACP profile, and only there.
-    assert caps["grok"] == caps["acp"]
+    # Grok diverges only on effort (its ACP ``reasoning_effort`` option).
+    assert dataclasses.replace(caps["grok"], effort=caps["acp"].effort) == caps["acp"]
     assert caps["devin"] != caps["acp"]

@@ -1363,23 +1363,23 @@ async def _team_worker_pick(
     server_client: httpx.AsyncClient | None,
     conversation_id: str | None,
     agent_spec: AgentSpec | None,
-) -> tuple[str | None, str | None]:
+) -> tuple[str | None, str | None, str | None]:
     """Read the worker a person chose in the conversation's Worker control.
 
-    :returns: ``(worker, model)`` from :func:`omnigent.team_worker.resolve_worker`;
-        ``(None, None)`` for a bundle without worker choices or when the
-        session cannot be read.
+    :returns: ``(worker, model, effort)`` from
+        :func:`omnigent.team_worker.resolve_worker`; all ``None`` for a bundle
+        without worker choices or when the session cannot be read.
     """
     from omnigent.team_worker import resolve_worker, worker_choices
 
     if not worker_choices(agent_spec) or server_client is None or not conversation_id:
-        return None, None
+        return None, None, None
     try:
         resp = await server_client.get(f"/v1/sessions/{conversation_id}", timeout=10.0)
     except (httpx.HTTPError, RuntimeError):
-        return None, None
+        return None, None, None
     if resp.status_code != 200:
-        return None, None
+        return None, None, None
     payload = _string_object_dict(resp.json())
     labels = _string_object_dict(payload.get("labels")) if payload is not None else None
     return resolve_worker(agent_spec, labels or {})
@@ -2263,7 +2263,7 @@ async def _execute_subagent_tool(
     # The worker a person picked in the conversation's Worker control wins over
     # the name dispatched. Read fresh on every dispatch so a change
     # mid-conversation applies to the next delegation, not the next session.
-    picked_worker, worker_model = await _team_worker_pick(
+    picked_worker, worker_model, worker_effort = await _team_worker_pick(
         server_client=server_client,
         conversation_id=conversation_id,
         agent_spec=agent_spec,
@@ -2616,6 +2616,10 @@ async def _execute_subagent_tool(
             session_effort_pick = _runner_app.session_sub_agent_effort(
                 conversation_id, str(sub_agent_name)
             )
+            if worker_effort is not None:
+                # The Worker control's effort, like its model, replaces the
+                # per-head pick: it is the one control nexus's UI shows.
+                session_effort_pick = worker_effort
             if session_effort_pick is not None:
                 try:
                     effective_effort = _validate_subagent_reasoning_effort(

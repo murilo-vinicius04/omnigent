@@ -1535,10 +1535,12 @@ def _build_acp_cli_spawn_env(
     Rows in :data:`omnigent.acp_cli_harnesses.ACP_CLI_HARNESSES` all run the
     shared ``omnigent/inner/acp_harness.py`` wrap; this maps a row + spec to
     the ``HARNESS_ACP_*`` vars it reads. Like goose/acp, a vendor ACP CLI owns
-    its own auth and model, so no provider/gateway credential and no model var
-    is wired. The binary resolves via the ``OMNIGENT_<NAME>_PATH`` env
-    override, then the config ``harness.<name>.command`` path, then PATH plus
-    the common global install dirs.
+    its own auth, so no provider/gateway credential is wired; a model the spec
+    pins becomes ``HARNESS_ACP_MODEL``, which the executor switches to only when
+    the agent advertises a ``model`` session option. The binary resolves via the
+    ``OMNIGENT_<NAME>_PATH`` env override, then the config
+    ``harness.<name>.command`` path, then PATH plus the common global install
+    dirs.
 
     :param spec: The agent spec.
     :param harness: The catalog row key, e.g. ``"grok"``.
@@ -1568,6 +1570,9 @@ def _build_acp_cli_spawn_env(
     # back to OMNIGENT_RUNNER_WORKSPACE — see HARNESS_ACP_CWD.
     if cwd is not None:
         env["HARNESS_ACP_CWD"] = str(cwd)
+    model = _resolve_spec_model(spec)
+    if model:
+        env["HARNESS_ACP_MODEL"] = model
     os_env_payload = _serialize_os_env(spec.os_env)
     if os_env_payload is not None:
         env["HARNESS_ACP_OS_ENV"] = os_env_payload

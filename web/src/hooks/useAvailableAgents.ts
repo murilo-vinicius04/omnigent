@@ -1,4 +1,4 @@
-import { type WorkerChoice, workerChoicesFromWire } from "@/lib/teamWorker";
+import { type WorkerChoice, type WorkerChoiceWire, workerChoicesFromWire } from "@/lib/teamWorker";
 import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { authenticatedFetch } from "@/lib/identity";
@@ -128,7 +128,7 @@ interface BuiltinAgentWire {
     harness?: string | null;
     model?: string | null;
   }[];
-  worker_choices?: { name: string; label?: string; harness?: string | null; models?: string[] }[];
+  worker_choices?: WorkerChoiceWire[];
   skills?: { name: string; description: string }[];
   // True only for server-seeded built-ins (deterministic id). Absent on
   // older servers, where every catalog row degrades to a protected entry.

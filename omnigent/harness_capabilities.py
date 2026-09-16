@@ -58,6 +58,7 @@ class EffortFamily(str, Enum):
     GEMINI = "gemini"
     COPILOT = "copilot"
     PI = "pi"
+    GROK = "grok"
 
 
 class ModelFamily(str, Enum):

@@ -149,6 +149,9 @@ def test_fake_row_login_command() -> None:
 # Listing one here is deliberate: it declares that the row no longer runs the
 # shared wrap and may declare capabilities the generic profile does not.
 _VENDOR_WRAPS = {"devin": "omnigent.inner.devin.harness"}
+# Rows whose agent advertises a standard ACP ``reasoning_effort`` option, which
+# the shared executor sets; they may differ from "acp" on the effort axis only.
+_EFFORT_ROWS = {"grok"}
 
 
 @pytest.mark.parametrize("name", sorted(ACP_CLI_HARNESSES))
@@ -168,6 +171,9 @@ def test_catalog_row_is_fully_registered(name: str) -> None:
         # quietly diverge on resume, auth, effort, or anything else.
         assert caps[name].subagents is True, name
         assert dataclasses.replace(caps[name], subagents=caps["acp"].subagents) == caps["acp"]
+    elif name in _EFFORT_ROWS:
+        assert caps[name].effort is not caps["acp"].effort, name
+        assert dataclasses.replace(caps[name], effort=caps["acp"].effort) == caps["acp"]
     else:
         # Same declared profile as the generic "acp" harness they run through.
         assert caps[name] == caps["acp"]

@@ -11,10 +11,15 @@ import type { WorkerChoice } from "@/lib/teamWorker";
 
 // Radix rejects "" as an item value, so "the worker's own default" needs a sentinel.
 const DEFAULT_MODEL = "__default__";
+const DEFAULT_EFFORT = "__default__";
+
+function defaultLabel(value: string | null): string {
+  return value ? `Default (${value})` : "Default";
+}
 
 /**
  * The Worker control: which one worker the orchestrator delegates to, and the
- * model it runs. Shared by the new-conversation dialog and a running
+ * model and reasoning effort it runs. Shared by the new-conversation dialog and a running
  * conversation's Configure dialog.
  */
 export function WorkerConfigRows({
@@ -22,8 +27,10 @@ export function WorkerConfigRows({
   hostId,
   worker,
   model,
+  effort,
   onWorkerChange,
   onModelChange,
+  onEffortChange,
   testIdPrefix,
 }: {
   choices: WorkerChoice[];
@@ -32,8 +39,11 @@ export function WorkerConfigRows({
   worker: string;
   /** Model id; "" is the worker's own default. */
   model: string;
+  /** Effort level; "" is the worker's own default. */
+  effort: string;
   onWorkerChange: (worker: string) => void;
   onModelChange: (model: string) => void;
+  onEffortChange: (effort: string) => void;
   testIdPrefix: string;
 }) {
   const selected = choices.find((choice) => choice.name === worker) ?? choices[0];
@@ -51,6 +61,8 @@ export function WorkerConfigRows({
   if (model && !models.some((option) => option.id === model)) {
     models.push({ id: model, label: model });
   }
+  const efforts = [...selected.efforts];
+  if (effort && !efforts.includes(effort)) efforts.push(effort);
 
   return (
     <>
@@ -59,8 +71,11 @@ export function WorkerConfigRows({
           value={selected.name}
           onValueChange={(value) => {
             onWorkerChange(value);
-            // A model id belongs to one worker's harness; start the new one on its default.
-            if (value !== selected.name) onModelChange("");
+            // A model id belongs to one worker's harness; start the new one on its defaults.
+            if (value !== selected.name) {
+              onModelChange("");
+              onEffortChange("");
+            }
           }}
           componentId={`${testIdPrefix}.worker`}
           valueHasNoPii
@@ -92,7 +107,7 @@ export function WorkerConfigRows({
             <SelectValue />
           </SelectTrigger>
           <SelectContent position="popper" align="start">
-            <SelectItem value={DEFAULT_MODEL}>Default</SelectItem>
+            <SelectItem value={DEFAULT_MODEL}>{defaultLabel(selected.defaultModel)}</SelectItem>
             {models.map((option) => (
               <SelectItem key={option.id} value={option.id}>
                 {option.label}
@@ -101,6 +116,32 @@ export function WorkerConfigRows({
           </SelectContent>
         </Select>
       </ConfigRow>
+      {selected.efforts.length > 0 && (
+        <ConfigRow label="Worker effort" description={`How hard ${selected.label} reasons`}>
+          <Select
+            value={effort || DEFAULT_EFFORT}
+            onValueChange={(value) => onEffortChange(value === DEFAULT_EFFORT ? "" : value)}
+            componentId={`${testIdPrefix}.worker_effort`}
+            valueHasNoPii
+          >
+            <SelectTrigger
+              className="w-full"
+              data-testid={`${testIdPrefix}-worker-effort`}
+              aria-label="Worker effort"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent position="popper" align="start">
+              <SelectItem value={DEFAULT_EFFORT}>{defaultLabel(selected.defaultEffort)}</SelectItem>
+              {efforts.map((level) => (
+                <SelectItem key={level} value={level}>
+                  {level}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </ConfigRow>
+      )}
     </>
   );
 }

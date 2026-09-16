@@ -42,6 +42,10 @@ ANTIGRAVITY_EFFORTS = GEMINI_EFFORTS
 # exactly these levels (``copilot.session.ReasoningEffort`` literal); per-model
 # support is gated by the Copilot backend (``list_models()``).
 COPILOT_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
+# Grok Build advertises these as its ACP ``reasoning_effort`` session option
+# (grok-4.6; grok-4.5 drops ``xhigh``, and the agent itself rejects a level the
+# live model lacks).
+GROK_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 # pi's ``--thinking`` ladder is ``off|minimal|low|medium|high|xhigh|max``. Its
 # ``off`` is omnigent's ``none`` — ``off`` is reserved here as a
 # clear-to-default sentinel — so :func:`to_pi_thinking_level` translates.
@@ -129,6 +133,7 @@ def efforts_by_family() -> dict[EffortFamily, frozenset[str]]:
         EffortFamily.GEMINI: GEMINI_EFFORTS,
         EffortFamily.COPILOT: COPILOT_EFFORTS,
         EffortFamily.PI: PI_EFFORTS,
+        EffortFamily.GROK: GROK_EFFORTS,
     }
 
 

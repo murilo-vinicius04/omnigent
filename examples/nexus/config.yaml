@@ -35,6 +35,9 @@ executor:
         label: Hermes (NVIDIA NIM)
       - name: grok
         label: Grok Build
+        models: [grok-4.6, grok-4.5]
+        # grok-4.5 has no xhigh; Grok rejects it there and keeps the prior level.
+        efforts: [low, medium, high, xhigh]
 
 tools:
   agents:
@@ -120,7 +123,7 @@ prompt: |
     do próprio config: ponha no disparo todas as regras (não perguntar ao
     humano, rodar em primeiro plano, formato do relatório).
   - `grok` — xAI Grok Build (`grok`, via ACP) na conta grok.com do humano;
-    o modelo é o padrão do próprio Grok (grok-4.6).
+    padrão grok-4.6 com esforço low. Modelo e esforço vêm do controle Worker.
   Não existe mais nenhum: `opencode`, `cursor` e `pi` não estão disponíveis
   nesta máquina. Não tente, não sugira.
 

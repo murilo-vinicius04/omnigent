@@ -262,12 +262,18 @@ class WorkerChoiceSummary(BaseModel):
     :param harness: The harness that sub-agent declares, e.g. ``"codex"``.
     :param models: Models to offer when the host cannot list that harness's
         catalog; empty means ask the host.
+    :param efforts: Reasoning efforts to offer; empty hides the effort control.
+    :param default_model: The model the worker runs when none is picked.
+    :param default_effort: The effort the worker runs when none is picked.
     """
 
     name: str
     label: str
     harness: str | None = None
     models: list[str] = Field(default_factory=list)
+    efforts: list[str] = Field(default_factory=list)
+    default_model: str | None = None
+    default_effort: str | None = None
 
 
 class AgentObject(BaseModel):

@@ -1,5 +1,5 @@
 import { WorkerConfigRows } from "@/components/WorkerConfigRows";
-import { WORKER_LABEL, WORKER_MODEL_LABEL } from "@/lib/teamWorker";
+import { WORKER_EFFORT_LABEL, WORKER_LABEL, WORKER_MODEL_LABEL } from "@/lib/teamWorker";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "@/lib/routing";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -1646,8 +1646,9 @@ interface PickedWorker {
   agentId: string;
   worker: string;
   model: string;
+  effort: string;
 }
-const NO_WORKER_PICK: PickedWorker = { agentId: "", worker: "", model: "" };
+const NO_WORKER_PICK: PickedWorker = { agentId: "", worker: "", model: "", effort: "" };
 
 /** One row of the Configure dialog's "Delegates to" group: a head's harness
  *  and, beside it, the model that head runs.
@@ -2012,6 +2013,7 @@ function HarnessConfigModal({
   const pickedWorkerHere = pickedWorker.agentId === agent.id ? pickedWorker : NO_WORKER_PICK;
   const [draftWorker, setDraftWorker] = useState(pickedWorkerHere.worker);
   const [draftWorkerModel, setDraftWorkerModel] = useState(pickedWorkerHere.model);
+  const [draftWorkerEffort, setDraftWorkerEffort] = useState(pickedWorkerHere.effort);
   const [draftRouting, setDraftRouting] = useState<CostControlMode>(costControlMode);
 
   useEffect(() => {
@@ -2029,6 +2031,7 @@ function HarnessConfigModal({
     setDraftSubEffort(pickedSubEffort);
     setDraftWorker(pickedWorkerHere.worker);
     setDraftWorkerModel(pickedWorkerHere.model);
+    setDraftWorkerEffort(pickedWorkerHere.effort);
     setDraftRouting(costControlMode);
     // Seed once per open from the current live values.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2147,7 +2150,12 @@ function HarnessConfigModal({
     // what the bundle declares are kept, so leaving every row alone sends
     // nothing and the session tracks the spec.
     if (workerChoices.length > 0) {
-      setPickedWorker({ agentId: agent.id, worker: draftWorker, model: draftWorkerModel });
+      setPickedWorker({
+        agentId: agent.id,
+        worker: draftWorker,
+        model: draftWorkerModel,
+        effort: draftWorkerEffort,
+      });
     }
     if ((agent.sub_agents ?? []).length > 0) {
       const declared = new Map((agent.sub_agents ?? []).map((c) => [c.name, c.harness ?? null]));
@@ -2541,8 +2549,10 @@ function HarnessConfigModal({
                 hostId={host?.host_id ?? null}
                 worker={draftWorker}
                 model={draftWorkerModel}
+                effort={draftWorkerEffort}
                 onWorkerChange={setDraftWorker}
                 onModelChange={setDraftWorkerModel}
+                onEffortChange={setDraftWorkerEffort}
                 testIdPrefix="new-chat-config"
               />
             </div>
@@ -4861,6 +4871,7 @@ export function NewChatLandingScreen() {
               ...(projectLabels ?? {}),
               [WORKER_LABEL]: pickedWorker.worker,
               ...(pickedWorker.model ? { [WORKER_MODEL_LABEL]: pickedWorker.model } : {}),
+              ...(pickedWorker.effort ? { [WORKER_EFFORT_LABEL]: pickedWorker.effort } : {}),
             }
           : projectLabels;
 

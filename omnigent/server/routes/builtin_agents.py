@@ -55,6 +55,9 @@ def worker_choice_summaries(spec: Any) -> list[WorkerChoiceSummary]:
             label=choice.label,
             harness=choice.harness,
             models=list(choice.models),
+            efforts=list(choice.efforts),
+            default_model=choice.default_model,
+            default_effort=choice.default_effort,
         )
         for choice in _worker_choices(spec)
     ]

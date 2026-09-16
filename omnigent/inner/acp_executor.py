@@ -137,6 +137,9 @@ _UPDATE_CONFIG_OPTION = "config_option_update"
 # not ``optionId``).
 _AGENT_METHOD_SET_CONFIG_OPTION = "session/set_config_option"
 _CONFIG_OPTION_MODEL = "model"
+# Reasoning effort as a session config option (Grok Build advertises it with
+# category ``thought_level``); the value is a plain level id such as ``"low"``.
+_CONFIG_OPTION_REASONING_EFFORT = "reasoning_effort"
 
 # ACP tool-call lifecycle statuses (the terminal ones close a tool card).
 _TOOL_STATUS_COMPLETED = "completed"
@@ -340,6 +343,8 @@ class AcpExecutor(Executor):
         # Latches off once an agent proves it can't warm-switch, so we don't
         # retry a failing request on every turn.
         self._model_switch_supported: bool = True
+        # The live ``reasoning_effort`` value, when the agent advertises one.
+        self._active_effort: str | None = None
 
         # Parsed argv; the first token is the binary we resolve / sandbox.
         self._argv: list[str] = shlex.split(config.command)
@@ -718,6 +723,10 @@ class AcpExecutor(Executor):
             )
         result = resp.get("result", {})
         server_session_id = result.get("sessionId") if isinstance(result, dict) else None
+        if isinstance(result, dict):
+            # Standard ACP: session/new already lists the settable options and
+            # their current values, so the first turn knows what it can switch.
+            self._note_config_options(result.get("configOptions"))
         session_id = server_session_id or client_id
         if not session_id:
             raise RuntimeError(
@@ -1363,12 +1372,54 @@ class AcpExecutor(Executor):
             if not isinstance(opt_id, str):
                 continue
             self._config_option_ids.add(opt_id)
+            current = opt.get("currentValue")
+            if not isinstance(current, str) or not current:
+                continue
             if opt_id == _CONFIG_OPTION_MODEL:
-                current = opt.get("currentValue")
-                if isinstance(current, str) and current:
-                    self._active_model = current
-                    model_value = current
+                self._active_model = current
+                model_value = current
+            elif opt_id == _CONFIG_OPTION_REASONING_EFFORT:
+                self._active_effort = current
         return model_value
+
+    async def _apply_reasoning_effort(self, session_id: str, effort: str | None) -> None:
+        """Set the agent's reasoning effort via ACP ``session/set_config_option``.
+
+        Only for an agent that advertised a ``reasoning_effort`` option, so a
+        generic ACP agent without one is never sent an unknown id. Never fails
+        the turn: a rejected level (e.g. ``xhigh`` on a model that lacks it)
+        leaves the agent on the effort it already has.
+
+        :param session_id: The live ACP session to reconfigure.
+        :param effort: Requested level, e.g. ``"low"``, or ``None`` to leave it.
+        """
+        if (
+            not effort
+            or effort == self._active_effort
+            or _CONFIG_OPTION_REASONING_EFFORT not in self._config_option_ids
+        ):
+            return
+        response = await self._rpc(
+            _AGENT_METHOD_SET_CONFIG_OPTION,
+            {
+                "sessionId": session_id,
+                "configId": _CONFIG_OPTION_REASONING_EFFORT,
+                "value": effort,
+            },
+        )
+        if "error" in response:
+            logger.warning(
+                "acp[%s] reasoning effort %s rejected (%s); keeping %s",
+                self._config.name,
+                effort,
+                response["error"].get("message", response["error"]),
+                self._active_effort,
+            )
+            return
+        result = response.get("result")
+        if isinstance(result, dict):
+            self._note_config_options(result.get("configOptions"))
+        logger.info("acp[%s] reasoning effort set to %s", self._config.name, self._active_effort)
 
     async def _apply_model_override(self, session_id: str, model: str | None) -> None:
         """Warm-switch the agent's model via ACP ``session/set_config_option``.
@@ -1466,12 +1517,22 @@ class AcpExecutor(Executor):
         # Apply a ``/model`` pick to the live session before prompting, so the
         # switch takes effect on this turn with the transcript intact. Never fatal
         # — an agent that can't switch answers on the model it already has.
-        requested_model = config.model if config is not None else None
+        # The per-turn override wins; otherwise the model the spawn env pinned
+        # (a sub-agent session's model override lands there).
+        requested_model = (config.model if config is not None else None) or self._config.model
         try:
             await self._apply_model_override(session_id, requested_model)
         except Exception as exc:  # noqa: BLE001
             self._model_switch_supported = False
             logger.warning("acp[%s] model switch failed: %s", self._config.name, exc)
+        # After the model: the effort levels on offer depend on the live model.
+        requested_effort = config.extra.get("reasoning_effort") if config is not None else None
+        try:
+            await self._apply_reasoning_effort(
+                session_id, requested_effort if isinstance(requested_effort, str) else None
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("acp[%s] reasoning effort switch failed: %s", self._config.name, exc)
 
         # A fresh ACP session holds no prior context. Captured before the latch
         # flips so we know whether to replay history into this turn.
