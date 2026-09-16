@@ -2088,3 +2088,139 @@ async def test_forward_loop_empty_prose_terminal_closes_turn(tmp_path, monkeypat
     assert f._read_state(bridge_dir).active_turn_id is None
     assert [s for s in statuses if s[0] == "running"] == [("running", "hermes_turn_1")]
     assert ("idle", "hermes_turn_1") in statuses
+
+
+# --- abandoned-turn detection from agent log text -----------------------------
+#
+# A turn that dies without answering (NIM overload, iteration cap, a kill) never
+# writes the terminal assistant row, so no idle edge wakes the parent. These
+# tests pin the contract for f.abandoned_turn_reason(log_text): it reads the
+# agent log text alone and reports why the turn ended without an answer, taking
+# the NEWEST marker as the verdict (a later healthy end overrides an earlier bad
+# one, and vice versa).
+
+
+def test_abandoned_turn_reason_max_iterations_reached() -> None:
+    log = (
+        "2026-09-15 agent.conversation_loop: Turn ended: reason=max_iterations_reached\n"
+        "2026-09-15 cli: CLI cleanup calling memory shutdown for session 20260915_103926_424f8d"
+    )
+    assert f.abandoned_turn_reason(log) == "max_iterations_reached"
+
+
+def test_abandoned_turn_reason_text_response_is_none() -> None:
+    log = "2026-09-15 agent.conversation_loop: Turn ended: reason=text_response"
+    assert f.abandoned_turn_reason(log) is None
+
+
+def test_abandoned_turn_reason_overloaded_api_failure_then_shutdown() -> None:
+    log = (
+        "2026-09-15 agent.conversation_loop: API call failed after 3 retries. "
+        "Service temporarily overloaded | provider=nvidia model=foo\n"
+        "2026-09-15 cli: CLI cleanup calling memory shutdown for session 20260915_103926_424f8d"
+    )
+    reason = f.abandoned_turn_reason(log)
+    assert reason is not None
+    assert reason.startswith("api_error:")
+    assert "overloaded" in reason
+
+
+def test_abandoned_turn_reason_newest_marker_wins() -> None:
+    log = (
+        "2026-09-15 agent.conversation_loop: Turn ended: reason=max_iterations_reached\n"
+        "2026-09-15 agent.conversation_loop: Turn ended: reason=text_response"
+    )
+    assert f.abandoned_turn_reason(log) is None
+
+
+async def test_forward_loop_posts_idle_once_for_abandoned_turn(
+    tmp_path, monkeypatch
+) -> None:
+    """An unfinished turn whose log shows an abandonment posts idle exactly once."""
+    workspace = str(tmp_path)
+    db = tmp_path / "state.db"
+    # One completed turn (already the baseline) + an unfinished turn: a user
+    # row and an assistant row WITH tool_calls, so no new terminal step lands.
+    con = sqlite3.connect(db)
+    con.executescript(_SCHEMA)
+    con.execute(
+        "INSERT INTO sessions(id, source, cwd, started_at) VALUES (?,?,?,?)",
+        ("s1", "cli", workspace, 1000.0),
+    )
+    tc = json.dumps([{"id": "c1", "call_id": "c1", "function": {"name": "f", "arguments": "{}"}}])
+    con.executemany(
+        "INSERT INTO messages"
+        "(session_id, role, content, tool_call_id, tool_calls, tool_name, active)"
+        " VALUES (?,?,?,?,?,?,?)",
+        [
+            ("s1", "user", "ask 0", None, None, None, 1),
+            ("s1", "assistant", "answer 0", None, None, None, 1),
+            ("s1", "user", "ask 1", None, None, None, 1),
+            ("s1", "assistant", "calling tool", "c1", tc, "f", 1),
+        ],
+    )
+    con.commit()
+    con.close()
+
+    bridge_dir = tmp_path / "bridge"
+    log_dir = bridge_dir / "hermes_home" / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "agent.log").write_text(
+        "2026-09-15 agent.conversation_loop: Turn ended: reason=max_iterations_reached\n",
+        encoding="utf-8",
+    )
+    hstatus.write_posted_count(bridge_dir, 1)  # baseline covers the completed turn
+
+    statuses: list[str] = []
+    await _run_hermes_loop(
+        monkeypatch,
+        db=db,
+        bridge_dir=bridge_dir,
+        workspace=workspace,
+        statuses=statuses,
+        stop_after_iterations=3,
+    )
+    assert statuses == ["idle"]
+    assert f._read_state(bridge_dir).abandoned_posted == "max_iterations_reached"
+
+
+async def test_forward_loop_abandoned_idle_not_reposted_on_later_polls(
+    tmp_path, monkeypatch
+) -> None:
+    """Polling the same abandoned turn repeatedly still yields exactly one idle."""
+    workspace = str(tmp_path)
+    db = tmp_path / "state.db"
+    con = sqlite3.connect(db)
+    con.executescript(_SCHEMA)
+    con.execute(
+        "INSERT INTO sessions(id, source, cwd, started_at) VALUES (?,?,?,?)",
+        ("s1", "cli", workspace, 1000.0),
+    )
+    con.execute(
+        "INSERT INTO messages"
+        "(session_id, role, content, tool_call_id, tool_calls, tool_name, active)"
+        " VALUES (?,?,?,?,?,?,?)",
+        ("s1", "user", "ask 0", None, None, None, 1),
+    )
+    con.commit()
+    con.close()
+
+    bridge_dir = tmp_path / "bridge"
+    log_dir = bridge_dir / "hermes_home" / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "agent.log").write_text(
+        "2026-09-15 agent.conversation_loop: Turn ended: reason=max_iterations_reached\n",
+        encoding="utf-8",
+    )
+
+    statuses: list[str] = []
+    await _run_hermes_loop(
+        monkeypatch,
+        db=db,
+        bridge_dir=bridge_dir,
+        workspace=workspace,
+        statuses=statuses,
+        stop_after_iterations=6,
+    )
+    assert statuses == ["idle"]
+    assert f._read_state(bridge_dir).abandoned_posted == "max_iterations_reached"

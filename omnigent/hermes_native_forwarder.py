@@ -269,6 +269,7 @@ class _ForwardState:
     launch_epoch_s: float = 0.0
     heartbeat_ms: int = 0
     active_turn_id: str | None = None
+    abandoned_posted: str | None = None
 
 
 def _read_state(bridge_dir: Path) -> _ForwardState:
@@ -294,6 +295,7 @@ def _read_state(bridge_dir: Path) -> _ForwardState:
     launch_epoch_s = data.get("launch_epoch_s")
     heartbeat_ms = data.get("heartbeat_ms")
     active_turn_id = data.get("active_turn_id")
+    abandoned_posted = data.get("abandoned_posted")
     return _ForwardState(
         hermes_session_id=sid if isinstance(sid, str) else None,
         last_id=last_id if isinstance(last_id, int) else 0,
@@ -303,6 +305,9 @@ def _read_state(bridge_dir: Path) -> _ForwardState:
         heartbeat_ms=heartbeat_ms if isinstance(heartbeat_ms, int) else 0,
         active_turn_id=active_turn_id
         if isinstance(active_turn_id, str) and active_turn_id
+        else None,
+        abandoned_posted=abandoned_posted
+        if isinstance(abandoned_posted, str) and abandoned_posted
         else None,
     )
 
@@ -325,6 +330,7 @@ def _write_state(bridge_dir: Path, state: _ForwardState) -> bool:
                     "partial_row_items": state.partial_row_items,
                     "launch_epoch_s": state.launch_epoch_s,
                     "active_turn_id": state.active_turn_id,
+                    "abandoned_posted": state.abandoned_posted,
                     # Stamp the heartbeat at persist time so every poll refreshes
                     # the session claim; a peer treats a claim older than
                     # ``_CLAIM_FRESH_MS`` as a dead session it may take over.
@@ -964,6 +970,61 @@ def _count_completed_turns(
     return completed
 
 
+def abandoned_turn_reason(log_text: str) -> str | None:
+    """Report why the newest turn in *log_text* ended without an answer.
+
+    Scans the agent log text for the turn-end markers Hermes writes and returns
+    the verdict of the NEWEST one: ``None`` for a healthy
+    ``Turn ended: reason=text_response``, the bare word for any other
+    ``Turn ended: reason=<word>``, ``"api_error: <msg>"`` for
+    ``API call failed after <n> retries. <msg>`` (msg trimmed at the first
+    `` | ``), and ``"hermes_exited"`` for ``CLI cleanup calling memory
+    shutdown``. The shutdown marker is logged on every exit — including turns
+    that failed for a concrete reason — so it only wins when no more specific
+    marker is present.
+    """
+    reason = None
+    newest = -1
+    hermes_exited = False
+    for match in re.finditer(r"Turn ended: reason=(\w+)", log_text):
+        if match.start() <= newest:
+            continue
+        newest = match.start()
+        reason = None if match.group(1) == "text_response" else match.group(1)
+    for match in re.finditer(
+        r"API call failed after \d+ retries\. ([^\n|]*)", log_text
+    ):
+        if match.start() <= newest:
+            continue
+        newest = match.start()
+        reason = f"api_error: {match.group(1).strip()}"
+    if "CLI cleanup calling memory shutdown" in log_text:
+        hermes_exited = True
+    if reason is None and newest == -1 and hermes_exited:
+        return "hermes_exited"
+    return reason
+
+
+def read_agent_log_tail(bridge_dir: Path, max_bytes: int = 65536) -> str:
+    """Return the last *max_bytes* of the agent log under *bridge_dir*.
+
+    Reads ``bridge_dir / "hermes_home" / "logs" / "agent.log"`` tail-first and
+    returns ``""`` for a missing or unreadable log. Never raises.
+    """
+    log_path = bridge_dir / "hermes_home" / "logs" / "agent.log"
+    try:
+        with log_path.open("rb") as handle:
+            try:
+                size = handle.seek(0, 2)
+                start = max(0, size - max_bytes)
+                handle.seek(start)
+                return handle.read(max_bytes).decode(errors="replace")
+            except OSError:
+                return ""
+    except OSError:
+        return ""
+
+
 async def _post_external_session_status(
     client: httpx.AsyncClient,
     *,
@@ -1160,6 +1221,12 @@ async def forward_hermes_store_to_session(
     active_turn_id: str | None = (
         persisted.active_turn_id if hermes_session_id is not None else None
     )
+    # The abandonment reason whose parent-wake idle was already posted (or None).
+    # Threading it through every ``_write_state`` keeps the once-only guarantee
+    # across polls and forwarder restarts.
+    abandoned_posted: str | None = (
+        persisted.abandoned_posted if hermes_session_id is not None else None
+    )
     # Track whether we have already PATCHed the external_session_id to the
     # Omnigent server so we do it at most once per forwarder lifetime.
     _external_id_synced = False
@@ -1199,6 +1266,7 @@ async def forward_hermes_store_to_session(
                                 partial_row_items=partial_row_items,
                                 launch_epoch_s=launch_epoch_s,
                                 active_turn_id=active_turn_id,
+                                abandoned_posted=abandoned_posted,
                             ),
                         )
                 # PATCH the external_session_id once so the server
@@ -1332,6 +1400,7 @@ async def forward_hermes_store_to_session(
                                     partial_row_items=partial_row_items,
                                     launch_epoch_s=launch_epoch_s,
                                     active_turn_id=action.turn_id_after,
+                                    abandoned_posted=abandoned_posted,
                                 ),
                             )
                         if not compaction_persisted and await asyncio.to_thread(
@@ -1396,6 +1465,7 @@ async def forward_hermes_store_to_session(
                                             partial_row_items=0,
                                             launch_epoch_s=launch_epoch_s,
                                             active_turn_id=None,
+                                            abandoned_posted=None,
                                         ),
                                     )
                                     continue
@@ -1445,6 +1515,7 @@ async def forward_hermes_store_to_session(
                                 partial_row_items=partial_row_items,
                                 launch_epoch_s=launch_epoch_s,
                                 active_turn_id=active_turn_id,
+                                abandoned_posted=abandoned_posted,
                             ),
                         )
                         # Turn each newly-completed turn into an
@@ -1485,6 +1556,56 @@ async def forward_hermes_store_to_session(
                                 bridge_dir,
                                 completed_turns,
                             )
+                            # A healthy completed turn resolves any earlier
+                            # abandonment, so the next one can still wake the
+                            # parent instead of being deduped against a stale
+                            # reason.
+                            if abandoned_posted is not None:
+                                abandoned_posted = None
+                                _write_state(
+                                    bridge_dir,
+                                    _ForwardState(
+                                        hermes_session_id=hermes_session_id,
+                                        last_id=last_id,
+                                        partial_row_id=partial_row_id,
+                                        partial_row_items=partial_row_items,
+                                        launch_epoch_s=launch_epoch_s,
+                                        active_turn_id=active_turn_id,
+                                        abandoned_posted=None,
+                                    ),
+                                )
+                        else:
+                            # No NEW completed turn. If the log shows the in-flight
+                            # turn was abandoned (an error marker rather than a
+                            # terminal step), wake the parent exactly once for it:
+                            # a stuck turn never lands a terminal row, so the guard
+                            # above would otherwise stay silent forever and the
+                            # orchestrator would hang. The reason is persisted so
+                            # later polls (or a forwarder restart) do not repeat
+                            # the wake; a different reason later still posts.
+                            reason = abandoned_turn_reason(
+                                read_agent_log_tail(bridge_dir)
+                            )
+                            if reason is not None and reason != abandoned_posted:
+                                await _post_external_session_status(
+                                    client,
+                                    session_id=session_id,
+                                    status="idle",
+                                    response_id=closed_turn_id,
+                                )
+                                abandoned_posted = reason
+                                _write_state(
+                                    bridge_dir,
+                                    _ForwardState(
+                                        hermes_session_id=hermes_session_id,
+                                        last_id=last_id,
+                                        partial_row_id=partial_row_id,
+                                        partial_row_items=partial_row_items,
+                                        launch_epoch_s=launch_epoch_s,
+                                        active_turn_id=active_turn_id,
+                                        abandoned_posted=abandoned_posted,
+                                    ),
+                                )
             except asyncio.CancelledError:
                 raise
             except Exception:
