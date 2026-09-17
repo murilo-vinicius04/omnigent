@@ -5471,6 +5471,123 @@ async def test_external_session_usage_cost_is_monotonic(
     assert usage.get("policy_cost_usd") == 0.95
 
 
+async def test_external_session_usage_counts_a_fresh_claude_session_from_zero(
+    client: httpx.AsyncClient,
+    db_uri: str,
+) -> None:
+    """
+    A new Claude session's spend is recorded even below the lifetime peak.
+
+    ``cumulative_cost_usd`` is cumulative per CLAUDE session and restarts at
+    zero on the next one, while the Omnigent conversation carries on. With
+    only the monotonic clamp, a conversation that had spent $143 across
+    earlier sessions recorded NOTHING from a new session until it passed
+    $143 on its own — for a full day the badge froze, the daily rollup got
+    zero deltas, and the Usage page's timeline stayed empty. Tagging the
+    report with ``cost_session_id`` must make the total the SUM of the
+    sessions instead.
+    """
+    agent = await create_test_agent(client)
+    session = await _create_session(client, agent["id"])
+
+    # Earlier sessions, before the forwarder tagged its reports.
+    seed = await client.post(
+        f"/v1/sessions/{session['id']}/events",
+        json={"type": "external_session_usage", "data": {"cumulative_cost_usd": 143.98}},
+    )
+    assert seed.status_code == 202, seed.text
+
+    # A fresh Claude session, reporting its own much smaller total.
+    fresh = await client.post(
+        f"/v1/sessions/{session['id']}/events",
+        json={
+            "type": "external_session_usage",
+            "data": {"cumulative_cost_usd": 53.34, "cost_session_id": "sess-today"},
+        },
+    )
+    assert fresh.status_code == 202, fresh.text
+
+    usage = _read_session_usage(db_uri, session["id"])
+    # The old lifetime total stands, and today's spend is added on top.
+    assert usage.get("total_cost_usd") == pytest.approx(197.32)
+    assert usage.get("cost_last_reported") == {"sess-today": pytest.approx(53.34)}
+
+
+async def test_external_session_usage_sums_sessions_without_double_counting(
+    client: httpx.AsyncClient,
+    db_uri: str,
+) -> None:
+    """
+    Each tagged session contributes its own peak, once.
+
+    Two failure modes to rule out: re-adding a session's whole cumulative
+    total on every poll (which multiplies the bill by the poll count), and
+    letting a later session's smaller total clamp an earlier one away.
+    """
+    agent = await create_test_agent(client)
+    session = await _create_session(client, agent["id"])
+
+    for data in (
+        {"cumulative_cost_usd": 2.00, "cost_session_id": "sess-a"},
+        # Same session polling again, higher: replaces its peak, not added to.
+        {"cumulative_cost_usd": 5.00, "cost_session_id": "sess-a"},
+        # A second session starts over from its own small total.
+        {"cumulative_cost_usd": 0.75, "cost_session_id": "sess-b"},
+    ):
+        resp = await client.post(
+            f"/v1/sessions/{session['id']}/events",
+            json={"type": "external_session_usage", "data": data},
+        )
+        assert resp.status_code == 202, resp.text
+
+    usage = _read_session_usage(db_uri, session["id"])
+    assert usage.get("total_cost_usd") == pytest.approx(5.75)
+    assert usage.get("cost_last_reported") == {
+        "sess-a": pytest.approx(5.00),
+        "sess-b": pytest.approx(0.75),
+    }
+
+
+async def test_external_session_usage_tagged_cost_still_cannot_go_down(
+    client: httpx.AsyncClient,
+    db_uri: str,
+) -> None:
+    """
+    A forged low report can't claw back cost, tagged or not.
+
+    Splitting the total per session must not re-open the budget bypass the
+    monotonic clamp closed: the event is posted with the session owner's own
+    bearer token, so a replayed low report must stay a no-op. Segments are
+    each monotonic and only ever added, so the conversation total can rise
+    but never fall — including when the forged report invents a session id.
+    """
+    agent = await create_test_agent(client)
+    session = await _create_session(client, agent["id"])
+
+    high = await client.post(
+        f"/v1/sessions/{session['id']}/events",
+        json={
+            "type": "external_session_usage",
+            "data": {"cumulative_cost_usd": 9.00, "cost_session_id": "sess-a"},
+        },
+    )
+    assert high.status_code == 202, high.text
+
+    for forged in (
+        {"cumulative_cost_usd": 0.0, "cost_session_id": "sess-a"},
+        {"cumulative_cost_usd": 0.0, "cost_session_id": "invented"},
+        {"cumulative_cost_usd": 0.0},
+    ):
+        resp = await client.post(
+            f"/v1/sessions/{session['id']}/events",
+            json={"type": "external_session_usage", "data": forged},
+        )
+        assert resp.status_code == 202, resp.text
+
+    usage = _read_session_usage(db_uri, session["id"])
+    assert usage.get("total_cost_usd") == pytest.approx(9.00)
+
+
 async def test_external_session_usage_codex_tokens_priced(
     client: httpx.AsyncClient,
     db_uri: str,

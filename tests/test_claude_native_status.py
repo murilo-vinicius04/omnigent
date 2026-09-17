@@ -254,3 +254,30 @@ def test_sync_raw_status_context_normalizes_and_retries(tmp_path: Path) -> None:
     assert new_sig != sig
     written = _json.loads((tmp_path / "context.json").read_text("utf-8"))
     assert written["model"] == "claude-sonnet-4-6"
+
+
+def test_status_record_carries_the_claude_session_id() -> None:
+    """The captured cost is tagged with the session it is cumulative over.
+
+    ``cost.total_cost_usd`` restarts at zero with every new Claude session,
+    so the server can only add sessions up if it is told which one a total
+    belongs to. Both come from this one statusLine payload, so recording
+    them together keeps the pair consistent.
+    """
+    from omnigent.claude_native_status import normalize_status_payload
+
+    record = normalize_status_payload(
+        {
+            "session_id": "d9653808-41bb-4a26-9ff7-df9c320e48b2",
+            "context_window": {"context_window_size": 1_000_000},
+            "cost": {"total_cost_usd": 53.34},
+        }
+    )
+    assert record is not None
+    assert record["session_id"] == "d9653808-41bb-4a26-9ff7-df9c320e48b2"
+    assert record["total_cost_usd"] == 53.34
+
+    # A payload without one stays as it was — nothing to tag with.
+    bare = normalize_status_payload({"context_window": {"context_window_size": 1000}})
+    assert bare is not None
+    assert "session_id" not in bare

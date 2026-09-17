@@ -24,6 +24,7 @@ from fastapi import (
 from fastapi.responses import Response
 from pydantic import ValidationError
 
+from omnigent import usage_history
 from omnigent.cli_invocation import cli_invocation
 from omnigent.db.utils import generate_agent_id, generate_task_id
 from omnigent.debug_logging import debug_event
@@ -1377,6 +1378,20 @@ def _accumulate_session_usage(
         delta["by_model"] = {llm_model: model_delta}
 
     new_current = conversation_store.increment_session_usage(session_id, delta)
+    if llm_model:
+        # Timestamped copy of what was just persisted, for the Usage page's
+        # per-provider history. The DB keeps running totals only; this is the
+        # one record of *when* a turn spent what, and on whose model.
+        usage_history.append_model_call(
+            llm_model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cost_usd=cost_delta if priced else None,
+            session_id=session_id,
+            source="relay",
+        )
     # Per-user daily rollup (policy-gated; this is the per-turn delta).
     _record_daily_cost(conv, cost_delta, conversation_store)
     return _priced_cost_for_display(new_current)
@@ -1411,6 +1426,84 @@ async def _persist_relay_reported_model(
             model=model,
         ).model_dump(exclude_none=True),
     )
+
+
+#: Where the last cumulative cost each reporting scope sent is remembered, in
+#: ``session_usage``, e.g. ``{"a1b2…": 53.34, "c3d4…": 7.10}``. Deltas against
+#: it are what reaches the daily rollup — see :func:`_native_cost_across_sessions`.
+_COST_LAST_REPORTED_KEY = "cost_last_reported"
+
+#: How many scopes to remember before dropping the oldest. A long-lived
+#: conversation launches many harness sessions and the key comes from the
+#: client, so the map must not grow without bound.
+_MAX_COST_SCOPES = 64
+
+
+def _native_cost_across_sessions(
+    current: dict[str, Any],
+    *,
+    cost: float,
+    cost_session_id: str,
+    old_cost: float,
+) -> float:
+    """Return the conversation total, following a per-session cost counter.
+
+    A native harness reports what *its own session* has spent, and that
+    counter restarts at zero whenever a new one begins — a fresh launch,
+    ``/clear``, a ``--resume`` that starts a new process — while the
+    Omnigent conversation carries on across all of them. Clamping the
+    conversation total monotonic therefore stops recording entirely once the
+    lifetime total passes what any single session spends: a conversation
+    holding $143 recorded nothing at all from a new session's first $53, so
+    the badge froze, every daily-rollup delta was zero, and the Usage page's
+    timeline stayed empty until the new session climbed past the old peak.
+
+    So track the last figure each scope reported and add its *growth*. A
+    report below the last one means that scope restarted its counter, and
+    everything it now reports is new spend. Both branches add a
+    non-negative amount, so the conversation total still only ever rises —
+    which is what the clamp was defending (the event is posted with the
+    session owner's own bearer token, so a forged low report must not reset
+    the cost-budget gate or drive the daily delta negative). A forged report
+    can still inflate the total, exactly as it could before.
+
+    Deliberately *not* keyed on the session id alone: a resumed session keeps
+    its id while its cost counter starts over, and keying on the id would
+    then keep only the largest run and silently drop the rest.
+
+    :param current: The session's usage dict, mutated in place with the
+        per-scope map.
+    :param cost: Cumulative cost reported by ``cost_session_id``, e.g.
+        ``53.34``.
+    :param cost_session_id: The reporting scope, e.g. a Claude Code session
+        uuid. Keeps two scopes reporting into one conversation from reading
+        as each other's restarts.
+    :param old_cost: The conversation total before this report.
+    :returns: The new conversation total, never below ``old_cost``.
+    """
+    raw = current.get(_COST_LAST_REPORTED_KEY)
+    reported: dict[str, float] = {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                reported[str(key)] = float(value)
+    previous = reported.get(cost_session_id)
+    if previous is None or cost < previous:
+        # First sight of this scope, or it restarted its counter: everything
+        # it reports now is spend this conversation has not counted yet. On
+        # first sight that includes whatever ran before the forwarder started
+        # tagging — a one-time catch-up, which is the point.
+        delta = cost
+    else:
+        delta = cost - previous
+    reported[cost_session_id] = cost
+    while len(reported) > _MAX_COST_SCOPES:
+        # Oldest first (dicts keep insertion order). A dropped scope that
+        # reports again reads as first sight and re-adds its own total —
+        # bounded over-count, and only for a scope silent this long.
+        del reported[next(iter(reported))]
+    current[_COST_LAST_REPORTED_KEY] = reported
+    return old_cost + max(0.0, delta)
 
 
 def _persist_native_cumulative_usage(
@@ -1455,6 +1548,14 @@ def _persist_native_cumulative_usage(
       than the full input rate. Absent for harnesses that don't report it.
     - ``model`` — LLM model id to price with (e.g. ``"databricks-gpt-5-5"``);
       falls back to the agent spec's model when absent.
+    - ``cost_session_id`` — the harness session ``cumulative_cost_usd`` is
+      cumulative over (claude-native forwards Claude Code's own session
+      uuid). Present, the conversation total follows that scope's growth and
+      treats a drop as the scope restarting its counter, so a fresh
+      session's spend is recorded from its first dollar instead of being
+      clamped away until it passes the conversation's lifetime peak. See
+      :func:`_native_cost_across_sessions`. Absent, the conversation is treated
+      as one reporting scope and the total is clamped monotonic as before.
 
     The ``total_cost_usd`` key is written only on the priced branches
     below (exact billing, or token-priced when the model is in the
@@ -1475,6 +1576,10 @@ def _persist_native_cumulative_usage(
     """
     cost = _coerce_cumulative_field(data, "cumulative_cost_usd", numeric=True)
     policy_cost = _coerce_cumulative_field(data, "policy_cost_usd", numeric=True)
+    # Which harness session ``cumulative_cost_usd`` is cumulative OVER, when the
+    # forwarder says (claude-native does; see _native_cost_across_sessions).
+    raw_cost_session = data.get("cost_session_id")
+    cost_session_id = raw_cost_session.strip() if isinstance(raw_cost_session, str) else ""
     cin = _coerce_cumulative_field(data, "cumulative_input_tokens", numeric=False)
     cout = _coerce_cumulative_field(data, "cumulative_output_tokens", numeric=False)
     ccache = _coerce_cumulative_field(data, "cumulative_cache_read_input_tokens", numeric=False)
@@ -1548,8 +1653,20 @@ def _persist_native_cumulative_usage(
         else None
     )
     if cost is not None:
-        # Monotonic: a reported total below the persisted one is ignored.
-        current["total_cost_usd"] = max(old_cost, float(cost))
+        if cost_session_id:
+            # The reported total is cumulative per harness session and
+            # restarts with each one; follow its growth instead of clamping a
+            # fresh session's smaller total away.
+            current["total_cost_usd"] = _native_cost_across_sessions(
+                current,
+                cost=float(cost),
+                cost_session_id=cost_session_id,
+                old_cost=old_cost,
+            )
+        else:
+            # Untagged harness: the whole conversation is one reporting scope.
+            # Monotonic — a reported total below the persisted one is ignored.
+            current["total_cost_usd"] = max(old_cost, float(cost))
     elif has_tokens:
         if isinstance(model_name, str) and model_name:
             from omnigent.llms.context_window import (
@@ -1581,15 +1698,18 @@ def _persist_native_cumulative_usage(
     # cumulative total, so per-model buckets sum to the flat total across model
     # switches. Clamp >= 0 so a lowered report never claws a bucket back (flat
     # tokens are SET not clamped, so buckets can exceed them then — fail-safe).
+    # This report's growth, also logged to the usage history below.
+    growth: dict[str, int] = {}
+    cost_growth = 0.0
     if isinstance(model_name, str) and model_name:
         bucket = _model_usage_bucket(current, model_name)
         for key in _MODEL_TOKEN_KEYS:
             if key in current:
-                bucket[key] = int(bucket.get(key, 0)) + max(0, int(current[key]) - old_tokens[key])
+                growth[key] = max(0, int(current[key]) - old_tokens[key])
+                bucket[key] = int(bucket.get(key, 0)) + growth[key]
         if "total_cost_usd" in current:
-            bucket["total_cost_usd"] = float(bucket.get("total_cost_usd", 0.0)) + max(
-                0.0, float(current["total_cost_usd"]) - old_cost
-            )
+            cost_growth = max(0.0, float(current["total_cost_usd"]) - old_cost)
+            bucket["total_cost_usd"] = float(bucket.get("total_cost_usd", 0.0)) + cost_growth
 
     # Enforcement value (claude-native display/policy split). Stored
     # separately from the displayed ``total_cost_usd`` so the gate can read
@@ -1603,6 +1723,20 @@ def _persist_native_cumulative_usage(
         current["policy_cost_usd"] = max(old_policy_cost, float(policy_cost))
 
     conversation_store.set_session_usage(session_id, current)
+    if isinstance(model_name, str) and model_name:
+        # Same timestamped history line as the relay path, from this report's
+        # growth rather than a per-response delta. Cost-only polls (claude-native
+        # forwards several a turn) carry no growth and are dropped by the writer.
+        usage_history.append_model_call(
+            model_name,
+            input_tokens=growth.get("input_tokens", 0),
+            output_tokens=growth.get("output_tokens", 0),
+            cache_read_input_tokens=growth.get("cache_read_input_tokens", 0),
+            cache_creation_input_tokens=growth.get("cache_creation_input_tokens", 0),
+            cost_usd=cost_growth or None,
+            session_id=session_id,
+            source="native",
+        )
     # Per-user daily rollup. Native reports cumulative totals, so the turn's
     # delta is the increase in cumulative cost. Uses the authoritative
     # ``total_cost_usd`` (= statusLine S), NOT ``policy_cost_usd`` — the

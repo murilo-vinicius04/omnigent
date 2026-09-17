@@ -1940,6 +1940,16 @@ async def _forward_session_cost(
         model = status_state.get("model")
         if isinstance(model, str) and model:
             payload["model"] = model
+        # Which Claude session that total belongs to. ``S`` is cumulative per
+        # Claude session and restarts at zero on the next one, so without this
+        # the server can only clamp — a conversation that has already spent
+        # $140 across earlier sessions records NOTHING for a fresh session
+        # until it passes $140 on its own. Tagging the total lets the server
+        # follow each session's own growth. Read from the same statusLine
+        # snapshot as the cost, so the pair is always consistent.
+        cost_session = status_state.get("session_id")
+        if isinstance(cost_session, str) and cost_session:
+            payload["cost_session_id"] = cost_session
     try:
         await _post_external_session_usage(
             client,

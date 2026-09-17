@@ -59,6 +59,15 @@ def normalize_status_payload(payload: dict[str, object]) -> dict[str, object] | 
             and total_cost >= 0
         ):
             record["total_cost_usd"] = float(total_cost)
+    # Claude Code's own session uuid, captured alongside the cost it belongs
+    # to. ``total_cost_usd`` is cumulative PER CLAUDE SESSION and restarts at
+    # zero whenever a new one begins (a fresh launch, ``/clear``, a resume
+    # that forks), while one Omnigent conversation outlives many of them.
+    # Recording which session a total came from lets the server follow each
+    # session's own growth instead of clamping the smaller total away.
+    raw_session_id = payload.get("session_id")
+    if isinstance(raw_session_id, str) and raw_session_id.strip():
+        record["session_id"] = raw_session_id.strip()
     # The active model, rewritten on every render — including right after an
     # in-pane ``/model`` switch — so gates see the switch before the next turn.
     model = payload.get("model")

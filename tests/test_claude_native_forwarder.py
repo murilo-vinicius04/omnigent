@@ -6707,6 +6707,63 @@ async def test_forward_session_cost_splits_display_and_policy(
 
 
 @pytest.mark.asyncio
+async def test_forward_session_cost_tags_the_display_cost_with_its_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """
+    A display-cost advance carries the Claude session it is cumulative over.
+
+    ``S`` restarts at zero with each new Claude session while the Omnigent
+    conversation lives on, so without this tag the server can only clamp and
+    a fresh session's spend goes unrecorded until it passes the
+    conversation's lifetime peak. The tag rides only on
+    ``cumulative_cost_usd`` posts — a mid-turn ``policy_cost_usd``-only post
+    carries no new display total to attribute.
+    """
+    bridge_dir = tmp_path / "bridge"
+    bridge_dir.mkdir()
+    parent = tmp_path / "sess.jsonl"
+    parent.write_text("parent", encoding="utf-8")
+
+    state = {"total_cost_usd": 53.34, "session_id": "sess-today", "model": "claude-opus-5"}
+    monkeypatch.setattr(forwarder, "read_claude_context_state", lambda _bridge: state)
+    dedupe = forwarder._ForwardDedupeState()
+
+    posted: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("type") == "external_session_usage":
+            posted.append(body["data"])
+        return httpx.Response(200, json={})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ap") as client:
+
+        async def run() -> None:
+            await forwarder._forward_session_cost(
+                client=client,
+                session_id="conv_parent",
+                bridge_dir=bridge_dir,
+                parent_transcript_path=parent,
+                subagent_state=forwarder.SubagentForwardState(subagents={}),
+                dedupe=dedupe,
+                cost_cache={},
+            )
+
+        await run()
+        assert posted[-1]["cost_session_id"] == "sess-today"
+        assert posted[-1]["cumulative_cost_usd"] == pytest.approx(53.34)
+
+        # A statusLine with no session id posts the cost untagged rather than
+        # failing — the server then falls back to the plain monotonic clamp.
+        state.pop("session_id")
+        state["total_cost_usd"] = 54.00
+        await run()
+        assert "cost_session_id" not in posted[-1]
+
+
+@pytest.mark.asyncio
 async def test_forward_session_cost_posts_status_when_no_subagents(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
