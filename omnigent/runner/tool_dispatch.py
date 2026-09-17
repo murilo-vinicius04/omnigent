@@ -28,6 +28,7 @@ import mimetypes
 import os
 import re
 import tempfile
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -2158,6 +2159,24 @@ async def _execute_subagent_tool(
         return "Error: sys_session_send requires server_client"
     if conversation_id is None:
         return "Error: sys_session_send requires conversation_id"
+
+    # One worker at a time. Two running together burn a provider's short
+    # rolling quota window about twice as fast while the orchestrator waits for
+    # both anyway, so the second dispatch buys nothing and can exhaust the
+    # window mid-task. Refused rather than queued: the orchestrator is awake
+    # here and can decide what the next step should be once the first lands.
+    in_flight = _runner_app.live_subagent_work_for_parent(conversation_id)
+    if in_flight is not None:
+        held_min = max(0.0, (time.time() - in_flight.created_at) / 60)
+        release_min = _runner_app.resolve_subagent_slot_hold_s() / 60
+        return (
+            f"Error: {in_flight.agent!r} is still working on {in_flight.title!r} "
+            f"({in_flight.status}, {held_min:.0f} min so far). Only one worker may "
+            "run at a time, because two share one quota window and drain it twice "
+            "as fast. Wait for the completion notice, read the result, then "
+            f"dispatch this step. If that worker is stuck, the slot frees itself "
+            f"after {release_min:.0f} min; do not retry before then."
+        )
     if session_inbox is not None:
         _runner_app._session_inboxes_ref.setdefault(conversation_id, session_inbox)
     elif conversation_id not in _runner_app._session_inboxes_ref:

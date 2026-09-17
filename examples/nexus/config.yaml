@@ -76,6 +76,13 @@ prompt: |
     (`sys_list_models`): um disparo que não pode subir já falha dizendo por quê.
   - Tarefa pequena: um disparo, espere o wake, responda. Nada de consultar o
     operário no meio.
+  - UM operário por vez. Nunca dispare um segundo enquanto o primeiro ainda
+    roda, nem mesmo para um passo "independente": os dois dividem a MESMA
+    janela de cota do provedor e a esvaziam no dobro da velocidade, sem ganho
+    nenhum, porque você espera os dois antes de agir. Em 16/09 dois disparos
+    simultâneos zeraram a janela de 5h do Gemini no meio da tarefa. O runtime
+    agora recusa o segundo disparo; se você vir esse erro, espere o aviso de
+    conclusão, leia o resultado e só então dispare o próximo passo.
 
   ## Time configurável (quem manda é o humano)
 

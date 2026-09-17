@@ -11316,3 +11316,115 @@ def test_response_failed_event_llm_source_is_preserved() -> None:
     )
     payload = _json.loads(raw.decode().split("data: ", 1)[1])
     assert payload["source"] == "llm"
+
+
+# --- one worker at a time (shared quota window) -----------------------------
+
+
+def test_live_subagent_work_for_parent_reports_only_unfinished_work() -> None:
+    """A parent's in-flight dispatch is visible; a finished one is not."""
+    from omnigent.runner import app as runner_app
+
+    runner_app._subagent_work_by_child.clear()
+    runner_app.register_subagent_work(
+        parent_session_id="conv_parent",
+        child_session_id="conv_child_a",
+        agent="gemini",
+        title="step-a",
+    )
+    assert runner_app.live_subagent_work_for_parent("conv_parent") is not None
+    # Another parent's work never blocks this one.
+    assert runner_app.live_subagent_work_for_parent("conv_other") is None
+
+    runner_app.mark_subagent_work_terminal(
+        child_session_id="conv_child_a", status="completed", output="done"
+    )
+    assert runner_app.live_subagent_work_for_parent("conv_parent") is None
+    runner_app._subagent_work_by_child.clear()
+
+
+@pytest.mark.asyncio
+async def test_second_dispatch_refused_while_a_worker_is_running() -> None:
+    """A concurrent dispatch is refused, and allowed again once the first ends.
+
+    Two workers share one provider quota window and drain it twice as fast,
+    for no gain: the orchestrator waits for both before acting.
+    """
+    from omnigent.runner import app as runner_app
+    from omnigent.runner.tool_dispatch import _execute_subagent_tool
+
+    runner_app._subagent_work_by_child.clear()
+    runner_app.register_subagent_work(
+        parent_session_id="conv_parent",
+        child_session_id="conv_child_a",
+        agent="gemini",
+        title="step-a",
+    )
+
+    spec = SimpleNamespace(sub_agents=[SimpleNamespace(name="gemini")])
+    # A client that would explode if touched: the refusal is a local policy
+    # decision and must cost no server round trip.
+    exploding_client = SimpleNamespace()
+    result = await _execute_subagent_tool(
+        {"agent": "gemini", "title": "step-b", "args": "do the next thing"},
+        server_client=exploding_client,
+        conversation_id="conv_parent",
+        agent_spec=spec,
+    )
+    assert "Only one worker may" in result
+    assert "step-a" in result
+
+    runner_app.mark_subagent_work_terminal(
+        child_session_id="conv_child_a", status="completed", output="done"
+    )
+    after = await _execute_subagent_tool(
+        {"agent": "gemini", "title": "step-b", "args": "do the next thing"},
+        server_client=exploding_client,
+        conversation_id="conv_parent",
+        agent_spec=spec,
+    )
+    # It gets past the quota guard; it stops later, on the real server call.
+    assert "Only one worker may" not in after
+    runner_app._subagent_work_by_child.clear()
+
+
+def test_a_worker_that_overstays_releases_the_dispatch_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stuck worker stops blocking its parent once it has held the slot too long.
+
+    A looping worker keeps emitting ``running`` edges, so it never looks
+    stalled and never reaches a terminal state. Without a release, the
+    orchestrator could not dispatch anything for as long as that worker lived
+    -- which happened on 2026-09-17 and stalled a whole run.
+    """
+    from omnigent.runner import app as runner_app
+
+    runner_app._subagent_work_by_child.clear()
+    entry = runner_app.register_subagent_work(
+        parent_session_id="conv_parent",
+        child_session_id="conv_child_stuck",
+        agent="gemini",
+        title="verify",
+    )
+    budget = runner_app.resolve_subagent_slot_hold_s()
+
+    # Inside the budget it blocks, as it should.
+    assert (
+        runner_app.live_subagent_work_for_parent("conv_parent", now=entry.created_at + budget - 1)
+        is entry
+    )
+    # Past it, the slot is free -- and the entry is left alone, not killed.
+    assert (
+        runner_app.live_subagent_work_for_parent("conv_parent", now=entry.created_at + budget + 1)
+        is None
+    )
+    assert runner_app._subagent_work_by_child["conv_child_stuck"].status != "failed"
+
+    # The budget is operator-tunable; zero or less disables the release.
+    monkeypatch.setenv("OMNIGENT_SUBAGENT_SLOT_HOLD_S", "0")
+    assert (
+        runner_app.live_subagent_work_for_parent("conv_parent", now=entry.created_at + 10 * budget)
+        is entry
+    )
+    runner_app._subagent_work_by_child.clear()

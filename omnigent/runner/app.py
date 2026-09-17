@@ -1773,6 +1773,77 @@ def get_subagent_work(child_session_id: str) -> _SubagentWorkEntry | None:
     return _subagent_work_by_child.get(child_session_id)
 
 
+_SUBAGENT_SLOT_HOLD_S_ENV = "OMNIGENT_SUBAGENT_SLOT_HOLD_S"
+
+#: How long one worker may hold its parent's dispatch slot. Generous on
+#: purpose: a real implementation step has been measured at 22 minutes, and
+#: releasing the slot under a worker that is merely slow would put two on the
+#: same quota window, which is what the slot exists to prevent.
+_DEFAULT_SUBAGENT_SLOT_HOLD_S = 1500.0
+
+
+def resolve_subagent_slot_hold_s() -> float:
+    """Return the slot-hold budget in seconds; ``<= 0`` disables the release.
+
+    :returns: The budget from :data:`_SUBAGENT_SLOT_HOLD_S_ENV`, else
+        :data:`_DEFAULT_SUBAGENT_SLOT_HOLD_S`.
+    """
+    raw = os.environ.get(_SUBAGENT_SLOT_HOLD_S_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_SUBAGENT_SLOT_HOLD_S
+    try:
+        return float(raw)
+    except ValueError:
+        _logger.warning(
+            "%s is not a number (%r); using %.0fs",
+            _SUBAGENT_SLOT_HOLD_S_ENV,
+            raw,
+            _DEFAULT_SUBAGENT_SLOT_HOLD_S,
+        )
+        return _DEFAULT_SUBAGENT_SLOT_HOLD_S
+
+
+def live_subagent_work_for_parent(
+    parent_session_id: str, *, now: float | None = None
+) -> _SubagentWorkEntry | None:
+    """
+    Return this parent's still-running sub-agent dispatch, if it has one.
+
+    Worker quota is a shared, rationed resource: two workers running at once
+    burn a provider's short rolling window roughly twice as fast, for no gain
+    the orchestrator can use, since it waits for both before acting. So a
+    dispatch is refused while an earlier one is still live -- see
+    :func:`omnigent.runner.tool_dispatch._execute_subagent_tool`.
+
+    A worker that never finishes must not take the orchestrator down with it.
+    On 2026-09-17 a worker fell into a tool-call loop, ignored two interrupts,
+    and -- because a looping worker keeps emitting ``running`` edges and so
+    never looks stalled -- held the slot indefinitely; the orchestrator was
+    left unable to dispatch anything at all, which is worse than the
+    double-spend the slot prevents. So the slot is released once a single
+    dispatch has held it past :func:`resolve_subagent_slot_hold_s`. The worker
+    is deliberately NOT killed: it may simply be slow, and letting a rare
+    second dispatch through costs quota, while killing real work costs the
+    work.
+
+    :param parent_session_id: Parent session id, e.g. ``"conv_parent123"``.
+    :param now: Clock override for tests, e.g. ``time.time()``.
+    :returns: The oldest non-terminal entry for this parent that is still
+        within its hold budget, or ``None`` when the parent has nothing in
+        flight (or its in-flight worker has overstayed).
+    """
+    budget = resolve_subagent_slot_hold_s()
+    current = time.time() if now is None else now
+    live = [
+        entry
+        for entry in _subagent_work_by_child.values()
+        if entry.parent_session_id == parent_session_id
+        and entry.status not in _SUBAGENT_TERMINAL_STATUSES
+        and (budget <= 0 or current - entry.created_at < budget)
+    ]
+    return min(live, key=lambda e: e.created_at) if live else None
+
+
 def mark_subagent_work_started(child_session_id: str) -> _SubagentWorkEntry | None:
     """
     Promote a sub-agent dispatch from launch bookkeeping to real execution.
