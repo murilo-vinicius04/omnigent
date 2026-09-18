@@ -277,7 +277,7 @@ describe("liveEngineAdapters", () => {
       expect(onNotice).toHaveBeenCalledWith("Live conversation ended: session cap reached");
     });
 
-    it("reopens a session Google stopped answering, then gives up", async () => {
+    it("tells the reader when Google stops answering, without reopening", async () => {
       const onNotice = vi.fn();
       const onError = vi.fn();
       await geminiEngineAdapter.open("session_stall", {
@@ -286,30 +286,18 @@ describe("liveEngineAdapters", () => {
         onNotice,
         onError,
       });
-      const stalled = {
+      const opens = startGeminiLive.mock.calls.length;
+
+      capturedOpts.onStateChange?.({
         state: "closed",
         kind: "error",
         code: 4000,
         reason: "gemini stopped responding",
-      };
-      const opens = () => startGeminiLive.mock.calls.length;
-      const before = opens();
-
-      capturedOpts.onStateChange?.(stalled);
+      });
       await Promise.resolve();
-      expect(opens()).toBe(before + 1);
-      expect(onNotice).toHaveBeenCalledWith("Gemini went quiet — reconnecting (1/2)");
-      expect(onError).not.toHaveBeenCalled();
 
-      capturedOpts.onStateChange?.(stalled);
-      await Promise.resolve();
-      expect(opens()).toBe(before + 2);
-      expect(onNotice).toHaveBeenCalledWith("Gemini went quiet — reconnecting (2/2)");
-
-      // Third strike: the reader is told rather than reconnected a third time.
-      capturedOpts.onStateChange?.(stalled);
-      await Promise.resolve();
-      expect(opens()).toBe(before + 2);
+      // Reopening would lose everything the model was holding in its head.
+      expect(startGeminiLive.mock.calls.length).toBe(opens);
       expect(onError).toHaveBeenCalledWith(
         "Gemini stopped answering — start the conversation again",
       );

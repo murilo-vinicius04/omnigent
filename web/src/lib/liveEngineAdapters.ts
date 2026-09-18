@@ -12,9 +12,6 @@ export const USD_PER_MINUTE = 0.05;
 /** How much of the reader's own speech a Gemini delegation carries to Claude. */
 const MAX_DELEGATED_CHARS = 4000;
 
-/** Silent-session reopens before the conversation is handed back to the reader. */
-const MAX_RECONNECTS = 2;
-
 export interface LiveEngineCallbacks {
   /** Emitted when a complete utterance is spoken by either the reader or the voice. */
   onUtterance: (utterance: { who: "reader" | "voice"; text: string }) => void;
@@ -176,74 +173,48 @@ export const geminiEngineAdapter: LiveEngineAdapter = {
       }
     };
 
-    // Google's live endpoint goes quiet mid-conversation often enough that
-    // ending the call would be the wrong answer: reopen and keep going. The
-    // reader loses what the model was holding in its head, not the session.
-    let reconnects = 0;
-    let userStopped = false;
-
-    const connect = async (): Promise<void> => {
-      started = await startGeminiLive({
-        sessionId,
-        onEvent: handleEvent,
-        onStateChange: (state) => {
-          if (state.state === "closed") {
-            if (
-              state.reason === "gemini stopped responding" &&
-              !userStopped &&
-              !closed &&
-              reconnects < MAX_RECONNECTS
+    started = await startGeminiLive({
+      sessionId,
+      onEvent: handleEvent,
+      onStateChange: (state) => {
+        if (state.state === "closed") {
+          if (state.kind === "error") {
+            closeSession(
+              state.reason === "gemini stopped responding"
+                ? "Gemini stopped answering — start the conversation again"
+                : state.reason || "the conversation ended early",
+            );
+          } else if (state.kind === "policy" || state.code === 1008) {
+            const reasonLower = (state.reason || "").toLowerCase();
+            let notice: string;
+            if (reasonLower.includes("cap")) {
+              notice = "Live conversation ended: session cap reached";
+            } else if (
+              reasonLower.includes("keepalive") ||
+              reasonLower.includes("idle") ||
+              reasonLower.includes("silent") ||
+              reasonLower.includes("time")
             ) {
-              reconnects += 1;
-              callbacks.onNotice?.(
-                `Gemini went quiet — reconnecting (${reconnects}/${MAX_RECONNECTS})`,
-              );
-              void connect().catch(() => {
-                closeSession("Gemini stopped answering — start the conversation again");
-              });
-              return;
-            }
-            if (state.kind === "error") {
-              closeSession(
-                state.reason === "gemini stopped responding"
-                  ? "Gemini stopped answering — start the conversation again"
-                  : state.reason || "the conversation ended early",
-              );
-            } else if (state.kind === "policy" || state.code === 1008) {
-              const reasonLower = (state.reason || "").toLowerCase();
-              let notice: string;
-              if (reasonLower.includes("cap")) {
-                notice = "Live conversation ended: session cap reached";
-              } else if (
-                reasonLower.includes("keepalive") ||
-                reasonLower.includes("idle") ||
-                reasonLower.includes("silent") ||
-                reasonLower.includes("time")
-              ) {
-                notice = "Live conversation ended: no audio for 60s";
-              } else {
-                notice = state.reason
-                  ? `Live conversation ended: ${state.reason}`
-                  : "Live conversation ended";
-              }
-              callbacks.onNotice?.(notice);
-              closeSession(null);
+              notice = "Live conversation ended: no audio for 60s";
             } else {
-              closeSession(null);
+              notice = state.reason
+                ? `Live conversation ended: ${state.reason}`
+                : "Live conversation ended";
             }
+            callbacks.onNotice?.(notice);
+            closeSession(null);
+          } else {
+            closeSession(null);
           }
-        },
-      });
-    };
-
-    await connect();
+        }
+      },
+    });
 
     const openedAt = Date.now();
 
     return {
       engine: "gemini",
       stop: () => {
-        userStopped = true;
         closeSession(null);
       },
       elapsedS: () => Math.round((Date.now() - openedAt) / 1000),
