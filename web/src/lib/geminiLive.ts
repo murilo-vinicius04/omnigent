@@ -234,7 +234,7 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
   let pingInterval: ReturnType<typeof setInterval> | null = null;
   let stallInterval: ReturnType<typeof setInterval> | null = null;
   let lastSpeechAt = 0;
-  let lastUpstreamAt = 0;
+  let lastAnswerAt = 0;
   // Playback scheduling: model audio chunks are placed end-to-end.
   let nextStartTime = 0;
   let sources: AudioBufferSourceNode[] = [];
@@ -295,6 +295,12 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
   };
 
   const handleEvent = (event: GeminiLiveEvent) => {
+    // Only an answer clears the debt. Google keeps transcribing the reader on a
+    // session that has stopped replying — counting that as life is how a wedged
+    // session looks healthy.
+    if (event.type === "audio" || event.type === "turnComplete" || event.type === "toolCall") {
+      lastAnswerAt = Date.now();
+    }
     if (event.type === "audio" && playbackCtx) {
       const floats = decodePcm16Base64(event.data);
       const buffer = playbackCtx.createBuffer(1, floats.length, PLAYBACK_RATE);
@@ -369,7 +375,6 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
 
     socket.addEventListener("message", (ev: MessageEvent<string | ArrayBuffer>) => {
       receivedAnyMessage = true;
-      lastUpstreamAt = Date.now();
       for (const event of parseServerMessages(ev.data)) handleEvent(event);
     });
 
@@ -423,7 +428,7 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
     // Owed an answer and nothing came back: hang up so the reader is told the
     // session died, instead of waiting on an endpoint that stopped listening.
     stallInterval = setInterval(() => {
-      if (stopped || !lastSpeechAt || lastUpstreamAt > lastSpeechAt) return;
+      if (stopped || !lastSpeechAt || lastAnswerAt > lastSpeechAt) return;
       if (Date.now() - lastSpeechAt < REPLY_STALL_MS) return;
       lastSpeechAt = 0;
       releaseAll();
