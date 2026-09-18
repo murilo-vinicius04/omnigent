@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import { narrateViaLive, type LiveNarration } from "./liveVoice";
+import { narrateViaGeminiLive } from "./geminiNarrator";
+import { getLiveVoiceEngine } from "./liveVoiceEngine";
 import { currentNarrationVolume, isNarrationEnabled } from "./sessionNarrationVolume";
 import { currentVoiceBackend } from "./sessionVoiceBackend";
 import { reportNarration } from "./narrationLog";
@@ -377,12 +379,35 @@ let speakingSessionId: string | null = null;
 /**
  * How long a summary may wait before it is no longer worth hearing. Bounds
  * the case where playback never reports an end and the queue sits for hours.
+ * After a long call, an old summary is noise, and the text is already on screen.
  */
-const QUEUE_MAX_WAIT_MS = 5 * 60_000;
+const QUEUE_MAX_WAIT_MS = 10 * 60_000;
 
 /** Drop everything waiting (the reader stopped playback, or switched off). */
 export function clearSpeechQueue(): void {
   speechQueue.length = 0;
+}
+
+let liveConversationOpen = false;
+let hangUpLiveConversation: (() => void) | null = null;
+
+/**
+ * Register whether a live voice conversation is active.
+ *
+ * While a call is open, spoken summaries wait in speechQueue instead of playing over
+ * or silencing the call. When the call ends, queued summaries are drained and played.
+ */
+export function setConversationSpeaking(open: boolean, hangUp?: (() => void) | null): void {
+  liveConversationOpen = open;
+  hangUpLiveConversation = open ? (hangUp ?? null) : null;
+  if (!open) {
+    playNextQueued(useSpeechPlaybackStore.setState, useSpeechPlaybackStore.getState);
+  }
+}
+
+/** Alias for setConversationSpeaking */
+export function registerLiveConversation(open: boolean, hangUp?: (() => void) | null): void {
+  setConversationSpeaking(open, hangUp);
 }
 
 /**
@@ -397,6 +422,7 @@ export function clearSpeechQueue(): void {
  * left as the only thing that can be speaking.
  *
  * @param el The element about to play, or `null` to silence everything.
+ * @param sessionId Optional session identifier.
  */
 export function claimSpeechChannel(el: HTMLAudioElement | null, sessionId?: string | null): void {
   getSpeechEngine().stop();
@@ -510,7 +536,9 @@ function startLivePlayback(
     playNextQueued(set, get);
   };
 
-  void narrateViaLive(text)
+  const narrate = getLiveVoiceEngine() === "gemini" ? narrateViaGeminiLive : narrateViaLive;
+
+  void narrate(text)
     .then((live) => {
       // Between the handshake starting and finishing, the reader may have
       // stopped playback or moved on. Hang up rather than talk over them.
@@ -543,6 +571,10 @@ function startLivePlayback(
         el.pause();
         el.srcObject = null;
         if (activeAudio === el) activeAudio = null;
+        // Hang up: a spoken-out narration still holds its upstream session,
+        // which counts against the live quota and crowds out conversation
+        // sessions until the server's runaway cap kills it half an hour later.
+        live.stop();
         clear();
       });
     })
@@ -561,10 +593,10 @@ function playNextQueued(
   set: (partial: Partial<SpeechPlaybackStoreState>) => void,
   get: () => SpeechPlaybackStoreState,
 ): void {
-  if (get().isSpeaking) return;
+  if (get().isSpeaking || liveConversationOpen) return;
   let next = speechQueue.shift();
   while (next && next.queuedAt !== undefined && Date.now() - next.queuedAt > QUEUE_MAX_WAIT_MS) {
-    next = speechQueue.shift(); // too late to be worth reading out
+    next = speechQueue.shift(); // after a long call, an old summary is noise, and the text is already on screen
   }
   if (next) startSummaryPlayback(next, set, get);
 }
@@ -605,6 +637,14 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
     if (!audioUrl && !live) return false;
     markMessageSpoken(itemId);
 
+    // A live conversation is open: wait rather than talk over it or silence the call.
+    // The call must never sit silent while billing, and summaries wait until the call ends.
+    if (liveConversationOpen) {
+      speechQueue.push({ itemId, text, lang, audioUrl, sessionId, queuedAt: Date.now() });
+      if (speechQueue.length > QUEUE_MAX) speechQueue.shift();
+      return true;
+    }
+
     // Another conversation is being read: wait rather than talk over it. A
     // newer summary from the same conversation still replaces the one playing
     // -- it supersedes it, and hearing the stale one finish helps nobody.
@@ -620,6 +660,11 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
 
   speakNow: (itemId, text, lang, audioUrl, sessionId) => {
     if (!itemId) return false;
+    // The reader pressing play during a call means they want the summary, not the call.
+    // Hang up the open call first: a silent call that still bills is the thing we are avoiding.
+    if (liveConversationOpen && hangUpLiveConversation) {
+      hangUpLiveConversation();
+    }
     clearSpeechQueue();
     closeActiveLive();
     markMessageSpoken(itemId);
