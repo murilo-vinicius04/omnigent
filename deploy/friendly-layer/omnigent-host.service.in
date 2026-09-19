@@ -1,0 +1,21 @@
+# Omnigent host: owns the runner zygote that forks every session's runner
+# (harnesses, native bridges, readers). It must import the SAME checkout as the
+# server. Run from omnigent-fork it silently ran that tree's code instead, so
+# runner-side fixes made here never executed. Installed by install.sh.
+[Unit]
+Description=Omnigent host (friendly-layer)
+After=omnigent-server.service
+Wants=omnigent-server.service
+
+[Service]
+WorkingDirectory=@CHECKOUT@
+Environment=HOME=@HOME@
+Environment=PATH=@PATH@
+ExecStart=@CHECKOUT@/.venv/bin/omni host --server http://127.0.0.1:6767
+Restart=on-failure
+RestartSec=5
+# Session runners can ignore SIGTERM; don't let a restart hang for 90s.
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target
