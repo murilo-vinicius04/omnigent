@@ -3646,9 +3646,12 @@ function ComposerImpl({
             {commandError}
           </div>
         )}
-        <div className="flex items-center justify-between gap-2 px-2 pb-2">
+        {/* Wraps on a phone: the narration and voice controls do not fit beside
+            the model picker and Send, and a row that cannot wrap pushed Send
+            past the right edge of a portrait screen. */}
+        <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-2 pb-2">
           {/* Attach + mic — left side of the action row */}
-          <div className="flex shrink-0 items-center gap-0.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-0.5">
             <Button
               type="button"
               size="icon"
@@ -3698,7 +3701,7 @@ function ComposerImpl({
               Smart Routing lives inside the gear modal — folded into the Model
               dropdown for Claude, a standalone Switch for other routable
               agents. */}
-          <div className="flex min-w-0 items-center gap-0.5">
+          <div className="ml-auto flex min-w-0 items-center gap-0.5">
             {showCodexPlanMode && (
               <Tooltip>
                 <TooltipTrigger asChild>
