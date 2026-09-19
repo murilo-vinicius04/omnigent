@@ -10,9 +10,16 @@ here="$(cd "$(dirname "$0")" && pwd)"
 units="$HOME/.config/systemd/user"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
+# The units are templates: they carry no machine's paths. Render them for THIS
+# checkout, so a fresh clone installs units that point at itself.
+checkout="$(cd "$here/../.." && pwd)"
 mkdir -p "$units"
-install -m 0644 "$here/omnigent-server.service" "$units/omnigent-server.service"
-install -m 0644 "$here/omnigent-host.service" "$units/omnigent-host.service"
+for template in "$here"/*.service.in; do
+  unit="$(basename "${template%.in}")"
+  sed -e "s#@CHECKOUT@#$checkout#g" -e "s#@HOME@#$HOME#g" -e "s#@PATH@#$PATH#g" \
+      "$template" > "$units/$unit"
+  chmod 0644 "$units/$unit"
+done
 
 # A transient unit of the same name shadows the file; stop it first.
 for unit in omnigent-host.service omnigent-server.service; do

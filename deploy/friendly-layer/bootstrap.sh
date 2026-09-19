@@ -3,16 +3,14 @@
 # bundle the server serves from disk, agent configs pointing at THIS checkout, and
 # the two user services. Idempotent — safe to re-run after a pull.
 #
-#   deploy/friendly-layer/bootstrap.sh [--install-services] [--start]
+#   deploy/friendly-layer/bootstrap.sh [--services]
 set -euo pipefail
 
 CHECKOUT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-UNITS="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-install_services=0; start=0
+services=0
 for arg in "$@"; do
   case "$arg" in
-    --install-services) install_services=1 ;;
-    --start) install_services=1; start=1 ;;
+    --services) services=1 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -41,27 +39,14 @@ else
 fi
 
 say "systemd user units"
-render() {  # <template> -> <unit path>
-  sed -e "s#@CHECKOUT@#$CHECKOUT#g" -e "s#@HOME@#$HOME#g" -e "s#@PATH@#$PATH#g" "$1"
-}
-if [ "$install_services" = 1 ]; then
-  mkdir -p "$UNITS"
-  for t in "$CHECKOUT"/deploy/friendly-layer/*.service.in; do
-    unit="$(basename "${t%.in}")"
-    render "$t" > "$UNITS/$unit"
-    echo "   wrote $UNITS/$unit"
-  done
-  systemctl --user daemon-reload
-  loginctl enable-linger "$USER" >/dev/null 2>&1 || true   # services survive logout
-  if [ "$start" = 1 ]; then
-    systemctl --user enable --now omnigent-server.service omnigent-host.service
-    echo "   started; http://127.0.0.1:6767"
-  else
-    echo "   start with: systemctl --user enable --now omnigent-server omnigent-host"
-  fi
+if [ "$services" = 1 ]; then
+  # One installer, shared with an existing setup: it renders the templates for
+  # this checkout, then enables, restarts and lingers the two units.
+  "$CHECKOUT/deploy/systemd/install.sh"
+  echo "   http://127.0.0.1:6767"
 else
-  echo "   skipped (pass --install-services, or --start to enable them too)"
-  echo "   preview: $CHECKOUT/deploy/friendly-layer/omnigent-server.service.in"
+  echo "   skipped (pass --services to install, enable and start them)"
+  echo "   templates: $CHECKOUT/deploy/systemd/*.service.in"
 fi
 
 cat <<TXT

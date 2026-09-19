@@ -10,14 +10,15 @@ worker, and a benchmark that measures whether that is worth it.
 ```bash
 git clone -b feat/friendly-layer https://github.com/murilo-vinicius04/omnigent.git
 cd omnigent
-deploy/friendly-layer/bootstrap.sh --start     # omit --start to only prepare
+deploy/friendly-layer/bootstrap.sh --services   # omit --services to only prepare
 ```
 
 Needs `uv`, `node`/`npm`, Python 3.12+, and Linux with systemd for the
 services. The script installs dependencies, **builds the web bundle** (the
 server serves `omnigent/server/static/web-ui` from disk, so it must be rebuilt
 after any `web/src` change), rewrites the agent configs to your checkout, and
-renders the two user services. Re-run it after a pull.
+and installs the two user services (`deploy/systemd/install.sh`, which renders
+the unit templates for your checkout). Re-run it after a pull.
 
 Open http://127.0.0.1:6767.
 
