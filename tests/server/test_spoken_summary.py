@@ -3169,3 +3169,48 @@ async def test_relay_turn_end_with_tts_disabled_skips_audio_scheduling() -> None
     assert "audio_pending" not in summary_part
     assert len(spawned_calls) == 0
 
+
+
+@pytest.mark.asyncio
+async def test_dropped_rewrite_logs_why_and_what(monkeypatch, caplog) -> None:
+    """A rewrite discarded as too long is logged with the reason and its text.
+
+    A bare "the rewriter returned nothing" could not tell a blank reply from a
+    discarded one, so a missing summary had no evidence behind it.
+    """
+    from omnigent.server import spoken_summary as module
+
+    runaway = "This rewrite goes on and on well past the reply it summarizes. " * 40
+
+    async def cold(_prompt, *, timeout_s):
+        return runaway
+
+    monkeypatch.setattr(module, "run_agy_prompt", cold)
+    monkeypatch.setattr(module, "use_agy_backend", lambda *_a, **_k: True)
+
+    with caplog.at_level("WARNING", logger=module.__name__):
+        part, _usage = await module.generate_spoken_summary(_LONG_RESPONSE_TEXT, language="en")
+
+    assert part is None
+    dropped = [r.getMessage() for r in caplog.records if "rewrite dropped" in r.getMessage()]
+    assert len(dropped) == 1
+    assert "too long" in dropped[0]
+    assert "goes on and on" in dropped[0]
+
+
+@pytest.mark.asyncio
+async def test_blank_rewrite_logs_blank(monkeypatch, caplog) -> None:
+    """A rewriter that answers with nothing is logged as blank, not as a rejection."""
+    from omnigent.server import spoken_summary as module
+
+    async def cold(_prompt, *, timeout_s):
+        return ""
+
+    monkeypatch.setattr(module, "run_agy_prompt", cold)
+    monkeypatch.setattr(module, "use_agy_backend", lambda *_a, **_k: True)
+
+    with caplog.at_level("WARNING", logger=module.__name__):
+        part, _usage = await module.generate_spoken_summary(_LONG_RESPONSE_TEXT, language="en")
+
+    assert part is None
+    assert any("output was blank" in r.getMessage() for r in caplog.records)

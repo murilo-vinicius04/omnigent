@@ -309,6 +309,56 @@ _LENGTH_GRACE_CHARS = 200
 _LENGTH_GRACE_RATIO = 1.25
 
 
+#: How much of a dropped rewrite the log keeps. Enough to judge it by eye;
+#: a runaway rewrite can be far longer and the head is what shows why.
+_REJECTED_LOG_CHARS = 2000
+
+
+def _rejection_reason(raw: str, shown: str, input_text: str | None) -> str:
+    """Name which check turned a rewrite into no summary.
+
+    Mirrors :func:`clamp_sentences` and :func:`parse_show_selection` so the
+    log says why, instead of a bare "returned nothing" that cannot tell a
+    blank reply from a discarded one.
+
+    :param raw: The rewriter's output before any cleanup.
+    :param shown: That output after the ``SHOW:`` line was stripped.
+    :param input_text: The reply that was being summarized.
+    :returns: A short reason for the log.
+    """
+    if not raw.strip():
+        return "the rewriter output was blank"
+    cleaned = shown.strip().strip("\"'")
+    if not cleaned:
+        return "only a SHOW line, no prose"
+    if "```" in cleaned:
+        return "contained a code fence"
+    if input_text is not None:
+        allowance = len(input_text.strip())
+        limit = max(allowance + _LENGTH_GRACE_CHARS, allowance * _LENGTH_GRACE_RATIO)
+        if len(cleaned) > limit:
+            return (
+                f"too long: {len(cleaned)} chars, limit {int(limit)} for a {allowance}-char reply"
+            )
+    return "clamping left nothing"
+
+
+def _log_rejected_rewrite(raw: str, shown: str, input_text: str | None, *, backend: str) -> None:
+    """Log a rewrite that produced no summary, with the text that was dropped.
+
+    :param raw: The rewriter's output before any cleanup.
+    :param shown: That output after the ``SHOW:`` line was stripped.
+    :param input_text: The reply that was being summarized.
+    :param backend: Which rewriter wrote it, for the log.
+    """
+    _logger.warning(
+        "spoken summary rewrite dropped (%s): %s; rewrite=%r",
+        backend,
+        _rejection_reason(raw, shown, input_text),
+        raw[:_REJECTED_LOG_CHARS],
+    )
+
+
 def clamp_sentences(
     text: str,
     max_sentences: int = 3,
@@ -1134,15 +1184,19 @@ async def generate_spoken_summary(
                 session_id=session_id,
             )
             if not raw:
+                _logger.warning(
+                    "spoken summary rewrite dropped (agy): the rewriter output was blank"
+                )
                 return None, None
-            raw, chosen = parse_show_selection(raw, candidates)
+            shown, chosen = parse_show_selection(raw, candidates)
             summary_text = clamp_sentences(
-                raw,
+                shown,
                 max_sentences=REWRITE_MAX_SENTENCES,
                 max_chars=REWRITE_MAX_CHARS,
                 input_text=text,
             )
             if not summary_text:
+                _log_rejected_rewrite(raw, shown, text, backend="agy")
                 return None, None
             lang_tag = (
                 language
@@ -1200,9 +1254,10 @@ async def generate_spoken_summary(
             raw_summary = getattr(resp, "text", "") or ""
 
         # Post-clean summary: clamp sentences and characters, check implausible output
-        raw_summary, chosen = parse_show_selection(raw_summary, candidates)
-        summary_text = clamp_sentences(raw_summary, max_sentences=3, input_text=text)
+        shown, chosen = parse_show_selection(raw_summary, candidates)
+        summary_text = clamp_sentences(shown, max_sentences=3, input_text=text)
         if not summary_text:
+            _log_rejected_rewrite(raw_summary, shown, text, backend=model)
             return None, None
 
         # Determine language tag
