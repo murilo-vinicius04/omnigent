@@ -167,6 +167,13 @@
             "format": "int64",
             "title": "Version",
             "type": "integer"
+          },
+          "worker_choices": {
+            "items": {
+              "$ref": "#/components/schemas/WorkerChoiceSummary"
+            },
+            "title": "Worker Choices",
+            "type": "array"
           }
         },
         "required": [
@@ -175,6 +182,55 @@
           "created_at"
         ],
         "title": "AgentObject",
+        "type": "object"
+      },
+      "AskRequest": {
+        "description": "A question for the companion.",
+        "properties": {
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "timeout_s": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "format": "double",
+                "maximum": 120.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout S"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "AskRequest",
+        "type": "object"
+      },
+      "AskResponse": {
+        "description": "The answer, plus the ledger it was produced from.",
+        "properties": {
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "state": {
+            "additionalProperties": true,
+            "title": "State",
+            "type": "object"
+          }
+        },
+        "required": [
+          "answer",
+          "state"
+        ],
+        "title": "AskResponse",
         "type": "object"
       },
       "AutomaticSessionRenameRequest": {
@@ -2858,6 +2914,115 @@
         "title": "LaunchRunnerRequest",
         "type": "object"
       },
+      "LiveOfferRequest": {
+        "description": "A browser's SDP offer plus optional session overrides.",
+        "properties": {
+          "instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instructions"
+          },
+          "mode": {
+            "default": "converse",
+            "enum": [
+              "narrate",
+              "converse"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "sdp": {
+            "minLength": 1,
+            "title": "Sdp",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voice"
+          }
+        },
+        "required": [
+          "sdp"
+        ],
+        "title": "LiveOfferRequest",
+        "type": "object"
+      },
+      "LiveOfferResponse": {
+        "description": "The SDP answer and the id of the session it belongs to.",
+        "properties": {
+          "sdp": {
+            "title": "Sdp",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "speak": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speak"
+          }
+        },
+        "required": [
+          "session_id",
+          "sdp"
+        ],
+        "title": "LiveOfferResponse",
+        "type": "object"
+      },
       "LocalImportRequest": {
         "description": "Request to import local harness sessions from a host.\n\nUnlike `/imports` (the CLI posts already-normalized items), the server\nasks the chosen host to read + normalize its own transcripts over the\ntunnel \u2014 the transcripts live on the caller's machine, not the server. A\nsupplied `session_id` loads that exact session without enumerating local\nhistory.",
         "properties": {
@@ -3137,6 +3302,19 @@
             "description": "Cumulative tokens read from the prompt cache, e.g. `8000`. `None` when not recorded.",
             "title": "Cache Read Input Tokens"
           },
+          "calls": {
+            "anyOf": [
+              {
+                "format": "int64",
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Number of requests made to this model, e.g. `12`. Recorded for backends that report no tokens or price at all -- a CLI billing its own account -- so the model still shows what it did rather than being absent from the breakdown entirely. `None` when not recorded.",
+            "title": "Calls"
+          },
           "input_tokens": {
             "anyOf": [
               {
@@ -3191,6 +3369,65 @@
           }
         },
         "title": "ModelUsage",
+        "type": "object"
+      },
+      "NarrationDecision": {
+        "description": "One autoplay decision the page made, for the server log.\n\nWhether a summary is read aloud is decided entirely in the browser, so\nwithout this the log can say a summary landed but never why it stayed\nsilent.",
+        "properties": {
+          "decision": {
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Decision",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "item_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Id"
+          },
+          "path": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          }
+        },
+        "required": [
+          "path",
+          "decision"
+        ],
+        "title": "NarrationDecision",
         "type": "object"
       },
       "NativeModelOption": {
@@ -3299,6 +3536,33 @@
           "item"
         ],
         "title": "NativeToolData",
+        "type": "object"
+      },
+      "NoteRequest": {
+        "description": "Something the companion should know, recorded without asking it.",
+        "properties": {
+          "kind": {
+            "default": "activity",
+            "enum": [
+              "activity",
+              "summary",
+              "question",
+              "answer",
+              "note"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "NoteRequest",
         "type": "object"
       },
       "OutputFileDoneEvent": {
@@ -3550,6 +3814,86 @@
         "title": "PermissionObject",
         "type": "object"
       },
+      "PlanLimitHistory": {
+        "description": "One provider's plan-window history.",
+        "properties": {
+          "label": {
+            "description": "Vendor display name.",
+            "title": "Label",
+            "type": "string"
+          },
+          "provider": {
+            "description": "Plan-limit provider id as the tray reports it (Gemini's row is `\"antigravity\"`, the client the quota is read from).",
+            "title": "Provider",
+            "type": "string"
+          },
+          "windows": {
+            "description": "One series per window the provider exposes.",
+            "items": {
+              "$ref": "#/components/schemas/PlanLimitWindowSeries"
+            },
+            "title": "Windows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "provider",
+          "label"
+        ],
+        "title": "PlanLimitHistory",
+        "type": "object"
+      },
+      "PlanLimitPoint": {
+        "description": "One plan-window reading.",
+        "properties": {
+          "at": {
+            "description": "ISO-8601 UTC instant the tray recorded the reading.",
+            "title": "At",
+            "type": "string"
+          },
+          "percent": {
+            "default": 0,
+            "description": "Share of the window consumed, 0-100.",
+            "format": "int64",
+            "title": "Percent",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "at"
+        ],
+        "title": "PlanLimitPoint",
+        "type": "object"
+      },
+      "PlanLimitWindowSeries": {
+        "description": "One plan window's utilization over time.",
+        "properties": {
+          "kind": {
+            "description": "Stable window id, e.g. `\"session\"` / `\"gemini-5h\"`.",
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "description": "Short human label, e.g. `\"5h\"`.",
+            "title": "Label",
+            "type": "string"
+          },
+          "points": {
+            "description": "Readings, oldest first, thinned for plotting. The newest reading is always kept so the curve ends where the tray's pill sits.",
+            "items": {
+              "$ref": "#/components/schemas/PlanLimitPoint"
+            },
+            "title": "Points",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "label"
+        ],
+        "title": "PlanLimitWindowSeries",
+        "type": "object"
+      },
       "PolicyDeniedEvent": {
         "description": "Signal that a policy DENY was enforced on a native harness turn.\n\nA native harness (Claude Code, Codex, ...) routes each tool call and\nprompt through Omnigent's policy engine via the vendor command-hook\n(`POST /v1/sessions/{id}/policies/evaluate`). The DENY verdict is\nreturned synchronously to that hook, so unlike the SDK/wrap path there is\nno stream-visible signal that a native action was blocked \u2014 only the\n*effect* (the blocked tool never runs). This event surfaces the decision\nitself on the session stream so observers (the web UI, the capability\nbench) can see a native DENY as a positive signal rather than infer it\nfrom an absence.\n\nFire-and-forget and observational: it does not gate the turn (the hook\nresponse already did that) and carries no correlation id.",
         "properties": {
@@ -3664,6 +4008,181 @@
           "joined_at"
         ],
         "title": "PresenceViewer",
+        "type": "object"
+      },
+      "ProviderTokenDay": {
+        "description": "One UTC day of one provider's token usage.",
+        "properties": {
+          "cached_tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Cached Tokens",
+            "type": "integer"
+          },
+          "calls": {
+            "default": 0,
+            "format": "int64",
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "default": 0.0,
+            "format": "double",
+            "title": "Cost Usd",
+            "type": "number"
+          },
+          "day": {
+            "description": "UTC calendar day as `\"YYYY-MM-DD\"`.",
+            "title": "Day",
+            "type": "string"
+          },
+          "input_tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "day"
+        ],
+        "title": "ProviderTokenDay",
+        "type": "object"
+      },
+      "ProviderTokenModel": {
+        "description": "One model's share of a provider's token usage.",
+        "properties": {
+          "cached_tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Cached Tokens",
+            "type": "integer"
+          },
+          "calls": {
+            "default": 0,
+            "format": "int64",
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "default": 0.0,
+            "format": "double",
+            "title": "Cost Usd",
+            "type": "number"
+          },
+          "input_tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "model": {
+            "description": "Raw harness model id, e.g. `\"claude-opus-5\"`.",
+            "title": "Model",
+            "type": "string"
+          },
+          "output_tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "title": "ProviderTokenModel",
+        "type": "object"
+      },
+      "ProviderTokenUsage": {
+        "description": "One vendor's recorded token usage over the requested window.",
+        "properties": {
+          "cached_tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Cached Tokens",
+            "type": "integer"
+          },
+          "calls": {
+            "default": 0,
+            "format": "int64",
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "default": 0.0,
+            "format": "double",
+            "title": "Cost Usd",
+            "type": "number"
+          },
+          "days": {
+            "description": "Per-day series, oldest first. Days with nothing recorded are omitted rather than zero-filled.",
+            "items": {
+              "$ref": "#/components/schemas/ProviderTokenDay"
+            },
+            "title": "Days",
+            "type": "array"
+          },
+          "id": {
+            "description": "Provider family, e.g. `\"claude\"` / `\"gemini\"` / `\"openai\"` / `\"grok\"`.",
+            "title": "Id",
+            "type": "string"
+          },
+          "input_tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "label": {
+            "description": "Display name for the family.",
+            "title": "Label",
+            "type": "string"
+          },
+          "models": {
+            "description": "Per-model breakdown, largest first.",
+            "items": {
+              "$ref": "#/components/schemas/ProviderTokenModel"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "output_tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "title": "ProviderTokenUsage",
         "type": "object"
       },
       "QueuedEvent": {
@@ -4226,6 +4745,57 @@
         "title": "RetryEvent",
         "type": "object"
       },
+      "RouteRequest": {
+        "description": "Something the reader said aloud, for the companion to decide about.",
+        "properties": {
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "RouteRequest",
+        "type": "object"
+      },
+      "RouteResponse": {
+        "description": "What to do with what they said.\n\n`forward` is the whole point: the reader spoke, and this says whether\nClaude has to see it. When the companion cannot decide, the\nconversation keeps it.",
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer"
+          },
+          "english": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "English"
+          },
+          "forward": {
+            "title": "Forward",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "forward"
+        ],
+        "title": "RouteResponse",
+        "type": "object"
+      },
       "RoutingDecisionData": {
         "description": "Data payload for an intelligent model-router decision item.\n\nEmitted by the server-side smart routing path at the START of an\nadvised turn and persisted\nas a display-only transcript item so the model the router chose shows\nin the conversation flow the moment the turn begins. Listed in\n`NON_CONTENT_ITEM_TYPES` so the agent loop's history filter\nskips it \u2014 the brain never sees (or answers) its own router note. The\nrunner's harness-input builder also drops every non\nmessage/function_call type, a second guarantee it stays out of the\nmodel's context.",
         "properties": {
@@ -4416,6 +4986,11 @@
           },
           "dictation_available": {
             "title": "Dictation Available",
+            "type": "boolean"
+          },
+          "dictation_prefer_server": {
+            "default": false,
+            "title": "Dictation Prefer Server",
             "type": "boolean"
           },
           "enabled_connections": {
@@ -7756,6 +8331,106 @@
         "title": "TerminalCommandData",
         "type": "object"
       },
+      "TokenCounts": {
+        "description": "Token and cost counters shared by every row of the token report.\n\n`tokens` is the whole turn \u2014 non-cached input, output, and cache\nreads/writes \u2014 because that is the number a provider's own meter counts.\n`cost_usd` is only what was priced, so it can lag the tokens on a\nsession running an unpriced model.",
+        "properties": {
+          "cached_tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Cached Tokens",
+            "type": "integer"
+          },
+          "calls": {
+            "default": 0,
+            "format": "int64",
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "default": 0.0,
+            "format": "double",
+            "title": "Cost Usd",
+            "type": "number"
+          },
+          "input_tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "title": "TokenCounts",
+        "type": "object"
+      },
+      "TokenUsageReport": {
+        "description": "Per-provider token usage over time, for `GET /v1/usage/tokens`.\n\nSourced from the append-only usage-history log, NOT from the database:\nthe log is the only record with a timestamp per call, which is what makes\na history possible. It is best-effort and rotated once it grows past a few\nmegabytes, so this report covers \"as far back as the log still goes\" and\nis not guaranteed to tie out to the authoritative per-session costs in\n`UsageReport`.",
+        "properties": {
+          "limits": {
+            "description": "Plan-window utilization curves, one row per provider.",
+            "items": {
+              "$ref": "#/components/schemas/PlanLimitHistory"
+            },
+            "title": "Limits",
+            "type": "array"
+          },
+          "object": {
+            "const": "token_usage_report",
+            "default": "token_usage_report",
+            "title": "Object",
+            "type": "string"
+          },
+          "providers": {
+            "description": "One row per vendor with recorded tokens, in vendor order.",
+            "items": {
+              "$ref": "#/components/schemas/ProviderTokenUsage"
+            },
+            "title": "Providers",
+            "type": "array"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Inclusive lower bound (UTC `\"YYYY-MM-DD\"`), when requested.",
+            "title": "Since"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/TokenCounts",
+            "description": "Sum across every provider row."
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Inclusive upper bound (UTC `\"YYYY-MM-DD\"`), when requested.",
+            "title": "Until"
+          }
+        },
+        "title": "TokenUsageReport",
+        "type": "object"
+      },
       "ToolOutputDeltaEvent": {
         "description": "Incremental output from an in-progress function call.",
         "properties": {
@@ -8583,6 +9258,79 @@
         ],
         "title": "ValidationError",
         "type": "object"
+      },
+      "WorkerChoiceSummary": {
+        "description": "One worker a person can pick for an orchestrator that delegates to one.",
+        "properties": {
+          "default_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The effort the worker runs when none is picked.",
+            "title": "Default Effort"
+          },
+          "default_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The model the worker runs when none is picked.",
+            "title": "Default Model"
+          },
+          "efforts": {
+            "description": "Reasoning efforts to offer; empty hides the effort control.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Efforts",
+            "type": "array"
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The harness that sub-agent declares, e.g. `\"codex\"`.",
+            "title": "Harness"
+          },
+          "label": {
+            "description": "What the Worker control shows, e.g. `\"Codex\"`.",
+            "title": "Label",
+            "type": "string"
+          },
+          "models": {
+            "description": "Models to offer when the host cannot list that harness's catalog; empty means ask the host.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "name": {
+            "description": "Declared sub-agent name, e.g. `\"codex\"`.",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "label"
+        ],
+        "title": "WorkerChoiceSummary",
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -8883,6 +9631,355 @@
           }
         },
         "summary": "Branding Logo"
+      }
+    },
+    "/v1/discussion/{session_id}": {
+      "get": {
+        "description": "Return what the companion for this session knows.",
+        "operationId": "discussion_state_v1_discussion__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Discussion State V1 Discussion  Session Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Discussion State",
+        "tags": [
+          "discussion"
+        ]
+      }
+    },
+    "/v1/discussion/{session_id}/ask": {
+      "post": {
+        "description": "Ask the companion one question and wait for the answer.",
+        "operationId": "discussion_ask_v1_discussion__session_id__ask_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Discussion Ask",
+        "tags": [
+          "discussion"
+        ]
+      }
+    },
+    "/v1/discussion/{session_id}/close": {
+      "post": {
+        "description": "Stop the process. The ledger survives and replays on the next ask.",
+        "operationId": "discussion_close_v1_discussion__session_id__close_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Discussion Close V1 Discussion  Session Id  Close Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Discussion Close",
+        "tags": [
+          "discussion"
+        ]
+      }
+    },
+    "/v1/discussion/{session_id}/delegate": {
+      "post": {
+        "description": "Answer what the live voice delegated, or say Claude is needed.\n\nGPT-Live raises a client delegation when it cannot answer; the\nbrowser rebuilds what was asked from the transcript and posts it\nhere. The session's language setting governs the wording sent to\nClaude, as for a typed message. Never fails the caller: anything\nthat goes wrong forwards, since the voice has already said it\ncannot answer.",
+        "operationId": "discussion_delegate_v1_discussion__session_id__delegate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Discussion Delegate",
+        "tags": [
+          "discussion"
+        ]
+      }
+    },
+    "/v1/discussion/{session_id}/note": {
+      "post": {
+        "description": "Record context without spending a turn on it.",
+        "operationId": "discussion_note_v1_discussion__session_id__note_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Discussion Note V1 Discussion  Session Id  Note Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Discussion Note",
+        "tags": [
+          "discussion"
+        ]
+      }
+    },
+    "/v1/discussion/{session_id}/prewarm": {
+      "post": {
+        "description": "Start the process now so the first question is a warm one.",
+        "operationId": "discussion_prewarm_v1_discussion__session_id__prewarm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Discussion Prewarm V1 Discussion  Session Id  Prewarm Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Discussion Prewarm",
+        "tags": [
+          "discussion"
+        ]
+      }
+    },
+    "/v1/discussion/{session_id}/route": {
+      "post": {
+        "description": "Decide whether something said aloud is work for Claude.\n\nThe spoken counterpart of what already happens when the reader\npresses enter, and deliberately the same code path: the session's\nlanguage setting decides what may happen to their words, and only\nthe routing decision is unconditional.\n\nNever fails the caller. Unlike a typed message, a companion that\ncannot decide keeps what was said: the voice is already answering\nit, and forwarding every failure sent small talk to Claude.",
+        "operationId": "discussion_route_v1_discussion__session_id__route_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Discussion Route",
+        "tags": [
+          "discussion"
+        ]
       }
     },
     "/v1/extensions": {
@@ -9951,6 +11048,94 @@
         ]
       }
     },
+    "/v1/live/gemini/availability": {
+      "get": {
+        "description": "Report whether Gemini live voice is configured, for UI choice.\n\nRead-only: returns only the boolean and the model name. The API\nkey never appears in the body, headers, or logs.",
+        "operationId": "gemini_live_availability_v1_live_gemini_availability_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Gemini Live Availability V1 Live Gemini Availability Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Gemini Live Availability",
+        "tags": [
+          "live-voice"
+        ]
+      }
+    },
+    "/v1/live/offer": {
+      "post": {
+        "description": "Broker one WebRTC handshake with OpenAI's live endpoint.",
+        "operationId": "live_offer_v1_live_offer_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LiveOfferRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveOfferResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Live Offer",
+        "tags": [
+          "live-voice"
+        ]
+      }
+    },
+    "/v1/live/test": {
+      "get": {
+        "description": "Serve the standalone live-voice probe page.",
+        "operationId": "live_test_v1_live_test_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Live Test",
+        "tags": [
+          "live-voice"
+        ]
+      }
+    },
     "/v1/me": {
       "get": {
         "description": "Return the current user's identity.\n\nReads the user from the auth provider (same logic that\nsession routes use). The frontend calls this on load to\ndiscover who it is.\n\nAlso returns `is_admin` \u2014 the mode-agnostic admin signal\n(the shared `users.is_admin` column, set by the admin-list\npromotion at login). The SPA gates admin chrome on it in\nEVERY mode, including OIDC/SSO where the accounts-only\n`/auth/me` endpoint does not exist.\n\nWhen OIDC is active and the user is unauthenticated,\nreturns 401 with a `login_url` so the frontend knows\nwhere to redirect.\n\n**Returns:** `{\"user_id\": \"alice@example.com\", \"is_admin\": true}`, `{\"user_id\": null, \"is_admin\": false}` if unauthenticated in header mode, or 401 with `login_url` in OIDC mode.",
@@ -9968,6 +11153,75 @@
         "summary": "Me",
         "tags": [
           "system"
+        ]
+      }
+    },
+    "/v1/narration/decision": {
+      "post": {
+        "description": "Write one autoplay decision from the page to the server log.",
+        "operationId": "narration_decision_v1_narration_decision_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NarrationDecision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Narration Decision V1 Narration Decision Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Narration Decision",
+        "tags": [
+          "live-voice"
+        ]
+      }
+    },
+    "/v1/plan-limits": {
+      "get": {
+        "operationId": "read_plan_limits_v1_plan_limits_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read Plan Limits V1 Plan Limits Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Plan Limits",
+        "tags": [
+          "plan-limits"
         ]
       }
     },
@@ -14694,6 +15948,90 @@
           }
         },
         "summary": "Get Usage",
+        "tags": [
+          "usage"
+        ]
+      }
+    },
+    "/v1/usage/tokens": {
+      "get": {
+        "description": "Per-provider token usage and plan-window history for the host.\n\nHost-scoped, not user-scoped: the usage log records what this machine's\nproviders spent, with no per-user attribution to filter on (unlike the\ndatabase-backed `GET /v1/usage`). It is still behind `require_user`\nso an unauthenticated caller in multi-user mode cannot read it.\n\nMalformed `since` / `until` values are ignored rather than\nrejected \u2014 a bad bound would otherwise blank a decorative chart with a\n422.",
+        "operationId": "get_token_usage_v1_usage_tokens_get",
+        "parameters": [
+          {
+            "description": "Inclusive UTC lower bound, YYYY-MM-DD.",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive UTC lower bound, YYYY-MM-DD.",
+              "title": "Since"
+            }
+          },
+          {
+            "description": "Inclusive UTC upper bound, YYYY-MM-DD.",
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive UTC upper bound, YYYY-MM-DD.",
+              "title": "Until"
+            }
+          },
+          {
+            "description": "Cap on plan-limit readings returned per window.",
+            "in": "query",
+            "name": "max_points",
+            "required": false,
+            "schema": {
+              "default": 240,
+              "description": "Cap on plan-limit readings returned per window.",
+              "maximum": 2000,
+              "minimum": 0,
+              "title": "Max Points",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenUsageReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Token Usage",
         "tags": [
           "usage"
         ]
