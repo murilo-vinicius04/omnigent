@@ -91,6 +91,7 @@ from omnigent.server.routes.dictation import create_dictation_router
 from omnigent.server.routes.discussion import create_discussion_router
 from omnigent.server.routes.extension_assets import create_extension_assets_router
 from omnigent.server.routes.extensions import create_extensions_router
+from omnigent.server.routes.gemini_live import create_gemini_live_router
 from omnigent.server.routes.harnesses import create_harnesses_router
 from omnigent.server.routes.imports import create_imports_router
 from omnigent.server.routes.live_voice import create_live_voice_router
@@ -2690,6 +2691,13 @@ def create_app(
     # servers register it anyway; the routes report 503 rather than 404.
     app.include_router(
         create_live_voice_router(auth_provider=auth_provider),
+        prefix="/v1",
+        tags=["live-voice"],
+    )
+    # Gemini Live sits beside the OpenAI live voice: same keyless browser,
+    # but a WebSocket the server proxies, not a WebRTC handshake.
+    app.include_router(
+        create_gemini_live_router(auth_provider=auth_provider),
         prefix="/v1",
         tags=["live-voice"],
     )

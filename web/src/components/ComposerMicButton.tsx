@@ -293,6 +293,7 @@ export const ComposerMicButton = ({
   const conversationSessionId = useLiveConversationStore((s) => s.sessionId);
   const conversationConnecting = useLiveConversationStore((s) => s.connecting);
   const conversationError = useLiveConversationStore((s) => s.error);
+  const conversationNotice = useLiveConversationStore((s) => s.notice);
   const inConversation = Boolean(conversationSessionId) || conversationConnecting;
   const liveVoiceChosen = currentVoiceBackend(liveSessionId) === "live";
   const active = isListening || inConversation;
@@ -541,6 +542,7 @@ export const ComposerMicButton = ({
   const tooltip =
     error ??
     conversationError ??
+    conversationNotice ??
     (inConversation
       ? "Talking live — billed about $0.05 a minute. Click to hang up."
       : liveVoiceChosen

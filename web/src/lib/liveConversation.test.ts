@@ -7,7 +7,12 @@ vi.mock("./liveVoice", () => ({
   narrateViaLive: vi.fn(),
   LiveVoiceUnavailable: class extends Error {},
 }));
-vi.mock("./speechPlayback", () => ({ claimSpeechChannel: vi.fn() }));
+const setConversationSpeaking = vi.fn();
+const claimSpeechChannel = vi.fn();
+vi.mock("./speechPlayback", () => ({
+  claimSpeechChannel: (...args: unknown[]) => claimSpeechChannel(...args),
+  setConversationSpeaking: (...args: unknown[]) => setConversationSpeaking(...args),
+}));
 const noteCompanion = vi.fn(async (_sessionId: string, _kind: string, _text: string) => {});
 const delegateSpoken = vi.fn(async (_sessionId: string, _text: string) => ({
   forward: false,
@@ -91,6 +96,17 @@ describe("the open spoken conversation", () => {
     await useLiveConversationStore.getState().start("conv_a");
     await useLiveConversationStore.getState().start("conv_b");
     expect(openLiveConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it("registers conversation speaking on start and unregisters on stop", async () => {
+    const live = fakeConversation();
+    openLiveConversation.mockResolvedValue(live);
+    await useLiveConversationStore.getState().start("conv_a");
+    expect(setConversationSpeaking).toHaveBeenCalledWith(true, expect.any(Function));
+    expect(claimSpeechChannel).toHaveBeenCalledWith(expect.anything(), "conv_a");
+
+    useLiveConversationStore.getState().stop();
+    expect(setConversationSpeaking).toHaveBeenCalledWith(false);
   });
 
   it("hangs up on stop, so the meter stops with it", async () => {
@@ -301,5 +317,27 @@ describe("answering what the voice delegates", () => {
     });
     await settleCallbacks();
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends not-ready tool response on delegation timeout (15s) and does NOT send to Claude", async () => {
+    vi.useFakeTimers();
+    try {
+      delegateSpoken.mockImplementation(
+        () => new Promise(() => {}),
+      );
+      const { live, delegate } = await open();
+      delegate("item_d_timeout", "what is the status of the deployment");
+
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      expect(live.commentary).toHaveBeenCalledWith(
+        "item_d_timeout",
+        expect.stringContaining("answer is not ready yet"),
+      );
+      expect(send).not.toHaveBeenCalled();
+      expect(live.stop).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

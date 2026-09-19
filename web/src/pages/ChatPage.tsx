@@ -173,6 +173,7 @@ import {
   type WorkspaceFile,
 } from "@/hooks/useWorkspaceChangedFiles";
 import { ComposerMicButton } from "@/components/ComposerMicButton";
+import { LiveVoiceEnginePicker } from "@/components/LiveVoiceEnginePicker";
 import { ComposerNarrateButton } from "@/components/ComposerNarrateButton";
 import { ComposerSummaryLanguageButton } from "@/components/ComposerSummaryLanguageButton";
 import { ComposerNarrateVolume } from "@/components/ComposerNarrateVolume";
@@ -3666,6 +3667,7 @@ function ComposerImpl({
             <ComposerNarrateVolume disabled={disabled || isReadOnly} />
             <ComposerVoicePicker disabled={disabled || isReadOnly} />
             <ComposerLiveMeter />
+            <LiveVoiceEnginePicker disabled={disabled || isReadOnly} />
             <ComposerMicButton
               sessionId={conversationId}
               agentId={selectedAgentId ?? agents?.[0]?.id ?? null}

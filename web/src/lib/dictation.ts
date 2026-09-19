@@ -172,7 +172,12 @@ registerProcessor("omnigent-pcm16-downsampler", Pcm16Downsampler);
 
 let cachedWorkletUrl: string | null = null;
 
-function workletUrl(): string {
+/**
+ * Object URL of the inlined PCM16 downsampler worklet (16 kHz Int16, 100 ms
+ * chunks). Shared by other capture paths (e.g. {@link startGeminiLive}) so
+ * the processor blob is built once per document.
+ */
+export function workletUrl(): string {
   if (cachedWorkletUrl === null) {
     cachedWorkletUrl = URL.createObjectURL(
       new Blob([WORKLET_SOURCE], { type: "application/javascript" }),

@@ -17,6 +17,7 @@ function clock(seconds: number): string {
  */
 export function ComposerLiveMeter() {
   const sessionId = useLiveConversationStore((s) => s.sessionId);
+  const engine = useLiveConversationStore((s) => s.engine);
   const connecting = useLiveConversationStore((s) => s.connecting);
   const elapsedS = useLiveConversationStore((s) => s.elapsedS);
 
@@ -37,7 +38,9 @@ export function ComposerLiveMeter() {
     >
       <span className="size-1.5 rounded-full bg-red-500" aria-hidden />
       <span>{clock(elapsedS)}</span>
-      <span className="opacity-60">${conversationCostUsd(elapsedS).toFixed(3)}</span>
+      {engine === "gpt" && (
+        <span className="opacity-60">${conversationCostUsd(elapsedS).toFixed(3)}</span>
+      )}
     </span>
   );
 }
