@@ -1,0 +1,12 @@
+tests/server/test_spoken_summary.py::test_spoken_summary_omits_todo_block
+tests/server/test_todo_extract.py::test_build_session_response_rebuilds_todos_on_cache_miss
+tests/server/test_todo_extract.py::test_heading_case_insensitivity_and_variants
+tests/server/test_todo_extract.py::test_item_containing_markdown_link
+tests/server/test_todo_extract.py::test_message_with_no_todo_block
+tests/server/test_todo_extract.py::test_nested_indented_items
+tests/server/test_todo_extract.py::test_real_sample_with_four_sections
+tests/server/test_todo_extract.py::test_rebuild_session_todos_from_history_empty_cache
+tests/server/test_todo_extract.py::test_strip_todo_block
+tests/server/test_todo_extract.py::test_strip_todo_block_when_absent
+tests/server/test_todo_extract.py::test_update_session_todos_block_present_updates_cache_and_emits_event
+tests/server/test_todo_extract.py::test_update_session_todos_no_block_keeps_previous_list

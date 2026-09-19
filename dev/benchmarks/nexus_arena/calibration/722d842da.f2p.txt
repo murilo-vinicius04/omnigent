@@ -1,0 +1,8 @@
+tests/server/routes/test_tool_loop_wake.py::test_breaking_and_reforming_streak_wakes_twice
+tests/server/routes/test_tool_loop_wake.py::test_call_id_prevents_double_count
+tests/server/routes/test_tool_loop_wake.py::test_five_identical_calls_wake_parent_once
+tests/server/routes/test_tool_loop_wake.py::test_four_identical_then_different_call_wakes_nobody
+tests/server/routes/test_tool_loop_wake.py::test_long_arguments_are_capped
+tests/server/routes/test_tool_loop_wake.py::test_parentless_session_never_wakes
+tests/server/routes/test_tool_loop_wake.py::test_record_publish_wires_observer
+tests/server/routes/test_tool_loop_wake.py::test_standard_output_item_shape_counts
