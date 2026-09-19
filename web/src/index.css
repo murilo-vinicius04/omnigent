@@ -247,6 +247,15 @@
   --chart-3: #2ea65c;
   --chart-4: #d4972a;
   --chart-5: #8e99a4;
+  /* Usage-page provider identity. A fixed hue per vendor (never cycled), so a
+   * filtered chart never repaints the survivors. Colorblind-safe steps: the
+   * general --chart-* ramp collides under protanopia when five categories sit
+   * side by side, which is what the stacked token chart does. */
+  --provider-claude: #e69f00;
+  --provider-gemini: #009e73;
+  --provider-openai: #0072b2;
+  --provider-grok: #cc79a7;
+  --provider-other: #56b4e9;
   --radius: 0.5rem;
   --radius-otto-button: 6px;
   --radius-otto-sm: 8px;
@@ -284,6 +293,13 @@
   --chart-3: oklch(0.68 0.15 145);
   --chart-4: oklch(0.75 0.16 70);
   --chart-5: oklch(0.65 0.008 240);
+  /* Dark steps are chosen, not flipped: amber, pink and sky read too light
+   * against the dark canvas, so they are re-stepped down the same hues. */
+  --provider-claude: #c38600;
+  --provider-gemini: #009e73;
+  --provider-openai: #0072b2;
+  --provider-grok: #c675a2;
+  --provider-other: #4a9dcc;
   --tooltip-bg: #2a2440;
 }
 

@@ -49,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -58,7 +59,14 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Request
 
-from omnigent import antigravity_native_rpc, openai_token_budget, usage_history
+from omnigent import (
+    antigravity_native_rpc,
+    grok_usage,
+    openai_token_budget,
+    pro_equivalent,
+    usage_history,
+    usage_timeline,
+)
 from omnigent.install_ledger import state_dir
 from omnigent.server.auth import AuthProvider
 from omnigent.server.routes._auth_helpers import require_user
@@ -81,12 +89,30 @@ ANTIGRAVITY_CACHE_PATH = state_dir() / "plan-limits-antigravity.json"
 #: Last good Claude reading, replayed during rate limit cooldowns.
 CLAUDE_CACHE_PATH = state_dir() / "plan-limits-claude.json"
 
+#: Grok CLI's auth credential file.
+GROK_AUTH_PATH = Path.home() / ".grok" / "auth.json"
+
+#: xAI billing endpoint for Grok plan limits.
+GROK_USAGE_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+
+#: Last good Grok reading, replayed during expiration or cooldown.
+GROK_CACHE_PATH = state_dir() / "plan-limits-grok.json"
+
 _claude_cache: dict[str, Any] | None = None
 _claude_cooldown_until: float = 0.0
 _claude_had_failure: bool = False
 _claude_fetch_counter: int = 0
 _last_claude_row: dict[str, Any] | None = None
 _claude_lock: asyncio.Lock | None = None
+
+_grok_cache: dict[str, Any] | None = None
+_grok_cooldown_until: float = 0.0
+_grok_had_failure: bool = False
+_grok_fetch_counter: int = 0
+_last_grok_row: dict[str, Any] | None = None
+_last_grok_fetch_time: float = 0.0
+_grok_lock: asyncio.Lock | None = None
+_GROK_MIN_POLL_INTERVAL_SECONDS = 60.0
 
 
 def _get_claude_lock() -> asyncio.Lock:
@@ -146,6 +172,36 @@ def _window(kind: str, label: str, payload: Any) -> dict[str, Any] | None:
         "percent": max(0, min(100, percent)),
         "resets_at": payload.get("resets_at"),
     }
+
+
+def _read_claude_plan_multiplier() -> int | None:
+    """How many Pro allowances the signed-in Claude plan holds, or ``None``.
+
+    Read from the same credential file as the token; any failure is "unknown",
+    which hides the Pro readout rather than guessing a multiple.
+    """
+    try:
+        blob = json.loads(CLAUDE_CREDENTIALS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    oauth = blob.get("claudeAiOauth")
+    if not isinstance(oauth, dict):
+        return None
+    return pro_equivalent.plan_multiplier(
+        oauth.get("rateLimitTier"), oauth.get("subscriptionType")
+    )
+
+
+def _with_pro_equivalent(row: dict[str, Any]) -> dict[str, Any]:
+    """Attach what the Claude row's readings would be on Pro, when knowable."""
+    multiplier = _read_claude_plan_multiplier()
+    windows = row.get("windows")
+    if multiplier is None or not isinstance(windows, list):
+        return row
+    equivalent = pro_equivalent.pro_equivalent(windows, multiplier)
+    if equivalent is not None:
+        row = {**row, "pro_equivalent": equivalent}
+    return row
 
 
 def _read_claude_token() -> str | None:
@@ -530,6 +586,335 @@ def _openai_provider() -> dict[str, Any]:
     return row
 
 
+def _get_grok_lock() -> asyncio.Lock:
+    global _grok_lock
+    if _grok_lock is None:
+        _grok_lock = asyncio.Lock()
+    return _grok_lock
+
+
+def _parse_grok_iso(ts: str) -> datetime | None:
+    try:
+        ts_clean = re.sub(r"(\.\d{6})\d+", r"\1", ts)
+        dt = datetime.fromisoformat(ts_clean.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _read_grok_token_entry() -> tuple[str | None, datetime | None]:
+    """Return the stored Grok auth token and expiration from ~/.grok/auth.json.
+
+    If multiple accounts exist, picks the single entry whose expires_at is latest.
+    Never prints, logs, or stores the token.
+    """
+    try:
+        blob = json.loads(GROK_AUTH_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None, None
+    if not isinstance(blob, dict) or not blob:
+        return None, None
+
+    best_token: str | None = None
+    best_expires: datetime | None = None
+
+    for entry in blob.values():
+        if not isinstance(entry, dict):
+            continue
+        token = entry.get("key")
+        if not isinstance(token, str) or not token:
+            continue
+        expires_str = entry.get("expires_at")
+        expires_dt = _parse_grok_iso(expires_str) if isinstance(expires_str, str) else None
+
+        if best_token is None or (
+            expires_dt is not None and (best_expires is None or expires_dt > best_expires)
+        ):
+            best_token = token
+            best_expires = expires_dt
+
+    return best_token, best_expires
+
+
+def _read_grok_cache() -> dict[str, Any] | None:
+    """Return the persisted last-good Grok reading, or None."""
+    try:
+        blob = json.loads(GROK_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(blob, dict) or not isinstance(blob.get("windows"), list):
+        return None
+    return blob
+
+
+def _write_grok_cache(windows: list[dict[str, Any]], details: list[str]) -> None:
+    """Persist a fresh Grok reading for replay during expiration/cooldown/error."""
+    payload = {
+        "windows": windows,
+        "details": details,
+        "as_of": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }
+    try:
+        GROK_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        GROK_CACHE_PATH.write_text(json.dumps(payload), encoding="utf-8")
+    except OSError as exc:
+        logger.debug("grok plan-limit cache write failed: %s", exc)
+
+
+def _build_grok_stale_or_error(
+    *,
+    cooldown_until: float | None = None,
+    default_state: str = "error",
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Build a Grok provider row from cache (stale) or fallback state when none exists."""
+    global _grok_cache
+    if _grok_cache is None:
+        _grok_cache = _read_grok_cache()
+
+    row: dict[str, Any] = {"id": "grok", "label": "Grok", "windows": []}
+    if cooldown_until is not None:
+        row["retry_at"] = round(cooldown_until)
+        row["reason"] = "rate_limited"
+    elif reason is not None:
+        row["reason"] = reason
+
+    if _grok_cache is not None:
+        row["windows"] = _grok_cache["windows"]
+        row["state"] = "stale"
+        row["as_of"] = _grok_cache.get("as_of")
+        if "details" in _grok_cache:
+            row["details"] = _grok_cache["details"]
+        return row
+
+    row["state"] = default_state
+    return row
+
+
+async def _grok_provider(client: httpx.AsyncClient) -> dict[str, Any]:
+    """Build the ``grok`` provider row from xAI billing API."""
+    global _grok_cache, _grok_cooldown_until, _grok_had_failure
+    global _grok_fetch_counter, _last_grok_row, _last_grok_fetch_time
+
+    try:
+        grok_usage.ingest()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("grok usage ingest failed: %s", exc)
+
+    token, expires_dt = _read_grok_token_entry()
+    if token is None:
+        return {"id": "grok", "label": "Grok", "windows": [], "state": "signed-out"}
+
+    now_wall = time.time()
+    now_mono = time.monotonic()
+
+    # Check expiration: if in the past, serve from cache or signed-out without network request
+    if expires_dt is not None and expires_dt <= datetime.now(UTC):
+        return _build_grok_stale_or_error(default_state="signed-out")
+
+    if now_wall < _grok_cooldown_until:
+        return _build_grok_stale_or_error(
+            cooldown_until=_grok_cooldown_until, default_state="error"
+        )
+
+    if (
+        _last_grok_row is not None
+        and (now_mono - _last_grok_fetch_time) < _GROK_MIN_POLL_INTERVAL_SECONDS
+    ):
+        return _last_grok_row
+
+    start_counter = _grok_fetch_counter
+    lock = _get_grok_lock()
+    async with lock:
+        now_wall = time.time()
+        now_mono = time.monotonic()
+        if expires_dt is not None and expires_dt <= datetime.now(UTC):
+            return _build_grok_stale_or_error(default_state="signed-out")
+
+        if now_wall < _grok_cooldown_until:
+            return _build_grok_stale_or_error(
+                cooldown_until=_grok_cooldown_until, default_state="error"
+            )
+
+        if _grok_fetch_counter != start_counter and _last_grok_row is not None:
+            return _last_grok_row
+
+        if (
+            _last_grok_row is not None
+            and (now_mono - _last_grok_fetch_time) < _GROK_MIN_POLL_INTERVAL_SECONDS
+        ):
+            return _last_grok_row
+
+        try:
+            resp = await client.get(
+                GROK_USAGE_URL,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "X-XAI-Token-Auth": "xai-grok-cli",
+                },
+            )
+        except httpx.HTTPError as exc:
+            logger.debug("grok plan-limit fetch failed: %s", exc)
+            _grok_had_failure = True
+            row = _build_grok_stale_or_error(default_state="error")
+            _grok_fetch_counter += 1
+            _last_grok_row = row
+            _last_grok_fetch_time = now_mono
+            return row
+
+        if resp.status_code in (401, 403):
+            row = _build_grok_stale_or_error(default_state="signed-out")
+            _grok_fetch_counter += 1
+            _last_grok_row = row
+            _last_grok_fetch_time = now_mono
+            return row
+
+        if resp.status_code == 429 or 500 <= resp.status_code < 600:
+            retry_after = _parse_retry_after(resp.headers.get("retry-after"), default=60.0)
+            _grok_cooldown_until = now_wall + retry_after
+            _grok_had_failure = True
+
+            logger.warning(
+                "Grok plan-limit cooldown started: status=%d, retry_after=%.0fs",
+                resp.status_code,
+                retry_after,
+            )
+            row = _build_grok_stale_or_error(
+                cooldown_until=_grok_cooldown_until, default_state="error"
+            )
+            _grok_fetch_counter += 1
+            _last_grok_row = row
+            _last_grok_fetch_time = now_mono
+            return row
+
+        if resp.status_code != 200:
+            _grok_had_failure = True
+            row = _build_grok_stale_or_error(default_state="error")
+            _grok_fetch_counter += 1
+            _last_grok_row = row
+            _last_grok_fetch_time = now_mono
+            return row
+
+        try:
+            data = resp.json()
+        except ValueError:
+            _grok_had_failure = True
+            row = _build_grok_stale_or_error(default_state="error")
+            _grok_fetch_counter += 1
+            _last_grok_row = row
+            _last_grok_fetch_time = now_mono
+            return row
+
+        config = (
+            data.get("config")
+            if isinstance(data, dict) and isinstance(data.get("config"), dict)
+            else (data if isinstance(data, dict) else {})
+        )
+        credit_usage_pct = config.get("creditUsagePercent")
+        if credit_usage_pct is None:
+            _grok_had_failure = True
+            row = _build_grok_stale_or_error(default_state="error")
+            _grok_fetch_counter += 1
+            _last_grok_row = row
+            _last_grok_fetch_time = now_mono
+            return row
+
+        try:
+            percent = max(0, min(100, round(float(credit_usage_pct))))
+        except (TypeError, ValueError):
+            percent = 0
+
+        current_period = (
+            config.get("currentPeriod") if isinstance(config.get("currentPeriod"), dict) else {}
+        )
+        resets_at = current_period.get("end") or config.get("billingPeriodEnd")
+
+        window = {
+            "kind": "weekly",
+            "label": "week",
+            "percent": percent,
+            "resets_at": str(resets_at) if resets_at else None,
+        }
+
+        details: list[str] = []
+        product_usage = config.get("productUsage")
+        if isinstance(product_usage, list):
+            for prod in product_usage:
+                if not isinstance(prod, dict):
+                    continue
+                p_name_raw = prod.get("product")
+                p_pct = prod.get("usagePercent")
+                if not isinstance(p_name_raw, str) or p_pct is None:
+                    continue
+                try:
+                    pct_val = round(float(p_pct))
+                except (TypeError, ValueError):
+                    continue
+                p_label = re.sub(r"([a-z])([A-Z])", r"\1 \2", p_name_raw)
+                details.append(f"{p_label} {pct_val}%")
+
+        windows = [window]
+        row = {
+            "id": "grok",
+            "label": "Grok",
+            "windows": windows,
+            "state": "ok",
+            "details": details,
+        }
+
+        _grok_cache = {
+            "windows": windows,
+            "details": details,
+            "as_of": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        }
+        _write_grok_cache(windows, details)
+
+        if _grok_had_failure:
+            logger.info("Grok plan-limit fetch recovered: status=200")
+            _grok_had_failure = False
+
+        _grok_fetch_counter += 1
+        _last_grok_row = row
+        _last_grok_fetch_time = now_mono
+        return row
+
+
+def _with_tokens_today(providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return *providers* with today's counted token usage attached.
+
+    The percentage says how much of the plan is gone; this says what actually
+    burned it. Counted by Omnigent from the usage log, so it covers only turns
+    this host ran — a vendor's own meter will read higher if the account is
+    used elsewhere.
+
+    Rows are copied before being annotated: several providers return a cached
+    row object that is replayed on later polls, and appending to it in place
+    would grow the same tooltip on every poll.
+    """
+    try:
+        today = usage_timeline.tokens_today()
+    except Exception as exc:  # noqa: BLE001 - decorative; never 500 the tray
+        logger.debug("token usage read failed: %s", exc)
+        return providers
+
+    annotated: list[dict[str, Any]] = []
+    for provider in providers:
+        row = dict(provider)
+        family = usage_timeline.PLAN_PROVIDER_FAMILY.get(str(row.get("id")), str(row.get("id")))
+        counts = today.get(family)
+        if counts and counts["tokens"]:
+            row["tokens_today"] = counts["tokens"]
+            details = list(row.get("details") or [])
+            tokens = usage_timeline.format_tokens(counts["tokens"])
+            calls = counts["calls"]
+            details.append(f"{tokens} tokens today · {calls} call{'' if calls == 1 else 's'}")
+            row["details"] = details
+        annotated.append(row)
+    return annotated
+
+
 async def collect_plan_limits() -> dict[str, Any]:
     """Fetch every provider's plan windows, honoring the process-wide cache.
 
@@ -549,12 +934,17 @@ async def collect_plan_limits() -> dict[str, Any]:
         # Antigravity's lookup does blocking port discovery (lsof / procfs), so
         # it goes to a worker thread; running it concurrently with Claude's HTTP
         # call keeps the route's latency at the slower of the two, not the sum.
-        claude_row, antigravity_row, openai_row = await asyncio.gather(
+        claude_row, antigravity_row, openai_row, grok_row = await asyncio.gather(
             _claude_provider(client),
             asyncio.to_thread(_antigravity_provider),
             asyncio.to_thread(_openai_provider),
+            _grok_provider(client),
         )
-        providers = [claude_row, antigravity_row, openai_row]
+        # Parsing the usage log is file work; keep it off the event loop.
+        claude_row = _with_pro_equivalent(claude_row)
+        providers = await asyncio.to_thread(
+            _with_tokens_today, [claude_row, antigravity_row, openai_row, grok_row]
+        )
 
     payload = {"providers": providers, "fetched_at": time.time()}
     # Debug history: what each provider read, throttled to one line per
@@ -565,6 +955,8 @@ async def collect_plan_limits() -> dict[str, Any]:
     now_wall = time.time()
     if _claude_cooldown_until > now_wall:
         ttl = min(_CACHE_TTL_SECONDS, max(0.0, _claude_cooldown_until - now_wall))
+    if _grok_cooldown_until > now_wall:
+        ttl = min(ttl, max(0.0, _grok_cooldown_until - now_wall))
 
     _cache = (now, payload, ttl)
     return payload

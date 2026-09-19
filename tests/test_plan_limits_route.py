@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -33,11 +35,38 @@ def _clear_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     monkeypatch.setattr(
         plan_limits, "CLAUDE_CACHE_PATH", tmp_path / "plan-limits-claude.json", raising=False
     )
+    monkeypatch.setattr(
+        plan_limits, "CLAUDE_CREDENTIALS_PATH", tmp_path / "claude_credentials.json", raising=False
+    )
     monkeypatch.setattr(plan_limits, "_claude_cache", None, raising=False)
     monkeypatch.setattr(plan_limits, "_claude_cooldown_until", 0.0, raising=False)
     monkeypatch.setattr(plan_limits, "_claude_had_failure", False, raising=False)
     monkeypatch.setattr(plan_limits, "_last_claude_fetch_time", None, raising=False)
     monkeypatch.setattr(plan_limits, "_claude_lock", None, raising=False)
+    monkeypatch.setattr(
+        plan_limits, "GROK_CACHE_PATH", tmp_path / "plan-limits-grok.json", raising=False
+    )
+    monkeypatch.setattr(plan_limits, "_grok_cache", None, raising=False)
+    monkeypatch.setattr(plan_limits, "_grok_cooldown_until", 0.0, raising=False)
+    monkeypatch.setattr(plan_limits, "_grok_had_failure", False, raising=False)
+    monkeypatch.setattr(plan_limits, "_last_grok_fetch_time", 0.0, raising=False)
+    monkeypatch.setattr(plan_limits, "_last_grok_row", None, raising=False)
+    monkeypatch.setattr(plan_limits, "_grok_fetch_counter", 0, raising=False)
+    monkeypatch.setattr(plan_limits, "_grok_lock", None, raising=False)
+    monkeypatch.setattr(plan_limits, "GROK_AUTH_PATH", tmp_path / "grok_auth.json", raising=False)
+    monkeypatch.setattr(plan_limits.grok_usage, "SESSIONS_ROOT", tmp_path / "grok_sessions")
+    monkeypatch.setattr(
+        plan_limits.grok_usage, "sessions_root", lambda: tmp_path / "grok_sessions"
+    )
+    monkeypatch.setattr(
+        plan_limits.grok_usage, "ledger_path", lambda: tmp_path / "grok_ledger.json"
+    )
+    monkeypatch.setattr(
+        plan_limits.usage_history, "history_path", lambda: tmp_path / "history.jsonl"
+    )
+    # The tray's "tokens today" line reads the usage log through a process-wide
+    # cache; a previous test's reading must not leak into this one.
+    plan_limits.usage_timeline._cache.clear()
     _stub_agy(monkeypatch, None)
 
 
@@ -632,3 +661,363 @@ def test_claude_cache_persists_to_disk_and_reloads_after_restart(
     assert claude["windows"][0]["percent"] == 42
     assert claude.get("as_of")
 
+
+# --- grok provider ----------------------------------------------------------
+
+
+def _mock_grok_auth(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    token: str | None = "secret-grok-token-123",
+    expires_at: str | None = "2099-01-01T00:00:00.000000000Z",
+) -> Path:
+    auth_file = tmp_path / "grok_auth.json"
+    if token is not None:
+        blob = {
+            "account1": {
+                "key": token,
+                "expires_at": expires_at,
+            }
+        }
+        auth_file.write_text(json.dumps(blob), encoding="utf-8")
+    elif auth_file.exists():
+        auth_file.unlink()
+    monkeypatch.setattr(plan_limits, "GROK_AUTH_PATH", auth_file)
+    return auth_file
+
+
+def test_grok_reports_weekly_window_and_details_from_billing_endpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    cache_file = tmp_path / "plan-limits-grok.json"
+    monkeypatch.setattr(plan_limits, "GROK_CACHE_PATH", cache_file)
+    _mock_grok_auth(tmp_path, monkeypatch, token="secret-grok-token-123")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == "Bearer secret-grok-token-123"
+        assert request.headers["X-XAI-Token-Auth"] == "xai-grok-cli"
+        assert str(request.url) == plan_limits.GROK_USAGE_URL
+        return httpx.Response(
+            200,
+            json={
+                "config": {
+                    "creditUsagePercent": 42.0,
+                    "currentPeriod": {
+                        "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                        "start": "2026-09-13T20:11:53.090402+00:00",
+                        "end": "2026-09-20T20:11:53.090402+00:00",
+                    },
+                    "productUsage": [
+                        {"product": "GrokChat", "usagePercent": 35.0},
+                        {"product": "GrokVoice", "usagePercent": 7.0},
+                        {"product": "GrokBuild"},
+                    ],
+                }
+            },
+        )
+
+    _mock_transport(monkeypatch, handler)
+    grok = _by_id(_collect(), "grok")
+    assert grok["state"] == "ok"
+    assert len(grok["windows"]) == 1
+    window = grok["windows"][0]
+    assert window["kind"] == "weekly"
+    assert window["label"] == "week"
+    assert window["percent"] == 42
+    assert window["resets_at"] == "2026-09-20T20:11:53.090402+00:00"
+
+    # Details
+    assert "details" in grok
+    details = grok["details"]
+    assert "Grok Chat 35%" in details
+    assert "Grok Voice 7%" in details
+    assert not any("GrokBuild" in d or "Grok Build" in d for d in details)
+    # Nothing was recorded in the log this test wrote, so no token line.
+    assert not any("tokens today" in d for d in details)
+
+    # Disk cache check
+    assert cache_file.exists()
+    cache_content = cache_file.read_text(encoding="utf-8")
+    assert "secret-grok-token-123" not in cache_content
+    cached_blob = json.loads(cache_content)
+    assert cached_blob["windows"][0]["percent"] == 42
+
+
+def test_grok_expired_token_never_calls_transport(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    cache_file = tmp_path / "plan-limits-grok.json"
+    monkeypatch.setattr(plan_limits, "GROK_CACHE_PATH", cache_file)
+    # Expired token in 2020
+    _mock_grok_auth(
+        tmp_path,
+        monkeypatch,
+        token="expired-token",
+        expires_at="2020-01-01T00:00:00.000000000Z",
+    )
+
+    transport_called = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal transport_called
+        transport_called = True
+        return httpx.Response(200, json={})
+
+    _mock_transport(monkeypatch, handler)
+
+    # Case 1: no cache -> signed-out
+    grok1 = _by_id(_collect(), "grok")
+    assert not transport_called
+    assert grok1["state"] == "signed-out"
+    assert grok1["windows"] == []
+
+    # Case 2: cache exists -> served stale
+    cache_file.write_text(
+        json.dumps(
+            {
+                "windows": [{"kind": "weekly", "label": "week", "percent": 55, "resets_at": None}],
+                "details": ["Grok Chat 55%"],
+                "as_of": "2026-09-15T12:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(plan_limits, "_cache", None)
+    monkeypatch.setattr(plan_limits, "_grok_cache", None)
+
+    grok2 = _by_id(_collect(), "grok")
+    assert not transport_called
+    assert grok2["state"] == "stale"
+    assert grok2["windows"][0]["percent"] == 55
+    assert grok2["as_of"] == "2026-09-15T12:00:00Z"
+    assert grok2["details"] == ["Grok Chat 55%"]
+
+
+def test_grok_missing_auth_file_reports_signed_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    _mock_grok_auth(tmp_path, monkeypatch, token=None)
+    _mock_transport(monkeypatch, lambda r: httpx.Response(200, json={}))
+    grok = _by_id(_collect(), "grok")
+    assert grok["state"] == "signed-out"
+    assert grok["windows"] == []
+
+
+def test_grok_401_and_403_report_signed_out_or_stale(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    cache_file = tmp_path / "plan-limits-grok.json"
+    monkeypatch.setattr(plan_limits, "GROK_CACHE_PATH", cache_file)
+    _mock_grok_auth(tmp_path, monkeypatch, token="tok")
+
+    status = 401
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"error": "unauthorized"})
+
+    _mock_transport(monkeypatch, handler)
+
+    # 401 without cache -> signed-out
+    assert _by_id(_collect(), "grok")["state"] == "signed-out"
+
+    # With cache -> stale
+    cache_file.write_text(
+        json.dumps(
+            {
+                "windows": [{"kind": "weekly", "label": "week", "percent": 30, "resets_at": None}],
+                "as_of": "2026-09-15T12:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(plan_limits, "_cache", None)
+    monkeypatch.setattr(plan_limits, "_grok_cache", None)
+    monkeypatch.setattr(plan_limits, "_last_grok_row", None)
+    monkeypatch.setattr(plan_limits, "_last_grok_fetch_time", 0.0)
+    status = 403
+    grok_stale = _by_id(_collect(), "grok")
+    assert grok_stale["state"] == "stale"
+    assert grok_stale["windows"][0]["percent"] == 30
+
+
+def test_grok_429_sets_cooldown_and_serves_stale_or_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    cache_file = tmp_path / "plan-limits-grok.json"
+    monkeypatch.setattr(plan_limits, "GROK_CACHE_PATH", cache_file)
+    clock = _mock_clock(monkeypatch, initial=1000.0)
+    _mock_grok_auth(tmp_path, monkeypatch, token="tok")
+
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(429, headers={"retry-after": "45"})
+
+    _mock_transport(monkeypatch, handler)
+
+    res = _collect()
+    grok = _by_id(res, "grok")
+    assert grok["state"] == "error"
+    assert grok["reason"] == "rate_limited"
+    assert grok["retry_at"] == 1045
+    assert calls == 1
+
+    # During cooldown -> no call
+    clock.advance(20)
+    monkeypatch.setattr(plan_limits, "_cache", None)
+    assert _by_id(_collect(), "grok")["state"] == "error"
+    assert calls == 1
+
+
+def test_grok_network_failure_is_contained(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    _mock_grok_auth(tmp_path, monkeypatch, token="tok")
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("timeout", request=request)
+
+    _mock_transport(monkeypatch, boom)
+    payload = _collect()
+    assert _by_id(payload, "grok")["state"] == "error"
+
+
+def test_grok_token_never_logged_or_stored_in_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    cache_file = tmp_path / "plan-limits-grok.json"
+    monkeypatch.setattr(plan_limits, "GROK_CACHE_PATH", cache_file)
+    secret_token = "ultra-secret-xai-token-xyz987"
+    _mock_grok_auth(tmp_path, monkeypatch, token=secret_token)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "config": {
+                    "creditUsagePercent": 10.0,
+                    "currentPeriod": {"end": "2026-09-20T00:00:00Z"},
+                    "productUsage": [],
+                }
+            },
+        )
+
+    _mock_transport(monkeypatch, handler)
+
+    with caplog.at_level(logging.DEBUG):
+        _collect()
+
+    # Verify token is not in logs
+    for record in caplog.records:
+        assert secret_token not in record.message
+
+    # Verify token is not in cache file
+    assert secret_token not in cache_file.read_text(encoding="utf-8")
+
+
+def test_grok_ingest_runs_during_provider_call(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    _mock_grok_auth(tmp_path, monkeypatch, token="tok")
+    ingest_called = False
+
+    def fake_ingest() -> int:
+        nonlocal ingest_called
+        ingest_called = True
+        return 1
+
+    monkeypatch.setattr(plan_limits.grok_usage, "ingest", fake_ingest)
+    _mock_transport(
+        monkeypatch,
+        lambda r: httpx.Response(200, json={"config": {"creditUsagePercent": 5}}),
+    )
+
+    _collect()
+    assert ingest_called
+
+
+
+# --- tokens burned today ----------------------------------------------------
+
+
+def test_every_provider_row_carries_todays_counted_tokens(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    # The percentage says how much of the plan is gone; this says what burned
+    # it. Every vendor gets the same line, from the same log — the number the
+    # Usage page charts is the number the tooltip shows.
+    now = datetime.now(UTC)
+    at = now.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    (tmp_path / "history.jsonl").write_text(
+        "".join(
+            json.dumps(event) + "\n"
+            for event in (
+                {"at": at, "kind": "model_call", "model": "claude-opus-5", "tokens": 12_000},
+                {"at": at, "kind": "model_call", "model": "Gemini 3.8 Flash", "tokens": 3_000},
+                {"at": at, "kind": "grok_call", "model": "grok-4.6-build", "tokens": 500},
+                # Yesterday: same vendor, outside today's window.
+                {
+                    "at": (now - timedelta(days=1)).replace(microsecond=0).isoformat(),
+                    "kind": "model_call",
+                    "model": "claude-opus-5",
+                    "tokens": 999_000,
+                },
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(plan_limits, "_read_claude_token", lambda: "tok")
+    _mock_grok_auth(tmp_path, monkeypatch, token="tok")
+    _stub_agy(monkeypatch, _agy_summary({"bucketId": "gemini-5h", "remainingFraction": 0.5}))
+    _mock_transport(
+        monkeypatch,
+        lambda r: httpx.Response(
+            200,
+            json=(
+                {"five_hour": {"utilization": 20}}
+                if "anthropic" in str(r.url)
+                else {"config": {"creditUsagePercent": 5}}
+            ),
+        ),
+    )
+
+    payload = _collect()
+
+    claude = _by_id(payload, "claude")
+    assert claude["tokens_today"] == 12_000
+    assert "12k tokens today · 1 call" in claude["details"]
+    # Gemini's row is keyed by the client Omnigent reads quota from (agy), but
+    # the tokens are the vendor's.
+    assert _by_id(payload, "antigravity")["tokens_today"] == 3_000
+    assert _by_id(payload, "grok")["tokens_today"] == 500
+    # Nothing recorded for OpenAI today: no line rather than a zero.
+    assert "tokens_today" not in _by_id(payload, "openai")
+
+
+def test_todays_token_line_is_not_appended_twice_to_a_replayed_row(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    # Several providers replay one cached row object across polls. Annotating
+    # it in place would grow the same tooltip on every poll.
+    at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    (tmp_path / "history.jsonl").write_text(
+        json.dumps({"at": at, "kind": "grok_call", "model": "grok-4.6", "tokens": 2_000}) + "\n",
+        encoding="utf-8",
+    )
+    _mock_grok_auth(tmp_path, monkeypatch, token="tok")
+    _mock_transport(
+        monkeypatch,
+        lambda r: httpx.Response(200, json={"config": {"creditUsagePercent": 5}}),
+    )
+
+    for _ in range(3):
+        plan_limits._cache = None
+        grok = _by_id(_collect(), "grok")
+
+    assert [line for line in grok["details"] if "tokens today" in line] == [
+        "2k tokens today · 1 call"
+    ]

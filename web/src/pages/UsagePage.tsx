@@ -3,10 +3,16 @@ import { CalendarIcon, Loader2Icon, TriangleAlertIcon } from "lucide-react";
 import { useOmnigentAnalytics } from "@/lib/analytics";
 import { PageScroll } from "@/components/PageScroll";
 import { CostTimelineChart } from "@/components/usage/CostTimelineChart";
+import { PlanLimitHistoryChart } from "@/components/usage/PlanLimitHistoryChart";
+import { ProEquivalentCard } from "@/components/usage/ProEquivalentCard";
+import { ProviderTokenCards } from "@/components/usage/ProviderTokenCards";
+import { TokenTimelineChart } from "@/components/usage/TokenTimelineChart";
 import { UsageBreakdownCharts } from "@/components/usage/UsageBreakdownCharts";
 import { UsageSessionTable } from "@/components/usage/UsageSessionTable";
+import { useTokenUsage } from "@/hooks/useTokenUsage";
 import { useUsageReport } from "@/hooks/useUsageReport";
 import { formatSessionCostUsd } from "@/lib/formatCost";
+import { formatTokens } from "@/lib/tokenUsageApi";
 import type { DailyCost, SessionUsage } from "@/lib/usageApi";
 import { cn } from "@/lib/utils";
 
@@ -82,6 +88,7 @@ export function UsagePage() {
 
   const today = todayIso();
   const { since, until } = rangeToWindow(rangeKey, customStart, customEnd);
+  const tokenUsage = useTokenUsage({ since, until });
 
   const filteredCosts = useMemo(
     () => (data ? filterDailyCosts(data.dailyCosts, since, until) : []),
@@ -197,6 +204,46 @@ export function UsagePage() {
             </section>
 
             <UsageBreakdownCharts sessions={filteredSessions} />
+
+            <section>
+              <div className="mb-3 flex items-baseline justify-between gap-3">
+                <h2 className="text-sm font-medium text-muted-foreground">Tokens by provider</h2>
+                {tokenUsage.data && tokenUsage.data.totals.tokens > 0 && (
+                  <p className="text-xs text-muted-foreground tabular-nums">
+                    {formatTokens(tokenUsage.data.totals.tokens)} tokens ·{" "}
+                    {tokenUsage.data.totals.calls} calls
+                  </p>
+                )}
+              </div>
+              {tokenUsage.isError ? (
+                <p className="text-sm text-muted-foreground">Failed to load token usage</p>
+              ) : (
+                <div className="flex flex-col gap-4">
+                  <ProviderTokenCards providers={tokenUsage.data?.providers ?? []} />
+                  <div className="rounded-lg border border-border bg-card p-4">
+                    <TokenTimelineChart providers={tokenUsage.data?.providers ?? []} />
+                  </div>
+                </div>
+              )}
+              <p className="mt-2 text-xs text-muted-foreground">
+                Counted by Omnigent from turns run on this host, and the log ages out — a vendor's
+                own meter reads higher if the account is used anywhere else.
+              </p>
+            </section>
+
+            <ProEquivalentCard />
+
+            <section>
+              <h2 className="mb-3 text-sm font-medium text-muted-foreground">
+                Plan limits over time
+              </h2>
+              <div className="rounded-lg border border-border bg-card p-4">
+                <PlanLimitHistoryChart limits={tokenUsage.data?.limits ?? []} />
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Each provider's tightest window — the same number the composer tray shows.
+              </p>
+            </section>
 
             <section>
               <h2 className="mb-3 text-sm font-medium text-muted-foreground">Sessions</h2>

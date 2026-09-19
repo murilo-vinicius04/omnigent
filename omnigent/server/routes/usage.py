@@ -1,13 +1,16 @@
-"""API route for the per-user LLM cost report (``omni usage``)."""
+"""API routes for the per-user LLM cost report (``omni usage``) and the
+per-provider token history behind the web Usage page's token charts."""
 
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 
+from omnigent import usage_timeline
 from omnigent._wrapper_labels import WRAPPER_LABEL_KEY
 from omnigent.entities import Conversation
 from omnigent.runtime.policies.builder import load_session_tree, load_session_usage
@@ -18,8 +21,11 @@ from omnigent.server.routes._sessions.helpers import (
     _resolve_harness_impl,
     _resolve_llm_model,
 )
-from omnigent.server.schemas import DailyCost, SessionUsage, UsageReport
+from omnigent.server.schemas import DailyCost, SessionUsage, TokenUsageReport, UsageReport
 from omnigent.stores import ConversationStore
+
+#: Accepted shape for the ``since`` / ``until`` query params.
+_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # The daily rollup floor for an "all-time" sum: earlier than any real row, so
 # ``sum_daily_cost`` with this lower bound totals every recorded day.
@@ -250,5 +256,42 @@ def create_usage_router(
             user_id,
             include_page_details=flags.enabled(Feature.USAGE_PAGE),
         )
+
+    @router.get("/usage/tokens", response_model=TokenUsageReport)
+    async def get_token_usage(
+        request: Request,
+        since: str | None = Query(
+            default=None, description="Inclusive UTC lower bound, YYYY-MM-DD."
+        ),
+        until: str | None = Query(
+            default=None, description="Inclusive UTC upper bound, YYYY-MM-DD."
+        ),
+        max_points: int = Query(
+            default=usage_timeline.DEFAULT_MAX_POINTS,
+            ge=0,
+            le=2000,
+            description="Cap on plan-limit readings returned per window.",
+        ),
+    ) -> TokenUsageReport:
+        """
+        Per-provider token usage and plan-window history for the host.
+
+        Host-scoped, not user-scoped: the usage log records what this machine's
+        providers spent, with no per-user attribution to filter on (unlike the
+        database-backed ``GET /v1/usage``). It is still behind ``require_user``
+        so an unauthenticated caller in multi-user mode cannot read it.
+
+        Malformed ``since`` / ``until`` values are ignored rather than
+        rejected — a bad bound would otherwise blank a decorative chart with a
+        422.
+        """
+        require_user(request, auth_provider)
+        report = await asyncio.to_thread(
+            usage_timeline.cached_token_usage,
+            since=since if since and _DAY_RE.match(since) else None,
+            until=until if until and _DAY_RE.match(until) else None,
+            max_points=max_points,
+        )
+        return TokenUsageReport.model_validate(report)
 
     return router

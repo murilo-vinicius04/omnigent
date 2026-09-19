@@ -2860,6 +2860,123 @@ class UsageReport(BaseModel):
     sessions: list[SessionUsage] = Field(default_factory=list)
 
 
+class TokenCounts(BaseModel):
+    """Token and cost counters shared by every row of the token report.
+
+    ``tokens`` is the whole turn — non-cached input, output, and cache
+    reads/writes — because that is the number a provider's own meter counts.
+    ``cost_usd`` is only what was priced, so it can lag the tokens on a
+    session running an unpriced model.
+    """
+
+    tokens: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    cost_usd: float = 0.0
+    calls: int = 0
+
+
+class ProviderTokenDay(TokenCounts):
+    """One UTC day of one provider's token usage.
+
+    :param day: UTC calendar day as ``"YYYY-MM-DD"``.
+    """
+
+    day: str
+
+
+class ProviderTokenModel(TokenCounts):
+    """One model's share of a provider's token usage.
+
+    :param model: Raw harness model id, e.g. ``"claude-opus-5"``.
+    """
+
+    model: str
+
+
+class ProviderTokenUsage(TokenCounts):
+    """One vendor's recorded token usage over the requested window.
+
+    :param id: Provider family, e.g. ``"claude"`` / ``"gemini"`` /
+        ``"openai"`` / ``"grok"``.
+    :param label: Display name for the family.
+    :param days: Per-day series, oldest first. Days with nothing recorded are
+        omitted rather than zero-filled.
+    :param models: Per-model breakdown, largest first.
+    """
+
+    id: str
+    label: str
+    days: list[ProviderTokenDay] = Field(default_factory=list)
+    models: list[ProviderTokenModel] = Field(default_factory=list)
+
+
+class PlanLimitPoint(BaseModel):
+    """One plan-window reading.
+
+    :param at: ISO-8601 UTC instant the tray recorded the reading.
+    :param percent: Share of the window consumed, 0-100.
+    """
+
+    at: str
+    percent: int = 0
+
+
+class PlanLimitWindowSeries(BaseModel):
+    """One plan window's utilization over time.
+
+    :param kind: Stable window id, e.g. ``"session"`` / ``"gemini-5h"``.
+    :param label: Short human label, e.g. ``"5h"``.
+    :param points: Readings, oldest first, thinned for plotting. The newest
+        reading is always kept so the curve ends where the tray's pill sits.
+    """
+
+    kind: str
+    label: str
+    points: list[PlanLimitPoint] = Field(default_factory=list)
+
+
+class PlanLimitHistory(BaseModel):
+    """One provider's plan-window history.
+
+    :param provider: Plan-limit provider id as the tray reports it (Gemini's
+        row is ``"antigravity"``, the client the quota is read from).
+    :param label: Vendor display name.
+    :param windows: One series per window the provider exposes.
+    """
+
+    provider: str
+    label: str
+    windows: list[PlanLimitWindowSeries] = Field(default_factory=list)
+
+
+class TokenUsageReport(BaseModel):
+    """
+    Per-provider token usage over time, for ``GET /v1/usage/tokens``.
+
+    Sourced from the append-only usage-history log, NOT from the database:
+    the log is the only record with a timestamp per call, which is what makes
+    a history possible. It is best-effort and rotated once it grows past a few
+    megabytes, so this report covers "as far back as the log still goes" and
+    is not guaranteed to tie out to the authoritative per-session costs in
+    :class:`UsageReport`.
+
+    :param since: Inclusive lower bound (UTC ``"YYYY-MM-DD"``), when requested.
+    :param until: Inclusive upper bound (UTC ``"YYYY-MM-DD"``), when requested.
+    :param providers: One row per vendor with recorded tokens, in vendor order.
+    :param limits: Plan-window utilization curves, one row per provider.
+    :param totals: Sum across every provider row.
+    """
+
+    object: Literal["token_usage_report"] = "token_usage_report"
+    since: str | None = None
+    until: str | None = None
+    providers: list[ProviderTokenUsage] = Field(default_factory=list)
+    limits: list[PlanLimitHistory] = Field(default_factory=list)
+    totals: TokenCounts = Field(default_factory=TokenCounts)
+
+
 # ── Permissions ────────────────────────────────────────────────────
 
 

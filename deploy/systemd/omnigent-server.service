@@ -14,6 +14,10 @@ Environment=OMNIGENT_SPOKEN_SUMMARY_LANGUAGE=pt-BR
 Environment=OMNIGENT_DICTATION_ENGINE=whisper
 Environment=OMNIGENT_DICTATION_PREFER_SERVER=1
 Environment=OMNIGENT_DICTATION_WHISPER_LANGUAGE=en
+# Release features this host serves. usage_page turns on the Usage screen
+# (per-provider tokens and plan-limit history); without it the route and the
+# sidebar entry stay hidden.
+Environment=OMNIGENT_FEATURES=usage_page
 ExecStart=/home/nexus/wt/friendly-layer/.venv/bin/omni server --host 0.0.0.0 --port 6767 --agent /home/nexus/omnigent-fork/examples/debby --agent /home/nexus/wt/friendly-layer/examples/nexus
 Restart=on-failure
 RestartSec=5

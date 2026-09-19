@@ -14,11 +14,16 @@ appended here as one JSON object per line:
  "output_tokens": 3298, "source": "proxy"}
 {"at": "2026-09-14T17:42:00Z", "kind": "plan_limits", "provider": "claude",
  "state": "ok", "windows": {"session": 42, "weekly": 17}}
+{"at": "2026-09-14T17:43:10Z", "kind": "model_call", "model": "claude-opus-5",
+ "tokens": 9600, "input_tokens": 1200, "output_tokens": 400,
+ "cache_read_input_tokens": 8000, "cost_usd": 0.03, "source": "relay"}
 ```
 
-Debug data, not a ledger: it is never read back by Omnigent, writes are
-best-effort, and the file is rotated once it passes
-:data:`_MAX_BYTES` so it cannot fill the disk.
+Best-effort and disposable: writes never raise, and the file is rotated once it
+passes :data:`_MAX_BYTES` so it cannot fill the disk. The database, not this
+log, is the authoritative record of what a session spent —
+:mod:`omnigent.usage_timeline` reads these lines back only to draw the
+per-provider history, and must tolerate a window that was rotated away.
 """
 
 from __future__ import annotations
@@ -78,6 +83,59 @@ def append(kind: str, **fields: Any) -> None:
             handle.write(json.dumps(event, sort_keys=True, default=str) + "\n")
     except OSError as exc:
         logger.debug("usage history write failed: %s", exc)
+
+
+def append_model_call(
+    model: str | None,
+    *,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
+    cache_creation_input_tokens: int = 0,
+    cost_usd: float | None = None,
+    session_id: str | None = None,
+    source: str = "session",
+) -> None:
+    """Append one ``model_call`` line for a turn's token delta.
+
+    The per-session counters in the database say what a session has spent in
+    total; this says *when* it was spent and on which model, which is what the
+    Usage page's per-provider timeline reads back. The vendor is derived from
+    the model id at read time (:func:`omnigent.usage_timeline.provider_for_model`),
+    so nothing here has to know the provider families.
+
+    A call with no tokens and no cost is dropped rather than logged: cost-only
+    native polls arrive several times a turn and would otherwise flood the log.
+
+    :param model: Raw harness model id, e.g. ``"claude-opus-5"``.
+    :param input_tokens: Non-cached input tokens for this turn.
+    :param output_tokens: Output tokens for this turn.
+    :param cache_read_input_tokens: Cached input tokens read this turn.
+    :param cache_creation_input_tokens: Cache-write tokens for this turn.
+    :param cost_usd: Priced cost of the turn, when the turn was priced.
+    :param session_id: Originating session, for tracing a spike back.
+    :param source: Which write path recorded it (``relay`` / ``native``).
+    """
+    total = (
+        max(0, input_tokens)
+        + max(0, output_tokens)
+        + max(0, cache_read_input_tokens)
+        + max(0, cache_creation_input_tokens)
+    )
+    if not total and not cost_usd:
+        return
+    append(
+        "model_call",
+        model=model or "unknown",
+        input_tokens=max(0, input_tokens),
+        output_tokens=max(0, output_tokens),
+        cache_read_input_tokens=max(0, cache_read_input_tokens),
+        cache_creation_input_tokens=max(0, cache_creation_input_tokens),
+        tokens=total,
+        cost_usd=round(float(cost_usd), 8) if cost_usd else 0.0,
+        session_id=session_id,
+        source=source,
+    )
 
 
 def append_plan_limits(providers: list[dict[str, Any]], *, now: float) -> None:

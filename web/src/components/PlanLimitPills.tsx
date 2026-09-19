@@ -119,7 +119,8 @@ export function PlanLimitPills() {
               <TooltipContent side="top" className="max-w-56 text-center text-sm">
                 <p className="font-medium">{provider.label}</p>
                 <p className="text-muted-foreground">
-                  Anthropic rate limit, retrying{retryTime ? ` at ${retryTime}` : ""}
+                  {provider.id === "claude" ? "Anthropic" : provider.label} rate limit, retrying
+                  {retryTime ? ` at ${retryTime}` : ""}
                 </p>
               </TooltipContent>
             </Tooltip>
@@ -131,6 +132,8 @@ export function PlanLimitPills() {
         const resets = formatResetAt(window.resets_at);
         const stale = provider.state === "stale";
         const asOf = stale ? formatResetAt(provider.as_of) : null;
+        const percent = window.percent;
+
         return (
           <Tooltip key={provider.id}>
             <TooltipTrigger asChild>
@@ -139,17 +142,17 @@ export function PlanLimitPills() {
                 data-stale={stale ? "true" : undefined}
                 className={cn(
                   "flex items-center gap-1.5",
-                  severityClass(window.percent),
+                  severityClass(percent),
                   // A replayed reading must not look like a live one.
                   stale && "opacity-50",
                 )}
-                aria-label={`${provider.label} ${window.label} plan limit ${window.percent}% used${
+                aria-label={`${provider.label} ${window.label} plan limit ${percent}% used${
                   stale ? " (last known)" : ""
                 }`}
               >
-                <LimitRing percent={window.percent} />
+                <LimitRing percent={percent} />
                 <span className="text-sm tabular-nums" aria-hidden="true">
-                  {window.percent}%
+                  {percent}%
                 </span>
               </span>
             </TooltipTrigger>
@@ -162,6 +165,11 @@ export function PlanLimitPills() {
                 <p key={w.kind} className="tabular-nums">
                   {w.label}: {w.percent}% used
                   {w.kind === window.kind && resets ? ` · resets ${resets}` : ""}
+                </p>
+              ))}
+              {provider.details?.map((line) => (
+                <p key={line} className="tabular-nums">
+                  {line}
                 </p>
               ))}
               {stale && (

@@ -120,4 +120,52 @@ describe("PlanLimitPills", () => {
     });
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("renders Grok pill as a ring with 42% and details in tooltip", async () => {
+    fetchPlanLimitsMock.mockResolvedValueOnce({
+      fetched_at: Date.now(),
+      providers: [
+        {
+          id: "grok",
+          label: "Grok",
+          state: "ok",
+          windows: [
+            {
+              kind: "weekly",
+              label: "week",
+              percent: 42,
+              resets_at: "2026-09-20T20:11:53Z",
+            },
+          ],
+          details: [
+            "Grok Chat 35%",
+            "Grok Voice 7%",
+            "Omnigent counted today: 456k tokens · 14 model calls",
+          ],
+        },
+      ],
+    });
+
+    render(
+      <TooltipProvider delayDuration={0}>
+        <PlanLimitPills />
+      </TooltipProvider>,
+    );
+
+    const pill = await screen.findByTestId("plan-limit-grok");
+    expect(pill).toBeInTheDocument();
+    expect(pill.textContent).toContain("42%");
+
+    fireEvent.focus(pill);
+    const bubble = await waitFor(() => {
+      const els = document.querySelectorAll<HTMLElement>('[data-slot="tooltip-content"]');
+      expect(els.length).toBeGreaterThan(0);
+      return els[0];
+    });
+    expect(bubble.textContent).toContain("Grok");
+    expect(bubble.textContent).toContain("week: 42% used");
+    expect(bubble.textContent).toContain("Grok Chat 35%");
+    expect(bubble.textContent).toContain("Grok Voice 7%");
+    expect(bubble.textContent).toContain("Omnigent counted today: 456k tokens · 14 model calls");
+  });
 });

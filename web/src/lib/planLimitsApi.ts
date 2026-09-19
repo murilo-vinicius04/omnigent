@@ -33,6 +33,8 @@ export type PlanLimitState =
   | "signed-out"
   /** Authenticated, but the account's tier exposes no quota API. */
   | "unsupported"
+  /** Provider unavailable or disabled on this host. */
+  | "unavailable"
   /** Network/upstream failure; transient, retried on the next poll. */
   | "error";
 
@@ -62,6 +64,35 @@ export interface PlanLimitProvider {
   as_of?: string | null;
   /** Unix epoch seconds when the rate limit cooldown ends. */
   retry_at?: number | null;
+  /** Optional generic detail lines rendered in the tooltip. */
+  details?: string[];
+  /**
+   * Tokens Omnigent counted against this vendor today (UTC), when it counted
+   * any. Absent means "nothing recorded", never "zero used" — the count covers
+   * only turns this host ran.
+   */
+  tokens_today?: number;
+  /**
+   * Claude only: what these readings would be on the Pro plan, when the
+   * signed-in plan is a known multiple of Pro (Max 5x = 5).
+   */
+  pro_equivalent?: ProEquivalent;
+}
+
+/** One window scaled to the Pro plan. ``used_pct`` can exceed 100. */
+export interface ProEquivalentWindow {
+  kind: string;
+  label: string | null;
+  used_pct: number;
+  /** Weighted tokens: input x1, output x5, cache read x0.1, cache write x1.25. */
+  weighted_tokens_used: number;
+  weighted_token_budget: number;
+}
+
+export interface ProEquivalent {
+  /** Pro allowances in the current plan, e.g. 5 for Max 5x. */
+  multiplier: number;
+  windows: ProEquivalentWindow[];
 }
 
 export interface PlanLimits {
@@ -117,10 +148,10 @@ export function usableProviders(limits: PlanLimits | null): PlanLimitProvider[] 
  * a 10%-consumed weekly one, regardless of declaration order.
  */
 export function tightestWindow(provider: PlanLimitProvider): PlanLimitWindow | null {
-  return provider.windows.reduce<PlanLimitWindow | null>(
-    (worst, w) => (worst === null || w.percent > worst.percent ? w : worst),
-    null,
-  );
+  return provider.windows.reduce<PlanLimitWindow | null>((worst, w) => {
+    if (worst === null) return w;
+    return w.percent > worst.percent ? w : worst;
+  }, null);
 }
 
 /**
