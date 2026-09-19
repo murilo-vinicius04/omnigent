@@ -1097,3 +1097,202 @@ this conversation silently ran the old code for several attempts.
    posts each status message again in Portuguese.
 5. Routing rule not yet written into `examples/nexus/config.yaml`: free worker
    for 1–2 file tasks with named locations; Luna/Gemini for anything bigger.
+
+## Session state — 2026-09-16/17 (Max upgrade; plain Claude vs nexus; usage plumbing)
+
+**Why this session exists.** The reader moved to Claude Max and wants that quota
+spent as an *investment*: find the cheapest way to work, then go back to Pro.
+The premise nexus was built on ("Claude plans, a cheap worker types") is now
+being tested rather than assumed.
+
+**Decided:**
+1. **Worker model is `gemini-3.7-flash-medium`.** Controlled A/B on one spec
+   (`glive-31-handoff`, same start state): 3.7 finished in **7 min** (90 calls,
+   13 edits, deployed); 3.8 Medium was killed at **26 min** with 5 edits. Across
+   five consecutive steps 3.7 ran 5–8 min each where 3.8 took 25–33.
+2. **One worker at a time**, now enforced in code, not asked for in a prompt.
+3. **Benchmarks come from our own private commits**, graded by the commit's real
+   tests (zero contamination — never public). The reader's rule, verbatim:
+   **do not fix either arm.** Both are graded exactly as delivered, and a false
+   "checks passed" claim is a **defect to record**. Plain Opus already produced
+   one (claimed ruff clean; 11 `E501` errors, reproduced in its own worktree).
+4. GLM/NIM is off: single calls of 591 s and 570 s with no stall warning
+   (Hermes only kills a stream after 180 s with *no* bytes; a slow trickle is
+   invisible).
+
+**Measured — expensive to re-derive:**
+
+| | |
+|---|---|
+| Gemini burn | **0.081 weekly-points per worker-minute** (39 steps / 472 calls / 25.0M tokens = 29 pts in 20.9 h) |
+| Gemini budget | 100 pts ≈ **1,236 worker-min ≈ 20.6 h/week ≈ 177 min/day**; one 5-h block ≈ 19 steps / 168 worker-min |
+| Sep 16 actual | 358 worker-min/day → a full week needs **234 pts, 2.3× the window** |
+| Per step | 3.8 High **0.72 pts** (619k tok) · 3.8 Medium **1.28** (1,099k) · 3.7 Medium **0.47** (402k) |
+| Concurrency | 87% one worker, 11.6% two, 1.4% three; 45 min total. 5-h window hit **100% at 19:42** during `grok-3`+`grok-4` overlap |
+| Brain cost Sep 16 | 35.3M cached read → 306k written = **$190.72** (115 tokens read per token written) |
+| Plain Opus 5, whole token-usage UI | **41.1 min**, 153 calls, **$18.47**, 3.16M weighted, 2,078 new + 486 changed lines, **+14 pts 5-h / +1 pt weekly**; 29 server + 25 web tests green |
+| Nexus equivalent (Grok pill) | **52 min**, 10 steps, 524 calls, 35 edits — **3 of 10 steps were cleanup or re-checking a worker** |
+| Sep 15 anchor `c546baafc` | plain Claude **8.2 min / 572,698 weighted**; nexus+GLM **30 min / 221,132** |
+
+**Done:**
+- **Gemini Live**: server idle guard now counts frames in *either* direction
+  (`routes/gemini_live.py`) — summaries were being killed at exactly 60.1 s
+  mid-sentence, 7 times. Delegation sends the reader's **verbatim transcript**,
+  not the model's paraphrase (`liveEngineAdapters.ts`). Handoff shows a notice
+  instead of dead air; goodbye cap 10 s → 20 s. Test proven to fail without the
+  fix. Deployed.
+- **One worker at a time**: `live_subagent_work_for_parent()` in
+  `runner/app.py`; refusal at the top of `_execute_subagent_tool`
+  (`runner/tool_dispatch.py`) before any server round trip. 2 tests. Rule +
+  reason added to `examples/nexus/config.yaml`.
+  *(`test_message_turn_lifecycle_status_suppressed_for_terminal_backed_harnesses[openai-agents]` fails on the pristine tree too — pre-existing, verified.)*
+- **Usage UI landed** from the plain-Opus run: `omnigent/usage_timeline.py`,
+  `GET /v1/usage/tokens`, per-provider cards + daily stacked chart + plan-limit
+  history on the Usage page; `append_model_call()` writes both usage paths in
+  `routes/_sessions/orchestration.py`. `OMNIGENT_FEATURES=usage_page` added to
+  `deploy/systemd/omnigent-server.service`. Server-only restart (host left
+  alone). 65 server + 37 web tests green. Shows Grok 6.75M and OpenAI 4.22M.
+
+**Open — in priority order:**
+1. **Cost tracking is silently dead (the blocker).** A long-lived Omnigent
+   session whose Claude Code session restarts never records cost again:
+   `_persist_native_cumulative_usage` clamps `max(old_cost, new)`, so a fresh
+   external session reporting **$53.34** against a stored cumulative **$143.98**
+   yields growth 0 → `_record_daily_cost(0)` and `append_model_call` dropped.
+   **`user_daily_cost` has had no row since Sep 16 20:48.** Claude and Gemini
+   therefore show nothing on the new Usage page. Fix shape agreed but NOT
+   started: record a per-external-session baseline and sum the deltas; **leave
+   the enforcement clamp on `policy_cost_usd` untouched** (the cost gate reads it).
+2. **Benchmark harness not built.** Hardest unmeasured task: **`c841ceb51`**
+   ("Keep one warm companion per session"), parent **`427bebc72`** (intact),
+   hidden test **`tests/server/test_discussion.py`** (356 lines), gold = 1,457
+   insertions / 83 new defs. **The real prompt survives** — this conversation
+   (`247c77f5f57748b0a2747e4b14548cac`), Sep 11 19:55:34, and it contains none
+   of the design ("the ledger is the memory, the process is a cache" was the
+   agent's own). Human coding window ~11 min, from a *compacted* context, so a
+   sanity marker only. **No Claude token baseline exists for any candidate** —
+   0 transcript events within ±45 min of every one. Existing grader:
+   `grade_glimmer_hard.py` in the session scratchpad.
+3. **Cross-conversation worker cap.** The guard is per-runner, so two
+   conversations still run two workers on one quota (Sep 16 17:04–17:21, the
+   "Project A" conversation vs this one). Needs a server-side cap.
+4. Loop watchdog still only fires on 5 *consecutive* identical calls.
+5. Nexus still sends each dispatch twice and repeats status messages in Portuguese.
+
+**Gotchas that cost time here:**
+- `vite build` wipes `static/web-ui/{usage,voice-ab}`; back up and restore around
+  every build (5 charts, 7 voice files).
+- The Usage page is **lazy-loaded** — its strings land in
+  `assets/UsagePage-*.js`, not `assets/index-*.js`. Grepping index.js says nothing.
+- `deploy/systemd/install.sh` restarts the **host** too, which interrupts every
+  running session. Copy the server unit + `daemon-reload` + restart the server alone.
+- A twin worker created with `parent_session_id` of the real nexus conversation
+  posts its completion into that inbox and costs a brain turn. Use a dummy parent.
+
+## Session state — 2026-09-18 (nexus benchmark resolved; Pro projection)
+
+**Goal behind all of it:** go back from Claude Max 5x to Pro, so find a way of
+working that fits Pro. Measure everything; decide from numbers.
+
+**Benchmark `f7da4a3dc`, four arms, same start `518ce2900`, same hidden tests.**
+Harness in the session scratchpad `bench/` (`task.md`, `grade.py`,
+`fail_to_pass.txt`, `README.md`). 13 of 20 graded tests die on names nobody
+disclosed (`AttributeError`/`TypeError`) and are unwinnable for every arm, so
+score on the **7 that grade behaviour**.
+
+| arm | score/7 | time | Claude $ | Gemini | lint | finished alone |
+|---|---|---|---|---|---|---|
+| plain Opus 5 | 4 | 38 min | $19.83 | 0 | clean | yes |
+| nexus+Gemini, brain couldn't inspect | 2 | 51 min | $1.01 | 2.25M tok | 8 errors | no |
+| nexus+Haiku, reviewing brain | 2 | 31 min | $5.78 | 0 | clean | yes |
+| **nexus+Gemini 3.7 Flash Medium, reviewing brain** | **4** | **22 min** | **$2.09** | 1.12M tok | clean | yes |
+
+**Decided: default = nexus + `gemini-3.7-flash-medium` + reviewing Opus brain.**
+The 2→4 jump came from the orchestrator (worker held fixed). Plain Opus's and
+the winner's 4th point is the same test, passed with real `MessageData` but
+failed on the suite's duck-typed fakes (strict grader: 3/7 each).
+
+**Done (uncommitted unless noted):**
+- `examples/nexus/config.yaml`: `os_env` (brain gets `sys_os_*` — it had NO
+  way to read code before, only worker self-reports), `blast_radius` guardrail,
+  prompt rule "Antes de dizer que terminou: OLHE O CÓDIGO", `claude` worker
+  `models: [claude-haiku-4-5, claude-sonnet-5, claude-opus-5]`.
+- `examples/nexus/agents/claude/config.yaml`: `permission_mode:
+  bypassPermissions` (was `auto`, which blocks headless on the first Edit).
+- Pro readout: `omnigent/pro_equivalent.py`, `_with_pro_equivalent` in
+  `server/routes/plan_limits.py`, `web/src/components/usage/ProEquivalentCard.tsx`
+  on the Usage page, tests `tests/test_pro_equivalent.py` + card test. Deployed.
+- Committed locally: `1e59dfab2` cost across Claude sessions, `8573bd579`
+  one-worker guard + 25-min slot release. Nothing pushed.
+
+**Measured — expensive to redo:**
+- Plan is **Max 5x** (`rateLimitTier default_claude_max_5x` in
+  `~/.claude/.credentials.json`) → 1 Max point ≈ 5 Pro points.
+- **Pro allowance ≈ 5.5M weighted tokens per 5-hour window (range 5–8.5M),
+  ≈ 40M per week** (weights: input×1, output×5, cache read×0.1, cache write×1.25).
+- Pre-Max demand: two Pro accounts together **36.8 Pro pts/day** (Sep 14–16),
+  = 258% of one Pro week; two projects at once (Omnigent + chain twin).
+- Pro 5-hour limit hit in 8 windows, **median 3.0 h** (1.8–4.5), then blocked 2–3 h.
+- Per task: plain Opus ≈ 65–70% of a Pro 5-hour window; nexus brain ≈ 7%.
+- Long conversations dominate: this session burned a whole Pro 5-hour window in
+  43 min (29M cache reads, ~400k context re-read per message). Compact earlier.
+- Gemini weekly: resets ~Sep 23; a nexus task ≈ 5 weekly pts (±2) ≈ 20/week.
+  Quota deltas are noisy (shared with the voice narrator, rolling 5-h window);
+  per-run Gemini TOKENS are the trustworthy number.
+- `~/.omnigent/claude-usage-history.csv` mixes two accounts; split by
+  `week_resets_at` (Thu 12:00Z = account now on Max; Sun 03:00Z = the other).
+
+**Projection (one Pro account):** one project at a time + ~30% of Claude use as
+nexus coding tasks → ~94% of the Pro week, Gemini ~21%. Two projects at once
+needs ~70% delegated (Gemini at cap) or a second Pro account. Pro 5-hour stops
+blocking mid-session only if ~half the session goes through nexus.
+
+**Open:**
+1. Commit: nexus config changes + Pro readout; `plan_limits.py` also carries the
+   still-uncommitted usage-UI merge, so they commit together.
+2. Measure the real delegable share over a normal week (per-session cost now records).
+3. Log the voice narrator's Gemini calls so per-task Gemini quota is clean.
+4. Nexus still dispatches every call twice (cosmetic) and replies in Portuguese.
+
+### 2026-09-18 afternoon — direct Pro limiter calibration (running)
+Now on the Pro account; week at 93%. Calibration script, readings and how to
+analyse them: see memory note `pro-plan-budget.md` ("Direct Pro calibration
+IN PROGRESS"). Early result: one 608.6k cache-write re-cache = 15% of a Pro
+5h window, consistent with price weights (in×1, out×5, cache read×0.1, cache
+write×1.25, ~6M weighted per Pro 5h window). Open after it finishes: set the
+`pro_equivalent.py` budgets/weights from the result; weekly factor looks ~×6
+not ×5 (Pro week ≈ 10.4 Pro 5h windows). Still uncommitted: nexus config,
+Pro readout, usage-UI merge (share `plan_limits.py`).
+
+## Session state — 2026-09-18 evening (Pro calibration done; Gemini live fixed; history archiver)
+
+**Why:** Murilo returns to one Pro account next month (Pro ends Sat 09-20, Max 5x
+until then); we measure what fits. Times for Murilo in local UTC−3.
+
+**Measured (final — memory `pro-plan-budget.md` top block is the source):**
+- Per 1% of a Pro 5h window ≈ **46k cache-write** / **4.9k output** / ~0.4M
+  cache-read tokens. Max 5x ÷ Pro ≈ **3.3–4.4× on writes, ~5.5× on output**.
+  Pro week ≈ 10 Pro 5h windows. Earlier 9–12× figures were wrong (invisible
+  compaction calls + $-based comparison).
+- Re-cache cost ≈ context/46k Pro points: 800k ≈ 17%, 600k ≈ 13%, 200k ≈ 4%.
+  Account switch re-caches every open session on both accounts (measured: 1.74M
+  writes = 41% of a Pro 5h window). On one account, idle >1h returns remain
+  the main re-cache cause (62 of 84 in the audit). No real model switches ever.
+
+**Done:**
+- `~/bin/claude-history-archive` + systemd user timer `claude-history-archive`
+  (every 2 min): append-only transcript mirror `~/.omnigent/claude-history/`
+  and per-call token ledger `~/.omnigent/claude-token-ledger.jsonl` (5m/1h
+  cache split). `/home` is 97% full — watch mirror growth.
+- Gemini live (commits 86bd53bde, e8f71ba68, 8f3d5c7b0, local only): mic
+  constraints (echo cancel/noise suppression — the "doesn't hear me" bug),
+  watchdog waits for an answer (not transcripts) and says so, narrations hang
+  up, MODEL → `gemini-3.1-flash-live-preview` (12-2025 preview left 3/10
+  sessions silent; 3.1 13/13). Auto-reconnect removed on Murilo's rule: find
+  root causes, don't reopen and forget the conversation. Server restarted.
+
+**Open:**
+1. Gemini live "stuttering" on 3.1 (Murilo, 18:4x) — not yet investigated.
+2. `pro_equivalent.py` card still uses old price weights; update to the final numbers.
+3. Uncommitted: nexus config, Pro readout, usage-UI merge (share `plan_limits.py`).
+4. Recommended compaction threshold vs continuity — Murilo's call, data above.
