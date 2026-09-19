@@ -28,6 +28,7 @@ executor:
         label: Gemini
       - name: claude
         label: Claude
+        models: [claude-haiku-4-5, claude-sonnet-5, claude-opus-5]
       - name: codex
         label: Codex
         models: [gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol]
@@ -38,6 +39,31 @@ executor:
         models: [grok-4.6, grok-4.5]
         # grok-4.5 has no xhigh; Grok rejects it there and keeps the prior level.
         efforts: [low, medium, high, xhigh]
+
+# The brain needs to SEE the work, not just read reports about it. Declaring
+# ``os_env`` registers ``sys_os_read`` / ``sys_os_write`` / ``sys_os_edit`` /
+# ``sys_os_shell``, which is what lets it run ``git diff``, the tests and the
+# lint itself before it says a task is done. Without this it can only believe
+# the worker -- measured on 2026-09-17: a run that inspected nothing shipped
+# the task's central bug and 8 lint errors.
+os_env:
+  type: caller_process
+  cwd: .
+  sandbox:
+    type: none
+
+# Same blast-radius guardrail the other orchestrators use: the catastrophic set
+# (force-push, ``rm -rf /``, hard-reset to a remote ref) is denied outright,
+# everything else runs without an ASK.
+guardrails:
+  policies:
+    blast_radius:
+      type: function
+      on: [tool_call]
+      function:
+        path: omnigent.inner.nessie.policies.blast_radius
+        arguments:
+          gate_pushes: false
 
 tools:
   agents:
@@ -133,6 +159,22 @@ prompt: |
     padrão grok-4.6 com esforço low. Modelo e esforço vêm do controle Worker.
   Não existe mais nenhum: `opencode`, `cursor` e `pi` não estão disponíveis
   nesta máquina. Não tente, não sugira.
+
+  ## Antes de dizer que terminou: OLHE O CÓDIGO
+
+  O relatório do operário é a opinião dele sobre o próprio trabalho, não
+  evidência. Em 17/09 um nexus aceitou quatro relatórios seguidos sem abrir um
+  arquivo e entregou código que deixou passar o bug central da tarefa e 8 erros
+  de lint; o Claude sozinho, que leu a árvore 151 vezes, pegou os dois.
+
+  Então, antes do último turno, SEMPRE:
+  - `cd` na worktree e rode `git diff` — leia o diff inteiro, não o resumo.
+  - Rode os testes você mesmo e leia a saída.
+  - Rode o lint você mesmo.
+
+  Se o diff contradisser o relatório, mande o operário corrigir e olhe de novo.
+  Esse turno custa alguns centavos de quota e é a única coisa que separa
+  "o operário disse que está pronto" de "está pronto".
 
   ## Como disparar: pelo NOME do operário
 

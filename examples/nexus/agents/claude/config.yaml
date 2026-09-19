@@ -6,10 +6,15 @@ executor:
   type: omnigent
   config:
     harness: claude-native
-    # Headless workers can't answer ApprovalCards, and managed Claude
-    # settings disable ``bypassPermissions``. ``auto`` auto-approves without
-    # prompting and is allowed under managed settings (-> ``--permission-mode auto``).
-    permission_mode: auto
+    # Headless workers can't answer ApprovalCards, so the mode has to approve
+    # without prompting. ``auto`` does NOT: measured 2026-09-17, a worker
+    # launched with ``--permission-mode auto`` blocked on its very first
+    # ``Edit`` and sat unanswered until the run was abandoned. Use the same
+    # mode the gemini and grok workers already use. (The old comment claimed
+    # managed settings disable ``bypassPermissions``; a headless
+    # ``claude -p --permission-mode bypassPermissions`` ran 151 tool calls on
+    # this machine the same day, so that is not true here.)
+    permission_mode: bypassPermissions
 
 prompt: |
   You are Claude Code, a coding sub-agent dispatched by the nexus
