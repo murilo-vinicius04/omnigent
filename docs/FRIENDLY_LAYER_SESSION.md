@@ -1296,3 +1296,73 @@ until then); we measure what fits. Times for Murilo in local UTC−3.
 2. `pro_equivalent.py` card still uses old price weights; update to the final numbers.
 3. Uncommitted: nexus config, Pro readout, usage-UI merge (share `plan_limits.py`).
 4. Recommended compaction threshold vs continuity — Murilo's call, data above.
+
+### 2026-09-19 — batch committed; Gemini live stutter diagnosed (test running)
+- Committed locally (not pushed): 84e592a9f live relay + engine picker,
+  487e0298a usage page + Pro card, 74fbeadb2 nexus config, c73746eab openapi,
+  fcf861628 notes. Verified on a clean checkout (120 server + 1692 web tests,
+  tsc, openapi --check). ACP permission-mode work left uncommitted: another
+  session's (acp_*.py, runner/app.py, routes_core.py, common.py, chatStore.ts,
+  ChatPage ACP hunks, schemas docstring).
+- Stutter root cause: `gemini-3.1-flash-live-preview` (current MODEL) delivers
+  audio at 0.77–0.83× realtime → 23–27 underruns per 26s answer.
+  `native-audio-latest` 3.0× realtime, 0 underruns. Probe:
+  `scratchpad/live_stutter.py <model>`. Stall-rate test for latest vs 3.1
+  running (`live_model_ab.py`, task bhbu4gkzw, output in scratchpad tasks/).
+  Switch MODEL in `omnigent/server/gemini_live.py` only if latest has ~0
+  silent sessions; then restart omnigent-server (server only, not host).
+- Still open: Pro card rebase on final numbers; /home 96% (mirror grows).
+
+### 2026-09-20 — bench2 finished: nexus matches the big models at a quarter of the Claude spend
+
+**Why:** decide whether the nexus orchestrator (reviewing Opus brain + cheap
+worker) can replace a big model alone, so one Pro account is enough.
+
+**Result, 39 graded tests across four tasks** (`dev/benchmarks/nexus_arena`):
+
+| arm | score | time | Claude | Gemini |
+|---|---|---|---|---|
+| plain Fable 5.1 | 36/39 | 70 min | $31.94 | — |
+| plain Opus 5 | 36/39 | 69 min | $34.42 | — |
+| nexus, old prompt (v22) | 34/39 | 105 min | $8.68 | 3.5M tok, 13 wk pts |
+| nexus, prompt fix (v23) | T3 5/5; T4 8/14 then 13/14 | — | — | — |
+
+Per task nexus ties both plain models on T1 8/8, T2 10/12, T4 13/14. Its only
+real gap was T3 (3/5); the prompt fix closed it (5/5).
+
+**The number that matters most: variance.** Same prompt, same task, same worker
+gave **8/14 and 13/14**; plain Opus varied **2.4× in time and 1.8× in cost** on
+one identical task. One run per condition cannot rank these setups. Cost is the
+finding that survives repetition: **nexus ≈ ¼ of the Claude spend**, paid for in
+Gemini quota and ~50% more wall-clock.
+
+**Prompt fix (`3e3891c88`, bundle v23).** Both tasks nexus lost were decided in
+the work order, before any code: it forbade the identifier the fix needed
+(`_CACHE_TTL_SECONDS`), and asserted `bare_model_id` strips a vendor prefix (it
+does not). Two rules added to `examples/nexus/config.yaml`: an order states the
+GOAL and never bans an identifier; confirm what existing code does before
+telling a worker to rely on it; and the last review is against the human's own
+message, not the plan. Confirmed working: the v23 run wrote "`bare_model_id`
+does not strip a `vendor/` prefix, so the module strips it itself".
+
+**Deploying an agent edit:** editing `examples/nexus/` does NOT reach a running
+server, and `PUT /v1/sessions/{id}/agent` refuses built-in agents. Only
+`systemctl --user restart omnigent-server.service` republishes the bundle
+(check `agents.version` + the tar under `~/.omnigent/artifacts/<agent_id>/`).
+Safe: the unit holds only the server and warm agy caches; runners live outside.
+
+**Two faults in my own harness, both against nexus** (fixed, `50d6ea859`):
+1. T4's fail-to-pass set was calibrated before `bin/benchguard.py`, so the
+   editable install resolved the missing module to the dev checkout (= gold)
+   and 5 legitimate tests were dropped. Four arms were scored out of 9, not 14.
+2. A restored test asserted the author's exact CLI output; all five arms failed
+   it. **Audit anything you restore, and recalibrate after touching the guard.**
+
+**Open:**
+1. Two commits unpushed (`3e3891c88`, `50d6ea859`); branch is on `fork`.
+2. T4's remaining nexus miss: strips `vendor/` but not a `-YYYY-MM-DD` suffix.
+3. Pro-equivalent card still uses old weights; rebase on the 09-19 numbers.
+4. Gemini live stutter parked: MODEL is `gemini-3.1-flash-live-preview`, which
+   delivers audio below realtime; `gemini-3.8-live` is 4.2× realtime, 0
+   underruns, but went silent in one window. Needs a decision, not a fix.
+5. Another session's ACP permission-mode work is still uncommitted here.
