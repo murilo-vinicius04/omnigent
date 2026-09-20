@@ -20,6 +20,12 @@ const PLAYBACK_RATE = 24_000;
  */
 const SPEECH_RMS = 900;
 const REPLY_STALL_MS = 7_000;
+// How far ahead of the playhead the first chunk of a reply is scheduled.
+// Audio arrives over a socket whose pacing we do not control, so the queue
+// needs slack: with none, a packet that is a few ms late plays into a gap and
+// the reply stutters. 150ms is under the ear's threshold for added latency and
+// is small next to the ~800ms we already wait for the first chunk.
+const JITTER_LEAD_S = 0.15;
 
 /** Convert little-endian PCM16 to standard base64 (no padding stripping). */
 export function pcm16ToBase64(pcm: Int16Array): string {
@@ -237,6 +243,9 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
   let lastAnswerAt = 0;
   // Playback scheduling: model audio chunks are placed end-to-end.
   let nextStartTime = 0;
+  // Times the queue ran dry mid-reply. Not reset per turn: it is a health
+  // count for the whole session, reported when the socket closes.
+  let underruns = 0;
   let sources: AudioBufferSourceNode[] = [];
   let drainResolvers: (() => void)[] = [];
 
@@ -277,6 +286,11 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
   const reportClosed = (kind: "normal" | "policy" | "error", code: number, reason: string) => {
     if (closedReported) return;
     closedReported = true;
+    // A stuttering reply is a queue that ran dry, which nothing else records.
+    // Report it once per session so the cause is visible without a repro.
+    if (underruns > 0) {
+      console.warn(`gemini live: audio queue ran dry ${underruns}x this session`);
+    }
     onStateChange?.({ state: "closed", kind, code, reason });
   };
 
@@ -308,9 +322,22 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
       const src = playbackCtx.createBufferSource();
       src.buffer = buffer;
       src.connect(playbackCtx.destination);
-      // Schedule back-to-back: clamp guards against clock drift.
+      // Schedule back-to-back, but never at exactly `now`. Starting a chunk
+      // the instant it lands leaves the playhead with zero slack, so the next
+      // packet that is even slightly late plays into a gap -- and because the
+      // old clamp restarted at `now`, every later chunk inherited that same
+      // zero slack and the reply stuttered the rest of the way. Re-establish
+      // the lead whenever the queue does run dry.
       const now = playbackCtx.currentTime;
-      if (nextStartTime < now) nextStartTime = now;
+      // `<=`, not `<`: a chunk that lands exactly as the previous one ends has
+      // no slack either, and it is the first chunk's case when the context
+      // clock still reads 0.
+      if (nextStartTime <= now) {
+        // nextStartTime is 0 on the first chunk of a reply and after a
+        // barge-in reset; neither is a starved queue.
+        if (nextStartTime > 0) underruns += 1;
+        nextStartTime = now + JITTER_LEAD_S;
+      }
       src.start(nextStartTime);
       nextStartTime += buffer.duration;
       sources.push(src);

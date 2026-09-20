@@ -66,6 +66,8 @@ const createdAudioSources: {
   onended: (() => void) | null;
 }[] = [];
 
+const createdAudioContexts: FakeAudioContext[] = [];
+
 class FakeAudioContext {
   state = "running";
   currentTime = 0;
@@ -78,6 +80,9 @@ class FakeAudioContext {
   createMediaStreamSource = () => ({ connect: () => {} });
   createGain = () => ({ gain: { value: 1 }, connect: () => {} });
   createBuffer = () => ({ duration: 0.1, copyToChannel: () => {} });
+  constructor() {
+    createdAudioContexts.push(this);
+  }
   createBufferSource = () => {
     const src = {
       buffer: null,
@@ -127,9 +132,7 @@ describe("pcm16ToBase64 / buildAudioFrame", () => {
     >;
     expect(frame.realtimeInput.audio.mimeType).toBe("audio/pcm;rate=16000");
     expect(typeof frame.realtimeInput.audio.data).toBe("string");
-    expect(frame.realtimeInput.audio.data).toBe(
-      pcm16ToBase64(new Int16Array([100, -100])),
-    );
+    expect(frame.realtimeInput.audio.data).toBe(pcm16ToBase64(new Int16Array([100, -100])));
   });
 });
 
@@ -179,9 +182,7 @@ describe("parseServerMessages", () => {
       },
     });
     const fromString = parseServerMessages(json);
-    const fromBuffer = parseServerMessages(
-      new TextEncoder().encode(json).buffer,
-    );
+    const fromBuffer = parseServerMessages(new TextEncoder().encode(json).buffer);
     expect(fromBuffer).toEqual(fromString);
     expect(fromString).toEqual([
       {
@@ -210,14 +211,12 @@ describe("parseServerMessages", () => {
   });
 
   it("parses interrupted, turnComplete, setupComplete; garbage is []", () => {
-    expect(
-      parseServerMessages(
-        JSON.stringify({ serverContent: { interrupted: true } }),
-      ),
-    ).toEqual([{ type: "interrupted" }]);
-    expect(
-      parseServerMessages(JSON.stringify({ serverContent: { turnComplete: true } })),
-    ).toEqual([{ type: "turnComplete" }]);
+    expect(parseServerMessages(JSON.stringify({ serverContent: { interrupted: true } }))).toEqual([
+      { type: "interrupted" },
+    ]);
+    expect(parseServerMessages(JSON.stringify({ serverContent: { turnComplete: true } }))).toEqual([
+      { type: "turnComplete" },
+    ]);
     expect(parseServerMessages(JSON.stringify({ setupComplete: {} }))).toEqual([
       { type: "setupComplete" },
     ]);
@@ -299,6 +298,7 @@ describe("classifyClose", () => {
 describe("startGeminiLive (stubbed)", () => {
   beforeEach(() => {
     createdAudioSources.length = 0;
+    createdAudioContexts.length = 0;
     h.order.length = 0;
     h.sockets.length = 0;
     getUserMedia.mockClear();
@@ -325,6 +325,58 @@ describe("startGeminiLive (stubbed)", () => {
     return { session, socket, states, errors };
   }
 
+  it("leaves the queue slack instead of starting a reply at the playhead", async () => {
+    const { socket } = await startSession();
+    const playback = createdAudioContexts[createdAudioContexts.length - 1];
+    const chunk = pcm16ToBase64(new Int16Array([1]));
+    const sendAudio = () =>
+      socket.emit("message", {
+        data: JSON.stringify({
+          serverContent: {
+            modelTurn: {
+              parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: chunk } }],
+            },
+          },
+        }),
+      });
+
+    sendAudio();
+    // Mock buffers are 0.1s, so this chunk occupies 0.15 -> 0.25.
+    expect(createdAudioSources[0].start).toHaveBeenCalledWith(0.15);
+
+    // The next packet arrives late: the queue has already run dry.
+    playback.currentTime = 0.3;
+    sendAudio();
+
+    // Restarting at the playhead is what made replies stutter -- the chunk
+    // plays with zero slack, so the one after it lands in a gap too.
+    expect(createdAudioSources[1].start).not.toHaveBeenCalledWith(0.3);
+    expect(createdAudioSources[1].start).toHaveBeenCalledWith(0.44999999999999996);
+  });
+
+  it("keeps chunks gapless while the queue still has audio in it", async () => {
+    const { socket } = await startSession();
+    const playback = createdAudioContexts[createdAudioContexts.length - 1];
+    const chunk = pcm16ToBase64(new Int16Array([1]));
+    const sendAudio = () =>
+      socket.emit("message", {
+        data: JSON.stringify({
+          serverContent: {
+            modelTurn: {
+              parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: chunk } }],
+            },
+          },
+        }),
+      });
+
+    sendAudio();
+    // Still mid-playback: the lead must not be re-added, or every chunk would
+    // push the reply further behind and stretch it.
+    playback.currentTime = 0.2;
+    sendAudio();
+    expect(createdAudioSources[1].start).toHaveBeenCalledWith(0.25);
+  });
+
   it("captures the mic before opening the socket", async () => {
     await startSession();
     expect(h.order.indexOf("getUserMedia")).toBeGreaterThanOrEqual(0);
@@ -333,9 +385,9 @@ describe("startGeminiLive (stubbed)", () => {
 
   it("rejects on denied permission without constructing a socket", async () => {
     getUserMedia.mockRejectedValueOnce(new Error("denied"));
-    await expect(
-      startGeminiLive({ onStateChange: () => {}, onError: () => {} }),
-    ).rejects.toThrow("denied");
+    await expect(startGeminiLive({ onStateChange: () => {}, onError: () => {} })).rejects.toThrow(
+      "denied",
+    );
     await flush();
     expect(h.sockets).toHaveLength(0);
   });
@@ -354,12 +406,15 @@ describe("startGeminiLive (stubbed)", () => {
     const { session, socket, states, errors } = await startSession();
     session.stop();
     socket.emit("close", { code: 1000, reason: "client stop" });
-    expect(states).toEqual([{ state: "connected" }, {
-      state: "closed",
-      kind: "normal",
-      code: 1000,
-      reason: "client stop",
-    }]);
+    expect(states).toEqual([
+      { state: "connected" },
+      {
+        state: "closed",
+        kind: "normal",
+        code: 1000,
+        reason: "client stop",
+      },
+    ]);
     expect(errors).toEqual([]);
   });
 
@@ -367,9 +422,7 @@ describe("startGeminiLive (stubbed)", () => {
     const { session, socket } = await startSession();
     expect(socket.readyState).toBe(FakeWebSocket.OPEN);
     session.stop();
-    expect(socket.sent).toContain(
-      JSON.stringify({ realtimeInput: { audioStreamEnd: true } }),
-    );
+    expect(socket.sent).toContain(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
     expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
   });
 
@@ -378,9 +431,7 @@ describe("startGeminiLive (stubbed)", () => {
     socket.readyState = FakeWebSocket.CLOSED;
     socket.sent.length = 0;
     session.stop();
-    expect(socket.sent).not.toContain(
-      JSON.stringify({ realtimeInput: { audioStreamEnd: true } }),
-    );
+    expect(socket.sent).not.toContain(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
   });
 
   it("reports a 1000 close with zero received messages as error (gemini never answered)", async () => {
@@ -547,4 +598,3 @@ describe("startGeminiLive (stubbed)", () => {
     }
   });
 });
-
