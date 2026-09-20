@@ -69,3 +69,19 @@ strings, an undisclosed default cooldown, a threshold the prompt never gives
 the guard and every fairness edit applied: **gold 8/8, 12/12, 5/5, 9/9; the
 bare start commit 0 on all four; no regressions.** Re-run it after any edit to
 `graded/` — a test that passes on the start tree is not measuring anything.
+
+## The run trees share the real venv
+
+`mktree.sh` symlinks `$REPO/.venv` into each run tree instead of building one
+per arm. Tests need it and a copy would cost a gigabyte per arm, but it means a
+worker that runs `uv pip install -e .` or `uv sync` inside its tree rewrites
+**the checkout's** editable pointers to that tree -- a snapshot of an old
+commit. Nothing fails loudly: the next server restart just imports the old code.
+
+On 2026-09-20 that removed the Gemini live router from a running server, so the
+voice engine picker disappeared from the UI, hours after the run that caused it.
+
+`bin/venv_guard.sh` checks it (resolving `omnigent` from outside the checkout,
+since cwd would mask the pointer) and `--repair` puts it back, including the
+`omni`/`omnigent` console-script shebangs the same install rewrites. `mktree.sh`
+runs it before every arm. **Restart `omnigent-server.service` after a repair.**

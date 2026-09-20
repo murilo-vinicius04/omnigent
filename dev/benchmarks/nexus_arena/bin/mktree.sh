@@ -13,4 +13,9 @@ ln -s $REPO/.venv $D/tree/.venv
 cd $D/tree && git init -q && git add -A && git -c user.email=b@b -c user.name=bench -c commit.gpgsign=false commit -qm "baseline" && \
   { git cat-file -e ${GOLD[$T]} 2>/dev/null && echo "LEAK $T-$A" && exit 1 || true; }
 cp $ARENA/tasks/$T-*.md $D/task.md
+# The symlink above hands every run tree the REAL venv. A worker that installs
+# anything in its tree repoints it at that snapshot, and the live server then
+# imports old code. Catch it at the start of each run, while the cause is still
+# the previous run rather than a mystery a week later.
+"$ARENA/bin/venv_guard.sh" --repair
 echo "$D ready"
