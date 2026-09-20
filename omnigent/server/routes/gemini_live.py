@@ -66,6 +66,8 @@ _CLIENT_IDLE_TIMEOUT_S: Final[float] = 60.0
 
 class _ClientTimedOut(Exception):
     """The client went silent past :data:`_CLIENT_IDLE_TIMEOUT_S`."""
+
+
 #: Factory for the upstream connection. Async callable taking the socket
 #: URL, returning an object with the ``websockets`` client surface used
 #: here (``send``, ``recv``, ``close``); overridable for tests.
@@ -75,6 +77,67 @@ UpstreamConnect = Callable[[str], Awaitable[Any]]
 async def _default_connect(url: str) -> Any:
     """Open the upstream socket with the pinned ``websockets`` client."""
     return await websockets.connect(url)
+
+
+#: 24 kHz mono PCM16 is what the Live API returns, so one second of speech is
+#: this many bytes. Used to compare audio delivered against time spent.
+_PLAYBACK_BYTES_PER_S: Final[int] = 24_000 * 2
+
+
+def _inline_audio_bytes(message: str | bytes | None) -> int:
+    """Return the decoded PCM byte count of a server message's audio parts.
+
+    Counts only ``inlineData`` audio, so transcripts and tool frames do not
+    inflate the throughput figure.
+
+    :param message: One raw frame as it arrived from the upstream socket.
+    :returns: Decoded audio bytes, or 0 when the frame carries none.
+    """
+    if message is None:
+        return 0
+    try:
+        text = message if isinstance(message, str) else message.decode("utf-8")
+        parsed = json.loads(text)
+    except (UnicodeDecodeError, ValueError):
+        return 0
+    if not isinstance(parsed, dict):
+        return 0
+    content = parsed.get("serverContent")
+    if not isinstance(content, dict):
+        return 0
+    turn = content.get("modelTurn")
+    if not isinstance(turn, dict):
+        return 0
+    total = 0
+    for part in turn.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        inline = part.get("inlineData")
+        if not isinstance(inline, dict):
+            continue
+        if not str(inline.get("mimeType", "")).startswith("audio/"):
+            continue
+        data = inline.get("data")
+        if isinstance(data, str):
+            # base64 -> bytes, without paying to actually decode it.
+            total += (len(data) * 3) // 4 - data.count("=")
+    return total
+
+
+def _realtime_factor(audio_bytes: int, first_at: float | None, last_at: float | None) -> str:
+    """Return audio delivered per second of delivery, as a printable ratio.
+
+    Below 1.0 the browser drains the queue faster than Google fills it, which
+    is a stutter no jitter buffer can hide.
+
+    :param audio_bytes: Decoded PCM bytes received this session.
+    :param first_at: Monotonic time of the first audio frame, if any.
+    :param last_at: Monotonic time of the last audio frame, if any.
+    :returns: The ratio to two decimals, or ``"n/a"`` when it cannot be formed.
+    """
+    if first_at is None or last_at is None or last_at <= first_at:
+        return "n/a"
+    return f"{(audio_bytes / _PLAYBACK_BYTES_PER_S) / (last_at - first_at):.2f}"
 
 
 def create_gemini_live_router(
@@ -125,9 +188,7 @@ def create_gemini_live_router(
         return {"configured": gemini_live.available(), "model": gemini_live.MODEL}
 
     @router.websocket("/live/gemini/ws")
-    async def gemini_live_ws(
-        websocket: WebSocket, session_id: str | None = None
-    ) -> None:
+    async def gemini_live_ws(websocket: WebSocket, session_id: str | None = None) -> None:
         """Relay one Gemini Live session, keeping the key server-side."""
         if auth_provider is not None and auth_provider.get_user_id(websocket) is None:
             raise WebSocketException(
@@ -136,9 +197,7 @@ def create_gemini_live_router(
             )
         await websocket.accept()
         session_param = (
-            session_id
-            if session_id is not None
-            else websocket.query_params.get("session_id")
+            session_id if session_id is not None else websocket.query_params.get("session_id")
         )
         session_id_clean = (session_param or "").strip()
         mode_param = websocket.query_params.get("mode")
@@ -220,6 +279,12 @@ def create_gemini_live_router(
 
         setup_ms: float | None = None
         first_audio_ms: float | None = None
+        # Audio actually delivered, against the wall clock spent delivering it.
+        # A reply stutters when this drops below 1.0: the browser plays faster
+        # than Google sends, and no jitter buffer can cover a real shortfall.
+        audio_pcm_bytes = 0
+        first_audio_at: float | None = None
+        last_audio_at: float | None = None
         timeline: list[str] = []
         tool_latencies: list[str] = []
         pending_tool_calls: list[tuple[float, asyncio.Task[None]]] = []
@@ -239,9 +304,7 @@ def create_gemini_live_router(
         async def _tool_call_timeout_watcher() -> None:
             try:
                 await asyncio.sleep(15.0)
-                _logger.warning(
-                    "gemini live toolCall received no toolResponse within 15s"
-                )
+                _logger.warning("gemini live toolCall received no toolResponse within 15s")
             except asyncio.CancelledError:
                 pass
 
@@ -366,6 +429,7 @@ def create_gemini_live_router(
                 nonlocal setup_complete_count, setup_ms, input_transcription_count
                 nonlocal output_transcription_count, interrupted_count
                 nonlocal turn_complete_count, generation_complete_count, first_audio_ms
+                nonlocal audio_pcm_bytes, first_audio_at, last_audio_at
                 while True:
                     try:
                         message = await upstream.recv()
@@ -410,8 +474,12 @@ def create_gemini_live_router(
                     if _contains(message, '"goAway"'):
                         on_go_away_received()
                     if _contains(message, '"inlineData"') or _contains(message, '"audio/pcm"'):
+                        now_mono = time.monotonic()
                         if first_audio_ms is None:
-                            first_audio_ms = (time.monotonic() - session_start) * 1000
+                            first_audio_ms = (now_mono - session_start) * 1000
+                            first_audio_at = now_mono
+                        last_audio_at = now_mono
+                        audio_pcm_bytes += _inline_audio_bytes(message)
 
                     if isinstance(message, str):
                         await websocket.send_text(message)
@@ -431,9 +499,7 @@ def create_gemini_live_router(
             if session_cap in done and not (done - {session_cap}):
                 close_reason = "gemini live session cap reached"
                 ended_by = "cap"
-                _logger.warning(
-                    "gemini live session hit the %ss runaway cap", max_session_s
-                )
+                _logger.warning("gemini live session hit the %ss runaway cap", max_session_s)
             for task in pending:
                 task.cancel()
             for task in done:
@@ -473,6 +539,7 @@ def create_gemini_live_router(
                 "gemini live session ended | client_frames=%d upstream_frames=%d "
                 "duration_s=%.1f ended_by=%s upstream_close=%s briefed=%s "
                 "tool_calls=%d handed_off=%s setup_ms=%s first_audio_ms=%s "
+                "audio_s=%.1f realtime_x=%s "
                 "events={setupComplete:%d,inputTranscription:%d,outputTranscription:%d,"
                 "interrupted:%d,turnComplete:%d,generationComplete:%d,toolCall:%d,"
                 "goAway:%d,toolResponse:%d,audioStreamEnd:%d,pings:%d} "
@@ -487,6 +554,8 @@ def create_gemini_live_router(
                 "yes" if handed_off else "no",
                 f"{setup_ms:.0f}" if setup_ms is not None else "none",
                 f"{first_audio_ms:.0f}" if first_audio_ms is not None else "none",
+                audio_pcm_bytes / _PLAYBACK_BYTES_PER_S,
+                _realtime_factor(audio_pcm_bytes, first_audio_at, last_audio_at),
                 setup_complete_count,
                 input_transcription_count,
                 output_transcription_count,
@@ -506,8 +575,6 @@ def create_gemini_live_router(
                 await websocket.close()
         else:
             with contextlib.suppress(RuntimeError):
-                await websocket.close(
-                    code=_WS_CLOSE_POLICY_VIOLATION, reason=close_reason
-                )
+                await websocket.close(code=_WS_CLOSE_POLICY_VIOLATION, reason=close_reason)
 
     return router

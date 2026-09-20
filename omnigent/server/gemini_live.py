@@ -126,10 +126,14 @@ def setup_frame(
                     {
                         "name": "ask_claude",
                         "description": (
-                            "Delegate to Claude when the user asks about something the "
-                            "session notes do not cover (code, files, data, measurements) "
-                            "or asks for actions on their machine; do not delegate when notes "
-                            "answer it or for brief clarifications."
+                            "Send a settled request to Claude, AFTER the user has agreed "
+                            "to send it. Calling this ends the call, so never call it on "
+                            "your own initiative: talk the request through first, ask "
+                            "whether to send it, and call this only once they say yes. "
+                            "What needs Claude: a fact the session notes do not cover "
+                            "(code, files, data, measurements) or an action on their "
+                            "machine. Not for what the notes answer, and not for a brief "
+                            "clarification."
                         ),
                         "parameters": {
                             "type": "OBJECT",

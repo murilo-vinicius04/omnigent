@@ -114,6 +114,7 @@ from starlette.websockets import WebSocketDisconnect  # noqa: E402
 from websockets.frames import Close  # noqa: E402
 
 from omnigent.server.discussion import DiscussionRegistry, voice_briefing  # noqa: E402
+from omnigent.server.routes import gemini_live as gemini_live_routes  # noqa: E402
 from omnigent.server.routes.gemini_live import create_gemini_live_router  # noqa: E402
 
 
@@ -967,3 +968,52 @@ def test_go_away_logs_warning(monkeypatch, tmp_path, caplog) -> None:
 
     warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     assert any("received goAway from upstream" in w for w in warnings)
+
+
+def test_the_voice_must_ask_before_sending_anything_to_claude():
+    """Handing off ends the call, so it is the reader's decision, not the model's.
+
+    Without this the voice delegated the moment it could not answer, which cut
+    the reader off mid-discussion and shipped a half-formed request.
+    """
+    setup = gemini_live.setup_frame(system_instruction="notes")["setup"]
+    tool = setup["tools"][0]["functionDeclarations"][0]
+    assert tool["name"] == "ask_claude"
+    description = tool["description"].lower()
+    assert "after the user has agreed" in description
+    assert "ends the call" in description
+    assert "only once they say yes" in description
+
+
+def test_realtime_factor_shows_when_audio_arrives_slower_than_it_plays():
+    """Below 1.0 is a real shortfall, which no client-side buffer can hide."""
+    one_second = 24_000 * 2
+    # Two seconds of audio delivered over two seconds: keeping up exactly.
+    assert gemini_live_routes._realtime_factor(2 * one_second, 10.0, 12.0) == "1.00"
+    # Two seconds of audio that took four to arrive: the queue runs dry.
+    assert gemini_live_routes._realtime_factor(2 * one_second, 10.0, 14.0) == "0.50"
+    # Narration arrives far faster than it plays, which is why it never stutters.
+    assert gemini_live_routes._realtime_factor(8 * one_second, 10.0, 12.0) == "4.00"
+    assert gemini_live_routes._realtime_factor(0, None, None) == "n/a"
+    assert gemini_live_routes._realtime_factor(one_second, 10.0, 10.0) == "n/a"
+
+
+def test_only_audio_parts_count_toward_throughput():
+    """Transcripts and tool frames must not inflate the delivered-audio figure."""
+    audio = json.dumps(
+        {
+            "serverContent": {
+                "modelTurn": {
+                    "parts": [
+                        {"inlineData": {"mimeType": "audio/pcm;rate=24000", "data": "AAAA"}},
+                        {"text": "not audio"},
+                    ]
+                }
+            }
+        }
+    )
+    assert gemini_live_routes._inline_audio_bytes(audio) == 3
+    transcript = json.dumps({"serverContent": {"outputTranscription": {"text": "hello"}}})
+    assert gemini_live_routes._inline_audio_bytes(transcript) == 0
+    assert gemini_live_routes._inline_audio_bytes("not json") == 0
+    assert gemini_live_routes._inline_audio_bytes(None) == 0
