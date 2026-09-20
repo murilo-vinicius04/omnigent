@@ -107,7 +107,9 @@ def test_manual_add_is_tagged_by_source(capsys: pytest.CaptureFixture[str]) -> N
     bucket = budget.read_day()["gpt-5.6-terra"]
     assert bucket["tokens"] == 39_602
     assert bucket["by_source"] == {"manual": 39_602}
-    assert "Luna/Terra: 39.6k of 2.5M (1.6%)" in capsys.readouterr().out
+    # [fairness] the exact printed wording is the author's format, never disclosed;
+    # all five arms wrote their own. Keep only that the command reports something.
+    assert capsys.readouterr().out.strip()
 
 
 def test_plan_limits_row_shows_each_free_pool(monkeypatch: pytest.MonkeyPatch) -> None:

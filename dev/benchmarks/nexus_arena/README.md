@@ -20,7 +20,7 @@ engineer would arrive at may be graded.**
 | T1 | `722d842da` | 8 | wake the parent when a sub-agent repeats one tool call |
 | T2 | `ad763b2db` | 12 | parse the agent's to-do block, show it, keep it after a restart |
 | T3 | `02628e770` | 5 | keep Claude's plan limits on screen through Anthropic's 429 |
-| T4 | `46a0c437a` | 9 | count OpenAI tokens ourselves against the free daily pools |
+| T4 | `46a0c437a` | 14 | count OpenAI tokens ourselves against the free daily pools |
 
 Each `tasks/T*.md` is the person's **own dictated request**, verbatim, plus the
 facts known at the time and the names the hidden tests bind to. Behaviour is
