@@ -140,9 +140,7 @@ describe("ComposerMicButton live engine routing", () => {
     await clickMic();
 
     expect(startGeminiLive).toHaveBeenCalledTimes(1);
-    expect(startGeminiLive).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionId: "conv_a" }),
-    );
+    expect(startGeminiLive).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "conv_a" }));
     expect(openLiveConversation).not.toHaveBeenCalled();
     expect(useLiveConversationStore.getState().sessionId).toBe("conv_a");
     expect(useLiveConversationStore.getState().engine).toBe("gemini");
@@ -263,7 +261,12 @@ describe("ComposerMicButton live engine routing", () => {
     await clickMic();
 
     await act(async () => {
-      geminiCallbacks.onStateChange?.({ state: "closed", kind: "error", code: 1011, reason: "boom" });
+      geminiCallbacks.onStateChange?.({
+        state: "closed",
+        kind: "error",
+        code: 1011,
+        reason: "boom",
+      });
     });
     expect(useLiveConversationStore.getState().error).toBe("boom");
     expect(useLiveConversationStore.getState().sessionId).toBeNull();
@@ -274,6 +277,11 @@ describe("ComposerMicButton live engine routing", () => {
     renderLiveMic();
     await clickMic();
     const session = await startGeminiLive.mock.results[0]?.value;
+    // The first ask_claude only asks the reader; prime it so these tests
+    // still exercise what happens once they have said yes.
+    await act(async () => {
+      geminiCallbacks.onEvent?.({ type: "toolCall", calls: [{ id: "prime", name: "ask_claude" }] });
+    });
     await clickMic();
 
     expect(session.stop).toHaveBeenCalled();
@@ -303,6 +311,11 @@ describe("ComposerMicButton live engine routing", () => {
     renderLiveMic();
     await clickMic();
     const session = await startGeminiLive.mock.results[0]?.value;
+    // The first ask_claude only asks the reader; prime it so these tests
+    // still exercise what happens once they have said yes.
+    await act(async () => {
+      geminiCallbacks.onEvent?.({ type: "toolCall", calls: [{ id: "prime", name: "ask_claude" }] });
+    });
 
     await act(async () => {
       geminiCallbacks.onEvent?.({
@@ -341,6 +354,11 @@ describe("ComposerMicButton live engine routing", () => {
     renderLiveMic();
     await clickMic();
     const session = await startGeminiLive.mock.results[0]?.value;
+    // The first ask_claude only asks the reader; prime it so these tests
+    // still exercise what happens once they have said yes.
+    await act(async () => {
+      geminiCallbacks.onEvent?.({ type: "toolCall", calls: [{ id: "prime", name: "ask_claude" }] });
+    });
 
     await act(async () => {
       geminiCallbacks.onEvent?.({
@@ -400,6 +418,21 @@ describe("ComposerMicButton live engine routing", () => {
       renderLiveMic();
       await clickMic();
       const session = await startGeminiLive.mock.results[0]?.value;
+      // Prime past the confirmation ask, as above.
+      await act(async () => {
+        geminiCallbacks.onEvent?.({
+          type: "toolCall",
+          calls: [{ id: "prime", name: "ask_claude" }],
+        });
+      });
+      // The first ask_claude only asks the reader; prime it so these tests
+      // still exercise what happens once they have said yes.
+      await act(async () => {
+        geminiCallbacks.onEvent?.({
+          type: "toolCall",
+          calls: [{ id: "prime", name: "ask_claude" }],
+        });
+      });
 
       await act(async () => {
         geminiCallbacks.onEvent?.({
@@ -448,6 +481,11 @@ describe("ComposerMicButton live engine routing", () => {
     renderLiveMic();
     await clickMic();
     const session = await startGeminiLive.mock.results[0]?.value;
+    // The first ask_claude only asks the reader; prime it so these tests
+    // still exercise what happens once they have said yes.
+    await act(async () => {
+      geminiCallbacks.onEvent?.({ type: "toolCall", calls: [{ id: "prime", name: "ask_claude" }] });
+    });
 
     await act(async () => {
       geminiCallbacks.onEvent?.({
@@ -481,6 +519,11 @@ describe("ComposerMicButton live engine routing", () => {
     renderLiveMic();
     await clickMic();
     const session = await startGeminiLive.mock.results[0]?.value;
+    // The first ask_claude only asks the reader; prime it so these tests
+    // still exercise what happens once they have said yes.
+    await act(async () => {
+      geminiCallbacks.onEvent?.({ type: "toolCall", calls: [{ id: "prime", name: "ask_claude" }] });
+    });
 
     await act(async () => {
       geminiCallbacks.onEvent?.({

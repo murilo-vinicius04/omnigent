@@ -12,6 +12,12 @@ export const USD_PER_MINUTE = 0.05;
 /** How much of the reader's own speech a Gemini delegation carries to Claude. */
 const MAX_DELEGATED_CHARS = 4000;
 
+/** Returned to the voice the first time it reaches for Claude, instead of sending. */
+const CONFIRM_BEFORE_SENDING =
+  "Not sent yet. Sending ends the call, so ask them first, in one short " +
+  "question, whether to send this to Claude. Call ask_claude again only if " +
+  "they say yes; if they say no or keep talking, carry on the conversation.";
+
 export interface LiveEngineCallbacks {
   /** Emitted when a complete utterance is spoken by either the reader or the voice. */
   onUtterance: (utterance: { who: "reader" | "voice"; text: string }) => void;
@@ -93,6 +99,8 @@ export const geminiEngineAdapter: LiveEngineAdapter = {
     let lastReader = "";
     // Everything the reader said since the last delegation, as transcribed.
     let readerSinceDelegation = "";
+    // Whether the reader has been asked about a handoff yet this call.
+    let handoffOffered = false;
     let waitForTurnCompleteResolve: (() => void) | null = null;
     let closed = false;
     let settleClosed: () => void = () => {};
@@ -159,6 +167,21 @@ export const geminiEngineAdapter: LiveEngineAdapter = {
                 id: call.id,
                 name: call.name,
                 response: { output: `Tool '${call.name}' is not available.` },
+              },
+            ]);
+          } else if (!handoffOffered) {
+            // Sending ends the call, so it is the reader's decision. Asking for
+            // that in the prompt was not enough: told "can you check the
+            // documentation", the model read the request itself as the yes and
+            // sent mid-discussion. So the first call never sends -- it buys the
+            // question. The transcript is deliberately left intact, because the
+            // send that follows still needs it.
+            handoffOffered = true;
+            started.sendToolResponse([
+              {
+                id: call.id,
+                name: call.name,
+                response: { output: CONFIRM_BEFORE_SENDING },
               },
             ]);
           } else {

@@ -127,6 +127,34 @@ describe("liveEngineAdapters", () => {
       expect(typeof handle.elapsedS()).toBe("number");
     });
 
+    it("asks before the first handoff, and sends on the second call", async () => {
+      const onUtterance = vi.fn();
+      const onDelegation = vi.fn();
+      await geminiEngineAdapter.open("session_2", { onUtterance, onDelegation });
+
+      capturedOpts.onEvent?.({ type: "inputTranscript", text: "Can you check the docs?" });
+
+      // The reported failure: "can you check the documentation" was read as the
+      // go-ahead and sent mid-discussion, ending the call.
+      capturedOpts.onEvent?.({ type: "toolCall", calls: [{ id: "c1", name: "ask_claude" }] });
+      expect(onDelegation).not.toHaveBeenCalled();
+      expect(currentSession.sendToolResponse).toHaveBeenCalledWith([
+        expect.objectContaining({
+          id: "c1",
+          name: "ask_claude",
+          response: expect.objectContaining({
+            output: expect.stringContaining("ask them first"),
+          }),
+        }),
+      ]);
+
+      // They say yes, the model asks again: now it goes, with the words that
+      // prompted it still attached.
+      capturedOpts.onEvent?.({ type: "toolCall", calls: [{ id: "c2", name: "ask_claude" }] });
+      expect(onDelegation).toHaveBeenCalledTimes(1);
+      expect(onDelegation).toHaveBeenCalledWith("c2", "Can you check the docs?");
+    });
+
     it("buffers transcript fragments and flushes whole utterances", async () => {
       const onUtterance = vi.fn();
       const onDelegation = vi.fn();
@@ -310,6 +338,9 @@ describe("liveEngineAdapters", () => {
         onDelegation,
       });
 
+      // The first ask_claude only buys the question; prime it so this test
+      // still exercises the send.
+      capturedOpts.onEvent?.({ type: "toolCall", calls: [{ id: "prime", name: "ask_claude" }] });
       capturedOpts.onEvent?.({
         type: "toolCall",
         calls: [
@@ -336,6 +367,9 @@ describe("liveEngineAdapters", () => {
       capturedOpts.onEvent?.({ type: "outputTranscript", text: "Got it." });
       capturedOpts.onEvent?.({ type: "turnComplete" });
       capturedOpts.onEvent?.({ type: "inputTranscript", text: " Can you ask Claude?" });
+      // The first ask_claude only buys the question; prime it so this test
+      // still exercises the send.
+      capturedOpts.onEvent?.({ type: "toolCall", calls: [{ id: "prime", name: "ask_claude" }] });
       capturedOpts.onEvent?.({
         type: "toolCall",
         calls: [{ id: "call_v", name: "ask_claude", args: { question: "Build a UI feature" } }],
@@ -362,6 +396,9 @@ describe("liveEngineAdapters", () => {
         onDelegation,
       });
 
+      // The first ask_claude only buys the question; prime it so this test
+      // still exercises the send.
+      capturedOpts.onEvent?.({ type: "toolCall", calls: [{ id: "prime", name: "ask_claude" }] });
       capturedOpts.onEvent?.({ type: "inputTranscript", text: "what is the status?" });
       capturedOpts.onEvent?.({
         type: "toolCall",
