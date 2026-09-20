@@ -143,7 +143,12 @@ export async function narrateViaGeminiLive(
         sources.push(src);
         src.onended = () => {
           sources = sources.filter((s) => s !== src);
-          if (turnCompleted && sources.length === 0) {
+          if (sources.length > 0) return;
+          // Narration never receives turnComplete -- the server sees only
+          // generationComplete -- so a drained queue with nothing more coming
+          // is what "finished" means here.
+          const upstreamQuiet = Date.now() - lastUpstreamAt > UPSTREAM_STALL_MS;
+          if (turnCompleted || upstreamQuiet) {
             settleFinished();
           }
         };
@@ -203,7 +208,15 @@ export async function narrateViaGeminiLive(
     // Waiting for the server's runaway cap holds the quota for half an hour,
     // so give up on a silent narration and let the caller ask again.
     stallTimer = setInterval(() => {
-      if (!stopped && Date.now() - lastUpstreamAt > UPSTREAM_STALL_MS) stop();
+      if (stopped || Date.now() - lastUpstreamAt <= UPSTREAM_STALL_MS) return;
+      // Google going quiet is not the end of the reading. It streams a
+      // narration faster than it plays, so the last chunk arrives long before
+      // it is spoken -- killing the context here cut every long narration off
+      // mid-sentence, exactly 20s after the final chunk landed. Wait for the
+      // queue to drain; only then is there nothing left to say.
+      if (sources.length > 0) return;
+      settleFinished();
+      stop();
     }, 2_000);
 
     const clientTurn = {

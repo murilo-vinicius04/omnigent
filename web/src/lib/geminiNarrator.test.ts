@@ -202,6 +202,50 @@ describe("geminiNarrator", () => {
       expect(finishedResolved).toBe(true);
     });
 
+    it("keeps reading after Google goes quiet, then finishes when the audio runs out", async () => {
+      vi.useFakeTimers();
+      try {
+        const p = narrateViaGeminiLive("Texto para falar.");
+        await vi.advanceTimersByTimeAsync(0);
+        const socket = h.sockets[h.sockets.length - 1];
+        socket.open();
+        const live = await p;
+        let finishedResolved = false;
+        void live.finished.then(() => {
+          finishedResolved = true;
+        });
+
+        // Gemini streams a narration faster than it plays, so every chunk
+        // lands well before it is spoken. No turnComplete: narration only
+        // ever gets generationComplete, which the parser does not surface.
+        const pcmB64 = btoa("\x00\x01\x00\x02");
+        socket.emit("message", {
+          data: JSON.stringify({
+            serverContent: {
+              modelTurn: {
+                parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: pcmB64 } }],
+              },
+            },
+          }),
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(createdAudioSources).toHaveLength(1);
+
+        // Silence from Google while the reading is still going must NOT end
+        // it: this is what cut every long narration off mid-sentence.
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(finishedResolved).toBe(false);
+        expect(socket.readyState).not.toBe(3);
+
+        // The last chunk finishes playing: now there is nothing left to say.
+        createdAudioSources[0].onended?.();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(finishedResolved).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("sends keepalive pings every 20s and stops on close", async () => {
       vi.useFakeTimers();
       try {
