@@ -10,6 +10,8 @@ import { resolveWebSocketUrl } from "./host";
 import { decodePcm16Base64, parseServerMessages } from "./geminiLive";
 import { LiveVoiceUnavailable, type LiveNarration } from "./liveVoice";
 
+// Mirrors geminiLive.ts: never start a chunk at the playhead itself.
+const JITTER_LEAD_S = 0.15;
 const PLAYBACK_RATE = 24_000;
 
 /** Silence from Google this long means the session is dead, not thinking. */
@@ -130,8 +132,12 @@ export async function narrateViaGeminiLive(
         const src = ctx.createBufferSource();
         src.buffer = buffer;
         src.connect(destination);
+        // Same slack the conversation queue needs. Reading has not stuttered
+        // because a narration streams faster than it plays, so the queue never
+        // runs dry -- but the scheduling is identical, so give it the lead too
+        // rather than leave the same defect waiting for a slow network.
         const now = ctx.currentTime;
-        if (nextStartTime < now) nextStartTime = now;
+        if (nextStartTime <= now) nextStartTime = now + JITTER_LEAD_S;
         src.start(nextStartTime);
         nextStartTime += buffer.duration;
         sources.push(src);

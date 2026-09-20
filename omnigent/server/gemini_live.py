@@ -105,7 +105,16 @@ def setup_frame(
 
     setup: dict[str, object] = {
         "model": name,
-        "generationConfig": {"responseModalities": ["AUDIO"]},
+        # Ask for the voice by name here too. Narration does, and a setup frame
+        # that omits speechConfig gets Google's own default instead, so the
+        # same companion answered in one voice when it read and a different
+        # one when it talked.
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice or DEFAULT_VOICE}}
+            },
+        },
         "inputAudioTranscription": {},
         "outputAudioTranscription": {},
     }

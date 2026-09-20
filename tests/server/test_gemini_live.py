@@ -47,6 +47,17 @@ def test_setup_frame():
     assert "systemInstruction" not in setup
 
 
+def test_conversation_and_narration_speak_in_the_same_voice():
+    # Omitting speechConfig hands the turn to Google's default voice, so the
+    # companion read in one voice and talked in another.
+    talking = gemini_live.setup_frame()["setup"]["generationConfig"]["speechConfig"]
+    reading = gemini_live.setup_frame(mode="narrate")["setup"]["generationConfig"]["speechConfig"]
+    assert talking == reading
+    assert talking["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == gemini_live.DEFAULT_VOICE
+    chosen = gemini_live.setup_frame(voice="Charon")["setup"]["generationConfig"]["speechConfig"]
+    assert chosen["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Charon"
+
+
 def test_setup_frame_without_briefing_matches_today():
     frame_plain = gemini_live.setup_frame()
     assert gemini_live.setup_frame(system_instruction=None) == frame_plain
@@ -63,9 +74,7 @@ def test_setup_frame_with_briefing():
     assert setup["inputAudioTranscription"] == {}
     assert setup["outputAudioTranscription"] == {}
     assert setup["model"] == gemini_live.MODEL
-    assert setup["systemInstruction"] == {
-        "parts": [{"text": "Role and background notes"}]
-    }
+    assert setup["systemInstruction"] == {"parts": [{"text": "Role and background notes"}]}
     assert "tools" in setup
     assert len(setup["tools"]) == 1
     funcs = setup["tools"][0]["functionDeclarations"]
@@ -221,6 +230,7 @@ def test_relay_both_directions(monkeypatch, tmp_path) -> None:
 
 # --- Appended: runaway guards (session cap, connect timeout, keepalive) ---
 
+
 def test_session_cap_closes_open_session(monkeypatch, tmp_path) -> None:
     """A still-open session is closed with a reason when the cap fires."""
     _with_key(monkeypatch, tmp_path)
@@ -269,9 +279,7 @@ def test_client_keepalive_closes_silent_client(monkeypatch, tmp_path) -> None:
     async def fake_connect(url: str):
         return upstream
 
-    app = _proxy_app(
-        upstream_connect=fake_connect, client_idle_timeout_s=0.05
-    )
+    app = _proxy_app(upstream_connect=fake_connect, client_idle_timeout_s=0.05)
     with TestClient(app) as tc:
         with tc.websocket_connect("/v1/live/gemini/ws") as ws:
             with pytest.raises(WebSocketDisconnect) as exc_info:
@@ -290,9 +298,7 @@ def test_keepalive_survives_client_traffic(monkeypatch, tmp_path) -> None:
     async def fake_connect(url: str):
         return upstream
 
-    app = _proxy_app(
-        upstream_connect=fake_connect, client_idle_timeout_s=0.1
-    )
+    app = _proxy_app(upstream_connect=fake_connect, client_idle_timeout_s=0.1)
     with TestClient(app) as tc:
         with tc.websocket_connect("/v1/live/gemini/ws") as ws:
             for _ in range(3):
@@ -353,9 +359,7 @@ def test_availability_refuses_unauthenticated(monkeypatch, tmp_path) -> None:
     app = _proxy_app(auth_provider=_FakeAuth())
     with TestClient(app) as tc:
         refused = tc.get("/v1/live/gemini/availability")
-        allowed = tc.get(
-            "/v1/live/gemini/availability", headers={"x-test-user": "alice"}
-        )
+        allowed = tc.get("/v1/live/gemini/availability", headers={"x-test-user": "alice"})
     assert refused.status_code == 401
     assert allowed.status_code == 200
     assert allowed.json()["configured"] is True
@@ -383,9 +387,7 @@ def test_session_summary_logged_with_counts(monkeypatch, tmp_path, caplog) -> No
             assert ws.receive_text() == '{"serverContent":{}}'
 
     summary_records = [
-        r.getMessage()
-        for r in caplog.records
-        if "gemini live session ended | " in r.getMessage()
+        r.getMessage() for r in caplog.records if "gemini live session ended | " in r.getMessage()
     ]
     assert len(summary_records) == 1
     summary = summary_records[0]
@@ -416,9 +418,7 @@ def test_upstream_close_code_and_reason_logged(monkeypatch, tmp_path, caplog) ->
             assert exc_info.value.code == 1000
 
     summary_records = [
-        r.getMessage()
-        for r in caplog.records
-        if "gemini live session ended | " in r.getMessage()
+        r.getMessage() for r in caplog.records if "gemini live session ended | " in r.getMessage()
     ]
     assert len(summary_records) == 1
     summary = summary_records[0]
@@ -455,26 +455,17 @@ def test_route_with_session_context_sends_briefed_setup_frame(
                 time.sleep(0.02)
     assert upstream.sent
     sent_frame = json.loads(upstream.sent[0])
-    assert (
-        sent_frame["setup"]["systemInstruction"]["parts"][0]["text"]
-        == expected_briefing
-    )
-    assert not any(
-        "gemini live briefing skipped" in r.getMessage() for r in caplog.records
-    )
+    assert sent_frame["setup"]["systemInstruction"]["parts"][0]["text"] == expected_briefing
+    assert not any("gemini live briefing skipped" in r.getMessage() for r in caplog.records)
     summary = next(
-        r.getMessage()
-        for r in caplog.records
-        if "gemini live session ended | " in r.getMessage()
+        r.getMessage() for r in caplog.records if "gemini live session ended | " in r.getMessage()
     )
     assert "briefed=yes" in summary
     for r in caplog.records:
         assert "test-key" not in r.getMessage()
 
 
-def test_route_missing_session_id_skips_briefing_and_logs(
-    monkeypatch, tmp_path, caplog
-) -> None:
+def test_route_missing_session_id_skips_briefing_and_logs(monkeypatch, tmp_path, caplog) -> None:
     """Missing session_id sends plain setup frame and logs reason=missing-session."""
     _with_key(monkeypatch, tmp_path)
     upstream = _FakeUpstream()
@@ -497,16 +488,12 @@ def test_route_missing_session_id_skips_briefing_and_logs(
         for r in caplog.records
     )
     summary = next(
-        r.getMessage()
-        for r in caplog.records
-        if "gemini live session ended | " in r.getMessage()
+        r.getMessage() for r in caplog.records if "gemini live session ended | " in r.getMessage()
     )
     assert "briefed=no" in summary
 
 
-def test_route_unknown_session_id_skips_briefing_and_logs(
-    monkeypatch, tmp_path, caplog
-) -> None:
+def test_route_unknown_session_id_skips_briefing_and_logs(monkeypatch, tmp_path, caplog) -> None:
     """Unknown session_id sends plain setup frame and logs reason=no-context."""
     _with_key(monkeypatch, tmp_path)
     upstream = _FakeUpstream()
@@ -531,16 +518,12 @@ def test_route_unknown_session_id_skips_briefing_and_logs(
         for r in caplog.records
     )
     summary = next(
-        r.getMessage()
-        for r in caplog.records
-        if "gemini live session ended | " in r.getMessage()
+        r.getMessage() for r in caplog.records if "gemini live session ended | " in r.getMessage()
     )
     assert "briefed=no" in summary
 
 
-def test_route_empty_context_skips_briefing_and_logs(
-    monkeypatch, tmp_path, caplog
-) -> None:
+def test_route_empty_context_skips_briefing_and_logs(monkeypatch, tmp_path, caplog) -> None:
     """A session with empty context logs reason=no-context and sends plain frame."""
     _with_key(monkeypatch, tmp_path)
     upstream = _FakeUpstream()
@@ -566,16 +549,12 @@ def test_route_empty_context_skips_briefing_and_logs(
         for r in caplog.records
     )
     summary = next(
-        r.getMessage()
-        for r in caplog.records
-        if "gemini live session ended | " in r.getMessage()
+        r.getMessage() for r in caplog.records if "gemini live session ended | " in r.getMessage()
     )
     assert "briefed=no" in summary
 
 
-def test_route_builder_error_skips_briefing_and_logs(
-    monkeypatch, tmp_path, caplog
-) -> None:
+def test_route_builder_error_skips_briefing_and_logs(monkeypatch, tmp_path, caplog) -> None:
     """When briefing resolution raises, connect as plain frame and log reason=error."""
     _with_key(monkeypatch, tmp_path)
     upstream = _FakeUpstream()
@@ -588,9 +567,7 @@ def test_route_builder_error_skips_briefing_and_logs(
             raise RuntimeError("registry exploded")
 
     caplog.set_level(logging.INFO)
-    app = _proxy_app(
-        upstream_connect=fake_connect, registry_provider=_BrokenRegistry
-    )
+    app = _proxy_app(upstream_connect=fake_connect, registry_provider=_BrokenRegistry)
     with TestClient(app) as tc:
         with tc.websocket_connect("/v1/live/gemini/ws?session_id=err_session"):
             deadline = 50
@@ -601,13 +578,10 @@ def test_route_builder_error_skips_briefing_and_logs(
     sent_frame = json.loads(upstream.sent[0])
     assert "systemInstruction" not in sent_frame["setup"]
     assert any(
-        "gemini live briefing skipped | reason=error" in r.getMessage()
-        for r in caplog.records
+        "gemini live briefing skipped | reason=error" in r.getMessage() for r in caplog.records
     )
     summary = next(
-        r.getMessage()
-        for r in caplog.records
-        if "gemini live session ended | " in r.getMessage()
+        r.getMessage() for r in caplog.records if "gemini live session ended | " in r.getMessage()
     )
     assert "briefed=no" in summary
 
@@ -651,9 +625,7 @@ def test_route_briefed_frame_declares_ask_claude_tool_and_unbriefed_has_no_tools
         assert "test-key" not in r.getMessage()
 
 
-def test_session_summary_logs_tool_calls_and_handoff(
-    monkeypatch, tmp_path, caplog
-) -> None:
+def test_session_summary_logs_tool_calls_and_handoff(monkeypatch, tmp_path, caplog) -> None:
     """Tool calls from upstream and handoff from client are reflected in end-of-session log."""
     _with_key(monkeypatch, tmp_path)
     upstream = _FakeUpstream()
@@ -667,33 +639,41 @@ def test_session_summary_logs_tool_calls_and_handoff(
         with tc.websocket_connect("/v1/live/gemini/ws") as ws:
             # upstream sends a toolCall
             upstream.push_from_test_thread(
-                json.dumps({
-                    "toolCall": {
-                        "functionCalls": [
-                            {"id": "call_1", "name": "ask_claude", "args": {"question": "test?"}}
-                        ]
+                json.dumps(
+                    {
+                        "toolCall": {
+                            "functionCalls": [
+                                {
+                                    "id": "call_1",
+                                    "name": "ask_claude",
+                                    "args": {"question": "test?"},
+                                }
+                            ]
+                        }
                     }
-                })
+                )
             )
             assert ws.receive_text()
             # client responds with handed_off response
             ws.send_text(
-                json.dumps({
-                    "toolResponse": {
-                        "functionResponses": [
-                            {
-                                "id": "call_1",
-                                "name": "ask_claude",
-                                "response": {
-                                    "output": (
-                                        "I've sent that to Claude. Its answer will show "
-                                        "up in the chat, so I'm ending the call now."
-                                    )
-                                },
-                            }
-                        ]
+                json.dumps(
+                    {
+                        "toolResponse": {
+                            "functionResponses": [
+                                {
+                                    "id": "call_1",
+                                    "name": "ask_claude",
+                                    "response": {
+                                        "output": (
+                                            "I've sent that to Claude. Its answer will show "
+                                            "up in the chat, so I'm ending the call now."
+                                        )
+                                    },
+                                }
+                            ]
+                        }
                     }
-                })
+                )
             )
             for _ in range(50):
                 if len(upstream.sent) >= 2:
@@ -701,9 +681,7 @@ def test_session_summary_logs_tool_calls_and_handoff(
                 time.sleep(0.02)
 
     summary = next(
-        r.getMessage()
-        for r in caplog.records
-        if "gemini live session ended | " in r.getMessage()
+        r.getMessage() for r in caplog.records if "gemini live session ended | " in r.getMessage()
     )
     assert "tool_calls=1" in summary
     assert "handed_off=yes" in summary
@@ -720,9 +698,7 @@ def test_setup_frame_narrate_mode() -> None:
     assert setup["generationConfig"]["responseModalities"] == ["AUDIO"]
     voice_config = setup["generationConfig"]["speechConfig"]["voiceConfig"]
     assert voice_config["prebuiltVoiceConfig"]["voiceName"] == gemini_live.DEFAULT_VOICE
-    assert setup["systemInstruction"] == {
-        "parts": [{"text": NARRATOR_INSTRUCTIONS}]
-    }
+    assert setup["systemInstruction"] == {"parts": [{"text": NARRATOR_INSTRUCTIONS}]}
     assert "tools" not in setup
     assert "inputAudioTranscription" not in setup
 
@@ -737,12 +713,9 @@ def test_setup_frame_unknown_mode_falls_back_to_conversation() -> None:
     frame_plain = gemini_live.setup_frame()
     assert gemini_live.setup_frame(mode="unknown") == frame_plain
     assert gemini_live.setup_frame(mode="conversation") == frame_plain
-    assert "speechConfig" not in frame_plain["setup"]["generationConfig"]
 
 
-def test_route_narrate_mode_sends_narrator_setup_frame(
-    monkeypatch, tmp_path
-) -> None:
+def test_route_narrate_mode_sends_narrator_setup_frame(monkeypatch, tmp_path) -> None:
     """mode=narrate sends setup frame with narrator instructions, voice, and skips briefing."""
     _with_key(monkeypatch, tmp_path)
     upstream = _FakeUpstream()
@@ -770,9 +743,7 @@ def test_route_narrate_mode_sends_narrator_setup_frame(
     assert "inputAudioTranscription" not in setup
 
 
-def test_route_unknown_mode_falls_back_to_conversation(
-    monkeypatch, tmp_path
-) -> None:
+def test_route_unknown_mode_falls_back_to_conversation(monkeypatch, tmp_path) -> None:
     """An unknown mode falls back to conversation mode frame."""
     _with_key(monkeypatch, tmp_path)
     upstream = _FakeUpstream()
@@ -795,9 +766,7 @@ def test_route_unknown_mode_falls_back_to_conversation(
 # --- Step 6: keepalive ping, event timeline, latencies, and security ---
 
 
-def test_ping_is_not_relayed_upstream_and_resets_idle_timer(
-    monkeypatch, tmp_path
-) -> None:
+def test_ping_is_not_relayed_upstream_and_resets_idle_timer(monkeypatch, tmp_path) -> None:
     """A client ping resets the idle timer and is NEVER forwarded upstream."""
     _with_key(monkeypatch, tmp_path)
     upstream = _FakeUpstream()
@@ -895,58 +864,52 @@ def test_session_summary_tracks_timeline_latencies_and_never_logs_text(
 
             # Upstream sends audio chunk
             upstream.push_from_test_thread(
-                json.dumps({
-                    "serverContent": {
-                        "modelTurn": {
-                            "parts": [
-                                {
-                                    "inlineData": {
-                                        "mimeType": "audio/pcm;rate=24000",
-                                        "data": "AAAA",
+                json.dumps(
+                    {
+                        "serverContent": {
+                            "modelTurn": {
+                                "parts": [
+                                    {
+                                        "inlineData": {
+                                            "mimeType": "audio/pcm;rate=24000",
+                                            "data": "AAAA",
+                                        }
                                     }
-                                }
-                            ]
+                                ]
+                            }
                         }
                     }
-                })
+                )
             )
             assert ws.receive_text()
 
             # Upstream sends transcript
             upstream.push_from_test_thread(
-                json.dumps({
-                    "serverContent": {
-                        "outputTranscription": {"text": unique_transcript}
-                    }
-                })
+                json.dumps({"serverContent": {"outputTranscription": {"text": unique_transcript}}})
             )
             assert ws.receive_text()
 
             # Upstream sends interrupted
-            upstream.push_from_test_thread(
-                json.dumps({"serverContent": {"interrupted": True}})
-            )
+            upstream.push_from_test_thread(json.dumps({"serverContent": {"interrupted": True}}))
             assert ws.receive_text()
 
             # Upstream sends toolCall
             upstream.push_from_test_thread(
-                json.dumps({
-                    "toolCall": {
-                        "functionCalls": [{"id": "c1", "name": "ask_claude"}]
-                    }
-                })
+                json.dumps({"toolCall": {"functionCalls": [{"id": "c1", "name": "ask_claude"}]}})
             )
             assert ws.receive_text()
 
             # Client sends toolResponse and ping
             ws.send_text(
-                json.dumps({
-                    "toolResponse": {
-                        "functionResponses": [
-                            {"id": "c1", "name": "ask_claude", "response": {"output": "ok"}}
-                        ]
+                json.dumps(
+                    {
+                        "toolResponse": {
+                            "functionResponses": [
+                                {"id": "c1", "name": "ask_claude", "response": {"output": "ok"}}
+                            ]
+                        }
                     }
-                })
+                )
             )
             ws.send_text(json.dumps({"omnigentPing": True}))
             for _ in range(50):
@@ -955,15 +918,11 @@ def test_session_summary_tracks_timeline_latencies_and_never_logs_text(
                 time.sleep(0.01)
 
             # Upstream sends turnComplete
-            upstream.push_from_test_thread(
-                json.dumps({"serverContent": {"turnComplete": True}})
-            )
+            upstream.push_from_test_thread(json.dumps({"serverContent": {"turnComplete": True}}))
             assert ws.receive_text()
 
     summary_records = [
-        r.getMessage()
-        for r in caplog.records
-        if "gemini live session ended | " in r.getMessage()
+        r.getMessage() for r in caplog.records if "gemini live session ended | " in r.getMessage()
     ]
     assert len(summary_records) == 1
     summary = summary_records[0]
@@ -1008,6 +967,3 @@ def test_go_away_logs_warning(monkeypatch, tmp_path, caplog) -> None:
 
     warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     assert any("received goAway from upstream" in w for w in warnings)
-
-
-
