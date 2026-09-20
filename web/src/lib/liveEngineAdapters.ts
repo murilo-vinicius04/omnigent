@@ -177,6 +177,16 @@ export const geminiEngineAdapter: LiveEngineAdapter = {
       sessionId,
       onEvent: handleEvent,
       onStateChange: (state) => {
+        if (state.state === "ready") {
+          // The socket opened earlier; this is the first moment the model can
+          // actually hear, so it is the one worth telling the reader about.
+          callbacks.onNotice?.("Listening — go ahead");
+          return;
+        }
+        if (state.state === "waiting") {
+          callbacks.onNotice?.("Still thinking…");
+          return;
+        }
         if (state.state === "closed") {
           if (state.kind === "error") {
             closeSession(

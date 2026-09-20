@@ -96,9 +96,22 @@ class FakeAudioContext {
   };
 }
 
+const createdWorklets: FakeAudioWorkletNode[] = [];
+
 class FakeAudioWorkletNode {
-  port = { onmessage: null as null, postMessage: () => {} };
+  port: { onmessage: ((ev: MessageEvent<unknown>) => void) | null; postMessage: () => void } = {
+    onmessage: null,
+    postMessage: () => {},
+  };
   connect = () => {};
+  constructor() {
+    createdWorklets.push(this);
+  }
+  /** Feed one frame of loud PCM16, i.e. the reader saying something. */
+  speak() {
+    const pcm = new Int16Array(320).fill(6_000);
+    this.port.onmessage?.({ data: pcm.buffer } as MessageEvent<unknown>);
+  }
 }
 
 const getUserMedia = vi.fn(async () => {
@@ -299,6 +312,7 @@ describe("startGeminiLive (stubbed)", () => {
   beforeEach(() => {
     createdAudioSources.length = 0;
     createdAudioContexts.length = 0;
+    createdWorklets.length = 0;
     h.order.length = 0;
     h.sockets.length = 0;
     getUserMedia.mockClear();
@@ -456,6 +470,9 @@ describe("startGeminiLive (stubbed)", () => {
     socket.emit("close", { code: 1000, reason: "upstream finished" });
     expect(states).toEqual([
       { state: "connected" },
+      // setupComplete is when the model starts hearing the mic, so it is
+      // reported: the reader needs a cue for when to start talking.
+      { state: "ready" },
       {
         state: "closed",
         kind: "normal",
@@ -561,6 +578,35 @@ describe("startGeminiLive (stubbed)", () => {
     createdAudioSources[0].onended?.();
     await flush();
     expect(drained).toBe(true);
+  });
+
+  it("says it is still thinking instead of hanging up on a slow reply", async () => {
+    vi.useFakeTimers();
+    try {
+      const states: unknown[] = [];
+      const p = startGeminiLive({ onStateChange: (st) => states.push(st), onError: () => {} });
+      await vi.advanceTimersByTimeAsync(0);
+      const socket = h.sockets[h.sockets.length - 1];
+      socket.open();
+      await p;
+      socket.emit("message", { data: JSON.stringify({ setupComplete: {} }) });
+      createdWorklets[createdWorklets.length - 1].speak();
+
+      // A real handoff needs ~5.5s for the tool round trip, and measured first
+      // audio reached 10.6s. The old 7s deadline killed both.
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(states).toContainEqual(expect.objectContaining({ state: "waiting" }));
+      expect(states).not.toContainEqual(expect.objectContaining({ state: "closed" }));
+      expect(socket.readyState).not.toBe(3);
+
+      // Only a silence far past anything observed working ends the call.
+      await vi.advanceTimersByTimeAsync(22_000);
+      expect(states).toContainEqual(
+        expect.objectContaining({ state: "closed", reason: "gemini stopped responding" }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("sends keepalive pings every 20s and stops on close", async () => {

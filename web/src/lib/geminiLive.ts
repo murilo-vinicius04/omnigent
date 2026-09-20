@@ -19,7 +19,13 @@ const PLAYBACK_RATE = 24_000;
  * answer is owed; frames are never gated on it.
  */
 const SPEECH_RMS = 900;
-const REPLY_STALL_MS = 7_000;
+// Waiting on a reply. The old single 7s deadline hung up on healthy sessions:
+// measured first audio in real conversations reached 10.6s, and a handoff needs
+// ~5.5s more for the tool round trip, so "yes, send it to Claude" was routinely
+// killed mid-thought. Say something at the first mark, hang up only at the
+// second, which is past anything observed working.
+const REPLY_SLOW_MS = 8_000;
+const REPLY_STALL_MS = 30_000;
 // How far ahead of the playhead the first chunk of a reply is scheduled.
 // Audio arrives over a socket whose pacing we do not control, so the queue
 // needs slack: with none, a packet that is a few ms late plays into a gap and
@@ -205,6 +211,12 @@ export interface GeminiLiveSession {
 /** State callbacks: connected once, closed exactly once with its kind. */
 export type GeminiLiveState =
   | { state: "connected" }
+  // Google has acknowledged the setup frame: from here the model actually
+  // hears the mic. The socket opens well before this, so "connected" alone is
+  // not a cue to start talking.
+  | { state: "ready" }
+  // Owed a reply for a while. Not fatal: the model is often just slow.
+  | { state: "waiting"; sinceMs: number }
   | {
       state: "closed";
       kind: "normal" | "policy" | "error";
@@ -241,6 +253,8 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
   let stallInterval: ReturnType<typeof setInterval> | null = null;
   let lastSpeechAt = 0;
   let lastAnswerAt = 0;
+  // One "still waiting" per unanswered utterance, not one per tick.
+  let slowNotified = false;
   // Playback scheduling: model audio chunks are placed end-to-end.
   let nextStartTime = 0;
   // Times the queue ran dry mid-reply. Not reset per turn: it is a health
@@ -314,6 +328,10 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
     // session looks healthy.
     if (event.type === "audio" || event.type === "turnComplete" || event.type === "toolCall") {
       lastAnswerAt = Date.now();
+      slowNotified = false;
+    }
+    if (event.type === "setupComplete") {
+      onStateChange?.({ state: "ready" });
     }
     if (event.type === "audio" && playbackCtx) {
       const floats = decodePcm16Base64(event.data);
@@ -456,7 +474,14 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
     // session died, instead of waiting on an endpoint that stopped listening.
     stallInterval = setInterval(() => {
       if (stopped || !lastSpeechAt || lastAnswerAt > lastSpeechAt) return;
-      if (Date.now() - lastSpeechAt < REPLY_STALL_MS) return;
+      const owedMs = Date.now() - lastSpeechAt;
+      if (owedMs >= REPLY_SLOW_MS && !slowNotified) {
+        // Tell the reader we are still waiting rather than sitting in silence
+        // that is indistinguishable from a dead session.
+        slowNotified = true;
+        onStateChange?.({ state: "waiting", sinceMs: owedMs });
+      }
+      if (owedMs < REPLY_STALL_MS) return;
       lastSpeechAt = 0;
       releaseAll();
       reportClosed("error", 4000, "gemini stopped responding");
