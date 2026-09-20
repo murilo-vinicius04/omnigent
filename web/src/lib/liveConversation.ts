@@ -9,11 +9,7 @@ import { create } from "zustand";
 import { delegateSpoken, noteCompanion, prewarmCompanion } from "./companionApi";
 import { claimSpeechChannel, setConversationSpeaking } from "./speechPlayback";
 import type { LiveVoiceEngine } from "./liveVoiceEngine";
-import {
-  getLiveEngineAdapter,
-  USD_PER_MINUTE,
-  type LiveEngineHandle,
-} from "./liveEngineAdapters";
+import { getLiveEngineAdapter, USD_PER_MINUTE, type LiveEngineHandle } from "./liveEngineAdapters";
 
 export { USD_PER_MINUTE };
 
@@ -81,6 +77,41 @@ function teardown(set: (partial: Partial<ConversationStoreState>) => void): void
  * conversation, the turn starts, and everything downstream -- the summary,
  * the narration -- behaves exactly as it would have.
  */
+/** Newest-first budget for the discussion carried into the handoff. */
+const MAX_CONTEXT_CHARS = 6000;
+
+/**
+ * Compose the handoff message: the question, then the call it came out of.
+ *
+ * The delegated question is one restated sentence. On its own it strands
+ * Claude -- a three-minute discussion becomes "I want this", with nothing
+ * saying what "this" is. Both sides of the call are on screen already; they
+ * belong in the message too.
+ *
+ * :param question: The companion's restatement of what the reader asked.
+ * :param transcript: The call so far, oldest first.
+ * :returns: The text to send, unchanged when there is no discussion to add.
+ */
+export function composeHandoff(
+  question: string,
+  transcript: readonly { who: "reader" | "voice"; text: string }[],
+): string {
+  const lines: string[] = [];
+  let budget = MAX_CONTEXT_CHARS;
+  // Oldest lines are the ones to drop, so fill from the end and reverse.
+  for (let i = transcript.length - 1; i >= 0; i -= 1) {
+    const { who, text } = transcript[i];
+    const line = `${who === "reader" ? "Me" : "Voice"}: ${text.trim()}`;
+    if (!text.trim()) continue;
+    if (line.length > budget) break;
+    budget -= line.length + 1;
+    lines.push(line);
+  }
+  if (lines.length === 0) return question;
+  lines.reverse();
+  return `${question}\n\n---\nContext — the voice conversation this came out of:\n\n${lines.join("\n")}`;
+}
+
 async function handToClaude(text: string, agentId: string | null): Promise<boolean> {
   if (!agentId) return false;
   try {
@@ -116,6 +147,8 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
     // The reader's last finished sentence, for a delegation that arrives before
     // the transcript of the words it is about.
     let lastReader = "";
+    // Both sides of the call, oldest first: the context a handoff carries.
+    const transcript: { who: "reader" | "voice"; text: string }[] = [];
 
     /**
      * The voice model could not answer and delegated. The delegation names no
@@ -138,10 +171,7 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
 
       let result: Awaited<ReturnType<typeof delegateSpoken>> | "timeout";
       try {
-        result = await Promise.race([
-          delegateSpoken(sessionId, question),
-          timeoutPromise,
-        ]);
+        result = await Promise.race([delegateSpoken(sessionId, question), timeoutPromise]);
       } finally {
         if (timer) clearTimeout(timer);
       }
@@ -162,7 +192,7 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
         return;
       }
       handedOff = true;
-      const text = decision.english ?? question;
+      const text = composeHandoff(decision.english ?? question, transcript);
       if (!(await handToClaude(text, agentId))) {
         // Hanging up without sending would lose the request entirely.
         handedOff = false;
@@ -186,6 +216,7 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
         // it, and the next conversation opens knowing what the last one said.
         onUtterance: ({ who, text }) => {
           void noteCompanion(sessionId, who === "reader" ? "question" : "answer", text);
+          transcript.push({ who, text });
           if (who === "reader") lastReader = text;
         },
         onDelegation: (delegationId, asked) => void answerDelegation(delegationId, asked),

@@ -32,7 +32,7 @@ vi.mock("@/store/chatStore", () => ({
   useChatStore: { getState: () => ({ send }) },
 }));
 
-import { useLiveConversationStore, conversationCostUsd } from "./liveConversation";
+import { useLiveConversationStore, conversationCostUsd, composeHandoff } from "./liveConversation";
 
 if (typeof globalThis.MediaStream === "undefined") {
   (globalThis as unknown as { MediaStream: unknown }).MediaStream = function MediaStream() {};
@@ -322,9 +322,7 @@ describe("answering what the voice delegates", () => {
   it("sends not-ready tool response on delegation timeout (15s) and does NOT send to Claude", async () => {
     vi.useFakeTimers();
     try {
-      delegateSpoken.mockImplementation(
-        () => new Promise(() => {}),
-      );
+      delegateSpoken.mockImplementation(() => new Promise(() => {}));
       const { live, delegate } = await open();
       delegate("item_d_timeout", "what is the status of the deployment");
 
@@ -339,5 +337,43 @@ describe("answering what the voice delegates", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("composeHandoff", () => {
+  it("carries the discussion, so a handoff is not stranded on its last phrase", () => {
+    // The reported failure: three minutes of discussion, then "I want this",
+    // and Claude received only that sentence.
+    const out = composeHandoff("Go ahead with the occlusion fix.", [
+      { who: "reader", text: "The D2 measurements look wrong." },
+      { who: "voice", text: "Which ones — the occluded markers?" },
+      { who: "reader", text: "No, forget occlusion. The good ones." },
+      { who: "voice", text: "So you want the unoccluded set re-checked?" },
+      { who: "reader", text: "I want this." },
+    ]);
+    expect(out).toContain("Go ahead with the occlusion fix.");
+    expect(out).toContain("Me: The D2 measurements look wrong.");
+    expect(out).toContain("Voice: Which ones — the occluded markers?");
+    // Oldest first, so Claude reads the discussion in the order it happened.
+    expect(out.indexOf("The D2 measurements")).toBeLessThan(out.indexOf("I want this."));
+  });
+
+  it("sends the bare question when there is nothing to add", () => {
+    expect(composeHandoff("Run the tests.", [])).toBe("Run the tests.");
+    expect(composeHandoff("Run the tests.", [{ who: "reader", text: "   " }])).toBe(
+      "Run the tests.",
+    );
+  });
+
+  it("drops the oldest lines rather than the request when the call is long", () => {
+    const transcript = Array.from({ length: 400 }, (_, i) => ({
+      who: (i % 2 === 0 ? "reader" : "voice") as "reader" | "voice",
+      text: `line ${i} ${"x".repeat(40)}`,
+    }));
+    const out = composeHandoff("Do the thing.", transcript);
+    expect(out.length).toBeLessThan(7000);
+    expect(out).toContain("Do the thing.");
+    expect(out).toContain("line 399");
+    expect(out).not.toContain("line 0 ");
   });
 });

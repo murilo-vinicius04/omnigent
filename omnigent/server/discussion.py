@@ -212,7 +212,9 @@ nothing to ask, is about the conversation itself: forward false.\
 #: sending the question to Claude.
 _DELEGATE_PROMPT: Final[str] = """\
 [The voice you work with could not answer this from its notes and asked you. \
-This is what the person said most recently.]
+This is what the person said. It may be one sentence or their whole side of a \
+long discussion, so read all of it: the request is often the last part and what \
+it refers to is earlier.]
 {message}
 
 Reply with ONE line of JSON and nothing else:
@@ -233,7 +235,9 @@ _RULE_TRANSLATE: Final[str] = (
     '- "english": their message restated in plain English for Claude. Faithful, '
     "same meaning, no commentary, no answering it. Always fill this in, even when "
     "you are answering yourself. Reproduce code, commands, paths, identifiers and "
-    "quoted output exactly as given."
+    "quoted output exactly as given. When they have been talking for a while, carry "
+    "what the request depends on, not only the sentence that asked for it: Claude "
+    "cannot hear the call."
 )
 
 #: The reader already writes English, so this is a repair, not an edit. The
