@@ -202,7 +202,12 @@ first audio ~0.25s, no dry gaps. Details and traps: memory `unmute-voice-stack`.
    that run the host executed code from `bench2/runs/T4-gemini2/tree/omnigent`
    (venv hijack; host tracebacks show the path). T4's code base `46a0c437a`
    predates the Worker control `494ff328a`, so the codex label had no effect.
-   Host and venv are now clean (`venv_guard.sh` ok); a rerun needs the user's go.
+   Host and venv are now clean (`venv_guard.sh` ok).
+   **Rerun 09-21 20:22 (T3, Opus brain + codex gpt-5.6-luna): 5/5, 0 regressions,
+   6.0 min, Claude $1.73, free pool 637k tokens (580k of them cached input
+   re-sent by Codex) = 25% of the 2.5M day.** The pool is shared with the
+   Unmute voice brain (Terra, ~1M/day). One run; variance is large.
+   `run_nexus.py <task> <host> [worker] [model]`; ARENA_WORK is used as given.
 4. Qwen-Omni-Realtime (Alibaba, Singapore region, 90-day free quota) is the
    cloud fallback option if Unmute doesn't satisfy; needs the user's account.
 
@@ -234,7 +239,8 @@ user liked ex02 and ex03-happy), `8b5cb49bd` per-call mic trace log.
    said yes). Also `3f058a8a2` talk over a reading, `324c790c5` readings
    survive session switches, call volume follows the narration slider.
 
-**Compaction bug — fix `842f2acca`, NOT deployed, needs the user's go:**
+**Compaction bug — fix `842f2acca` is LIVE** (in the host since its 18:41
+restart; the user reports compaction working, 09-21 ~20:20). History below:
 every Claude relaunch rebuilds the transcript from Omnigent's compaction
 records; the hook path saved them before Claude wrote the compacted transcript,
 so each held the whole old history and relaunches undid compactions (611k→7.4k
