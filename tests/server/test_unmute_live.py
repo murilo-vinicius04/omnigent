@@ -331,3 +331,20 @@ def test_the_page_talks_gemini_frames_through_the_relay() -> None:
     assert "modelTurn" in frames[1]["serverContent"]
     assert frames[2] == {"serverContent": {"outputTranscription": {"text": " Hello"}}}
     assert frames[3] == {"serverContent": {"turnComplete": True}}
+
+
+def test_the_input_trace_shows_whether_the_page_sent_speech_or_silence() -> None:
+    import base64
+
+    import numpy as np
+
+    trace = routes._InputTrace(started=100.0)
+    loud = (np.sin(np.arange(1600) / 5) * 8000).astype("<i2").tobytes()
+    trace.audio(100.2, base64.b64encode(loud).decode())
+    trace.audio(101.5, base64.b64encode(bytes(3200)).decode())  # a muted mic
+    trace.word(100.4)
+    trace.reply(102.0)
+
+    summary = trace.summary()
+    assert summary.startswith("mic_dbfs_per_s=[-15,-90]")
+    assert "words_at=[0.4]" in summary and "replies_at=[2.0]" in summary

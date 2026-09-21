@@ -24,6 +24,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, Final
 
 import httpx
+import numpy as np
 import websockets
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketException
 from starlette import status
@@ -95,6 +96,49 @@ def translate_upstream(event: dict[str, Any]) -> dict[str, Any] | None:
     if kind == "response.audio.done":
         return {"serverContent": {"turnComplete": True}}
     return None
+
+
+class _InputTrace:
+    """Per-second loudness of the page's mic, and when Unmute heard or answered.
+
+    A call that stops answering is either silence coming from the page (a
+    muted track, echo cancellation clamping the mic) or speech-to-text that
+    stopped hearing real speech; the loudness beside the words tells which.
+    """
+
+    def __init__(self, started: float) -> None:
+        self.started = started
+        self.loudest: dict[int, float] = {}
+        self.words: list[float] = []
+        self.replies: list[float] = []
+
+    def audio(self, now: float, b64: str) -> None:
+        try:
+            pcm = np.frombuffer(base64.b64decode(b64), dtype="<i2").astype(np.float32)
+        except ValueError:
+            return
+        if pcm.size == 0:
+            return
+        rms = float(np.sqrt(np.mean(pcm * pcm)))
+        dbfs = 20 * float(np.log10(max(rms, 1.0) / 32768))
+        second = int(now - self.started)
+        if second < 600:
+            self.loudest[second] = max(self.loudest.get(second, -120.0), dbfs)
+
+    def word(self, now: float) -> None:
+        if len(self.words) < 80:
+            self.words.append(now - self.started)
+
+    def reply(self, now: float) -> None:
+        if len(self.replies) < 30:
+            self.replies.append(now - self.started)
+
+    def summary(self) -> str:
+        span = max(self.loudest, default=-1) + 1
+        loud = ",".join(str(round(self.loudest.get(i, -120))) for i in range(span))
+        words = ",".join(f"{t:.1f}" for t in self.words)
+        replies = ",".join(f"{t:.1f}" for t in self.replies)
+        return f"mic_dbfs_per_s=[{loud}] words_at=[{words}] replies_at=[{replies}]"
 
 
 def _audio_bytes(b64: str) -> int:
@@ -201,6 +245,7 @@ def create_unmute_live_router(
         last_audio_at: float | None = None
         reply = _ReplyMeter()
         replies: list[str] = []
+        trace = _InputTrace(started)
 
         async def client_to_upstream() -> None:
             nonlocal last_activity, handed_off
@@ -238,6 +283,7 @@ def create_unmute_live_router(
                 audio = (frame.get("realtimeInput") or {}).get("audio") or {}
                 if isinstance(audio, dict) and isinstance(audio.get("data"), str):
                     counts["audio_in"] += 1
+                    trace.audio(time.monotonic(), audio["data"])
                     await upstream.send(
                         json.dumps({"type": "input_audio_buffer.append", "audio": audio["data"]})
                     )
@@ -286,7 +332,11 @@ def create_unmute_live_router(
                 content = frame.get("serverContent") or {}
                 if "setupComplete" in frame and setup_ms is None:
                     setup_ms = (now - started) * 1000
+                if "inputTranscription" in content:
+                    trace.word(now)
                 if "modelTurn" in content:
+                    if reply.first_at is None:
+                        trace.reply(now)
                     size = _audio_bytes(str(event.get("delta", "")))
                     if first_audio_ms is None:
                         first_audio_ms = (now - started) * 1000
@@ -381,6 +431,8 @@ def create_unmute_live_router(
                 "[" + ",".join([*replies, *filter(None, [reply.summary()])]) + "]",
                 upstream_error or "none",
             )
+            if not narrating:
+                _logger.info("unmute live input trace | %s", trace.summary())
         with contextlib.suppress(RuntimeError):
             await websocket.close(code=close_code, reason=close_reason)
 
