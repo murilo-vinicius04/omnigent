@@ -181,8 +181,18 @@ grep "gemini live session ended" $(ls -t ~/.omnigent/logs/server/*.log | head -1
   `unmute-voice-stack`. Stack: `~/unmute`, `docker-compose.local.yml`, brain
   `gpt-5.6-terra` via the free OpenAI pool (~2s first token). English only.
 
+**Later the same day — Unmute is now a third engine (`52f9b34f9`, not pushed).**
+Picker "Unmute (local)": calls and summary narration run on the local Kyutai
+stack, with Omnigent as its model ("brain", gpt-5.6-terra, free pool, tools at
+`reasoning_effort: none`). The relay `/v1/live/unmute/ws` speaks Gemini Live's
+frames, so the page reuses the Gemini client and handoff code unchanged. The
+Unmute-side patch is committed on `~/unmute` branch `omnigent-local`. Measured
+with synthetic speech: reply audio 1.25-2.2s after the speaker stops, narration
+first audio ~0.25s, no dry gaps. Details and traps: memory `unmute-voice-stack`.
+
 **Open:**
-1. User to try /unmute (delay, barge-in, voice) — then decide keep/remove.
+1. User to try the Unmute engine in a real call (mic echo, barge-in, voice,
+   handoff) — synthetic tests cannot judge echo or the voice itself.
 2. Disk ~6 GB free. pi05 training (openpi — NEVER touch) wrote ~25 GB last
    night and will fail if it runs again. Candidates the user has NOT approved:
    Isaac shader caches 30 GB (stop Isaac first), spot-teleop venvs in git
