@@ -9,10 +9,13 @@ import {
 } from "@/components/ui/select";
 import {
   fetchGeminiLiveAvailability,
-  fetchUnmuteLiveAvailability,
+  fetchUnmuteLive,
   getLiveVoiceEngine,
+  getUnmuteVoice,
   setLiveVoiceEngine,
+  setUnmuteVoice,
   type GeminiAvailability,
+  type UnmuteVoice,
 } from "@/lib/liveVoiceEngine";
 import { useLiveConversationStore } from "@/lib/liveConversation";
 import { useEffect, useState } from "react";
@@ -31,6 +34,8 @@ export function LiveVoiceEnginePicker({ disabled }: { disabled?: boolean }) {
   const [engine, setEngine] = useState(getLiveVoiceEngine);
   const [geminiAvailability, setGeminiAvailability] = useState<GeminiAvailability>("unknown");
   const [unmuteAvailability, setUnmuteAvailability] = useState<GeminiAvailability>("unknown");
+  const [unmuteVoices, setUnmuteVoices] = useState<UnmuteVoice[]>([]);
+  const [unmuteVoice, setUnmuteVoiceState] = useState<string | null>(getUnmuteVoice);
   const conversationSessionId = useLiveConversationStore((s) => s.sessionId);
   const conversationConnecting = useLiveConversationStore((s) => s.connecting);
   const sessionActive = Boolean(conversationSessionId) || conversationConnecting;
@@ -52,8 +57,14 @@ export function LiveVoiceEnginePicker({ disabled }: { disabled?: boolean }) {
     });
     // Unmute is never switched away from: falling back would silently start
     // billing GPT Live. A stopped stack says so when a call is started.
-    void fetchUnmuteLiveAvailability().then((status) => {
-      if (!cancelled) setUnmuteAvailability(status);
+    void fetchUnmuteLive().then(({ availability, voices, defaultVoice }) => {
+      if (cancelled) return;
+      setUnmuteAvailability(availability);
+      setUnmuteVoices(voices);
+      // Show the voice the server will actually use when none was chosen.
+      setUnmuteVoiceState((current) =>
+        current && voices.some((v) => v.id === current) ? current : defaultVoice,
+      );
     });
     return () => {
       cancelled = true;
@@ -62,47 +73,81 @@ export function LiveVoiceEnginePicker({ disabled }: { disabled?: boolean }) {
 
   const geminiDisabled = geminiAvailability === "unconfigured";
 
+  const locked = disabled || sessionActive;
+
   return (
-    <Select
-      value={engine}
-      onValueChange={(next) => {
-        if (next !== "gpt" && next !== "gemini" && next !== "unmute") return;
-        setLiveVoiceEngine(next);
-        setEngine(next);
-      }}
-      disabled={disabled || sessionActive}
-    >
-      <SelectTrigger
-        size="sm"
-        aria-label="Live voice engine"
-        title={
-          sessionActive
-            ? "Cannot switch engines while a live conversation is open"
-            : "Which live voice engine a spoken conversation uses"
-        }
+    <>
+      <Select
+        value={engine}
+        onValueChange={(next) => {
+          if (next !== "gpt" && next !== "gemini" && next !== "unmute") return;
+          setLiveVoiceEngine(next);
+          setEngine(next);
+        }}
+        disabled={locked}
       >
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value="gpt">GPT Live</SelectItem>
-        <SelectItem
-          value="gemini"
-          disabled={geminiDisabled}
-          title={geminiDisabled ? "No Gemini key configured on the server" : "Gemini Live"}
-        >
-          Gemini Live
-        </SelectItem>
-        <SelectItem
-          value="unmute"
+        <SelectTrigger
+          size="sm"
+          aria-label="Live voice engine"
           title={
-            unmuteAvailability === "unconfigured"
-              ? "The local Unmute stack is not running"
-              : "Kyutai Unmute on this machine's GPU (English only)"
+            sessionActive
+              ? "Cannot switch engines while a live conversation is open"
+              : "Which live voice engine a spoken conversation uses"
           }
         >
-          Unmute (local)
-        </SelectItem>
-      </SelectContent>
-    </Select>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="gpt">GPT Live</SelectItem>
+          <SelectItem
+            value="gemini"
+            disabled={geminiDisabled}
+            title={geminiDisabled ? "No Gemini key configured on the server" : "Gemini Live"}
+          >
+            Gemini Live
+          </SelectItem>
+          <SelectItem
+            value="unmute"
+            title={
+              unmuteAvailability === "unconfigured"
+                ? "The local Unmute stack is not running"
+                : "Kyutai Unmute on this machine's GPU (English only)"
+            }
+          >
+            Unmute (local)
+          </SelectItem>
+        </SelectContent>
+      </Select>
+      {engine === "unmute" && unmuteVoices.length > 1 && unmuteVoice && (
+        <Select
+          value={unmuteVoice}
+          onValueChange={(next) => {
+            if (!unmuteVoices.some((v) => v.id === next)) return;
+            setUnmuteVoice(next);
+            setUnmuteVoiceState(next);
+          }}
+          disabled={locked}
+        >
+          <SelectTrigger
+            size="sm"
+            aria-label="Unmute voice"
+            title={
+              sessionActive
+                ? "Cannot switch voices while a live conversation is open"
+                : "Which voice Unmute speaks with"
+            }
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {unmuteVoices.map((v) => (
+              <SelectItem key={v.id} value={v.id}>
+                {v.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+    </>
   );
 }

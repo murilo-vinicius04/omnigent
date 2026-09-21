@@ -141,7 +141,11 @@ def create_unmute_live_router(
             up = all(health.get(k) for k in ("tts_up", "stt_up", "llm_up"))
         except (httpx.HTTPError, ValueError, AttributeError):
             up = False
-        return {"configured": up, "voice": unmute_live.voice()}
+        return {
+            "configured": up,
+            "voices": [{"id": vid, "label": label} for vid, label, _ in unmute_live.VOICES],
+            "default": unmute_live.VOICES[0][0],
+        }
 
     @router.websocket("/live/unmute/ws")
     async def unmute_live_ws(websocket: WebSocket) -> None:
@@ -162,7 +166,7 @@ def create_unmute_live_router(
                 companion = companions().peek(session_id) if session_id else None
             briefed = bool(companion is not None and getattr(companion, "context", None))
             instructions = f"{voice_briefing(companion)}\n\n{unmute_live.SPOKEN_RULES}"
-        call = unmute_live.open_call(session_id, instructions)
+        call = unmute_live.open_call(session_id, instructions, websocket.query_params.get("voice"))
 
         base = unmute_live.unmute_base_url()
         ws_base = base.replace("http://", "ws://", 1).replace("https://", "wss://", 1)

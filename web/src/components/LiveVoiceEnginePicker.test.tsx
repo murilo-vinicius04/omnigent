@@ -19,7 +19,16 @@ vi.mock("@/lib/liveVoiceEngine", () => ({
     window.localStorage.setItem(KEY, engine);
   },
   fetchGeminiLiveAvailability: () => availability,
-  fetchUnmuteLiveAvailability: () => unmuteAvailability,
+  fetchUnmuteLive: async () => ({
+    availability: await unmuteAvailability,
+    voices: [
+      { id: "ex02", label: "Plain" },
+      { id: "ex03-happy", label: "Upbeat" },
+    ],
+    defaultVoice: "ex02",
+  }),
+  getUnmuteVoice: () => window.localStorage.getItem("omnigent:unmute-voice"),
+  setUnmuteVoice: (voice: string) => window.localStorage.setItem("omnigent:unmute-voice", voice),
 }));
 
 vi.mock("@/lib/liveConversation", () => ({
@@ -118,6 +127,24 @@ describe("LiveVoiceEnginePicker", () => {
     const option = await screen.findByRole("option", { name: /Unmute \(local\)/ });
     expect(option).toHaveAttribute("title", "The local Unmute stack is not running");
     expect(window.localStorage.getItem(KEY)).toBe("unmute");
+  });
+
+  it("offers Unmute's voices only while Unmute is the engine", async () => {
+    render(<LiveVoiceEnginePicker />);
+    await act_wait();
+    expect(screen.queryByRole("combobox", { name: "Unmute voice" })).toBeNull();
+    cleanup();
+
+    window.localStorage.setItem(KEY, "unmute");
+    render(<LiveVoiceEnginePicker />);
+    const voice = await screen.findByRole("combobox", { name: "Unmute voice" });
+    // Nothing chosen yet: it shows the server's default.
+    expect(voice).toHaveTextContent("Plain");
+    fireEvent.click(voice);
+    fireEvent.click(await screen.findByRole("option", { name: "Upbeat" }));
+    await waitFor(() => {
+      expect(window.localStorage.getItem("omnigent:unmute-voice")).toBe("ex03-happy");
+    });
   });
 
   it("is disabled while a live conversation is active", async () => {

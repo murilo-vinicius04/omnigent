@@ -99,6 +99,12 @@ describe("liveEngineAdapters", () => {
         "Unmute isn't hearing you — nothing you said came through",
         "warn",
       );
+
+      // A chosen voice rides on the socket URL of the next call.
+      window.localStorage.setItem("omnigent:unmute-voice", "ex03-happy");
+      await unmuteEngineAdapter.open("session_u", { onUtterance: vi.fn(), onDelegation: vi.fn() });
+      window.localStorage.removeItem("omnigent:unmute-voice");
+      expect(opts.endpoint).toBe("/v1/live/unmute/ws?voice=ex03-happy");
     });
   });
 

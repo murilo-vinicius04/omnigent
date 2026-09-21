@@ -33,10 +33,17 @@ _logger = logging.getLogger(__name__)
 UPSTREAM_ENV: Final[str] = "OMNIGENT_UNMUTE_URL"
 DEFAULT_UPSTREAM: Final[str] = "http://127.0.0.1:8089"
 
-#: Unmute voice for Omnigent calls: a studio narration clip from the Expresso
-#: dataset, so no accent is cloned into it.
+#: Voices the page offers, first is the default: ``(id, label, Unmute voice)``.
+#: Unmute clones the clip's speaker, accent and manner included, so these are
+#: plain-style Expresso studio clips (American voice actors), picked by ear
+#: from eight candidates on 2026-09-21.
+VOICES: Final[tuple[tuple[str, str, str], ...]] = (
+    ("ex02", "Plain", "expresso/ex01-ex02_default_001_channel2_198s.wav"),
+    ("ex03-happy", "Upbeat", "expresso/ex03-ex01_happy_001_channel1_334s.wav"),
+)
+
+#: Overrides the default voice with any Unmute voice path.
 VOICE_ENV: Final[str] = "OMNIGENT_UNMUTE_VOICE"
-DEFAULT_VOICE: Final[str] = "unmute-prod-website/ex04_narration_longform_00001.wav"
 
 #: Where the brain sends model calls. Defaults to this server's own OpenAI
 #: budget proxy, so every call is admitted against and recorded in the free pool.
@@ -108,9 +115,16 @@ def brain_upstream(server: tuple[str, int] | None) -> str:
     return f"http://127.0.0.1:{port}/v1/openai-budget/v1"
 
 
-def voice() -> str:
-    """Return the Unmute voice Omnigent calls speak with."""
-    return os.environ.get(VOICE_ENV, "").strip() or DEFAULT_VOICE
+def voice(choice: str | None = None) -> str:
+    """Return the Unmute voice for a call.
+
+    :param choice: A :data:`VOICES` id the page asked for; anything else
+        gets the default (``OMNIGENT_UNMUTE_VOICE``, else the first voice).
+    """
+    for voice_id, _label, path in VOICES:
+        if choice == voice_id:
+            return path
+    return os.environ.get(VOICE_ENV, "").strip() or VOICES[0][2]
 
 
 class CallEnded(Exception):
@@ -129,6 +143,8 @@ class UnmuteCall:
     call_id: str
     session_id: str
     instructions: str | None
+    #: Unmute voice path the call speaks with.
+    voice: str = ""
     #: Text to read aloud, once the page has sent it (narration only).
     narration: str | None = None
     #: Gemini-shaped frames the brain wants the page to see (tool calls).
@@ -185,9 +201,14 @@ class UnmuteCall:
 _CALLS: dict[str, UnmuteCall] = {}
 
 
-def open_call(session_id: str, instructions: str | None) -> UnmuteCall:
-    """Register a call; ``instructions=None`` opens a narration."""
-    call = UnmuteCall(secrets.token_urlsafe(18), session_id, instructions)
+def open_call(
+    session_id: str, instructions: str | None, voice_id: str | None = None
+) -> UnmuteCall:
+    """Register a call; ``instructions=None`` opens a narration.
+
+    :param voice_id: A :data:`VOICES` id; unknown or ``None`` is the default.
+    """
+    call = UnmuteCall(secrets.token_urlsafe(18), session_id, instructions, voice(voice_id))
     _CALLS[call.call_id] = call
     return call
 
@@ -221,7 +242,7 @@ def session_update(call: UnmuteCall) -> dict[str, Any]:
         "type": "session.update",
         "session": {
             "instructions": {"type": "constant", "text": f"omnigent-call:{call.call_id}"},
-            "voice": voice(),
+            "voice": call.voice,
             "allow_recording": False,
             "audio_format": "pcm16",
             # The page captures at 16 kHz; a narration feeds its own silence.

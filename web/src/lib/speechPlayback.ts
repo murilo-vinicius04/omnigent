@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { narrateViaLive, type LiveNarration } from "./liveVoice";
 import { narrateViaGeminiLive } from "./geminiNarrator";
-import { getLiveVoiceEngine } from "./liveVoiceEngine";
+import { getLiveVoiceEngine, unmuteEndpoint } from "./liveVoiceEngine";
 import { currentNarrationVolume, isNarrationEnabled } from "./sessionNarrationVolume";
 import { currentVoiceBackend } from "./sessionVoiceBackend";
 import { reportNarration } from "./narrationLog";
@@ -541,7 +541,7 @@ function startLivePlayback(
     engine === "gemini"
       ? narrateViaGeminiLive
       : engine === "unmute"
-        ? (summary: string) => narrateViaGeminiLive(summary, { endpoint: "/v1/live/unmute/ws" })
+        ? (summary: string) => narrateViaGeminiLive(summary, { endpoint: unmuteEndpoint() })
         : narrateViaLive;
 
   void narrate(text)

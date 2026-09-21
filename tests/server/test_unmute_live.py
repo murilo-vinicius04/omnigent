@@ -200,6 +200,18 @@ def test_the_session_update_asks_unmute_for_pcm_and_no_unprompted_speech() -> No
     assert read["greet"] is True and read["input_sample_rate"] == 24_000
 
 
+def test_a_call_speaks_with_the_voice_the_page_chose() -> None:
+    upbeat = unmute_live.open_call("s1", "BRIEFING", "ex03-happy")
+    unknown = unmute_live.open_call("s1", "BRIEFING", "../etc/passwd")
+    try:
+        assert unmute_live.session_update(upbeat)["session"]["voice"] == unmute_live.VOICES[1][2]
+        # Anything but a listed id is the default, never a path passed through.
+        assert unmute_live.session_update(unknown)["session"]["voice"] == unmute_live.VOICES[0][2]
+    finally:
+        unmute_live.close_call(upbeat)
+        unmute_live.close_call(unknown)
+
+
 def _app(**kwargs: Any) -> TestClient:
     app = FastAPI()
     app.include_router(routes.create_unmute_live_router(**kwargs), prefix="/v1")
@@ -299,7 +311,7 @@ def test_the_page_talks_gemini_frames_through_the_relay() -> None:
         return unmute
 
     client = _app(upstream_connect=connect)
-    with client.websocket_connect("/v1/live/unmute/ws?session_id=s1") as ws:
+    with client.websocket_connect("/v1/live/unmute/ws?session_id=s1&voice=ex03-happy") as ws:
         assert json.loads(ws.receive_text()) == {"setupComplete": {}}
         ws.send_text(json.dumps({"realtimeInput": {"audio": {"data": "AQI=", "mimeType": "x"}}}))
         frames = [json.loads(ws.receive_text()) for _ in range(4)]
@@ -307,6 +319,7 @@ def test_the_page_talks_gemini_frames_through_the_relay() -> None:
     assert urls == [("ws://127.0.0.1:8089/unmute/api/v1/realtime", ["realtime"])]
     update, audio = unmute.sent[:2]
     assert update["session"]["instructions"]["text"].startswith("omnigent-call:")
+    assert update["session"]["voice"] == unmute_live.VOICES[1][2]
     # Audio passes through as-is: both sides carry base64 PCM16.
     assert audio == {"type": "input_audio_buffer.append", "audio": "AQI="}
     assert frames[0] == {"serverContent": {"inputTranscription": {"text": " hi"}}}

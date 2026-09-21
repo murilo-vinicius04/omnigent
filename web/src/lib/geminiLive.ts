@@ -473,8 +473,9 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
     await playbackCtx.resume();
 
     const endpoint = opts.endpoint ?? "/v1/live/gemini/ws";
+    const joiner = endpoint.includes("?") ? "&" : "?";
     const wsPath = opts.sessionId
-      ? `${endpoint}?session_id=${encodeURIComponent(opts.sessionId)}`
+      ? `${endpoint}${joiner}session_id=${encodeURIComponent(opts.sessionId)}`
       : endpoint;
     ws = new WebSocket(resolveWebSocketUrl(wsPath));
     const socket = ws;

@@ -5,7 +5,7 @@
 
 import { openLiveConversation, type LiveConversation } from "./liveVoice";
 import { startGeminiLive, type GeminiLiveSession, type GeminiLiveEvent } from "./geminiLive";
-import { getLiveVoiceEngine, type LiveVoiceEngine } from "./liveVoiceEngine";
+import { getLiveVoiceEngine, unmuteEndpoint, type LiveVoiceEngine } from "./liveVoiceEngine";
 
 /** Billed rate for gpt-live, mirrored from the server so the meter can be shown. */
 export const USD_PER_MINUTE = 0.05;
@@ -108,7 +108,7 @@ export const gptEngineAdapter: LiveEngineAdapter = {
  */
 function relayedEngineAdapter(
   engine: "gemini" | "unmute",
-  endpoint: string,
+  endpoint: () => string,
   voice: string,
 ): LiveEngineAdapter {
   return {
@@ -219,7 +219,7 @@ function relayedEngineAdapter(
 
       started = await startGeminiLive({
         sessionId,
-        endpoint,
+        endpoint: endpoint(),
         onEvent: handleEvent,
         onStateChange: (state) => {
           if (state.state === "ready") {
@@ -335,10 +335,14 @@ function relayedEngineAdapter(
 }
 
 /** Gemini Live adapter: relayed WebSocket connection with Gemini Live API. */
-export const geminiEngineAdapter = relayedEngineAdapter("gemini", "/v1/live/gemini/ws", "Gemini");
+export const geminiEngineAdapter = relayedEngineAdapter(
+  "gemini",
+  () => "/v1/live/gemini/ws",
+  "Gemini",
+);
 
 /** Local Kyutai Unmute: speech on this machine's GPU, Omnigent's model as the brain. */
-export const unmuteEngineAdapter = relayedEngineAdapter("unmute", "/v1/live/unmute/ws", "Unmute");
+export const unmuteEngineAdapter = relayedEngineAdapter("unmute", unmuteEndpoint, "Unmute");
 
 /** Select the live engine adapter by engine name, defaulting to the stored preference. */
 export function getLiveEngineAdapter(engine?: LiveVoiceEngine): LiveEngineAdapter {

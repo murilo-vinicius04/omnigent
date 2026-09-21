@@ -115,7 +115,10 @@ export async function narrateViaGeminiLive(
     throw new LiveVoiceUnavailable("aborted");
   }
 
-  const socketUrl = resolveWebSocketUrl(`${options.endpoint ?? "/v1/live/gemini/ws"}?mode=narrate`);
+  const endpoint = options.endpoint ?? "/v1/live/gemini/ws";
+  const socketUrl = resolveWebSocketUrl(
+    `${endpoint}${endpoint.includes("?") ? "&" : "?"}mode=narrate`,
+  );
   ws = new WebSocket(socketUrl);
   const socket = ws;
   socket.binaryType = "arraybuffer";

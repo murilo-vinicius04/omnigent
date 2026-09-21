@@ -10,6 +10,13 @@ export type LiveVoiceEngine = "gpt" | "gemini" | "unmute";
 export type GeminiAvailability = "configured" | "unconfigured" | "unknown";
 
 const STORAGE_KEY = "omnigent:live-voice-engine";
+const UNMUTE_VOICE_KEY = "omnigent:unmute-voice";
+
+/** A voice the local Unmute stack offers, as the server lists it. */
+export interface UnmuteVoice {
+  id: string;
+  label: string;
+}
 
 /** The chosen engine; anything unreadable or unknown means GPT. */
 export function getLiveVoiceEngine(): LiveVoiceEngine {
@@ -35,9 +42,58 @@ export async function fetchGeminiLiveAvailability(): Promise<GeminiAvailability>
   return fetchAvailability("/v1/live/gemini/availability");
 }
 
-/** Whether the local Unmute stack is up (GET /v1/live/unmute/availability). */
-export async function fetchUnmuteLiveAvailability(): Promise<GeminiAvailability> {
-  return fetchAvailability("/v1/live/unmute/availability");
+/** The chosen Unmute voice id, or null for the server's default. */
+export function getUnmuteVoice(): string | null {
+  try {
+    return localStorage.getItem(UNMUTE_VOICE_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist the Unmute voice. Storage refusals are non-fatal. */
+export function setUnmuteVoice(voice: string): void {
+  try {
+    localStorage.setItem(UNMUTE_VOICE_KEY, voice);
+  } catch {
+    // The choice then lasts only until the page reloads.
+  }
+}
+
+/** The Unmute relay socket path, carrying the chosen voice. */
+export function unmuteEndpoint(): string {
+  const voice = getUnmuteVoice();
+  return voice ? `/v1/live/unmute/ws?voice=${encodeURIComponent(voice)}` : "/v1/live/unmute/ws";
+}
+
+/** Whether the local Unmute stack is up, and the voices it offers. */
+export async function fetchUnmuteLive(): Promise<{
+  availability: GeminiAvailability;
+  voices: UnmuteVoice[];
+  defaultVoice: string | null;
+}> {
+  try {
+    const res = await hostFetch("/v1/live/unmute/availability");
+    if (!res.ok) return { availability: "unknown", voices: [], defaultVoice: null };
+    const data = (await res.json()) as {
+      configured?: unknown;
+      voices?: unknown;
+      default?: unknown;
+    };
+    const voices = Array.isArray(data.voices)
+      ? data.voices.filter(
+          (v): v is UnmuteVoice =>
+            Boolean(v) && typeof v.id === "string" && typeof v.label === "string",
+        )
+      : [];
+    return {
+      availability: data.configured === true ? "configured" : "unconfigured",
+      voices,
+      defaultVoice: typeof data.default === "string" ? data.default : null,
+    };
+  } catch {
+    return { availability: "unknown", voices: [], defaultVoice: null };
+  }
 }
 
 async function fetchAvailability(path: string): Promise<GeminiAvailability> {
