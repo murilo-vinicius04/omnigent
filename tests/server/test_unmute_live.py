@@ -204,9 +204,14 @@ def test_a_call_speaks_with_the_voice_the_page_chose() -> None:
     upbeat = unmute_live.open_call("s1", "BRIEFING", "ex03-happy")
     unknown = unmute_live.open_call("s1", "BRIEFING", "../etc/passwd")
     try:
-        assert unmute_live.session_update(upbeat)["session"]["voice"] == unmute_live.VOICES[1][2]
+        assert unmute_live.session_update(upbeat)["session"]["voice"] == unmute_live.voice(
+            "ex03-happy"
+        )
         # Anything but a listed id is the default, never a path passed through.
-        assert unmute_live.session_update(unknown)["session"]["voice"] == unmute_live.VOICES[0][2]
+        assert unmute_live.session_update(unknown)["session"]["voice"] == unmute_live.voice(
+            unmute_live.DEFAULT_VOICE_ID
+        )
+        assert "ex03-ex01_happy" in unmute_live.voice("ex03-happy")
     finally:
         unmute_live.close_call(upbeat)
         unmute_live.close_call(unknown)
@@ -319,7 +324,7 @@ def test_the_page_talks_gemini_frames_through_the_relay() -> None:
     assert urls == [("ws://127.0.0.1:8089/unmute/api/v1/realtime", ["realtime"])]
     update, audio = unmute.sent[:2]
     assert update["session"]["instructions"]["text"].startswith("omnigent-call:")
-    assert update["session"]["voice"] == unmute_live.VOICES[1][2]
+    assert update["session"]["voice"] == unmute_live.voice("ex03-happy")
     # Audio passes through as-is: both sides carry base64 PCM16.
     assert audio == {"type": "input_audio_buffer.append", "audio": "AQI="}
     assert frames[0] == {"serverContent": {"inputTranscription": {"text": " hi"}}}

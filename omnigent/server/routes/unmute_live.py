@@ -144,7 +144,7 @@ def create_unmute_live_router(
         return {
             "configured": up,
             "voices": [{"id": vid, "label": label} for vid, label, _ in unmute_live.VOICES],
-            "default": unmute_live.VOICES[0][0],
+            "default": unmute_live.DEFAULT_VOICE_ID,
         }
 
     @router.websocket("/live/unmute/ws")

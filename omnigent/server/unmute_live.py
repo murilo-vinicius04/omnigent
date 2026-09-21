@@ -33,14 +33,26 @@ _logger = logging.getLogger(__name__)
 UPSTREAM_ENV: Final[str] = "OMNIGENT_UNMUTE_URL"
 DEFAULT_UPSTREAM: Final[str] = "http://127.0.0.1:8089"
 
-#: Voices the page offers, first is the default: ``(id, label, Unmute voice)``.
-#: Unmute clones the clip's speaker, accent and manner included, so these are
-#: plain-style Expresso studio clips (American voice actors), picked by ear
-#: from eight candidates on 2026-09-21.
+#: Voices the page offers: ``(id, label, Unmute voice)``. Unmute clones the
+#: clip's speaker, accent and manner included; these are Expresso studio clips
+#: (American voice actors), numbered as in the 2026-09-21 listening samples.
 VOICES: Final[tuple[tuple[str, str, str], ...]] = (
-    ("ex02", "Plain", "expresso/ex01-ex02_default_001_channel2_198s.wav"),
-    ("ex03-happy", "Upbeat", "expresso/ex03-ex01_happy_001_channel1_334s.wav"),
+    (
+        "ex04-longform",
+        "0 · ex04 long narration",
+        "unmute-prod-website/ex04_narration_longform_00001.wav",
+    ),
+    ("ex01", "1 · ex01 plain", "expresso/ex01-ex02_default_001_channel1_168s.wav"),
+    ("ex02", "2 · ex02 plain", "expresso/ex01-ex02_default_001_channel2_198s.wav"),
+    ("ex03-calm", "3 · ex03 calm", "expresso/ex03-ex01_calm_001_channel1_1143s.wav"),
+    ("ex03-narration", "4 · ex03 narration", "expresso/ex03-ex02_narration_001_channel1_674s.wav"),
+    ("ex03-happy", "5 · ex03 upbeat", "expresso/ex03-ex01_happy_001_channel1_334s.wav"),
+    ("ex04-calm", "6 · ex04 calm", "expresso/ex04-ex02_calm_002_channel1_480s.wav"),
+    ("ex04", "7 · ex04 plain", "expresso/ex04-ex03_default_001_channel1_3s.wav"),
 )
+
+#: The voice a call gets when the page names none.
+DEFAULT_VOICE_ID: Final[str] = "ex02"
 
 #: Overrides the default voice with any Unmute voice path.
 VOICE_ENV: Final[str] = "OMNIGENT_UNMUTE_VOICE"
@@ -119,12 +131,12 @@ def voice(choice: str | None = None) -> str:
     """Return the Unmute voice for a call.
 
     :param choice: A :data:`VOICES` id the page asked for; anything else
-        gets the default (``OMNIGENT_UNMUTE_VOICE``, else the first voice).
+        gets the default (``OMNIGENT_UNMUTE_VOICE``, else ``DEFAULT_VOICE_ID``).
     """
-    for voice_id, _label, path in VOICES:
-        if choice == voice_id:
-            return path
-    return os.environ.get(VOICE_ENV, "").strip() or VOICES[0][2]
+    paths = {voice_id: path for voice_id, _label, path in VOICES}
+    if choice in paths:
+        return paths[choice]
+    return os.environ.get(VOICE_ENV, "").strip() or paths[DEFAULT_VOICE_ID]
 
 
 class CallEnded(Exception):
