@@ -195,6 +195,7 @@ def test_the_session_update_asks_unmute_for_pcm_and_no_unprompted_speech() -> No
     assert unmute_live.find_call(talk["instructions"]["text"]) is None  # closed
     assert talk["audio_format"] == "pcm16" and talk["input_sample_rate"] == 16_000
     assert talk["greet"] is False and talk["nudge_on_silence"] is False
+    assert talk["interrupt_on_vad"] is False
     # A narration "greets" with its text, off silence the relay feeds it.
     assert read["greet"] is True and read["input_sample_rate"] == 24_000
 

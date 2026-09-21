@@ -440,6 +440,15 @@ describe("startGeminiLive (stubbed)", () => {
     expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
   });
 
+  it("stop() reports what the speakers got, so a silent call can be diagnosed", async () => {
+    const { session, socket } = await startSession();
+    session.stop();
+    const report = socket.sent
+      .map((frame) => JSON.parse(String(frame)) as Record<string, unknown>)
+      .find((frame) => "omnigentStats" in frame);
+    expect(report?.omnigentStats).toMatchObject({ chunks: 0, playedS: 0, interrupts: 0 });
+  });
+
   it("stop() does not send audioStreamEnd when socket is not OPEN", async () => {
     const { session, socket } = await startSession();
     socket.readyState = FakeWebSocket.CLOSED;

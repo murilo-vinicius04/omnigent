@@ -226,6 +226,11 @@ def create_unmute_live_router(
                 if frame.get("omnigentPing"):
                     counts["pings"] += 1
                     continue
+                if isinstance(frame.get("omnigentStats"), dict):
+                    _logger.info(
+                        "unmute live page playback | %s", json.dumps(frame["omnigentStats"])
+                    )
+                    continue
                 audio = (frame.get("realtimeInput") or {}).get("audio") or {}
                 if isinstance(audio, dict) and isinstance(audio.get("data"), str):
                     counts["audio_in"] += 1

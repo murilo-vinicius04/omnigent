@@ -228,6 +228,9 @@ def session_update(call: UnmuteCall) -> dict[str, Any]:
             "input_sample_rate": 24_000 if narrating else 16_000,
             "greet": narrating,
             "nudge_on_silence": False,
+            # Only a recognized word interrupts: a noise or echo flicker in the
+            # voice-activity score right after a pause cancelled whole replies.
+            "interrupt_on_vad": False,
         },
     }
 

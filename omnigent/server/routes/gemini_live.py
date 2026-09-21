@@ -440,6 +440,10 @@ def create_gemini_live_router(
                         if '"omnigentPing"' in text_payload:
                             ping_count += 1
                             continue
+                        if '"omnigentStats"' in text_payload:
+                            # What the page's speakers got; never Google's business.
+                            _logger.info("gemini live page playback | %s", text_payload[:500])
+                            continue
                         if '"toolResponse"' in text_payload:
                             on_tool_response_received()
                             try:

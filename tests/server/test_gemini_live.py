@@ -789,6 +789,24 @@ def test_ping_is_not_relayed_upstream_and_resets_idle_timer(monkeypatch, tmp_pat
     assert "omnigentPing" not in str(upstream.sent[0])
 
 
+def test_the_pages_playback_report_is_logged_not_sent_to_google(monkeypatch, tmp_path) -> None:
+    _with_key(monkeypatch, tmp_path)
+    upstream = _FakeUpstream()
+
+    async def fake_connect(url: str):
+        upstream.loop = asyncio.get_running_loop()
+        return upstream
+
+    app = _proxy_app(upstream_connect=fake_connect)
+    with TestClient(app) as tc:
+        with tc.websocket_connect("/v1/live/gemini/ws") as ws:
+            ws.send_text(json.dumps({"omnigentStats": {"chunks": 3, "playedS": 0.0}}))
+            time.sleep(0.05)
+
+    assert len(upstream.sent) == 1  # the setup frame only
+    assert "omnigentStats" not in str(upstream.sent[0])
+
+
 def test_narrate_session_with_only_pings_stays_open_past_idle_timeout(
     monkeypatch, tmp_path
 ) -> None:

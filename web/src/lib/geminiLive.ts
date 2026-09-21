@@ -282,6 +282,10 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
   let underruns = 0;
   let sources: AudioBufferSourceNode[] = [];
   let drainResolvers: (() => void)[] = [];
+  // What the speakers actually got, reported to the server on hang-up: the
+  // server only knows what it sent, and "I heard nothing" needs this side.
+  const heard = { chunks: 0, receivedS: 0, playedS: 0, cutS: 0, interrupts: 0, firstState: "" };
+  const cut = new WeakSet<AudioBufferSourceNode>();
 
   const notifyDrain = () => {
     if (sources.length === 0) {
@@ -331,6 +335,8 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
   const stopScheduledAudio = () => {
     // Barge-in: kill everything queued and reset the schedule.
     for (const src of sources) {
+      cut.add(src);
+      heard.cutS += src.buffer?.duration ?? 0;
       try {
         src.stop();
       } catch {
@@ -404,11 +410,16 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
       src.start(nextStartTime);
       nextStartTime += buffer.duration;
       sources.push(src);
+      heard.chunks += 1;
+      heard.receivedS += buffer.duration;
+      if (!heard.firstState) heard.firstState = playbackCtx.state;
       src.onended = () => {
+        if (!cut.has(src)) heard.playedS += buffer.duration;
         sources = sources.filter((s) => s !== src);
         notifyDrain();
       };
     } else if (event.type === "interrupted") {
+      heard.interrupts += 1;
       stopScheduledAudio();
     }
     onEvent?.(event);
@@ -605,6 +616,29 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
     stop() {
       if (stopped) return;
       stopped = true;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          const round = (n: number) => Math.round(n * 100) / 100;
+          ws.send(
+            JSON.stringify({
+              omnigentStats: {
+                chunks: heard.chunks,
+                receivedS: round(heard.receivedS),
+                playedS: round(heard.playedS),
+                cutS: round(heard.cutS),
+                interrupts: heard.interrupts,
+                firstState: heard.firstState,
+                state: playbackCtx?.state ?? "none",
+                clockS: round(playbackCtx?.currentTime ?? 0),
+                rate: playbackCtx?.sampleRate ?? 0,
+                outputLatencyS: round(playbackCtx?.outputLatency ?? 0),
+              },
+            }),
+          );
+        } catch {
+          // Diagnostics only: never let them break hang-up.
+        }
+      }
       releaseAll();
       if (ws && ws.readyState === WebSocket.OPEN) {
         try {
