@@ -198,9 +198,11 @@ first audio ~0.25s, no dry gaps. Details and traps: memory `unmute-voice-stack`.
    Isaac shader caches 30 GB (stop Isaac first), spot-teleop venvs in git
    history ~6 GB (blocked: 9 stashes, 12 uncommitted changes and an unpushed
    `master` there), friend-clone-test 3.8 GB, journal 3.7 GB (sudo).
-3. T4-codex benchmark never used codex: labels `team.worker=codex` were set but
-   both workers spawned as `gemini:`. Trace `resolve_worker` /
-   `worker_choices` in `omnigent/team_worker.py`.
+3. T4-codex benchmark never used codex — CAUSE FOUND (09-21 evening): during
+   that run the host executed code from `bench2/runs/T4-gemini2/tree/omnigent`
+   (venv hijack; host tracebacks show the path). T4's code base `46a0c437a`
+   predates the Worker control `494ff328a`, so the codex label had no effect.
+   Host and venv are now clean (`venv_guard.sh` ok); a rerun needs the user's go.
 4. Qwen-Omni-Realtime (Alibaba, Singapore region, 90-day free quota) is the
    cloud fallback option if Unmute doesn't satisfy; needs the user's account.
 
@@ -227,8 +229,10 @@ user liked ex02 and ex03-happy), `8b5cb49bd` per-call mic trace log.
    with the copy in `~/unmute/volumes/hf-cache/token`; asked the user.
 3. Page bug: attachments with a caption made mid-turn fold into collapsed
    steps (attach uncaptioned, with the turn's response_id, until fixed).
-4. With Unmute the voice asks twice before a handoff (first-call rule + Terra
-   already asks). User has not decided whether to drop the rule for Unmute.
+4. Double question before a handoff: fixed in `1965baafa` (a first send goes
+   through when the voice's last question was about sending and the reader
+   said yes). Also `3f058a8a2` talk over a reading, `324c790c5` readings
+   survive session switches, call volume follows the narration slider.
 
 **Compaction bug — fix `842f2acca`, NOT deployed, needs the user's go:**
 every Claude relaunch rebuilds the transcript from Omnigent's compaction
