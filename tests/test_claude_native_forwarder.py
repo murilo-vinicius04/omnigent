@@ -7077,6 +7077,78 @@ async def test_persist_native_compaction_item_posts_compaction_event(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_hook_path_compaction_waits_for_the_compacted_transcript(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The completion hook can beat Claude's transcript write by a second.
+
+    Read at that moment, the session is still the whole pre-compaction
+    history; recorded as the compacted context, every resume reloaded it
+    (a 610k-token session came back at 589k). The persist waits for the
+    new summary and records the chain it leads.
+    """
+    import asyncio as _asyncio
+    import json as _json
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
+
+    import omnigent.claude_native_forwarder as fwd
+
+    monkeypatch.setattr(fwd, "_COMPACT_SUMMARY_POLL_S", 0.02)
+    transcript = tmp_path / "claude.jsonl"
+
+    def summary_line(text: str, when: float) -> str:
+        stamp = _dt.fromtimestamp(when, _tz.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        record = {
+            "type": "user",
+            "isCompactSummary": True,
+            "timestamp": stamp,
+            "message": {"role": "user", "content": text},
+        }
+        return _json.dumps(record) + "\n"
+
+    transcript.write_text(summary_line("OLD summary", time.time() - 86_400))
+
+    def message(role: str, content: str) -> MagicMock:
+        fake = MagicMock()
+        fake.type = role
+        fake.message = {"content": content}
+        return fake
+
+    old_chain = [message("user", "OLD summary")] + [message("assistant", "x")] * 50
+    new_chain = [message("user", "NEW summary"), message("assistant", "kept")]
+    chain = {"now": old_chain}
+
+    async def claude_writes_the_compaction() -> None:
+        await _asyncio.sleep(0.3)
+        with transcript.open("a") as handle:
+            handle.write(summary_line("NEW summary", time.time()))
+        chain["now"] = new_chain
+
+    get_response = MagicMock()
+    get_response.raise_for_status = MagicMock()
+    get_response.json.return_value = {"data": [{"id": "item_9"}]}
+    client = AsyncMock()
+    client.get.return_value = get_response
+    client.post.return_value = MagicMock(raise_for_status=MagicMock())
+
+    with (
+        patch("omnigent.claude_native_forwarder.read_claude_session_id", return_value="sid"),
+        patch("claude_agent_sdk.get_session_messages", side_effect=lambda _sid: chain["now"]),
+    ):
+        await _asyncio.gather(
+            fwd._persist_native_compaction_item(
+                client, session_id="conv_x", bridge_dir=tmp_path, transcript_path=transcript
+            ),
+            claude_writes_the_compaction(),
+        )
+
+    data = client.post.call_args[1]["json"]["data"]
+    assert data["summary"] == "NEW summary"
+    assert [m["content"] for m in data["compacted_messages"]] == ["NEW summary", "kept"]
+
+
+@pytest.mark.asyncio
 async def test_persist_native_compaction_item_empty_items_uses_fallback(tmp_path: Path) -> None:
     """
     When no items exist, ``last_item_id`` falls back to a generated boundary id.

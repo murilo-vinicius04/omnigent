@@ -12,6 +12,7 @@ import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -2871,6 +2872,7 @@ async def _forward_available_status_events(
                                 client,
                                 session_id=session_id,
                                 bridge_dir=bridge_dir,
+                                transcript_path=record.transcript_path,
                             )
                         except httpx.HTTPError as exc:
                             if post_may_have_been_delivered(exc):
@@ -4622,12 +4624,84 @@ async def _post_external_compaction_status(
     resp.raise_for_status()
 
 
+#: Longest the hook-path persist waits for Claude to write the compacted
+#: transcript before reading it.
+_COMPACT_SUMMARY_WAIT_S = 20.0
+_COMPACT_SUMMARY_POLL_S = 0.25
+#: A compact summary older than this at completion belongs to an earlier
+#: compaction (the hook fires as the new one finishes).
+_COMPACT_SUMMARY_FRESH_S = 180.0
+#: Tail of the transcript scanned for the summary: records are appended.
+_COMPACT_SUMMARY_TAIL_BYTES = 8_000_000
+
+
+def _message_text(content: object) -> str:
+    """Return the plain text of a transcript message's content."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            str(block.get("text", ""))
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
+
+def _newest_compact_summary(transcript: Path, *, since: float) -> str | None:
+    """Return the newest ``isCompactSummary`` text written at or after *since*.
+
+    :param transcript: Claude's JSONL transcript for the session.
+    :param since: Epoch seconds; an older summary is from a past compaction.
+    :returns: The summary text, or ``None`` when no fresh one is written yet.
+    """
+    try:
+        with transcript.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - _COMPACT_SUMMARY_TAIL_BYTES))
+            tail = handle.read()
+    except OSError:
+        return None
+    for raw in reversed(tail.splitlines()):
+        if b'"isCompactSummary"' not in raw:
+            continue
+        try:
+            record = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or record.get("isCompactSummary") is not True:
+            continue
+        stamp = str(record.get("timestamp") or "")
+        try:
+            written = datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+        if written < since:
+            return None
+        message = record.get("message")
+        text = _message_text(message.get("content") if isinstance(message, dict) else None)
+        return text or None
+    return None
+
+
+async def _await_fresh_compact_summary(transcript: Path) -> str | None:
+    """Wait for Claude to write the summary of the compaction that just ended."""
+    since = time.time() - _COMPACT_SUMMARY_FRESH_S
+    deadline = time.monotonic() + _COMPACT_SUMMARY_WAIT_S
+    while True:
+        text = await asyncio.to_thread(_newest_compact_summary, transcript, since=since)
+        if text is not None or time.monotonic() >= deadline:
+            return text
+        await asyncio.sleep(_COMPACT_SUMMARY_POLL_S)
+
+
 async def _persist_native_compaction_item(
     client: httpx.AsyncClient,
     *,
     session_id: str,
     bridge_dir: Path,
     summary_override: str | None = None,
+    transcript_path: Path | str | None = None,
 ) -> None:
     """
     Persist a compaction boundary item to the conversation store.
@@ -4653,6 +4727,11 @@ async def _persist_native_compaction_item(
         transcript ``isCompactSummary`` record, stored as the boundary's
         ``summary``. ``None`` (the hook-driven path, which has no summary
         text) falls back to a generic placeholder.
+    :param transcript_path: Claude's transcript, for the hook-driven path.
+        That hook can fire before Claude writes the compacted transcript,
+        and a read then records the whole pre-compaction history as the
+        compacted context -- which every resume then reloads. So the read
+        waits for the new summary to land (up to ``_COMPACT_SUMMARY_WAIT_S``).
     :raises httpx.HTTPError: If the boundary POST fails or is rejected.
         The caller must not advance its cursor or mark the boundary
         persisted when this raises.
@@ -4666,6 +4745,18 @@ async def _persist_native_compaction_item(
     items = resp.json().get("data", [])
     last_item_id = items[0]["id"] if items else f"compact_boundary_{session_id}"
 
+    fresh_summary: str | None = None
+    if summary_override is None and transcript_path is not None:
+        fresh_summary = await _await_fresh_compact_summary(Path(transcript_path))
+        if fresh_summary is None:
+            _logger.warning(
+                "Compaction completed but no fresh summary reached %s within %.0fs; "
+                "the recorded context may predate it; session=%s",
+                transcript_path,
+                _COMPACT_SUMMARY_WAIT_S,
+                session_id,
+            )
+
     # Read the post-compaction session messages so session resume can
     # reconstruct context in ephemeral environments.
     compacted_messages: list[dict[str, object]] | None = None
@@ -4675,6 +4766,20 @@ async def _persist_native_compaction_item(
         claude_sid = read_claude_session_id(bridge_dir)
         if claude_sid:
             msgs = get_session_messages(claude_sid)
+            if fresh_summary is not None:
+                # The summary is written; its chain can trail it by a beat.
+                deadline = time.monotonic() + _COMPACT_SUMMARY_WAIT_S
+                lead = fresh_summary[:200]
+                while (
+                    not msgs
+                    or not _message_text(
+                        msgs[0].message.get("content")
+                        if isinstance(msgs[0].message, dict)
+                        else None
+                    ).startswith(lead)
+                ) and time.monotonic() < deadline:
+                    await asyncio.sleep(_COMPACT_SUMMARY_POLL_S)
+                    msgs = get_session_messages(claude_sid)
             compacted_messages = [
                 {"type": "message", "role": m.type, "content": m.message.get("content", [])}
                 for m in msgs
@@ -4688,8 +4793,8 @@ async def _persist_native_compaction_item(
 
     summary = (
         summary_override
-        if summary_override
-        else "[Claude Code compaction — context was compacted in the terminal]"
+        or fresh_summary
+        or "[Claude Code compaction — context was compacted in the terminal]"
     )
     event_data: dict[str, object] = {
         "summary": summary,
