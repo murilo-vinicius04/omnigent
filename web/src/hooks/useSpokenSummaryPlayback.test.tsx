@@ -1136,6 +1136,39 @@ describe("useSpokenSummaryPlayback", () => {
     });
   });
 
+  describe("a reading already under way", () => {
+    it("keeps reading another session's summary when this transcript changes", () => {
+      const stop = vi.fn();
+      useSpeechPlaybackStore.setState({
+        isSpeaking: true,
+        speakingItemId: "resp_elsewhere",
+        speakingSessionId: "conv_2",
+        stop,
+      });
+      const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
+        initialProps: { bubbles: [] as Bubble[] },
+      });
+      rerender({ bubbles: [makeAssistantBubble("resp_here", "item_here")] });
+      expect(stop).not.toHaveBeenCalled();
+    });
+
+    it("stops this session's reading once its turn is gone from the transcript", () => {
+      const stop = vi.fn();
+      useSpeechPlaybackStore.setState({
+        isSpeaking: true,
+        speakingItemId: "resp_retried",
+        speakingSessionId: "conv_1",
+        stop,
+      });
+      const { rerender } = renderHook(({ bubbles }) => useSpokenSummaryPlayback(bubbles), {
+        initialProps: { bubbles: [makeAssistantBubble("resp_retried", "item_r")] },
+      });
+      expect(stop).not.toHaveBeenCalled();
+      rerender({ bubbles: [makeAssistantBubble("resp_new", "item_n")] });
+      expect(stop).toHaveBeenCalled();
+    });
+  });
+
   describe("isToolStreaming", () => {
     it("returns true only for input-available and false for settled states", () => {
       expect(isToolStreaming("input-available")).toBe(true);

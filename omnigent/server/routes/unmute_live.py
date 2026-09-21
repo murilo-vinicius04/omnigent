@@ -392,7 +392,7 @@ def create_unmute_live_router(
                 ended_by = "upstream"
             except Exception as exc:  # noqa: BLE001 - relay errors end the call
                 ended_by = "error"
-                _logger.warning("unmute live relay error: %s", exc)
+                _logger.warning("unmute live relay error: %r", exc)
             if ended_by == "cap":
                 close_code = status.WS_1008_POLICY_VIOLATION
                 close_reason = "unmute live session cap reached"
@@ -401,7 +401,7 @@ def create_unmute_live_router(
                 close_reason = upstream_error[:120]
         except Exception as exc:  # noqa: BLE001
             ended_by = "error"
-            _logger.warning("unmute live relay error: %s", exc)
+            _logger.warning("unmute live relay error: %r", exc)
         finally:
             for task in tasks:
                 task.cancel()

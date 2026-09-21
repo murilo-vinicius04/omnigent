@@ -307,6 +307,9 @@ export function clearInMemorySpokenTracking(): void {
 interface SpeechPlaybackStoreState {
   isSpeaking: boolean;
   speakingItemId: string | null;
+  /** Whose summary is being read right now, so a newer one from the SAME
+   * conversation can replace it while another conversation's waits. */
+  speakingSessionId: string | null;
   speakLiveSummary: (
     itemId: string,
     text: string,
@@ -371,10 +374,6 @@ interface QueuedSummary {
  */
 const speechQueue: QueuedSummary[] = [];
 const QUEUE_MAX = 5;
-
-/** Whose summary is being read right now, so a newer one from the SAME
- * conversation can replace it while another conversation's waits. */
-let speakingSessionId: string | null = null;
 
 /**
  * How long a summary may wait before it is no longer worth hearing. Bounds
@@ -461,7 +460,7 @@ function startSummaryPlayback(
   get: () => SpeechPlaybackStoreState,
 ): boolean {
   const { text, sessionId } = item;
-  speakingSessionId = sessionId ?? null;
+  set({ speakingSessionId: sessionId ?? null });
 
   // A session on the live voice is read by the live voice and nothing else.
   // The local recording is never its fallback: the reader chose live, and
@@ -615,6 +614,7 @@ function playNextQueued(
 export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get) => ({
   isSpeaking: false,
   speakingItemId: null,
+  speakingSessionId: null,
 
   speakLiveSummary: (
     itemId: string,
@@ -660,7 +660,7 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
     // newer summary from the same conversation still replaces the one playing
     // -- it supersedes it, and hearing the stale one finish helps nobody.
     const otherConversationSpeaking =
-      get().isSpeaking && Boolean(sessionId) && speakingSessionId !== (sessionId ?? null);
+      get().isSpeaking && Boolean(sessionId) && get().speakingSessionId !== (sessionId ?? null);
     if (otherConversationSpeaking) {
       speechQueue.push({ itemId, text, lang, audioUrl, sessionId, queuedAt: Date.now() });
       if (speechQueue.length > QUEUE_MAX) speechQueue.shift();
@@ -692,7 +692,6 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
   stop: () => {
     // The reader asked for quiet: drop what is waiting rather than starting it.
     clearSpeechQueue();
-    speakingSessionId = null;
     // Pausing a live session would silence it while it kept billing.
     closeActiveLive();
     if (activeAudio) {
@@ -701,6 +700,6 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
     }
     const engine = getSpeechEngine();
     engine.stop();
-    set({ isSpeaking: false, speakingItemId: null });
+    set({ isSpeaking: false, speakingItemId: null, speakingSessionId: null });
   },
 }));

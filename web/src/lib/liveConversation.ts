@@ -156,10 +156,8 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
       // Delegation still works against a cold companion, only slower.
     });
 
-    // Pressed while a summary is being read: the reading carries on under the
-    // open mic, and the reader talking over it is what stops it, the way they
-    // would interrupt a person. Cutting it as soon as the call connected ended
-    // the reading before they had said a word.
+    // Pressed mid-reading: the reading carries on under the open mic until the
+    // reader talks over it, the way they would interrupt a person.
     const overNarration = narrationPlaying();
     // Set once either side is heard; until then the reading keeps the channel.
     let heard = false;

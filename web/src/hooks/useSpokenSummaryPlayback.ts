@@ -68,10 +68,14 @@ export function useSpokenSummaryPlayback(
   const stop = useSpeechPlaybackStore((s) => s.stop);
 
   useEffect(() => {
-    // If audio is playing from a turn no longer in the transcript (e.g. session switch), stop it.
-    const currentSpeakingId = useSpeechPlaybackStore.getState().speakingItemId;
+    // Stop a reading of this session's turn once the turn is gone from it. Not
+    // for another session's: summaries are read for the reader, and switching
+    // sessions mid-sentence must not cut them off.
+    const { speakingItemId: currentSpeakingId, speakingSessionId } =
+      useSpeechPlaybackStore.getState();
     if (
       currentSpeakingId &&
+      speakingSessionId === sessionId &&
       !bubbles.some((b) => b.kind === "assistant" && b.responseId === currentSpeakingId)
     ) {
       stop();
