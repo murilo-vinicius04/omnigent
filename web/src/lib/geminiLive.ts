@@ -210,6 +210,8 @@ export interface GeminiLiveSession {
   sendToolResponse: (responses: GeminiToolResponseItem[]) => void;
   /** Resolves when all currently scheduled audio playback has completed. */
   untilPlaybackDrained: () => Promise<void>;
+  /** Set how loud the voice plays, 0..1. */
+  setVolume: (volume: number) => void;
 }
 
 /** State callbacks: connected once, closed exactly once with its kind. */
@@ -240,6 +242,8 @@ export interface GeminiLiveOptions {
   sessionId?: string | null;
   /** Relay socket path; the Unmute relay speaks the same frames. */
   endpoint?: string;
+  /** How loud the voice plays, 0..1; defaults to full. */
+  volume?: number;
   onEvent?: (event: GeminiLiveEvent) => void;
   onStateChange?: (state: GeminiLiveState) => void;
   onError?: (error: Error) => void;
@@ -258,6 +262,7 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
   let mediaStream: MediaStream | null = null;
   let captureCtx: AudioContext | null = null;
   let playbackCtx: AudioContext | null = null;
+  let playbackGain: GainNode | null = null;
   let ws: WebSocket | null = null;
   let stopped = false;
   let startResolved = false;
@@ -382,7 +387,7 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
       buffer.copyToChannel(new Float32Array(floats), 0);
       const src = playbackCtx.createBufferSource();
       src.buffer = buffer;
-      src.connect(playbackCtx.destination);
+      src.connect(playbackGain ?? playbackCtx.destination);
       // Schedule back-to-back, but never at exactly `now`. Starting a chunk
       // the instant it lands leaves the playhead with zero slack, so the next
       // packet that is even slightly late plays into a gap -- and because the
@@ -471,6 +476,9 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
     };
     playbackCtx = new AudioContext({ sampleRate: PLAYBACK_RATE });
     await playbackCtx.resume();
+    playbackGain = playbackCtx.createGain();
+    playbackGain.gain.value = opts.volume ?? 1;
+    playbackGain.connect(playbackCtx.destination);
 
     const endpoint = opts.endpoint ?? "/v1/live/gemini/ws";
     const joiner = endpoint.includes("?") ? "&" : "?";
@@ -607,6 +615,9 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
       } catch {
         // Best-effort: failures must not break conversation
       }
+    },
+    setVolume(volume: number) {
+      if (playbackGain) playbackGain.gain.value = Math.min(1, Math.max(0, volume));
     },
     untilPlaybackDrained() {
       if (sources.length === 0) return Promise.resolve();

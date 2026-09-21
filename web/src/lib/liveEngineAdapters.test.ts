@@ -198,6 +198,54 @@ describe("liveEngineAdapters", () => {
       expect(onDelegation).toHaveBeenCalledWith("c2", "Can you check the docs?");
     });
 
+    it("sends at once when the voice already asked and the reader said yes", async () => {
+      const onDelegation = vi.fn();
+      await geminiEngineAdapter.open("session_2", { onUtterance: vi.fn(), onDelegation });
+      const say = (text: string) => {
+        capturedOpts.onEvent?.({ type: "outputTranscript", text });
+        capturedOpts.onEvent?.({ type: "turnComplete" });
+      };
+
+      capturedOpts.onEvent?.({ type: "inputTranscript", text: "Check my disk usage." });
+      say("Got it. Want me to send that to Claude?");
+      capturedOpts.onEvent?.({ type: "inputTranscript", text: "Yes." });
+      // An acknowledgement in between is not a new question.
+      say("Okay, sending it now.");
+      capturedOpts.onEvent?.({ type: "toolCall", calls: [{ id: "c1", name: "ask_claude" }] });
+
+      expect(onDelegation).toHaveBeenCalledTimes(1);
+      expect(currentSession.sendToolResponse).not.toHaveBeenCalled();
+    });
+
+    it("still asks when the reader turned the question down or it moved on", async () => {
+      const onDelegation = vi.fn();
+      await geminiEngineAdapter.open("session_2", { onUtterance: vi.fn(), onDelegation });
+      const say = (text: string) => {
+        capturedOpts.onEvent?.({ type: "outputTranscript", text });
+        capturedOpts.onEvent?.({ type: "turnComplete" });
+      };
+
+      say("Should I send that to Claude?");
+      capturedOpts.onEvent?.({ type: "inputTranscript", text: "No, not yet, okay?" });
+      capturedOpts.onEvent?.({ type: "toolCall", calls: [{ id: "c1", name: "ask_claude" }] });
+      expect(onDelegation).not.toHaveBeenCalled();
+    });
+
+    it("forgets the question once the voice asks something else", async () => {
+      const onDelegation = vi.fn();
+      await geminiEngineAdapter.open("session_3", { onUtterance: vi.fn(), onDelegation });
+      const say = (text: string) => {
+        capturedOpts.onEvent?.({ type: "outputTranscript", text });
+        capturedOpts.onEvent?.({ type: "turnComplete" });
+      };
+
+      say("Do you want me to send that to Claude?");
+      say("Actually, which folder did you mean?");
+      capturedOpts.onEvent?.({ type: "inputTranscript", text: "Yeah, the home one." });
+      capturedOpts.onEvent?.({ type: "toolCall", calls: [{ id: "c1", name: "ask_claude" }] });
+      expect(onDelegation).not.toHaveBeenCalled();
+    });
+
     it("buffers transcript fragments and flushes whole utterances", async () => {
       const onUtterance = vi.fn();
       const onDelegation = vi.fn();

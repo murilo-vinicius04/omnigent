@@ -9,6 +9,7 @@ import { create } from "zustand";
 import { delegateSpoken, noteCompanion, prewarmCompanion } from "./companionApi";
 import { claimSpeechChannel, isNarrating, setConversationSpeaking } from "./speechPlayback";
 import type { LiveVoiceEngine } from "./liveVoiceEngine";
+import { conversationVolume } from "./sessionNarrationVolume";
 import { getLiveEngineAdapter, USD_PER_MINUTE, type LiveEngineHandle } from "./liveEngineAdapters";
 
 export { USD_PER_MINUTE };
@@ -265,7 +266,11 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
     }
 
     activeHandle = handle;
-    const claim = (): void => claimSpeechChannel(handle.audioElement, sessionId);
+    const claim = (): void => {
+      claimSpeechChannel(handle.audioElement, sessionId);
+      // The narration level, except that a muted session's call still plays.
+      if (handle.audioElement) handle.audioElement.volume = conversationVolume(sessionId);
+    };
     // Either side speaking hands the channel over: the reader interrupting,
     // or the voice starting to answer, which must not play over the reading.
     if (overNarration && !heard && narrationPlaying()) {

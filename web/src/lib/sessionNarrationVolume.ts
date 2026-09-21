@@ -85,6 +85,16 @@ export function currentNarrationVolume(sessionId: string | null): number {
 }
 
 /**
+ * How loud a live call plays: the session's narration level, so the voice does
+ * not jump in volume between a reading and a call. Muting stops narration; it
+ * never silences a call the reader opened.
+ */
+export function conversationVolume(sessionId: string | null): number {
+  const level = currentNarrationVolume(sessionId);
+  return level > 0 ? level : UNMUTE_VOLUME;
+}
+
+/**
  * Whether this session should be read aloud.
  *
  * Muted is off: the reader turned the volume down to be left alone, and a

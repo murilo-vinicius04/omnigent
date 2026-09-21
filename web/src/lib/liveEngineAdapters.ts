@@ -6,6 +6,7 @@
 import { openLiveConversation, type LiveConversation } from "./liveVoice";
 import { startGeminiLive, type GeminiLiveSession, type GeminiLiveEvent } from "./geminiLive";
 import { getLiveVoiceEngine, unmuteEndpoint, type LiveVoiceEngine } from "./liveVoiceEngine";
+import { conversationVolume, useVolumeStore } from "./sessionNarrationVolume";
 
 /** Billed rate for gpt-live, mirrored from the server so the meter can be shown. */
 export const USD_PER_MINUTE = 0.05;
@@ -18,6 +19,12 @@ const CONFIRM_BEFORE_SENDING =
   "Not sent yet. Sending ends the call, so ask them first, in one short " +
   "question, whether to send this to Claude. Call ask_claude again only if " +
   "they say yes; if they say no or keep talking, carry on the conversation.";
+
+/** The voice's last words asked whether to send something to Claude. */
+const ASKED_TO_SEND = /\b(claude|cloud|clod)\b[^?]*\?\s*$/i;
+/** A reply that agrees; one that opens with a refusal does not. */
+const SAID_YES = /\b(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|send it)\b/i;
+const SAID_NO = /^\W*(no|nope|not|wait|don't|do not)\b/i;
 
 /** "warn" when the call is not working as the reader expects, else "info". */
 export type LiveNoticeTone = "info" | "warn";
@@ -120,6 +127,10 @@ function relayedEngineAdapter(
       let readerBuf = "";
       let voiceBuf = "";
       let lastReader = "";
+      // The voice asked to send and has not asked anything else since, and
+      // what the reader has said since that question.
+      let askedToSend = false;
+      let readerSinceAsk = "";
       // Everything the reader said since the last delegation, as transcribed.
       let readerSinceDelegation = "";
       // Whether the reader has been asked about a handoff yet this call.
@@ -144,8 +155,21 @@ function relayedEngineAdapter(
         const text = voiceBuf.trim();
         voiceBuf = "";
         if (text) {
+          if (ASKED_TO_SEND.test(text)) {
+            askedToSend = true;
+            readerSinceAsk = "";
+          } else if (text.endsWith("?")) {
+            askedToSend = false;
+          }
           callbacks.onUtterance({ who: "voice", text });
         }
+      };
+
+      // The voice already asked to send and the reader said yes: asking again
+      // is the double question, so the send goes through.
+      const alreadyAgreed = (): boolean => {
+        const reply = readerSinceAsk.trim();
+        return askedToSend && SAID_YES.test(reply) && !SAID_NO.test(reply);
       };
 
       let started: GeminiLiveSession;
@@ -170,6 +194,7 @@ function relayedEngineAdapter(
         if (ev.type === "inputTranscript") {
           if (ev.text.trim()) callbacks.onSpeech?.("reader");
           readerBuf += ev.text;
+          readerSinceAsk += ev.text;
           lastReader = readerBuf.trim();
           readerSinceDelegation = (readerSinceDelegation + ev.text).slice(-MAX_DELEGATED_CHARS);
         } else if (ev.type === "outputTranscript") {
@@ -196,13 +221,13 @@ function relayedEngineAdapter(
                   response: { output: `Tool '${call.name}' is not available.` },
                 },
               ]);
-            } else if (!handoffOffered) {
+            } else if (!handoffOffered && !alreadyAgreed()) {
               // Sending ends the call, so it is the reader's decision. Asking for
               // that in the prompt was not enough: told "can you check the
               // documentation", the model read the request itself as the yes and
-              // sent mid-discussion. So the first call never sends -- it buys the
-              // question. The transcript is deliberately left intact, because the
-              // send that follows still needs it.
+              // sent mid-discussion. So a first call it did not ask about buys the
+              // question instead. The transcript is deliberately left intact,
+              // because the send that follows still needs it.
               handoffOffered = true;
               started.sendToolResponse([
                 {
@@ -227,6 +252,7 @@ function relayedEngineAdapter(
       started = await startGeminiLive({
         sessionId,
         endpoint: endpoint(),
+        volume: conversationVolume(sessionId),
         onEvent: handleEvent,
         onStateChange: (state) => {
           if (state.state === "ready") {
@@ -285,6 +311,11 @@ function relayedEngineAdapter(
       });
 
       const openedAt = Date.now();
+      // The slider moves the call too, as it does a reading mid-sentence.
+      const unsubscribeVolume = useVolumeStore.subscribe(() =>
+        started.setVolume(conversationVolume(sessionId)),
+      );
+      void closedPromise.then(unsubscribeVolume);
 
       return {
         engine,

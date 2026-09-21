@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  conversationVolume,
   DEFAULT_VOLUME,
   isNarrationEnabled,
   readSessionVolume,
@@ -76,5 +77,22 @@ describe("muting is how narration is turned off", () => {
   it("a lowered but audible level still narrates", () => {
     useVolumeStore.getState().set("conv_1", 0.2);
     expect(isNarrationEnabled("conv_1")).toBe(true);
+  });
+});
+
+describe("a live call's volume", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useVolumeStore.setState({ levels: {} });
+  });
+
+  it("matches the session's narration, so the voice does not jump between them", () => {
+    useVolumeStore.getState().set("conv_1", 0.4);
+    expect(conversationVolume("conv_1")).toBe(0.4);
+  });
+
+  it("is never silenced by a muted narration, since the reader opened the call", () => {
+    useVolumeStore.getState().set("conv_1", 0);
+    expect(conversationVolume("conv_1")).toBeGreaterThan(0);
   });
 });
