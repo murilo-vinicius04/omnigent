@@ -631,8 +631,34 @@ describe("ComposerMicButton on the live voice", () => {
       connecting: false,
       elapsedS: 0,
       error: null,
+      notice: null,
+      noticeTone: "info",
     });
     window.localStorage.clear();
+  });
+
+  it("shows the call's state on screen, not only in a hover tooltip", () => {
+    useVoiceBackendStore.getState().set("conv_a", "live");
+    useLiveConversationStore.setState({
+      sessionId: "conv_a",
+      notice: "Gemini isn't hearing you — nothing you said came through",
+      noticeTone: "warn",
+    } as never);
+
+    render(<ComposerMicButton onTranscript={() => {}} sessionId="conv_a" />);
+
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("Gemini isn't hearing you");
+    expect(status).toHaveAttribute("data-tone", "warn");
+  });
+
+  it("shows no status line outside a call", () => {
+    useVoiceBackendStore.getState().set("conv_a", "live");
+    useLiveConversationStore.setState({ sessionId: null, notice: "stale" } as never);
+
+    render(<ComposerMicButton onTranscript={() => {}} sessionId="conv_a" />);
+
+    expect(screen.queryByRole("status")).toBeNull();
   });
 
   it("opens a spoken conversation instead of dictating", () => {

@@ -609,6 +609,87 @@ describe("startGeminiLive (stubbed)", () => {
     }
   });
 
+  it("says when Gemini is not hearing the reader, and clears once it does", async () => {
+    vi.useFakeTimers();
+    try {
+      const states: unknown[] = [];
+      const p = startGeminiLive({ onStateChange: (st) => states.push(st), onError: () => {} });
+      await vi.advanceTimersByTimeAsync(0);
+      const socket = h.sockets[h.sockets.length - 1];
+      socket.open();
+      await p;
+      socket.emit("message", { data: JSON.stringify({ setupComplete: {} }) });
+
+      // Talking, with nothing transcribed back: they are talking to themselves.
+      const worklet = createdWorklets[createdWorklets.length - 1];
+      worklet.speak();
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(states).toContainEqual({ state: "not-hearing" });
+
+      socket.emit("message", {
+        data: JSON.stringify({ serverContent: { inputTranscription: { text: "hello" } } }),
+      });
+      expect(states[states.length - 1]).toEqual({ state: "clear" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("flags a reply that runs dry mid-sentence, but not the gap between replies", async () => {
+    const { socket, states } = await startSession();
+    const playback = createdAudioContexts[createdAudioContexts.length - 1];
+    const chunk = pcm16ToBase64(new Int16Array([1]));
+    const sendAudio = () =>
+      socket.emit("message", {
+        data: JSON.stringify({
+          serverContent: {
+            modelTurn: {
+              parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: chunk } }],
+            },
+          },
+        }),
+      });
+
+    sendAudio(); // plays 0.15 -> 0.25
+    socket.emit("message", { data: JSON.stringify({ serverContent: { turnComplete: true } }) });
+    // The next reply starts long after: an empty queue between replies is normal.
+    playback.currentTime = 5;
+    sendAudio();
+    expect(states).not.toContainEqual({ state: "lagging" });
+
+    // Mid-reply, the next chunk lands after the queue already ran out: a freeze.
+    playback.currentTime = 6;
+    sendAudio();
+    expect(states).toContainEqual({ state: "lagging" });
+
+    socket.emit("message", { data: JSON.stringify({ serverContent: { turnComplete: true } }) });
+    expect(states[states.length - 1]).toEqual({ state: "clear" });
+  });
+
+  it("clears 'still thinking' once the answer arrives", async () => {
+    vi.useFakeTimers();
+    try {
+      const states: unknown[] = [];
+      const p = startGeminiLive({ onStateChange: (st) => states.push(st), onError: () => {} });
+      await vi.advanceTimersByTimeAsync(0);
+      const socket = h.sockets[h.sockets.length - 1];
+      socket.open();
+      await p;
+      socket.emit("message", { data: JSON.stringify({ setupComplete: {} }) });
+      socket.emit("message", {
+        data: JSON.stringify({ serverContent: { inputTranscription: { text: "hi" } } }),
+      });
+      createdWorklets[createdWorklets.length - 1].speak();
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(states).toContainEqual(expect.objectContaining({ state: "waiting" }));
+
+      socket.emit("message", { data: JSON.stringify({ serverContent: { turnComplete: true } }) });
+      expect(states[states.length - 1]).toEqual({ state: "clear" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("sends keepalive pings every 20s and stops on close", async () => {
     vi.useFakeTimers();
     try {

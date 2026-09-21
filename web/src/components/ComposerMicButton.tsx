@@ -294,6 +294,7 @@ export const ComposerMicButton = ({
   const conversationConnecting = useLiveConversationStore((s) => s.connecting);
   const conversationError = useLiveConversationStore((s) => s.error);
   const conversationNotice = useLiveConversationStore((s) => s.notice);
+  const conversationNoticeTone = useLiveConversationStore((s) => s.noticeTone);
   const inConversation = Boolean(conversationSessionId) || conversationConnecting;
   const liveVoiceChosen = currentVoiceBackend(liveSessionId) === "live";
   const active = isListening || inConversation;
@@ -430,7 +431,6 @@ export const ComposerMicButton = ({
   }, []);
   toggleServerRef.current = toggleServer;
 
-
   const toggle = useCallback(() => {
     // On the live voice the mic is not dictation. There is no transcription
     // step and no text to review: the session hears the reader and answers
@@ -549,45 +549,65 @@ export const ComposerMicButton = ({
         ? "Talk to it out loud. Opens a live session billed about $0.05 a minute."
         : a11yLabel);
 
+  // The call's state has to be visible without hovering: "not hearing you" and
+  // "audio lagging" are exactly the moments the reader is looking elsewhere.
+  const statusLine = inConversation ? conversationNotice : null;
 
   return (
-    <Button
-      type="button"
-      size="icon"
-      variant="ghost"
-      disabled={disabled}
-      onClick={toggle}
-      aria-pressed={active}
-      aria-label={a11yLabel}
-      title={tooltip}
-      className={cn(
-        "size-9 md:size-8",
-        active &&
-          "bg-muted/60 text-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive",
-        error && "text-destructive",
-      )}
-    >
-      {active ? (
-        // Bars fade out and stop icon fades in on hover OR keyboard focus,
-        // so keyboard users get the stop affordance without needing hover.
-        <span className="relative flex size-4 items-center justify-center" aria-hidden>
-          <span className="flex h-full items-center gap-[2px] transition-opacity group-hover/button:opacity-0 group-focus-visible/button:opacity-0">
-            {BAR_BINS.map(([lo, hi], i) => (
-              <span
-                key={`${lo}-${hi}`}
-                ref={(el) => {
-                  barRefs.current[i] = el;
-                }}
-                className="block h-3 w-[2px] origin-center rounded-full bg-current"
-                style={{ transform: `scaleY(${BAR_BASELINE})` }}
-              />
-            ))}
-          </span>
-          <SquareIcon className="absolute size-3 fill-current opacity-0 transition-opacity group-hover/button:opacity-100 group-focus-visible/button:opacity-100" />
+    <span className="relative inline-flex">
+      {statusLine ? (
+        <span
+          role="status"
+          aria-live="polite"
+          data-tone={conversationNoticeTone}
+          className={cn(
+            "pointer-events-none absolute right-0 bottom-full mb-1.5 max-w-[min(18rem,80vw)] truncate rounded-md border px-2 py-0.5 text-xs whitespace-nowrap shadow-sm",
+            conversationNoticeTone === "warn"
+              ? "border-warning/40 bg-popover text-warning"
+              : "bg-popover text-muted-foreground",
+          )}
+        >
+          {statusLine}
         </span>
-      ) : (
-        <MicIcon className="size-4" data-icon-size="16" />
-      )}
-    </Button>
+      ) : null}
+      <Button
+        type="button"
+        size="icon"
+        variant="ghost"
+        disabled={disabled}
+        onClick={toggle}
+        aria-pressed={active}
+        aria-label={a11yLabel}
+        title={tooltip}
+        className={cn(
+          "size-9 md:size-8",
+          active &&
+            "bg-muted/60 text-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive",
+          error && "text-destructive",
+        )}
+      >
+        {active ? (
+          // Bars fade out and stop icon fades in on hover OR keyboard focus,
+          // so keyboard users get the stop affordance without needing hover.
+          <span className="relative flex size-4 items-center justify-center" aria-hidden>
+            <span className="flex h-full items-center gap-[2px] transition-opacity group-hover/button:opacity-0 group-focus-visible/button:opacity-0">
+              {BAR_BINS.map(([lo, hi], i) => (
+                <span
+                  key={`${lo}-${hi}`}
+                  ref={(el) => {
+                    barRefs.current[i] = el;
+                  }}
+                  className="block h-3 w-[2px] origin-center rounded-full bg-current"
+                  style={{ transform: `scaleY(${BAR_BASELINE})` }}
+                />
+              ))}
+            </span>
+            <SquareIcon className="absolute size-3 fill-current opacity-0 transition-opacity group-hover/button:opacity-100 group-focus-visible/button:opacity-100" />
+          </span>
+        ) : (
+          <MicIcon className="size-4" data-icon-size="16" />
+        )}
+      </Button>
+    </span>
   );
 };

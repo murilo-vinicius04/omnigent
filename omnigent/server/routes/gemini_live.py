@@ -124,6 +124,54 @@ def _inline_audio_bytes(message: str | bytes | None) -> int:
     return total
 
 
+#: Lead the browser schedules a reply's first chunk with (geminiLive.ts
+#: JITTER_LEAD_S). Mirrored so the server can tell when that queue ran dry.
+_CLIENT_LEAD_S: Final[float] = 0.15
+
+
+class _ReplyMeter:
+    """Audio delivery for one reply, replayed against the browser's queue.
+
+    The session total cannot show a stutter: it averages over the time the
+    reader spends talking. Per reply it can, and replaying arrivals through the
+    same schedule the browser uses says exactly when its queue would have run
+    dry -- which is what a freeze is.
+    """
+
+    def __init__(self) -> None:
+        self.audio_s = 0.0
+        self.first_at: float | None = None
+        self.last_at: float | None = None
+        self.queue_end = 0.0
+        self.dry = 0
+        self.dry_s = 0.0
+
+    def add(self, now: float, pcm_bytes: int) -> None:
+        """Account one audio chunk arriving at monotonic time *now*."""
+        if pcm_bytes <= 0:
+            return
+        seconds = pcm_bytes / _PLAYBACK_BYTES_PER_S
+        if self.first_at is None:
+            self.first_at = now
+            self.queue_end = now + _CLIENT_LEAD_S
+        elif now >= self.queue_end:
+            # Arrived after everything queued had already played: silence.
+            self.dry += 1
+            self.dry_s += now - self.queue_end
+            self.queue_end = now + _CLIENT_LEAD_S
+        self.queue_end += seconds
+        self.audio_s += seconds
+        self.last_at = now
+
+    def summary(self) -> str | None:
+        """Return ``"<audio>s@<ratio>x/<dry>dry<secs>s"``, or ``None`` without audio."""
+        if self.first_at is None or self.last_at is None:
+            return None
+        span = self.last_at - self.first_at
+        ratio = f"{self.audio_s / span:.2f}" if span > 0 else "inf"
+        return f"{self.audio_s:.1f}s@{ratio}x/{self.dry}dry{self.dry_s:.1f}s"
+
+
 def _realtime_factor(audio_bytes: int, first_at: float | None, last_at: float | None) -> str:
     """Return audio delivered per second of delivery, as a printable ratio.
 
@@ -287,6 +335,8 @@ def create_gemini_live_router(
         last_audio_at: float | None = None
         timeline: list[str] = []
         tool_latencies: list[str] = []
+        reply = _ReplyMeter()
+        replies: list[str] = []
         pending_tool_calls: list[tuple[float, asyncio.Task[None]]] = []
 
         def _contains(msg: str | bytes | None, target: str) -> bool:
@@ -429,7 +479,7 @@ def create_gemini_live_router(
                 nonlocal setup_complete_count, setup_ms, input_transcription_count
                 nonlocal output_transcription_count, interrupted_count
                 nonlocal turn_complete_count, generation_complete_count, first_audio_ms
-                nonlocal audio_pcm_bytes, first_audio_at, last_audio_at
+                nonlocal audio_pcm_bytes, first_audio_at, last_audio_at, reply
                 while True:
                     try:
                         message = await upstream.recv()
@@ -479,7 +529,16 @@ def create_gemini_live_router(
                             first_audio_ms = (now_mono - session_start) * 1000
                             first_audio_at = now_mono
                         last_audio_at = now_mono
-                        audio_pcm_bytes += _inline_audio_bytes(message)
+                        chunk_bytes = _inline_audio_bytes(message)
+                        audio_pcm_bytes += chunk_bytes
+                        reply.add(now_mono, chunk_bytes)
+                    # After the audio: a frame can carry a reply's last chunk
+                    # and its turnComplete together.
+                    if _contains(message, '"interrupted"') or _contains(message, '"turnComplete"'):
+                        done = reply.summary()
+                        if done is not None and len(replies) < 30:
+                            replies.append(done)
+                        reply = _ReplyMeter()
 
                     if isinstance(message, str):
                         await websocket.send_text(message)
@@ -543,7 +602,7 @@ def create_gemini_live_router(
                 "events={setupComplete:%d,inputTranscription:%d,outputTranscription:%d,"
                 "interrupted:%d,turnComplete:%d,generationComplete:%d,toolCall:%d,"
                 "goAway:%d,toolResponse:%d,audioStreamEnd:%d,pings:%d} "
-                "timeline=%s tool_latencies=%s",
+                "timeline=%s tool_latencies=%s replies=%s",
                 client_frames,
                 upstream_frames,
                 duration_s,
@@ -569,6 +628,9 @@ def create_gemini_live_router(
                 ping_count,
                 "[" + ",".join(timeline) + "]",
                 "[" + ",".join(tool_latencies) + "]",
+                # Per reply: audio, delivery rate, and how often and how long
+                # the browser's queue ran dry -- i.e. the freezes it heard.
+                "[" + ",".join([*replies, *filter(None, [reply.summary()])]) + "]",
             )
         if close_reason is None:
             with contextlib.suppress(RuntimeError):

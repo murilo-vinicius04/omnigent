@@ -48,6 +48,8 @@ interface ConversationStoreState {
   error: string | null;
   /** Non-error notice (e.g. policy close: idle / session cap), for the control to show. */
   notice: string | null;
+  /** "warn" for a notice that means the call is not working as expected. */
+  noticeTone: "info" | "warn";
   start: (sessionId: string, agentId?: string | null) => Promise<void>;
   stop: () => void;
 }
@@ -132,11 +134,12 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
   elapsedS: 0,
   error: null,
   notice: null,
+  noticeTone: "info",
 
   start: async (sessionId: string, agentId: string | null = null) => {
     // Opening a second would be two voices and two meters.
     if (get().sessionId || get().connecting) return;
-    set({ connecting: true, error: null, notice: null, handedOff: null });
+    set({ connecting: true, error: null, notice: null, noticeTone: "info", handedOff: null });
     // A delegation waits on the companion, and a cold one can spend most of
     // the time the voice is holding the conversation. Warming it is free.
     void prewarmCompanion(sessionId).catch(() => {
@@ -162,7 +165,7 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
 
       // The wait that follows is silent on the call, so say so on screen: a
       // quiet voice for several seconds otherwise reads as a dead connection.
-      set({ notice: WORKING_ON_IT });
+      set({ notice: WORKING_ON_IT, noticeTone: "info" });
 
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeoutPromise = new Promise<"timeout">((resolve) => {
@@ -180,14 +183,14 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
       if (!current || handedOff) return;
 
       if (result === "timeout") {
-        set({ notice: NOTICE_NOT_READY });
+        set({ notice: NOTICE_NOT_READY, noticeTone: "info" });
         current.speakBack(delegationId, NOT_READY);
         return;
       }
 
       const decision = result;
       if (!decision.forward && decision.answer) {
-        set({ notice: null });
+        set({ notice: null, noticeTone: "info" });
         current.speakBack(delegationId, decision.answer);
         return;
       }
@@ -196,7 +199,7 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
       if (!(await handToClaude(text, agentId))) {
         // Hanging up without sending would lose the request entirely.
         handedOff = false;
-        set({ notice: NOT_SENT });
+        set({ notice: NOT_SENT, noticeTone: "info" });
         current.speakBack(delegationId, NOT_SENT);
         return;
       }
@@ -223,8 +226,8 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
         onError: (error) => {
           set({ error });
         },
-        onNotice: (notice) => {
-          set({ notice });
+        onNotice: (notice, tone) => {
+          set({ notice, noticeTone: tone ?? "info" });
         },
       });
     } catch (error) {

@@ -26,6 +26,10 @@ const SPEECH_RMS = 900;
 // second, which is past anything observed working.
 const REPLY_SLOW_MS = 8_000;
 const REPLY_STALL_MS = 30_000;
+// Speech this long with nothing transcribed means Gemini is not hearing it.
+// Input transcripts stream while the reader talks, so a healthy session sends
+// one well inside this.
+const NOT_HEARD_MS = 5_000;
 // How far ahead of the playhead the first chunk of a reply is scheduled.
 // Audio arrives over a socket whose pacing we do not control, so the queue
 // needs slack: with none, a packet that is a few ms late plays into a gap and
@@ -217,6 +221,14 @@ export type GeminiLiveState =
   | { state: "ready" }
   // Owed a reply for a while. Not fatal: the model is often just slow.
   | { state: "waiting"; sinceMs: number }
+  // The reader has been talking and nothing came back transcribed: Gemini is
+  // not hearing them, so they are talking to themselves.
+  | { state: "not-hearing" }
+  // A reply's audio ran out mid-sentence: Google is sending it slower than it
+  // plays, which is the freeze the reader hears.
+  | { state: "lagging" }
+  // A warning above no longer applies.
+  | { state: "clear" }
   | {
       state: "closed";
       kind: "normal" | "policy" | "error";
@@ -255,6 +267,12 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
   let lastAnswerAt = 0;
   // One "still waiting" per unanswered utterance, not one per tick.
   let slowNotified = false;
+  // When the reader started talking with nothing transcribed yet (0: not).
+  let speechStartedAt = 0;
+  let deafNotified = false;
+  let lagNotified = false;
+  // The next audio chunk opens a reply, so an empty queue is not a freeze.
+  let firstChunkOfReply = true;
   // Playback scheduling: model audio chunks are placed end-to-end.
   let nextStartTime = 0;
   // Times the queue ran dry mid-reply. Not reset per turn: it is a health
@@ -328,7 +346,24 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
     // session looks healthy.
     if (event.type === "audio" || event.type === "turnComplete" || event.type === "toolCall") {
       lastAnswerAt = Date.now();
+      // The answer came: "still thinking" is no longer true.
+      if (slowNotified) onStateChange?.({ state: "clear" });
       slowNotified = false;
+    }
+    // Transcribed or answered: it heard them.
+    if (event.type === "inputTranscript" || event.type === "audio") {
+      speechStartedAt = 0;
+      if (deafNotified) {
+        deafNotified = false;
+        onStateChange?.({ state: "clear" });
+      }
+    }
+    if (event.type === "turnComplete" || event.type === "interrupted") {
+      firstChunkOfReply = true;
+      if (lagNotified) {
+        lagNotified = false;
+        onStateChange?.({ state: "clear" });
+      }
     }
     if (event.type === "setupComplete") {
       onStateChange?.({ state: "ready" });
@@ -347,13 +382,21 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
       // zero slack and the reply stuttered the rest of the way. Re-establish
       // the lead whenever the queue does run dry.
       const now = playbackCtx.currentTime;
+      const midReply = !firstChunkOfReply;
+      firstChunkOfReply = false;
       // `<=`, not `<`: a chunk that lands exactly as the previous one ends has
       // no slack either, and it is the first chunk's case when the context
       // clock still reads 0.
       if (nextStartTime <= now) {
-        // nextStartTime is 0 on the first chunk of a reply and after a
-        // barge-in reset; neither is a starved queue.
-        if (nextStartTime > 0) underruns += 1;
+        // Only mid-reply is an empty queue a freeze: before a reply's first
+        // chunk it is just the gap between turns.
+        if (midReply) {
+          underruns += 1;
+          if (!lagNotified) {
+            lagNotified = true;
+            onStateChange?.({ state: "lagging" });
+          }
+        }
         nextStartTime = now + JITTER_LEAD_S;
       }
       src.start(nextStartTime);
@@ -404,7 +447,12 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
       // ANY-FRAME idle guard: while the mic is open we must keep sending;
       // never gate frames on client-side VAD.
       if (pcm && !stopped && ws && ws.readyState === WebSocket.OPEN) {
-        if (isSpeech(pcm)) lastSpeechAt = Date.now();
+        if (isSpeech(pcm)) {
+          lastSpeechAt = Date.now();
+          // Not while Gemini is talking: echo that leaks past cancellation is
+          // not the reader, and must not read as "not hearing you".
+          if (!speechStartedAt && sources.length === 0) speechStartedAt = lastSpeechAt;
+        }
         ws.send(JSON.stringify(buildAudioFrame(pcm)));
       }
     };
@@ -473,6 +521,15 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
     // Owed an answer and nothing came back: hang up so the reader is told the
     // session died, instead of waiting on an endpoint that stopped listening.
     stallInterval = setInterval(() => {
+      if (
+        !stopped &&
+        !deafNotified &&
+        speechStartedAt &&
+        Date.now() - speechStartedAt >= NOT_HEARD_MS
+      ) {
+        deafNotified = true;
+        onStateChange?.({ state: "not-hearing" });
+      }
       if (stopped || !lastSpeechAt || lastAnswerAt > lastSpeechAt) return;
       const owedMs = Date.now() - lastSpeechAt;
       if (owedMs >= REPLY_SLOW_MS && !slowNotified) {

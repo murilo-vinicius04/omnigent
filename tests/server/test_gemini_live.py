@@ -1017,3 +1017,38 @@ def test_only_audio_parts_count_toward_throughput():
     assert gemini_live_routes._inline_audio_bytes(transcript) == 0
     assert gemini_live_routes._inline_audio_bytes("not json") == 0
     assert gemini_live_routes._inline_audio_bytes(None) == 0
+
+
+def test_the_voice_cannot_claim_a_handoff_it_did_not_make():
+    """On 2026-09-21 the voice said "vou pedir pra ele olhar", never called the
+    tool, and then invented an off-channel link to Claude to explain the
+    silence. Both the role and the tool must rule that out."""
+    from omnigent.server.discussion import LIVE_VOICE_ROLE
+
+    role = LIVE_VOICE_ROLE.lower()
+    assert "no other channel to claude" in role
+    assert "unless you called" in role
+    setup = gemini_live.setup_frame(system_instruction="notes")["setup"]
+    tool = setup["tools"][0]["functionDeclarations"][0]["description"].lower()
+    assert "only way to reach claude" in tool
+    assert "then call it at once" in tool
+
+
+def test_reply_meter_counts_the_freezes_the_browser_hears():
+    """A reply that arrives slower than it plays leaves the queue dry: that is
+    the freeze, and the session-wide average hides it."""
+    one_second = 24_000 * 2
+    steady = gemini_live_routes._ReplyMeter()
+    for i in range(4):  # 1s of audio every 0.5s: always ahead of playback
+        steady.add(10.0 + 0.5 * i, one_second)
+    assert steady.dry == 0
+    assert steady.summary() == "4.0s@2.67x/0dry0.0s"
+
+    starved = gemini_live_routes._ReplyMeter()
+    starved.add(10.0, one_second // 2)  # plays 10.15 -> 10.65
+    starved.add(12.0, one_second // 2)  # lands 1.35s after the queue ran out
+    assert starved.dry == 1
+    assert round(starved.dry_s, 2) == 1.35
+    assert "/1dry" in starved.summary()
+
+    assert gemini_live_routes._ReplyMeter().summary() is None

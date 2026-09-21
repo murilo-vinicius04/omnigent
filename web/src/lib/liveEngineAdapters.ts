@@ -18,6 +18,14 @@ const CONFIRM_BEFORE_SENDING =
   "question, whether to send this to Claude. Call ask_claude again only if " +
   "they say yes; if they say no or keep talking, carry on the conversation.";
 
+/** "warn" when the call is not working as the reader expects, else "info". */
+export type LiveNoticeTone = "info" | "warn";
+
+/** Shown while Gemini hears nothing: the reader is talking to themselves. */
+export const NOT_HEARING_NOTICE = "Gemini isn't hearing you — nothing you said came through";
+/** Shown while a reply's audio arrives slower than it plays. */
+export const LAGGING_NOTICE = "Gemini's audio is lagging — expect gaps";
+
 export interface LiveEngineCallbacks {
   /** Emitted when a complete utterance is spoken by either the reader or the voice. */
   onUtterance: (utterance: { who: "reader" | "voice"; text: string }) => void;
@@ -26,7 +34,7 @@ export interface LiveEngineCallbacks {
   /** Emitted on a fatal or unexpected session error. */
   onError?: (error: string) => void;
   /** Emitted on a deliberate policy or lifecycle notice (e.g. idle timeout, session cap). */
-  onNotice?: (notice: string) => void;
+  onNotice?: (notice: string | null, tone?: LiveNoticeTone) => void;
 }
 
 export interface LiveEngineHandle {
@@ -208,6 +216,18 @@ export const geminiEngineAdapter: LiveEngineAdapter = {
         }
         if (state.state === "waiting") {
           callbacks.onNotice?.("Still thinking…");
+          return;
+        }
+        if (state.state === "not-hearing") {
+          callbacks.onNotice?.(NOT_HEARING_NOTICE, "warn");
+          return;
+        }
+        if (state.state === "lagging") {
+          callbacks.onNotice?.(LAGGING_NOTICE, "warn");
+          return;
+        }
+        if (state.state === "clear") {
+          callbacks.onNotice?.(null);
           return;
         }
         if (state.state === "closed") {
