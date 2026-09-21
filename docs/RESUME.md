@@ -157,3 +157,44 @@ grep "gemini live session ended" $(ls -t ~/.omnigent/logs/server/*.log | head -1
   the picked name is in `worker_choices(spec)` — next step is checking whether
   `codex` is in the nexus bundle's worker choices. Its tree is kept ungraded in
   the bench2 scratchpad.
+
+## 2026-09-21 midday — live voice + Unmute (read this first)
+
+**Why:** Gemini Live freezes in the mornings. Measured: narration delivery was
+3.1–3.8x realtime every time around midnight, but 0.05–6.8x between 10:22 and
+10:59, with first audio up to 12.8s; Gemini's *text* API stalled too (11.7s,
+28.9s, timeout). Same code both times, so it's Google load, not us.
+
+**Done (local commits, NOT pushed):**
+- `136f4bfe5` status line above the mic button (it was only a hover title):
+  "not hearing you" (5s speech, no transcript), "audio lagging" (reply ran dry
+  mid-sentence), "still thinking" clears on answer. Per-reply log in the
+  session summary: `replies=[<audio>s@<rate>x/<n>dry<secs>s]`. The voice may not
+  claim a Claude handoff without calling `ask_claude` (it had invented an
+  "off-channel" link).
+- `8cc980054` conversation frame sets
+  `realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity:
+  START_SENSITIVITY_LOW`: replies were being cut after one word by echo/noise.
+  **Not yet verified by a real call.**
+- `fbef674d6` Omnigent serves Kyutai Unmute at **localhost:6767/unmute**
+  (`omnigent/server/routes/unmute_proxy.py`). Details and build traps in memory
+  `unmute-voice-stack`. Stack: `~/unmute`, `docker-compose.local.yml`, brain
+  `gpt-5.6-terra` via the free OpenAI pool (~2s first token). English only.
+
+**Open:**
+1. User to try /unmute (delay, barge-in, voice) — then decide keep/remove.
+2. Disk ~6 GB free. pi05 training (openpi — NEVER touch) wrote ~25 GB last
+   night and will fail if it runs again. Candidates the user has NOT approved:
+   Isaac shader caches 30 GB (stop Isaac first), spot-teleop venvs in git
+   history ~6 GB (blocked: 9 stashes, 12 uncommitted changes and an unpushed
+   `master` there), friend-clone-test 3.8 GB, journal 3.7 GB (sudo).
+3. T4-codex benchmark never used codex: labels `team.worker=codex` were set but
+   both workers spawned as `gemini:`. Trace `resolve_worker` /
+   `worker_choices` in `omnigent/team_worker.py`.
+4. Qwen-Omni-Realtime (Alibaba, Singapore region, 90-day free quota) is the
+   cloud fallback option if Unmute doesn't satisfy; needs the user's account.
+
+**Traps from today:** a daemon started while a venv was hijacked keeps the
+bench-tree interpreter path (check `/proc/<pid>/cmdline` before deleting bench
+trees); containers write root-owned files (delete via
+`docker run --rm -v ... alpine rm -rf`).
