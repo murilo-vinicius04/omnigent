@@ -140,3 +140,20 @@ grep "gemini live session ended" $(ls -t ~/.omnigent/logs/server/*.log | head -1
   worker repointed it at a benchmark snapshot, silently serving old code.
 - Details: `docs/FRIENDLY_LAYER_SESSION.md`. Memory index:
   `~/.claude/projects/-home-nexus/memory/MEMORY.md`.
+
+## 2026-09-21 morning — open items
+
+- **Disk:** filled to 100% overnight (pi05 training wrote ~25G of checkpoints +
+  wandb staging). Cleaned to 30G free without touching openpi/pi05 (user rule:
+  never touch the openpi project). Next pi05 run of that size fills it again.
+- **omnigent-host was running from a deleted interpreter path**
+  (`bench2/runs/T4-gemini2/tree/.venv/bin/python3`, left over from the venv
+  hijack). Deleting bench trees broke every new runner. Stopgap symlink
+  recreated; host restarted on 2026-09-21 at the user's request so it runs from
+  the real venv. Check `/proc/<host pid>/cmdline` before deleting bench trees.
+- **T4-codex did NOT test codex.** Labels were `team.worker=codex`,
+  `gpt-5.6-luna`, but both spawned workers were `gemini:` and the OpenAI pool
+  still read 0. `resolve_worker` (omnigent/team_worker.py) returns None unless
+  the picked name is in `worker_choices(spec)` — next step is checking whether
+  `codex` is in the nexus bundle's worker choices. Its tree is kept ungraded in
+  the bench2 scratchpad.
