@@ -26,12 +26,13 @@ def nexus_spec():
     return load(NEXUS)
 
 
-def test_nexus_offers_exactly_its_five_workers(nexus_spec) -> None:
+def test_nexus_offers_exactly_its_six_workers(nexus_spec) -> None:
     choices = worker_choices(nexus_spec)
     assert [(c.name, c.label, c.harness) for c in choices] == [
         ("gemini", "Gemini", "antigravity-native"),
         ("claude", "Claude", "claude-native"),
         ("codex", "Codex", "codex"),
+        ("codex-plan", "Codex (ChatGPT plan)", "codex"),
         ("hermes", "Hermes (NVIDIA NIM)", "hermes-native"),
         ("grok", "Grok Build", "grok"),
     ]
@@ -40,7 +41,7 @@ def test_nexus_offers_exactly_its_five_workers(nexus_spec) -> None:
 
 
 def test_grok_offers_models_and_efforts_and_defaults_to_4_6_low(nexus_spec) -> None:
-    grok = worker_choices(nexus_spec)[4]
+    grok = next(c for c in worker_choices(nexus_spec) if c.name == "grok")
     assert grok.models == ("grok-4.6", "grok-4.5")
     assert grok.efforts == ("low", "medium", "high", "xhigh")
     assert (grok.default_model, grok.default_effort) == ("grok-4.6", "low")

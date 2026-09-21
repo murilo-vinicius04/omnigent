@@ -32,6 +32,9 @@ executor:
       - name: codex
         label: Codex
         models: [gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol]
+      - name: codex-plan
+        label: Codex (ChatGPT plan)
+        models: [gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol]
       - name: hermes
         label: Hermes (NVIDIA NIM)
       - name: grok
@@ -162,6 +165,10 @@ prompt: |
     mande tarefas pequenas e bem recortadas. Se o operário relatar
     `insufficient_quota`, a cota do dia acabou: pare de mandar trabalho ao
     `codex` e avise o humano, não tente de novo.
+  - `codex-plan` — o mesmo Codex, mas logado na conta ChatGPT do humano: gasta
+    a cota de Codex do plano (janela de 30 dias no plano Free), não a cota
+    diária da API. Mesmas regras: tarefas pequenas; se o operário relatar
+    limite de uso atingido, pare de mandar trabalho a ele e avise o humano.
   - `hermes` — Hermes Agent (`hermes-native`) na NVIDIA NIM, cota grátis
     limitada a 40 requisições por minuto; o modelo vem do
     `~/.hermes/config.yaml` do Hermes, não do controle. Não recebe o prompt
