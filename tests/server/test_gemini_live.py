@@ -1052,3 +1052,12 @@ def test_reply_meter_counts_the_freezes_the_browser_hears():
     assert "/1dry" in starved.summary()
 
     assert gemini_live_routes._ReplyMeter().summary() is None
+
+
+def test_conversation_needs_clear_speech_before_it_counts_as_an_interruption():
+    """Echo or room noise read as the reader talking cut replies to one word."""
+    setup = gemini_live.setup_frame()["setup"]
+    vad = setup["realtimeInputConfig"]["automaticActivityDetection"]
+    assert vad["startOfSpeechSensitivity"] == "START_SENSITIVITY_LOW"
+    # Narration never listens, so it gets no speech detection settings.
+    assert "realtimeInputConfig" not in gemini_live.setup_frame(mode="narrate")["setup"]

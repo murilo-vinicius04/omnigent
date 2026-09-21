@@ -117,6 +117,12 @@ def setup_frame(
         },
         "inputAudioTranscription": {},
         "outputAudioTranscription": {},
+        # Low start sensitivity: its own voice leaking back through speakers,
+        # or room noise, read as the reader talking and cut every reply after a
+        # word or two ("Opa! O", "Tô sim,"). Real speech still interrupts.
+        "realtimeInputConfig": {
+            "automaticActivityDetection": {"startOfSpeechSensitivity": "START_SENSITIVITY_LOW"}
+        },
     }
     if system_instruction and system_instruction.strip():
         setup["systemInstruction"] = {"parts": [{"text": system_instruction}]}
