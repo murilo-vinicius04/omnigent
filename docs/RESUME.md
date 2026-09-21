@@ -208,3 +208,37 @@ first audio ~0.25s, no dry gaps. Details and traps: memory `unmute-voice-stack`.
 bench-tree interpreter path (check `/proc/<pid>/cmdline` before deleting bench
 trees); containers write root-owned files (delete via
 `docker run --rm -v ... alpine rm -rf`).
+
+## 2026-09-21 evening — Unmute engine live, compaction bug found (read first)
+
+**Unmute (local Kyutai voice) is the third live engine** and works end to end;
+details and traps in memory `unmute-voice-stack`. Commits (local, not pushed):
+`52f9b34f9` engine + brain, `8820f9464` interrupt only on recognized words
+(noise cancelled replies), `60bc170a6` 8 voices in a menu (default ex02,
+user liked ex02 and ex03-happy), `8b5cb49bd` per-call mic trace log.
+`~/unmute` branch `omnigent-local`: `544de6f`, `1b5bbaa`, `aec1e7d`
+(speech-to-text `batch_size = 4`; at 1 a narration blocked calls).
+
+**Open on Unmute:**
+1. User saw "heard my first sentence, then nothing for 40s" (audio arrived, no
+   words). Not reproducible with recorded speech. Next occurrence: read the
+   `unmute live input trace` line in the server log (mic dBFS per second).
+2. Host `~/.cache/huggingface/token` vanished ~18:40 (not us). STT was started
+   with the copy in `~/unmute/volumes/hf-cache/token`; asked the user.
+3. Page bug: attachments with a caption made mid-turn fold into collapsed
+   steps (attach uncaptioned, with the turn's response_id, until fixed).
+4. With Unmute the voice asks twice before a handoff (first-call rule + Terra
+   already asks). User has not decided whether to drop the rule for Unmute.
+
+**Compaction bug — fix `842f2acca`, NOT deployed, needs the user's go:**
+every Claude relaunch rebuilds the transcript from Omnigent's compaction
+records; the hook path saved them before Claude wrote the compacted transcript,
+so each held the whole old history and relaunches undid compactions (611k→7.4k
+came back at 589k). Deploy order: repair the latest compaction record of
+`d14bc7496a6a42b6b6a0730b3f4f5f20` (1,541 msgs) and `79d4dd11…` (4,104 msgs)
+from their current Claude chain, user runs `/compact`, then restart
+`omnigent-host`. `tests/test_claude_native_forwarder.py` cannot import here
+(`opentelemetry-sdk` missing from the venv); its compaction tests were run from
+a scratch copy.
+
+Disk: something freed ~22 GB ~18:46 and wiped this session's scratchpad.
