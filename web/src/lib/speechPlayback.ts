@@ -444,6 +444,11 @@ export function claimSpeechChannel(el: HTMLAudioElement | null, sessionId?: stri
   activeAudio = el;
 }
 
+/** Whether a summary is being read aloud right now, or its voice is connecting. */
+export function isNarrating(): boolean {
+  return useSpeechPlaybackStore.getState().isSpeaking;
+}
+
 /**
  * Play one summary now, in the voice its session has chosen.
  *

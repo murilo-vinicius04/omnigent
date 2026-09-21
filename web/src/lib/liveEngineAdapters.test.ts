@@ -223,6 +223,24 @@ describe("liveEngineAdapters", () => {
       expect(onUtterance).toHaveBeenNthCalledWith(2, { who: "voice", text: "Hi there" });
     });
 
+    it("says who is heard, so a reading under the call knows when to stop", async () => {
+      const onSpeech = vi.fn();
+      await geminiEngineAdapter.open("session_2", {
+        onUtterance: vi.fn(),
+        onDelegation: vi.fn(),
+        onSpeech,
+      });
+
+      // Blank fragments are not anyone talking.
+      capturedOpts.onEvent?.({ type: "inputTranscript", text: " " });
+      expect(onSpeech).not.toHaveBeenCalled();
+
+      capturedOpts.onEvent?.({ type: "inputTranscript", text: "Wait" });
+      expect(onSpeech).toHaveBeenLastCalledWith("reader");
+      capturedOpts.onEvent?.({ type: "audio", mimeType: "audio/pcm", data: "AAAA" });
+      expect(onSpeech).toHaveBeenLastCalledWith("voice");
+    });
+
     it("flushes pending buffers on close and reports error", async () => {
       const onUtterance = vi.fn();
       const onError = vi.fn();

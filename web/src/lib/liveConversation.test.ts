@@ -9,9 +9,11 @@ vi.mock("./liveVoice", () => ({
 }));
 const setConversationSpeaking = vi.fn();
 const claimSpeechChannel = vi.fn();
+let narrating = false;
 vi.mock("./speechPlayback", () => ({
   claimSpeechChannel: (...args: unknown[]) => claimSpeechChannel(...args),
   setConversationSpeaking: (...args: unknown[]) => setConversationSpeaking(...args),
+  isNarrating: () => narrating,
 }));
 const noteCompanion = vi.fn(async (_sessionId: string, _kind: string, _text: string) => {});
 const delegateSpoken = vi.fn(async (_sessionId: string, _text: string) => ({
@@ -107,6 +109,29 @@ describe("the open spoken conversation", () => {
 
     useLiveConversationStore.getState().stop();
     expect(setConversationSpeaking).toHaveBeenCalledWith(false);
+  });
+
+  it("opened over a reading, leaves it playing until someone on the call speaks", async () => {
+    narrating = true;
+    try {
+      openLiveConversation.mockResolvedValue(fakeConversation());
+      await useLiveConversationStore.getState().start("conv_a");
+      // The mic is open and the reading carries on underneath it.
+      expect(useLiveConversationStore.getState().sessionId).toBe("conv_a");
+      expect(claimSpeechChannel).not.toHaveBeenCalled();
+
+      const options = openLiveConversation.mock.calls[0]?.[1] as {
+        onSpeech?: (who: "reader" | "voice") => void;
+      };
+      options.onSpeech?.("reader");
+      expect(claimSpeechChannel).toHaveBeenCalledTimes(1);
+      expect(claimSpeechChannel).toHaveBeenCalledWith(expect.anything(), "conv_a");
+      // Only the first voice on the call hands over; later speech changes nothing.
+      options.onSpeech?.("voice");
+      expect(claimSpeechChannel).toHaveBeenCalledTimes(1);
+    } finally {
+      narrating = false;
+    }
   });
 
   it("hangs up on stop, so the meter stops with it", async () => {

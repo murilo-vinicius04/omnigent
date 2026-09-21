@@ -343,6 +343,8 @@ export async function openLiveConversation(
      * delegation, since the event itself carries no task text.
      */
     onDelegation?: (delegationId: string, asked: string) => void;
+    /** Either side was heard: a transcript delta came in for them. */
+    onSpeech?: (who: "reader" | "voice") => void;
   } = {},
 ): Promise<LiveConversation> {
   if (typeof RTCPeerConnection === "undefined") {
@@ -460,6 +462,7 @@ export async function openLiveConversation(
     }
     if (payload.type === "session.input_transcript.delta") {
       touch();
+      if (payload.delta?.trim()) options.onSpeech?.("reader");
       readerSinceDelegation = (readerSinceDelegation + (payload.delta ?? "")).slice(
         -MAX_DELEGATED_CHARS,
       );
@@ -467,6 +470,7 @@ export async function openLiveConversation(
     } else if (payload.type === "session.output_transcript.delta") {
       touch();
       voiceSpeaking?.();
+      if (payload.delta?.trim()) options.onSpeech?.("voice");
       collect("voice", payload.delta ?? "");
     } else if (payload.type === "session.delegation.created" && payload.delegation?.id) {
       // The voice could not answer and handed the question to this application.

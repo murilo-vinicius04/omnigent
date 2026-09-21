@@ -35,6 +35,8 @@ export interface LiveEngineCallbacks {
   onUtterance: (utterance: { who: "reader" | "voice"; text: string }) => void;
   /** Emitted when the voice model delegates a question. */
   onDelegation: (id: string, question: string) => void;
+  /** Emitted whenever either side is heard: the reader's words, or the voice's. */
+  onSpeech?: (who: "reader" | "voice") => void;
   /** Emitted on a fatal or unexpected session error. */
   onError?: (error: string) => void;
   /** Emitted on a deliberate policy or lifecycle notice (e.g. idle timeout, session cap). */
@@ -73,6 +75,7 @@ export const gptEngineAdapter: LiveEngineAdapter = {
     live = await openLiveConversation(sessionId, {
       onUtterance: callbacks.onUtterance,
       onDelegation: callbacks.onDelegation,
+      onSpeech: callbacks.onSpeech,
     });
 
     const audio = new Audio();
@@ -165,14 +168,18 @@ function relayedEngineAdapter(
 
       const handleEvent = (ev: GeminiLiveEvent): void => {
         if (ev.type === "inputTranscript") {
+          if (ev.text.trim()) callbacks.onSpeech?.("reader");
           readerBuf += ev.text;
           lastReader = readerBuf.trim();
           readerSinceDelegation = (readerSinceDelegation + ev.text).slice(-MAX_DELEGATED_CHARS);
         } else if (ev.type === "outputTranscript") {
+          if (ev.text.trim()) callbacks.onSpeech?.("voice");
           if (readerBuf) {
             flushReader();
           }
           voiceBuf += ev.text;
+        } else if (ev.type === "audio") {
+          callbacks.onSpeech?.("voice");
         } else if (ev.type === "interrupted" || ev.type === "turnComplete") {
           flushVoice();
           if (ev.type === "turnComplete" && waitForTurnCompleteResolve) {
