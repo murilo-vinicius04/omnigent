@@ -112,6 +112,7 @@ from omnigent.server.routes.sessions import (
 )
 from omnigent.server.routes.sharing import create_sharing_router
 from omnigent.server.routes.terminal_attach import create_terminal_attach_router
+from omnigent.server.routes.unmute_live import create_unmute_live_router
 from omnigent.server.routes.unmute_proxy import create_unmute_proxy_router
 from omnigent.server.routes.usage import create_usage_router
 from omnigent.server.runner_session_init import RunnerSessionInitializer
@@ -2706,6 +2707,7 @@ def create_app(
     # A local Kyutai Unmute voice stack, served under this origin at /unmute
     # so the microphone works on the same forwarded port as the app.
     app.include_router(create_unmute_proxy_router(auth_provider=auth_provider))
+    app.include_router(create_unmute_live_router(auth_provider=auth_provider), prefix="/v1")
     # The warm companion: one agy process per session, plus its probe
     # page. Registered unconditionally; a missing CLI reports 503.
     app.include_router(

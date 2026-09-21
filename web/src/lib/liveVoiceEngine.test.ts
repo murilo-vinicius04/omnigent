@@ -25,6 +25,11 @@ describe("getLiveVoiceEngine", () => {
     expect(getLiveVoiceEngine()).toBe("gemini");
   });
 
+  it("reads a persisted unmute choice", () => {
+    setLiveVoiceEngine("unmute");
+    expect(getLiveVoiceEngine()).toBe("unmute");
+  });
+
   it("falls back to gpt on an invalid stored value", () => {
     window.localStorage.setItem(KEY, "claude");
     expect(getLiveVoiceEngine()).toBe("gpt");
@@ -56,7 +61,10 @@ describe("fetchGeminiLiveAvailability", () => {
   it("returns configured when the server reports configured", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ configured: true, model: "gemini-2.0" }), { status: 200 })),
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ configured: true, model: "gemini-2.0" }), { status: 200 }),
+      ),
     );
     expect(await fetchGeminiLiveAvailability()).toBe("configured");
     vi.unstubAllGlobals();
@@ -65,14 +73,19 @@ describe("fetchGeminiLiveAvailability", () => {
   it("returns unconfigured when configured is not true", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ configured: false, model: "" }), { status: 200 })),
+      vi.fn(
+        async () => new Response(JSON.stringify({ configured: false, model: "" }), { status: 200 }),
+      ),
     );
     expect(await fetchGeminiLiveAvailability()).toBe("unconfigured");
     vi.unstubAllGlobals();
   });
 
   it("returns unknown on a non-2xx response", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 401 })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("nope", { status: 401 })),
+    );
     expect(await fetchGeminiLiveAvailability()).toBe("unknown");
     vi.unstubAllGlobals();
   });

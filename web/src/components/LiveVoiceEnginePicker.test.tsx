@@ -7,19 +7,25 @@ import type { GeminiAvailability } from "@/lib/liveVoiceEngine";
 
 // Mutable knobs the mocked modules read at call time.
 let availability: Promise<GeminiAvailability> = Promise.resolve("configured");
+let unmuteAvailability: Promise<GeminiAvailability> = Promise.resolve("configured");
 let liveSessionActive = false;
 
 vi.mock("@/lib/liveVoiceEngine", () => ({
-  getLiveVoiceEngine: () => (window.localStorage.getItem(KEY) === "gemini" ? "gemini" : "gpt"),
-  setLiveVoiceEngine: (engine: "gpt" | "gemini") => {
+  getLiveVoiceEngine: () => {
+    const stored = window.localStorage.getItem(KEY);
+    return stored === "gemini" || stored === "unmute" ? stored : "gpt";
+  },
+  setLiveVoiceEngine: (engine: "gpt" | "gemini" | "unmute") => {
     window.localStorage.setItem(KEY, engine);
   },
   fetchGeminiLiveAvailability: () => availability,
+  fetchUnmuteLiveAvailability: () => unmuteAvailability,
 }));
 
 vi.mock("@/lib/liveConversation", () => ({
-  useLiveConversationStore: (sel: (s: { sessionId: string | null; connecting: boolean }) => unknown) =>
-    sel({ sessionId: liveSessionActive ? "s_1" : null, connecting: false }),
+  useLiveConversationStore: (
+    sel: (s: { sessionId: string | null; connecting: boolean }) => unknown,
+  ) => sel({ sessionId: liveSessionActive ? "s_1" : null, connecting: false }),
 }));
 
 import { LiveVoiceEnginePicker } from "./LiveVoiceEnginePicker";
@@ -27,6 +33,7 @@ import { LiveVoiceEnginePicker } from "./LiveVoiceEnginePicker";
 beforeEach(() => {
   window.localStorage.clear();
   availability = Promise.resolve("configured");
+  unmuteAvailability = Promise.resolve("configured");
   liveSessionActive = false;
 });
 
@@ -92,6 +99,25 @@ describe("LiveVoiceEnginePicker", () => {
     await waitFor(() => {
       expect(window.localStorage.getItem(KEY)).toBe("gemini");
     });
+  });
+
+  it("choosing Unmute persists the engine choice", async () => {
+    render(<LiveVoiceEnginePicker />);
+    openMenu();
+    fireEvent.click(await screen.findByRole("option", { name: /Unmute \(local\)/ }));
+    await waitFor(() => {
+      expect(window.localStorage.getItem(KEY)).toBe("unmute");
+    });
+  });
+
+  it("a stopped Unmute stack never switches the reader to billed GPT Live", async () => {
+    window.localStorage.setItem(KEY, "unmute");
+    unmuteAvailability = Promise.resolve("unconfigured");
+    render(<LiveVoiceEnginePicker />);
+    openMenu();
+    const option = await screen.findByRole("option", { name: /Unmute \(local\)/ });
+    expect(option).toHaveAttribute("title", "The local Unmute stack is not running");
+    expect(window.localStorage.getItem(KEY)).toBe("unmute");
   });
 
   it("is disabled while a live conversation is active", async () => {

@@ -17,6 +17,7 @@ import {
   gptEngineAdapter,
   geminiEngineAdapter,
   getLiveEngineAdapter,
+  unmuteEngineAdapter,
   USD_PER_MINUTE,
 } from "./liveEngineAdapters";
 
@@ -62,6 +63,42 @@ describe("liveEngineAdapters", () => {
     it("returns gptEngineAdapter for gpt and geminiEngineAdapter for gemini", () => {
       expect(getLiveEngineAdapter("gpt")).toBe(gptEngineAdapter);
       expect(getLiveEngineAdapter("gemini")).toBe(geminiEngineAdapter);
+      expect(getLiveEngineAdapter("unmute")).toBe(unmuteEngineAdapter);
+    });
+  });
+
+  describe("unmuteEngineAdapter", () => {
+    it("runs the Gemini call flow through the Unmute relay, under its own name", async () => {
+      let opts: {
+        endpoint?: string;
+        onEvent?: (ev: GeminiLiveEvent) => void;
+        onStateChange?: (state: { state: string }) => void;
+      } = {};
+      const session = fakeGeminiSession();
+      startGeminiLive.mockImplementation((o: typeof opts) => {
+        opts = o;
+        return Promise.resolve(session);
+      });
+      const onDelegation = vi.fn();
+      const onNotice = vi.fn();
+      const handle = await unmuteEngineAdapter.open("session_u", {
+        onUtterance: vi.fn(),
+        onDelegation,
+        onNotice,
+      });
+
+      expect(handle.engine).toBe("unmute");
+      expect(opts.endpoint).toBe("/v1/live/unmute/ws");
+      // Same rule as Gemini: the first handoff only buys the question.
+      opts.onEvent?.({ type: "toolCall", calls: [{ id: "c1", name: "ask_claude" }] });
+      expect(onDelegation).not.toHaveBeenCalled();
+      opts.onEvent?.({ type: "toolCall", calls: [{ id: "c2", name: "ask_claude" }] });
+      expect(onDelegation).toHaveBeenCalledTimes(1);
+      opts.onStateChange?.({ state: "not-hearing" });
+      expect(onNotice).toHaveBeenLastCalledWith(
+        "Unmute isn't hearing you — nothing you said came through",
+        "warn",
+      );
     });
   });
 

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 from collections.abc import Awaitable, Callable
 from typing import Any, Final
 
@@ -21,12 +20,10 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketExcep
 from starlette import status
 from starlette.background import BackgroundTask
 from starlette.responses import Response, StreamingResponse
+from websockets.typing import Subprotocol
 
 from omnigent.server.auth import AuthProvider
-
-#: Where the Unmute stack listens. Overridable for a stack on another port.
-UPSTREAM_ENV: Final[str] = "OMNIGENT_UNMUTE_URL"
-DEFAULT_UPSTREAM: Final[str] = "http://127.0.0.1:8089"
+from omnigent.server.unmute_live import unmute_base_url
 
 #: Connection-scoped headers that must not be relayed, plus ``host`` (the
 #: upstream sets its own) and ``content-length`` (the body is re-streamed).
@@ -53,11 +50,8 @@ UpstreamConnect = Callable[[str, list[str]], Awaitable[Any]]
 
 async def _default_connect(url: str, subprotocols: list[str]) -> Any:
     # Audio frames exceed the library's 1 MiB default message cap.
-    return await websockets.connect(url, subprotocols=subprotocols or None, max_size=None)
-
-
-def _upstream_base() -> str:
-    return os.environ.get(UPSTREAM_ENV, DEFAULT_UPSTREAM).rstrip("/")
+    offered = [Subprotocol(p) for p in subprotocols] or None
+    return await websockets.connect(url, subprotocols=offered, max_size=None)
 
 
 def _target(base: str, path: str, query: str) -> str:
@@ -86,7 +80,7 @@ def create_unmute_proxy_router(
     async def unmute_http(request: Request, path: str = "") -> Response:
         if auth_provider is not None and auth_provider.get_user_id(request) is None:
             raise HTTPException(status_code=401, detail="authentication required")
-        url = _target(_upstream_base(), path, request.url.query)
+        url = _target(unmute_base_url(), path, request.url.query)
         headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
         client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(120.0, connect=5.0))
         # GET/HEAD carry no body; streaming an empty one sends a chunked GET.
@@ -97,7 +91,7 @@ def create_unmute_proxy_router(
         except httpx.HTTPError:
             await client.aclose()
             return Response(
-                "Unmute is not running (expected on " + _upstream_base() + ").",
+                "Unmute is not running (expected on " + unmute_base_url() + ").",
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 media_type="text/plain",
             )
@@ -118,7 +112,7 @@ def create_unmute_proxy_router(
     async def unmute_ws(websocket: WebSocket, path: str) -> None:
         if auth_provider is not None and auth_provider.get_user_id(websocket) is None:
             raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
-        base = _upstream_base().replace("http://", "ws://", 1).replace("https://", "wss://", 1)
+        base = unmute_base_url().replace("http://", "ws://", 1).replace("https://", "wss://", 1)
         # Unmute's realtime socket negotiates the "realtime" subprotocol.
         offered = list(websocket.scope.get("subprotocols") or [])
         try:

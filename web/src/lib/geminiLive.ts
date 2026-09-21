@@ -238,6 +238,8 @@ export type GeminiLiveState =
 
 export interface GeminiLiveOptions {
   sessionId?: string | null;
+  /** Relay socket path; the Unmute relay speaks the same frames. */
+  endpoint?: string;
   onEvent?: (event: GeminiLiveEvent) => void;
   onStateChange?: (state: GeminiLiveState) => void;
   onError?: (error: Error) => void;
@@ -459,9 +461,10 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
     playbackCtx = new AudioContext({ sampleRate: PLAYBACK_RATE });
     await playbackCtx.resume();
 
+    const endpoint = opts.endpoint ?? "/v1/live/gemini/ws";
     const wsPath = opts.sessionId
-      ? `/v1/live/gemini/ws?session_id=${encodeURIComponent(opts.sessionId)}`
-      : "/v1/live/gemini/ws";
+      ? `${endpoint}?session_id=${encodeURIComponent(opts.sessionId)}`
+      : endpoint;
     ws = new WebSocket(resolveWebSocketUrl(wsPath));
     const socket = ws;
     socket.binaryType = "arraybuffer";

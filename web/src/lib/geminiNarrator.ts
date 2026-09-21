@@ -38,11 +38,12 @@ export function frameForReading(text: string): string {
  *
  * @param text - The finished summary to read aloud verbatim.
  * @param options.signal - Aborts the narration and closes the session.
+ * @param options.endpoint - Relay socket path; the Unmute relay speaks the same frames.
  * @throws LiveVoiceUnavailable when no session could be opened or text is empty.
  */
 export async function narrateViaGeminiLive(
   text: string,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; endpoint?: string } = {},
 ): Promise<LiveNarration> {
   if (!text || !text.trim()) {
     throw new LiveVoiceUnavailable("nothing to read");
@@ -114,7 +115,7 @@ export async function narrateViaGeminiLive(
     throw new LiveVoiceUnavailable("aborted");
   }
 
-  const socketUrl = resolveWebSocketUrl("/v1/live/gemini/ws?mode=narrate");
+  const socketUrl = resolveWebSocketUrl(`${options.endpoint ?? "/v1/live/gemini/ws"}?mode=narrate`);
   ws = new WebSocket(socketUrl);
   const socket = ws;
   socket.binaryType = "arraybuffer";

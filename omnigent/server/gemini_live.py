@@ -45,6 +45,23 @@ DEFAULT_VOICE: Final[str] = "Aoede"
 VOICE: Final[str] = DEFAULT_VOICE
 
 
+#: The handoff tool, as every live voice declares it (Unmute's brain too).
+ASK_CLAUDE_DESCRIPTION: Final[str] = (
+    "Send a settled request to Claude, AFTER the user has agreed "
+    "to send it. Calling this ends the call, so never call it on "
+    "your own initiative: talk the request through first, ask "
+    "whether to send it, and call this only once they say yes -- "
+    "then call it at once. This is the only way to reach Claude: "
+    "never say you are asking or waiting on Claude without "
+    "calling it. "
+    "What needs Claude: a fact the session notes do not cover "
+    "(code, files, data, measurements) or an action on their "
+    "machine. Not for what the notes answer, and not for a brief "
+    "clarification."
+)
+ASK_CLAUDE_QUESTION: Final[str] = "The question or task to ask Claude."
+
+
 def api_key() -> str:
     """Return the Gemini API key.
 
@@ -131,25 +148,13 @@ def setup_frame(
                 "functionDeclarations": [
                     {
                         "name": "ask_claude",
-                        "description": (
-                            "Send a settled request to Claude, AFTER the user has agreed "
-                            "to send it. Calling this ends the call, so never call it on "
-                            "your own initiative: talk the request through first, ask "
-                            "whether to send it, and call this only once they say yes -- "
-                            "then call it at once. This is the only way to reach Claude: "
-                            "never say you are asking or waiting on Claude without "
-                            "calling it. "
-                            "What needs Claude: a fact the session notes do not cover "
-                            "(code, files, data, measurements) or an action on their "
-                            "machine. Not for what the notes answer, and not for a brief "
-                            "clarification."
-                        ),
+                        "description": ASK_CLAUDE_DESCRIPTION,
                         "parameters": {
                             "type": "OBJECT",
                             "properties": {
                                 "question": {
                                     "type": "STRING",
-                                    "description": "The question or task to ask Claude.",
+                                    "description": ASK_CLAUDE_QUESTION,
                                 }
                             },
                             "required": ["question"],

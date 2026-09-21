@@ -214,6 +214,28 @@ describe("speechPlayback call coordination and queueing", () => {
     expect(narrateViaLive).not.toHaveBeenCalled();
   });
 
+  it("narrates through the local Unmute relay when that engine is chosen", () => {
+    setLiveVoiceEngine("unmute");
+    useVoiceBackendStore.getState().set("conv_live_unmute", "live");
+    narrateViaGeminiLive.mockReturnValue(
+      Promise.resolve({
+        stream: new FakeMediaStream() as unknown as MediaStream,
+        finished: new Promise<void>(() => {}),
+        stop: vi.fn(),
+      }),
+    );
+
+    const started = useSpeechPlaybackStore
+      .getState()
+      .speakLiveSummary("msg_unmute", "Unmute text", "en", undefined, "conv_live_unmute");
+
+    expect(started).toBe(true);
+    expect(narrateViaGeminiLive).toHaveBeenCalledWith("Unmute text", {
+      endpoint: "/v1/live/unmute/ws",
+    });
+    expect(narrateViaLive).not.toHaveBeenCalled();
+  });
+
   it("uses GPT narrator when getLiveVoiceEngine() is gpt", () => {
     setLiveVoiceEngine("gpt");
     useVoiceBackendStore.getState().set("conv_live_gpt", "live");
@@ -259,4 +281,3 @@ describe("speechPlayback call coordination and queueing", () => {
     expect(stopFn).toHaveBeenCalled();
   });
 });
-

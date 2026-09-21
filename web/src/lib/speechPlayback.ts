@@ -536,7 +536,13 @@ function startLivePlayback(
     playNextQueued(set, get);
   };
 
-  const narrate = getLiveVoiceEngine() === "gemini" ? narrateViaGeminiLive : narrateViaLive;
+  const engine = getLiveVoiceEngine();
+  const narrate =
+    engine === "gemini"
+      ? narrateViaGeminiLive
+      : engine === "unmute"
+        ? (summary: string) => narrateViaGeminiLive(summary, { endpoint: "/v1/live/unmute/ws" })
+        : narrateViaLive;
 
   void narrate(text)
     .then((live) => {
