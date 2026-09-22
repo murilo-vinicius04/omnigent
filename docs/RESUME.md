@@ -316,3 +316,56 @@ checkout .` (drops that hand patch and the old bootstrap path rewrite), `git pul
 25% of the daily pool) for small fast tasks. Codex on ChatGPT Free 4/5 16 min, 5% of 30-day
 allowance; NIM GLM/DeepSeek too slow; APMIX DeepSeek burned 3.8M tokens in 10 min. Details:
 memory `codex-worker-quotas`. `run_nexus.py <task> <host> [worker] [model]`.
+
+## 2026-09-22 evening — READ FIRST (supersedes the section above)
+
+Fork `feat/friendly-layer` tip `6ef766b95`; friend's PC (clone `~/omnigent-friendly-layer`, data
+`~/.omnigent-friendly-layer`) is on the same commit. His host+server restarted 19:47, server 20:21.
+
+**Done today (pushed):** `1b66722ed` Worker row when an uploaded nexus copy wins the new-chat picker ·
+`79dd0a559` worker paths via `$OMNIGENT_CHECKOUT` (host unit), bootstrap no longer edits clones, APMIX
+worker gone (provider + key removed from `~/.omnigent` too) · `d8b021dbf` agy reader: a `schedule`
+timer cancelled early ("Timer cancelled early…"/"Finished waiting…") counts as finished, and the idle
+backstop re-checks every tick so the 600 s task-wait timeout can fire (friend's nexus waited 25+ min on
+a finished Gemini worker) · `52c9b8645`/`1300b9b19`/`3f3f2de93` friendly view lists the answer's
+openable files (links + inline-code video/html/img/pdf paths) under the summary · `662e343d3` nexus
+prompt: one absolute-path link per file · `6ef766b95` `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`: Claude Code
+2.1.280 withholds TaskCreate/Update/List/Get from Opus 5/5.5 (model is the only factor, measured).
+
+**Facts that cost time:**
+- Runner code reloads with no host restart: the zygote refuses forks once omnigent files change and
+  the host spawns fresh `_entry` runners from disk; runners idle-exit after 60 min. Host restart only
+  for `omnigent/host/*` or unit env. Server restart re-registers `--agent` bundles; here it also
+  relaunched ~6 idle Claude panes (20:22).
+- agy from outside: port from the runner log (`127.0.0.1:<port>/exa.language_server_pb…`), token =
+  `--csrf_token` in `/proc/<agy pid>/cmdline`, then `antigravity_native_rpc.get_all_cascade_trajectories`
+  / `get_trajectory_steps(port, cascade, csrf_token=…)`. Task logs: `~/.omnigent/antigravity-native/
+  <bridge>/agy-home/.gemini/antigravity-cli/brain/<cascade>/.system_generated/tasks/`.
+- Tools offered to the model: point `ANTHROPIC_BASE_URL` at a local server that logs the
+  `/v1/messages` body; run interactive `claude` in `/home/nexus/.local/bin/tmux -L todolab`. No quota.
+- Pre-existing, not ours: pyrefly errors in `runtime/telemetry.py`, `_sessions/helpers.py`; model-id
+  lint (repo-wide); 8 `tests/host` failures (stale_build_info ×2, model_options ×5, session_log_dir).
+
+**Open (ask first):**
+1. Unmute GPU parking (user said go; paused). `~/unmute/docker-compose.local.yml` edited, uncommitted,
+   containers NOT recreated: explicit `/dev/nvidia*` devices for tts+stt (new processes in the running
+   containers get "Failed to initialize NVML" after a host daemon-reload) and `HF_HUB_OFFLINE=1` for
+   tts (81 of its 110 s start was HF checks of 901 voice files). `~/unmute/tools/cuda-checkpoint`
+   (driver 580 ok). Next: `docker compose -f docker-compose.local.yml up -d stt` (only stt/tts: this
+   shell lacks the backend's tokens), `cuda-checkpoint --toggle --pid 77` inside, measure VRAM freed,
+   restore time, still transcribes; then tts; then time the offline start. Idle Unmute: 11.6 GB VRAM
+   (tts 8.4, stt 3.2), ~0% GPU, stt ~18% of a core.
+2. Laya test (user: worth it). `~/laya-test/.venv` (laya 0.3.6, torch cu130); `decisions.jsonl` from
+   `build_dataset.py`: 306 companion routing decisions, 50 kept / 256 to Claude (84% baseline; some are
+   bench prompts). Next: untuned `laya` + `laya-multilingual`, chart agreement and latency.
+3. Opus may still not use the task tools unprompted (Claude Code drops its "Use TaskCreate…" line for
+   Opus). Adding an instruction changes the claude-native framework-instruction design: needs user OK.
+4. Stale duplicate Claude process on this chat's transcript: pid 1102933 (09-21 18:44); live is
+   1981374. Offered to end it.
+5. Installer: `uv sync --extra all` fails on a fresh clone (chatterbox-tts via gradio 6.8 needs
+   starlette<1.0; omnigent needs >=1.0.1). `FRIENDLY_LAYER_SETUP.md` wrongly says a server restart
+   interrupts sessions.
+6. Older: model picker silent no-op; language cache not cleared on change (`spoken_summary.py:654`,
+   60 s); user runs `sudo bash ~/cleanup-sudo.sh`.
+7. XR hub: `petrobras-chains/xr/serve.py --spot <crawl-lab/xr>` serves chain `/` + Spot clips `/spot/`
+   on 8731 (nohup, `xr/hub.log`); idea: port the rollout viewer into the shell as a second app.
