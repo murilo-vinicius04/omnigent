@@ -208,6 +208,12 @@ first audio ~0.25s, no dry gaps. Details and traps: memory `unmute-voice-stack`.
    re-sent by Codex) = 25% of the 2.5M day.** The pool is shared with the
    Unmute voice brain (Terra, ~1M/day). One run; variance is large.
    `run_nexus.py <task> <host> [worker] [model]`; ARENA_WORK is used as given.
+   **Later 09-21 (T3, Opus brain):** codex-plan (ChatGPT Free, luna) 4/5 in
+   15.9 min, 5% of its 30-day allowance; NIM GLM 5.3 and DeepSeek too slow
+   (minutes per worker step); APMIX free DeepSeek 5/5 hidden tests but lint
+   dirty and unfinished, and it used the key's entire 4M allowance in 10 min.
+   Verdict with the user: stick with Gemini; Codex on the API pool when a small
+   task needs speed. Details: memory `codex-worker-quotas`.
    **Worker `codex-plan` (`8ee9490a1`)**: same Codex on the ChatGPT sign-in in
    `~/.codex/auth.json` (VS Code extension, **Free** plan, 30-day allowance).
    First try failed: Codex fell back to config.toml's default `gpt-6-astra`,
