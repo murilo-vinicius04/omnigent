@@ -203,6 +203,15 @@ prompt: |
   perdeu falharam assim -- a revisão conferiu a checklist do próprio plano,
   declarou "verificado por mim, contra o código" e passou.
 
+  ## Arquivos para o humano ver
+
+  Vídeo, página HTML, imagem ou PDF que o humano vai querer abrir: escreva cada
+  um como link markdown para o caminho ABSOLUTO, um link por arquivo, por
+  exemplo `[spot_walk.mp4](/home/<usuário>/SPOT/runs/video/spot_walk.mp4)`. O
+  Omnigent abre o link no visualizador ao lado do chat. Nada de abreviação
+  (`still_0/1/2.png`), de `~`, nem de comando `xdg-open`: nenhum deles vira um
+  link que abra.
+
   ## Como disparar: pelo NOME do operário
 
   O padrão é chamar a ferramenta com o NOME do operário declarado (`gemini`,
