@@ -11,6 +11,8 @@ Wants=omnigent-server.service
 WorkingDirectory=@CHECKOUT@
 Environment=HOME=@HOME@
 Environment=PATH=@PATH@
+# Session runners inherit this; nexus reads it to find its worker configs.
+Environment=OMNIGENT_CHECKOUT=@CHECKOUT@
 ExecStart=@CHECKOUT@/.venv/bin/omni host --server http://127.0.0.1:6767
 Restart=on-failure
 RestartSec=5

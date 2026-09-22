@@ -26,14 +26,13 @@ def nexus_spec():
     return load(NEXUS)
 
 
-def test_nexus_offers_exactly_its_seven_workers(nexus_spec) -> None:
+def test_nexus_offers_exactly_its_six_workers(nexus_spec) -> None:
     choices = worker_choices(nexus_spec)
     assert [(c.name, c.label, c.harness) for c in choices] == [
         ("gemini", "Gemini", "antigravity-native"),
         ("claude", "Claude", "claude-native"),
         ("codex", "Codex", "codex"),
         ("codex-plan", "Codex (ChatGPT plan)", "codex"),
-        ("apmix", "APMIX (free)", "codex"),
         ("hermes", "Hermes (NVIDIA NIM)", "hermes-native"),
         ("grok", "Grok Build", "grok"),
     ]

@@ -35,9 +35,6 @@ executor:
       - name: codex-plan
         label: Codex (ChatGPT plan)
         models: [gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol]
-      - name: apmix
-        label: APMIX (free)
-        models: [deepseek-v4.1-flash-free, gpt-5.6-luna-free]
       - name: hermes
         label: Hermes (NVIDIA NIM)
       - name: grok
@@ -172,10 +169,6 @@ prompt: |
     a cota de Codex do plano (janela de 30 dias no plano Free), não a cota
     diária da API. Mesmas regras: tarefas pequenas; se o operário relatar
     limite de uso atingido, pare de mandar trabalho a ele e avise o humano.
-  - `apmix` — o Codex apontado para a APMIX, com modelos grátis
-    (`deepseek-v4.1-flash-free` ou `gpt-5.6-luna-free`). Cota pequena de 4M
-    tokens, sem data de renovação: só tarefas pequenas; se o operário relatar
-    cota esgotada, pare de mandar trabalho a ele e avise o humano.
   - `hermes` — Hermes Agent (`hermes-native`) na NVIDIA NIM, cota grátis
     limitada a 40 requisições por minuto; o modelo vem do
     `~/.hermes/config.yaml` do Hermes, não do controle. Não recebe o prompt
@@ -227,16 +220,18 @@ prompt: |
   escolhas de harness/modelo feitas na interface, então volte ao disparo por
   nome assim que a edição não for mais necessária.
 
-  Os arquivos dos operários são exatamente estes, e são a única fonte.
-  Use o caminho ABSOLUTO, copiado letra por letra:
-  - `/home/nexus/wt/friendly-layer/examples/nexus/agents/gemini/config.yaml`
-  - `/home/nexus/wt/friendly-layer/examples/nexus/agents/claude/config.yaml`
-  - `/home/nexus/wt/friendly-layer/examples/nexus/agents/codex/config.yaml`
-  - `/home/nexus/wt/friendly-layer/examples/nexus/agents/hermes/config.yaml`
-  - `/home/nexus/wt/friendly-layer/examples/nexus/agents/grok/config.yaml`
+  Os arquivos dos operários ficam no checkout do Omnigent desta máquina,
+  em `examples/nexus/agents/<operário>/config.yaml` (`gemini`, `claude`,
+  `codex`, `codex-plan`, `hermes`, `grok`), e são a única fonte. O caminho
+  do checkout muda de máquina para máquina: descubra-o uma vez com
+  `sys_os_shell` rodando `printf '%s' "$OMNIGENT_CHECKOUT"` e use o caminho
+  ABSOLUTO resultante, por exemplo
+  `<checkout>/examples/nexus/agents/gemini/config.yaml`, tanto para editar
+  quanto no `config_path`.
 
-  Se `sys_session_create` responder `config_not_found`, PARE e diga ao
-  humano em uma linha. Nunca troque para outro agente (por `agent_id` ou
+  Se `OMNIGENT_CHECKOUT` vier vazio, ou `sys_session_create` responder
+  `config_not_found` ou que o caminho sai da pasta de trabalho, PARE e diga
+  ao humano em uma linha. Nunca troque para outro agente (por `agent_id` ou
   outro caminho): o agente embutido não tem bypass e o operário fica
   pedindo aprovação a cada comando.
 

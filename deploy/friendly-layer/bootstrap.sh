@@ -27,17 +27,6 @@ say "web bundle -> omnigent/server/static/web-ui"
 # The server serves this from disk: it must be rebuilt after any web/src change.
 (cd "$CHECKOUT/web" && npm ci && npm run build)
 
-say "agent configs: absolute paths -> this checkout"
-# nexus dispatches workers by absolute config_path (read relative to the runner's
-# workspace otherwise, which differs per session), so these are rewritten in place.
-mapfile -t stale < <(grep -rl '/home/nexus/wt/friendly-layer' "$CHECKOUT/examples" 2>/dev/null || true)
-if [ "${#stale[@]}" -gt 0 ] && [ "$CHECKOUT" != "/home/nexus/wt/friendly-layer" ]; then
-  sed -i "s#/home/nexus/wt/friendly-layer#$CHECKOUT#g" "${stale[@]}"
-  printf '   rewrote: %s\n' "${stale[@]}"
-else
-  echo "   nothing to rewrite"
-fi
-
 say "systemd user units"
 if [ "$services" = 1 ]; then
   # One installer, shared with an existing setup: it renders the templates for

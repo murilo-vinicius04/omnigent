@@ -16,9 +16,11 @@ deploy/friendly-layer/bootstrap.sh --services   # omit --services to only prepar
 Needs `uv`, `node`/`npm`, Python 3.12+, and Linux with systemd for the
 services. The script installs dependencies, **builds the web bundle** (the
 server serves `omnigent/server/static/web-ui` from disk, so it must be rebuilt
-after any `web/src` change), rewrites the agent configs to your checkout, and
-and installs the two user services (`deploy/systemd/install.sh`, which renders
-the unit templates for your checkout). Re-run it after a pull.
+after any `web/src` change) and installs the two user services
+(`deploy/systemd/install.sh`, which renders the unit templates for your
+checkout). The clone itself is never edited, so `git pull` stays clean: the
+host service exports `OMNIGENT_CHECKOUT`, which is how nexus finds its worker
+configs on any machine. Re-run it after a pull.
 
 Open http://127.0.0.1:6767.
 
