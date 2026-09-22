@@ -112,6 +112,30 @@ describe("BlockRenderer dispatch", () => {
     expect(openWorkspaceFile).toHaveBeenCalledWith("runs/clip.mp4");
   });
 
+  it("keeps a video named as an inline-code path clickable under the rewrite", () => {
+    openWorkspaceFile.mockClear();
+    const items: RenderItem[] = [
+      {
+        kind: "text",
+        itemId: "msg_1",
+        text: "The video is done: `~/ws/runs/clip.mp4`\n\n```bash\nxdg-open ~/ws/runs/clip.mp4\n```",
+        final: true,
+        spokenSummary: { text: "The video is finished.", lang: "en-US" },
+      },
+    ];
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <FileViewerContext.Provider value={FILE_VIEWER_WITH_CLIP}>
+          <BlockRenderer items={items} sessionStatus="idle" />
+        </FileViewerContext.Provider>
+      </QueryClientProvider>,
+    );
+
+    const links = screen.getByTestId("friendly-response-file-links");
+    fireEvent.click(within(links).getByRole("button", { name: "~/ws/runs/clip.mp4" }));
+    expect(openWorkspaceFile).toHaveBeenCalledWith("runs/clip.mp4");
+  });
+
   it("renders nothing extra when the spoken_summary part is absent", () => {
     const items: RenderItem[] = [
       {

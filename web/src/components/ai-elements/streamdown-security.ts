@@ -67,6 +67,26 @@ export function extractWorkspaceFileLinks(markdown: string): WorkspaceFileLinkSo
   return links;
 }
 
+// Files a reader opens to look at, rather than read as code.
+const VIEWABLE_FILE = /\.(?:mp4|m4v|mov|webm|ogv|html?|png|jpe?g|gif|webp|svg|pdf)$/i;
+
+/**
+ * Inline-code paths in *markdown* that name a viewable file (video, page, image,
+ * PDF), outside code blocks, first occurrence only. Agents often write the file
+ * they made as `` `~/runs/walk.mp4` `` rather than as a link; the transcript
+ * already makes that clickable, and the friendly view must not drop it.
+ */
+export function extractViewableCodePaths(markdown: string): string[] {
+  const prose = markdown.replace(/^[ \t]*```[\s\S]*?^[ \t]*```/gm, "");
+  const paths: string[] = [];
+  for (const match of prose.matchAll(/(?<!`)`([^`\s]+)`(?!`)/g)) {
+    const path = match[1];
+    if (!path.includes("/") || !VIEWABLE_FILE.test(path) || paths.includes(path)) continue;
+    paths.push(path);
+  }
+  return paths;
+}
+
 // Where a file link's href is parked once the path moves to the data
 // attribute. Must be a *named* fragment: harden passes a fragment-only href
 // through only when `new URL(href, base).hash` round-trips, and a bare "#"

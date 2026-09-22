@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractWorkspaceFileLinks } from "./streamdown-security";
+import { extractViewableCodePaths, extractWorkspaceFileLinks } from "./streamdown-security";
 
 describe("extractWorkspaceFileLinks", () => {
   it("keeps file links and drops URLs, anchors, images and repeats", () => {
@@ -18,5 +18,22 @@ describe("extractWorkspaceFileLinks", () => {
 
   it("finds nothing in plain prose", () => {
     expect(extractWorkspaceFileLinks("No links here, just `runs/clip.mp4` in code.")).toEqual([]);
+  });
+});
+
+describe("extractViewableCodePaths", () => {
+  it("keeps viewable files named in inline code, skipping code blocks and source files", () => {
+    const markdown = [
+      "The video is done: `~/SPOT/runs/video/spot_walk.mp4`, stills in `runs/video/still_0.png`.",
+      "Script: `runs/video/record_walk.py`, command `ls`, again `~/SPOT/runs/video/spot_walk.mp4`.",
+      "```bash",
+      "xdg-open ~/SPOT/runs/video/other.mp4",
+      "```",
+    ].join("\n");
+
+    expect(extractViewableCodePaths(markdown)).toEqual([
+      "~/SPOT/runs/video/spot_walk.mp4",
+      "runs/video/still_0.png",
+    ]);
   });
 });

@@ -35,7 +35,10 @@ import type { SessionStatus } from "@/lib/types";
 import type { ActiveResponse } from "@/store/types";
 import { cn } from "@/lib/utils";
 import { FilePathAwareMessageResponse } from "./ChatMarkdown";
-import { extractWorkspaceFileLinks } from "@/components/ai-elements/streamdown-security";
+import {
+  extractViewableCodePaths,
+  extractWorkspaceFileLinks,
+} from "@/components/ai-elements/streamdown-security";
 import { CompanionAnswerNote } from "@/components/chat/CompanionAnswerNote";
 import { AttachedFiles } from "@/components/chat/AttachedFiles";
 import { FriendlyResponse } from "@/components/chat/FriendlyResponse";
@@ -773,13 +776,12 @@ function isInProgressTool(item: RenderItem): boolean {
 
 /** The original's workspace-file links, rendered as the transcript renders them. */
 function friendlyFileLinks(text: string): ReactNode {
-  const links = extractWorkspaceFileLinks(text);
-  if (links.length === 0) return undefined;
-  return (
-    <FilePathAwareMessageResponse>
-      {links.map((link) => `[${link.label}](${link.href})`).join(" · ")}
-    </FilePathAwareMessageResponse>
-  );
+  const parts = [
+    ...extractWorkspaceFileLinks(text).map((link) => `[${link.label}](${link.href})`),
+    ...extractViewableCodePaths(text).map((path) => `\`${path}\``),
+  ];
+  if (parts.length === 0) return undefined;
+  return <FilePathAwareMessageResponse>{parts.join(" · ")}</FilePathAwareMessageResponse>;
 }
 
 function renderItem(
