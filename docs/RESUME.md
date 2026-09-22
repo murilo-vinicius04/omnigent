@@ -279,3 +279,40 @@ from their current Claude chain, user runs `/compact`, then restart
 a scratch copy.
 
 Disk: something freed ~22 GB ~18:46 and wiped this session's scratchpad.
+
+## 2026-09-22 — READ FIRST (latest state)
+
+**Waiting on the user (ask, don't act):**
+1. Pushed 09-22 on request (worker paths now checkout-relative via `OMNIGENT_CHECKOUT`, APMIX
+   worker dropped). Here, add `Environment=OMNIGENT_CHECKOUT=/home/nexus/wt/friendly-layer` to the
+   installed host unit only with the user's go; it takes effect at the next host restart (compact
+   first). Do NOT re-run install.sh here: this server's unit loads debby from omnigent-fork.
+2. Picker fix offered: the Claude-terminal model picker fails silently (sends alias `opus`, server
+   stores it as no change, nothing typed). Should show why it could not switch.
+3. `sudo bash ~/cleanup-sudo.sh` (journal + Ollama) is the user's to run.
+
+**Done 09-22 (local commits):** `08400f55d` summaries show digits, `speakable_numbers()` words
+them for Chatterbox/Unmute only; `527a1c1bb`+`307cdc6dd` file viewer plays video (download
+stream) and loads HTML past the 10 MiB cap; memory `deliver-videos-and-html-as-workspace-links`
+(link files by absolute workspace path, never attach video/HTML; scratchpad paths don't link).
+
+**Project Analysis session** `d14bc7496a6a42b6b6a0730b3f4f5f20` (transcript `08622a13-…`):
+relaunched 16:33 on Claude Code 2.1.280, `model_override=claude-opus-5-5`, Opus 5.5 confirmed.
+Opus 5.5 needs Claude Code >= 2.1.280; a pane started before an auto-update keeps the old build.
+Restart one claude-native session without the host (resumes from its compaction, 6.6 MB -> 27 KB):
+`DELETE /v1/sessions/{id}/resources/terminals/terminal_claude_main`, then
+`POST /v1/sessions/{id}/resources/terminals {"terminal":"claude","session_key":"main","ensure_native_terminal":true}`.
+Orphan `claude --resume` processes from before a host restart can linger; check `ps` by start time.
+
+**Friend's PC** (reached over Tailscale SSH with the user's permission; no credentials stored):
+clone `~/omnigent-friendly-layer`, data dir `~/.omnigent-friendly-layer`, services from our
+installer. The missing Worker row was a picker bug, not their setup: a 09-19 nexus test chat left an
+uploaded copy named `nexus`, the new-chat picker lets the newer copy win, and copies lost their
+worker_choices (fixed in `1b66722ed`, applied there by hand and rebuilt 09-22). To update: `git
+checkout .` (drops that hand patch and the old bootstrap path rewrite), `git pull`, re-run
+`deploy/friendly-layer/bootstrap.sh`. Hermes and Grok are not configured there.
+
+**Workers verdict (T3, Opus brain):** Gemini stays the worker; Codex on the API pool (5/5, 6 min,
+25% of the daily pool) for small fast tasks. Codex on ChatGPT Free 4/5 16 min, 5% of 30-day
+allowance; NIM GLM/DeepSeek too slow; APMIX DeepSeek burned 3.8M tokens in 10 min. Details:
+memory `codex-worker-quotas`. `run_nexus.py <task> <host> [worker] [model]`.
