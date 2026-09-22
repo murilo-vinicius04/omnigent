@@ -438,7 +438,6 @@ function VideoViewer({ conversationId, path }: { conversationId: string; path: s
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-black/90 p-2">
       {url ? (
-        // oxlint-disable-next-line media-has-caption -- agent-rendered clips carry no caption track
         <video
           key={url}
           src={url}
