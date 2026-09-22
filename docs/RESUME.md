@@ -214,6 +214,14 @@ first audio ~0.25s, no dry gaps. Details and traps: memory `unmute-voice-stack`.
    dirty and unfinished, and it used the key's entire 4M allowance in 10 min.
    Verdict with the user: stick with Gemini; Codex on the API pool when a small
    task needs speed. Details: memory `codex-worker-quotas`.
+
+**09-22 — videos and big HTML open in the side viewer** (`527a1c1bb`): the
+file viewer plays .mp4/.webm/.mov from the uncapped download stream and fetches
+HTML past the 10 MiB read cap whole. Agents should LINK such files by absolute
+workspace path instead of attaching (memory
+`deliver-videos-and-html-as-workspace-links`); files in a Claude scratchpad are
+outside the workspace and will not link. `08400f55d`: summaries show digits;
+`speakable_numbers()` words them for Chatterbox/Unmute only.
    **Worker `codex-plan` (`8ee9490a1`)**: same Codex on the ChatGPT sign-in in
    `~/.codex/auth.json` (VS Code extension, **Free** plan, 30-day allowance).
    First try failed: Codex fell back to config.toml's default `gpt-6-astra`,
