@@ -2996,16 +2996,18 @@ async def test_relay_turn_end_with_tts_enabled_schedules_audio_synthesis() -> No
         language: str,
         show: list[dict[str, Any]] | None = None,
     ) -> None:
-        spawned_calls.append({
-            "conversation_store": conversation_store,
-            "file_store": file_store,
-            "artifact_store": artifact_store,
-            "session_id": session_id,
-            "response_id": response_id,
-            "text": text,
-            "language": language,
-            "show": show,
-        })
+        spawned_calls.append(
+            {
+                "conversation_store": conversation_store,
+                "file_store": file_store,
+                "artifact_store": artifact_store,
+                "session_id": session_id,
+                "response_id": response_id,
+                "text": text,
+                "language": language,
+                "show": show,
+            }
+        )
 
     text_acc = [_LONG_RESPONSE_TEXT]
     with (
@@ -3170,7 +3172,6 @@ async def test_relay_turn_end_with_tts_disabled_skips_audio_scheduling() -> None
     assert len(spawned_calls) == 0
 
 
-
 @pytest.mark.asyncio
 async def test_dropped_rewrite_logs_why_and_what(monkeypatch, caplog) -> None:
     """A rewrite discarded as too long is logged with the reason and its text.
@@ -3214,3 +3215,10 @@ async def test_blank_rewrite_logs_blank(monkeypatch, caplog) -> None:
 
     assert part is None
     assert any("output was blank" in r.getMessage() for r in caplog.records)
+
+
+def test_the_rewrite_is_asked_for_numbers_as_digits() -> None:
+    """The summary is read on screen: "46", not "forty-six"."""
+    instructions = build_spoken_summary_instructions()
+    assert "writing numbers as digits" in instructions
+    assert "forty" not in instructions

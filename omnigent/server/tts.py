@@ -158,6 +158,108 @@ def _tunable(name: str, default: float, low: float, high: float) -> float:
         return default
 
 
+#: A money amount: the symbol, the whole part (thousands groups allowed) and
+#: two-digit cents after either separator, e.g. ``$1.73``, ``R$ 1.200,50``.
+_MONEY_RE = re.compile(r"(R\$|(?:US)?\$)\s?(\d{1,3}(?:[.,]\d{3})+|\d+)(?:[.,](\d{2}))?(?!\d)")
+
+#: A count with a scale suffix, e.g. ``637k``, ``2.5M``, ``3B``. Lowercase
+#: ``m`` is left alone: in these summaries it is minutes as often as millions.
+_SCALED_RE = re.compile(r"(?<![\w.,-])(\d+(?:[.,]\d+)?)([kKMB])\b")
+
+
+class _NumberWords(NamedTuple):
+    """How one language says the numbers :func:`speakable_numbers` rewrites."""
+
+    decimal: str  # decimal separator, "." or ","
+    point: str
+    group: str  # thousands separator
+    dollar: tuple[str, str]  # singular, plural
+    real: tuple[str, str]
+    cent: tuple[str, str]
+    and_: str
+    thousand: tuple[str, str]
+    million: tuple[str, str]
+    billion: tuple[str, str]
+
+
+_NUMBER_WORDS: dict[str, _NumberWords] = {
+    "en": _NumberWords(
+        ".",
+        "point",
+        ",",
+        ("dollar", "dollars"),
+        ("real", "reais"),
+        ("cent", "cents"),
+        "and",
+        ("thousand", "thousand"),
+        ("million", "million"),
+        ("billion", "billion"),
+    ),
+    "pt": _NumberWords(
+        ",",
+        "vírgula",
+        ".",
+        ("dólar", "dólares"),
+        ("real", "reais"),
+        ("centavo", "centavos"),
+        "e",
+        ("mil", "mil"),
+        ("milhão", "milhões"),
+        ("bilhão", "bilhões"),
+    ),
+}
+
+
+def speakable_numbers(text: str, language: str) -> str:
+    """Rewrite decimals, money and large numbers in *text* as they are said.
+
+    Summaries show numbers as digits, which reads well on screen. Both local
+    voices say small whole numbers right, but measured on 2026-09-22 Chatterbox
+    read "15.9" as "15 to 29", "$1.73" as "$9.99" and "4,000,000" as "4,000",
+    and Unmute read "$1.73" as "173 dollars"; the worded forms below came out
+    right on both. Versions and identifiers ("gpt-5.6-luna", "v1.2") are kept.
+
+    :param text: The text about to be synthesized.
+    :param language: BCP-47 tag, e.g. ``"pt-BR"``; languages without a word
+        table here are returned unchanged.
+    :returns: The text with those numbers in words, e.g. ``"$1.73"`` ->
+        ``"1 dollar and 73 cents"`` and ``"2.5M"`` -> ``"2 point 5 million"``.
+    """
+    words = _NUMBER_WORDS.get((language or "").split("-")[0].lower())
+    if words is None:
+        return text
+
+    def say(count: int | str, forms: tuple[str, str]) -> str:
+        return f"{count} {forms[0] if str(count) == '1' else forms[1]}"
+
+    def money(match: re.Match[str]) -> str:
+        whole = int(re.sub(r"[.,]", "", match.group(2)))
+        cents = int(match.group(3) or 0)
+        unit = words.real if match.group(1) == "R$" else words.dollar
+        parts = [say(whole, unit)] if whole or not cents else []
+        if cents:
+            parts.append(say(cents, words.cent))
+        return f" {words.and_} ".join(parts)
+
+    def scaled(match: re.Match[str]) -> str:
+        scale = {"k": words.thousand, "K": words.thousand, "M": words.million}
+        return say(match.group(1), scale.get(match.group(2), words.billion))
+
+    group = re.escape(words.group)
+    text = _MONEY_RE.sub(money, text)
+    text = _SCALED_RE.sub(scaled, text)
+    # Round thousands and millions, the only large numbers these summaries
+    # quote exactly ("4,000,000 tokens"); other long numbers pass through.
+    for zeros, forms in (
+        (f"{group}000{group}000", words.million),
+        (f"{group}000", words.thousand),
+    ):
+        exact = re.compile(rf"(?<![\w.,])(\d{{1,3}}){zeros}(?![\w]|[.,]\d)")
+        text = exact.sub(lambda m, forms=forms: say(m.group(1), forms), text)
+    decimal = re.compile(rf"(?<![\w.,-])(\d+){re.escape(words.decimal)}(\d+)(?![\w-]|[.,]\d)")
+    return decimal.sub(rf"\1 {words.point} \2", text)
+
+
 def split_for_synthesis(text: str, max_chars: int = _CHUNK_MAX_CHARS) -> list[str]:
     """Split *text* into chunks small enough to speak without being truncated.
 
@@ -363,7 +465,7 @@ def _synthesize_sync(text: str, language: str) -> SummaryAudio | None:
                 "cfg_weight": _tunable("OMNIGENT_TTS_CFG_WEIGHT", VOICE_CFG_WEIGHT, 0.0, 1.0),
                 "temperature": _tunable("OMNIGENT_TTS_TEMPERATURE", VOICE_TEMPERATURE, 0.1, 1.5),
             }
-            chunks = split_for_synthesis(text)
+            chunks = split_for_synthesis(speakable_numbers(text, language))
             if not chunks:
                 return None
 

@@ -26,6 +26,7 @@ from typing import Any, Final
 import httpx
 
 from omnigent.server.gemini_live import ASK_CLAUDE_DESCRIPTION, ASK_CLAUDE_QUESTION
+from omnigent.server.tts import speakable_numbers
 
 _logger = logging.getLogger(__name__)
 
@@ -238,8 +239,9 @@ def find_call(system_prompt: str) -> UnmuteCall | None:
 
 
 def narration_text(framed: str) -> str:
-    """Strip the read-aloud frame the page wraps a summary in."""
-    return framed.split(_NARRATION_LEAD, 1)[-1].strip()
+    """Strip the read-aloud frame the page wraps a summary in, and word its
+    decimals and amounts so Unmute's English voice says them right."""
+    return speakable_numbers(framed.split(_NARRATION_LEAD, 1)[-1].strip(), "en")
 
 
 def session_update(call: UnmuteCall) -> dict[str, Any]:

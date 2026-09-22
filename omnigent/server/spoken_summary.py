@@ -385,8 +385,8 @@ def clamp_sentences(
 
     # Reject runaway output. A rewrite meaningfully longer than its source has
     # invented something, but "longer" alone is the wrong test on a short reply:
-    # spelling numbers out and saying what the reply did NOT cover both add
-    # characters honestly, and a bare > check silently drops those summaries.
+    # saying what the reply did NOT cover adds characters honestly, and a bare >
+    # check silently drops those summaries.
     if input_text is not None:
         allowance = len(input_text.strip())
         if len(cleaned) > max(allowance + _LENGTH_GRACE_CHARS, allowance * _LENGTH_GRACE_RATIO):
@@ -526,9 +526,10 @@ def build_spoken_summary_instructions(
         "step-by-step to the original. "
         "Keep separate findings separate, one sentence each, in the order they "
         "happened. Never pad. "
-        'Say numbers and names that carry the point ("eight of thirteen terms", '
-        '"forty-five seconds"); leave out code, commands and long paths, which '
-        "are unreadable aloud and one click away in the original. "
+        "Say numbers and names that carry the point, writing numbers as digits "
+        'because this text is also read on screen ("8 of 13 terms", "45 seconds", '
+        '"$1.73"); leave out code, commands and long paths, which are unreadable '
+        "aloud and one click away in the original. "
         "Everyday words over jargon, short sentences over long ones. Contractions are "
         "good. Do not open by repeating the question back, do not sign off, and do "
         "not say you are rewriting anything. "

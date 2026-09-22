@@ -183,6 +183,11 @@ async def test_a_narration_reads_the_summary_verbatim_without_a_model_call() -> 
     assert model.requests == []
 
 
+def test_a_narration_words_the_amounts_unmute_would_misread() -> None:
+    framed = "Read the following status update aloud ... Just say it:\n\nIt cost $1.73."
+    assert unmute_live.narration_text(framed) == "It cost 1 dollar and 73 cents."
+
+
 def test_the_session_update_asks_unmute_for_pcm_and_no_unprompted_speech() -> None:
     call = unmute_live.open_call("s1", "BRIEFING")
     narration = unmute_live.open_call("s1", None)

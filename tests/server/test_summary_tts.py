@@ -656,3 +656,38 @@ async def test_the_rebuild_never_borrows_another_turns_reply() -> None:
 
     got = await _native_turn_text(_Store(), "conv_1", "resp_1", "the reply to the turn before")
     assert got == "the answer"
+
+
+@pytest.mark.parametrize(
+    ("text", "language", "spoken"),
+    [
+        (
+            "It took 15.9 minutes and cost $1.73.",
+            "en-US",
+            "It took 15 point 9 minutes and cost 1 dollar and 73 cents.",
+        ),
+        ("$32, $1 and $0.60", "en", "32 dollars, 1 dollar and 60 cents"),
+        (
+            "4,000,000 tokens, 637k cached, 2.5M a day",
+            "en",
+            "4 million tokens, 637 thousand cached, 2 point 5 million a day",
+        ),
+        (
+            "Levou 15,9 minutos e custou R$ 1,73",
+            "pt-BR",
+            "Levou 15 vírgula 9 minutos e custou 1 real e 73 centavos",
+        ),
+        ("1M hoje, 4.000.000 no total", "pt-BR", "1 milhão hoje, 4 milhões no total"),
+    ],
+)
+def test_numbers_are_worded_for_the_voice(text: str, language: str, spoken: str) -> None:
+    assert tts.speakable_numbers(text, language) == spoken
+
+
+def test_identifiers_minutes_and_plain_counts_are_left_as_written() -> None:
+    text = "gpt-5.6-luna, v1.2, 5.6.1, 8m 7s, 46% and 4 of 5"
+    assert tts.speakable_numbers(text, "en") == text
+
+
+def test_a_language_without_word_tables_is_untouched() -> None:
+    assert tts.speakable_numbers("Kostet 15,9 Euro.", "de-DE") == "Kostet 15,9 Euro."
