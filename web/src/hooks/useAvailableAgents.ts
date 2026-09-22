@@ -283,6 +283,7 @@ interface AgentObjectWire {
   description?: string | null;
   harness?: string | null;
   skills?: { name: string; description: string }[];
+  worker_choices?: WorkerChoiceWire[];
 }
 
 /**
@@ -333,6 +334,12 @@ export async function prefetchAvailableAgentDetails(
               description: json.description ?? null,
               harness: json.harness ?? null,
               skills: json.skills ?? [],
+              // A same-named upload can win the picker over the catalog row
+              // (newest wins), and without this it would lose nexus's Worker
+              // control in the new-chat configure dialog.
+              ...(json.worker_choices?.length
+                ? { worker_choices: workerChoicesFromWire(json.worker_choices) }
+                : {}),
             },
       );
       // If enrichment reveals this agent is a native coding agent (e.g. a

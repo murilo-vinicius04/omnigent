@@ -2557,37 +2557,39 @@ function HarnessConfigModal({
               />
             </div>
           )}
-          {workerChoices.length === 0 && (agent.sub_agents ?? []).length > 0 && brainEntries.length > 0 && (
-            <div className="flex flex-col gap-3 border-l border-border/60 pl-3">
-              <div className="text-sm text-muted-foreground">
-                Delegates to — harness and model per sub-agent
+          {workerChoices.length === 0 &&
+            (agent.sub_agents ?? []).length > 0 &&
+            brainEntries.length > 0 && (
+              <div className="flex flex-col gap-3 border-l border-border/60 pl-3">
+                <div className="text-sm text-muted-foreground">
+                  Delegates to — harness and model per sub-agent
+                </div>
+                {(agent.sub_agents ?? []).map((child) => (
+                  <SubAgentConfigRow
+                    key={child.name}
+                    child={child}
+                    hostId={host?.host_id ?? null}
+                    host={host}
+                    brainHarnessLabels={brainHarnessLabels}
+                    brainEntries={brainEntries}
+                    collapsedBadge={collapsedBadge}
+                    harness={draftSubHarness[child.name] ?? child.harness ?? ""}
+                    model={draftSubModel[child.name] ?? ""}
+                    effort={draftSubEffort[child.name] ?? ""}
+                    harnessEfforts={harnessEfforts}
+                    onHarnessChange={(value) =>
+                      setDraftSubHarness((prev) => ({ ...prev, [child.name]: value }))
+                    }
+                    onModelChange={(value) =>
+                      setDraftSubModel((prev) => ({ ...prev, [child.name]: value }))
+                    }
+                    onEffortChange={(value) =>
+                      setDraftSubEffort((prev) => ({ ...prev, [child.name]: value }))
+                    }
+                  />
+                ))}
               </div>
-              {(agent.sub_agents ?? []).map((child) => (
-                <SubAgentConfigRow
-                  key={child.name}
-                  child={child}
-                  hostId={host?.host_id ?? null}
-                  host={host}
-                  brainHarnessLabels={brainHarnessLabels}
-                  brainEntries={brainEntries}
-                  collapsedBadge={collapsedBadge}
-                  harness={draftSubHarness[child.name] ?? child.harness ?? ""}
-                  model={draftSubModel[child.name] ?? ""}
-                  effort={draftSubEffort[child.name] ?? ""}
-                  harnessEfforts={harnessEfforts}
-                  onHarnessChange={(value) =>
-                    setDraftSubHarness((prev) => ({ ...prev, [child.name]: value }))
-                  }
-                  onModelChange={(value) =>
-                    setDraftSubModel((prev) => ({ ...prev, [child.name]: value }))
-                  }
-                  onEffortChange={(value) =>
-                    setDraftSubEffort((prev) => ({ ...prev, [child.name]: value }))
-                  }
-                />
-              ))}
-            </div>
-          )}
+            )}
 
           {/* Top-level Smart Routing: the router owns the model, so Permissions
           is the last decidable row — and it is locked to Default until a
@@ -3583,6 +3585,12 @@ export function NewChatLandingScreen() {
         : agentList.find((a) => a.id === effectiveAgentId),
     [agentList, effectiveAgentId, pendingAgent],
   );
+  // A session-discovered agent arrives name-only; its harness, skills and
+  // Worker choices load on demand. The picker menu does that when it opens,
+  // but the selected agent's configure dialog can be opened without it.
+  useEffect(() => {
+    if (selectedAgent) void prefetchAvailableAgentDetails(selectedAgent, queryClient);
+  }, [selectedAgent, queryClient]);
   const selectedNativeHarness = nativeCodingAgentForAvailableAgent(selectedAgent)?.harness ?? null;
   const supportsPermissionMode = nativeAgentHasCapability(selectedAgent, "permissionMode");
   const supportsApprovalMode = nativeAgentHasCapability(selectedAgent, "approvalMode");

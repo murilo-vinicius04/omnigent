@@ -3,7 +3,11 @@ import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { useAvailableAgents, prefetchAvailableAgentDetails } from "./useAvailableAgents";
+import {
+  type AvailableAgent,
+  useAvailableAgents,
+  prefetchAvailableAgentDetails,
+} from "./useAvailableAgents";
 
 // The hook unions the built-in agent list from GET /v1/agents with
 // custom agents discovered on the caller's sessions via
@@ -784,6 +788,45 @@ describe("prefetchAvailableAgentDetails", () => {
       },
     ]);
     expect(fetchMock.mock.calls[0][0]).toBe("/v1/sessions/conv_3/agent");
+  });
+
+  it("keeps the Worker choices of an upload that won its name over the catalog row", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const agent = {
+      id: "ag_nexus_upload",
+      name: "nexus",
+      display_name: "Nexus",
+      description: null,
+      harness: null,
+      skills: [],
+      sessionId: "conv_nexus",
+    };
+    queryClient.setQueryData(["available-agents"], [agent]);
+    fetchMock.mockResolvedValueOnce(
+      mockResponse({
+        id: "ag_nexus_upload",
+        object: "agent",
+        name: "nexus",
+        harness: "claude-sdk",
+        worker_choices: [
+          {
+            name: "gemini",
+            label: "Gemini",
+            harness: "antigravity-native",
+            default_model: "flash",
+          },
+          { name: "codex", harness: "codex-native" },
+        ],
+      }),
+    );
+
+    await prefetchAvailableAgentDetails(agent, queryClient);
+
+    const [patched] = queryClient.getQueryData<AvailableAgent[]>(["available-agents"])!;
+    expect(patched.worker_choices?.map((w) => [w.name, w.label, w.defaultModel])).toEqual([
+      ["gemini", "Gemini", "flash"],
+      ["codex", "codex", null],
+    ]);
   });
 
   it("is a no-op when harness is already populated", async () => {
