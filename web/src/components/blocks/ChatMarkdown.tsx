@@ -230,6 +230,34 @@ function WorkspaceFileLink({
   );
 }
 
+/**
+ * One workspace file as a clickable name, or nothing at all when *path* names
+ * no workspace file. For file lists lifted out of an answer, where a name that
+ * does not resolve (a typo, a shorthand like `still_0/1/2.png`) is only noise.
+ */
+export function WorkspaceFileChip({ path, label }: { path: string; label?: string }) {
+  const openWorkspaceFile = useWorkspaceFileOpener(path);
+  if (!openWorkspaceFile) return null;
+  return (
+    <a
+      role="button"
+      tabIndex={0}
+      title={path}
+      data-streamdown="link"
+      className={cn(STREAMDOWN_LINK_CLASS, "decoration-dotted underline-offset-2")}
+      onClick={openWorkspaceFile}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openWorkspaceFile();
+        }
+      }}
+    >
+      {label ?? path}
+    </a>
+  );
+}
+
 // Markdown images open in the shared lightbox on click, matching uploaded and
 // generated images. (Remote `src`s are still gated by Streamdown's image
 // security; this only adds the zoom affordance to whatever does render.)

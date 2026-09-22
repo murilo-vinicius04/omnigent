@@ -136,6 +136,30 @@ describe("BlockRenderer dispatch", () => {
     expect(openWorkspaceFile).toHaveBeenCalledWith("runs/clip.mp4");
   });
 
+  it("leaves out a name under the rewrite that is no workspace file", () => {
+    openWorkspaceFile.mockClear();
+    const items: RenderItem[] = [
+      {
+        kind: "text",
+        itemId: "msg_1",
+        text: "Video: `~/ws/runs/clip.mp4`; I compared the stills (`still_0/1/2.png`).",
+        final: true,
+        spokenSummary: { text: "The video is finished.", lang: "en-US" },
+      },
+    ];
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <FileViewerContext.Provider value={FILE_VIEWER_WITH_CLIP}>
+          <BlockRenderer items={items} sessionStatus="idle" />
+        </FileViewerContext.Provider>
+      </QueryClientProvider>,
+    );
+
+    const links = screen.getByTestId("friendly-response-file-links");
+    expect(within(links).getByRole("button", { name: "~/ws/runs/clip.mp4" })).toBeInTheDocument();
+    expect(links.textContent).not.toContain("still_0");
+  });
+
   it("renders nothing extra when the spoken_summary part is absent", () => {
     const items: RenderItem[] = [
       {

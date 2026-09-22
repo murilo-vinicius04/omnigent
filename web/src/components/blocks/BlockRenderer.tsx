@@ -34,7 +34,7 @@ import type { RenderItem } from "@/lib/renderItems";
 import type { SessionStatus } from "@/lib/types";
 import type { ActiveResponse } from "@/store/types";
 import { cn } from "@/lib/utils";
-import { FilePathAwareMessageResponse } from "./ChatMarkdown";
+import { FilePathAwareMessageResponse, WorkspaceFileChip } from "./ChatMarkdown";
 import {
   extractViewableCodePaths,
   extractWorkspaceFileLinks,
@@ -776,12 +776,18 @@ function isInProgressTool(item: RenderItem): boolean {
 
 /** The original's workspace-file links, rendered as the transcript renders them. */
 function friendlyFileLinks(text: string): ReactNode {
-  const parts = [
-    ...extractWorkspaceFileLinks(text).map((link) => `[${link.label}](${link.href})`),
-    ...extractViewableCodePaths(text).map((path) => `\`${path}\``),
-  ];
-  if (parts.length === 0) return undefined;
-  return <FilePathAwareMessageResponse>{parts.join(" · ")}</FilePathAwareMessageResponse>;
+  const files = [
+    ...extractWorkspaceFileLinks(text),
+    ...extractViewableCodePaths(text).map((path) => ({ label: path, href: path })),
+  ].filter((file, index, all) => all.findIndex((other) => other.href === file.href) === index);
+  if (files.length === 0) return undefined;
+  return (
+    <span className="flex flex-wrap gap-x-3 gap-y-1">
+      {files.map((file) => (
+        <WorkspaceFileChip key={file.href} path={file.href} label={file.label} />
+      ))}
+    </span>
+  );
 }
 
 function renderItem(
