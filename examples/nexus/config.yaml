@@ -35,6 +35,9 @@ executor:
       - name: codex-plan
         label: Codex (ChatGPT plan)
         models: [gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol]
+      - name: apmix
+        label: APMIX (free)
+        models: [deepseek-v4.1-flash-free, gpt-5.6-luna-free]
       - name: hermes
         label: Hermes (NVIDIA NIM)
       - name: grok
@@ -169,6 +172,10 @@ prompt: |
     a cota de Codex do plano (janela de 30 dias no plano Free), não a cota
     diária da API. Mesmas regras: tarefas pequenas; se o operário relatar
     limite de uso atingido, pare de mandar trabalho a ele e avise o humano.
+  - `apmix` — o Codex apontado para a APMIX, com modelos grátis
+    (`deepseek-v4.1-flash-free` ou `gpt-5.6-luna-free`). Cota pequena de 4M
+    tokens, sem data de renovação: só tarefas pequenas; se o operário relatar
+    cota esgotada, pare de mandar trabalho a ele e avise o humano.
   - `hermes` — Hermes Agent (`hermes-native`) na NVIDIA NIM, cota grátis
     limitada a 40 requisições por minuto; o modelo vem do
     `~/.hermes/config.yaml` do Hermes, não do controle. Não recebe o prompt
