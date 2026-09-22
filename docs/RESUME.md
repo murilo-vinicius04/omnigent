@@ -208,6 +208,13 @@ first audio ~0.25s, no dry gaps. Details and traps: memory `unmute-voice-stack`.
    re-sent by Codex) = 25% of the 2.5M day.** The pool is shared with the
    Unmute voice brain (Terra, ~1M/day). One run; variance is large.
    `run_nexus.py <task> <host> [worker] [model]`; ARENA_WORK is used as given.
+   **Worker `codex-plan` (`8ee9490a1`)**: same Codex on the ChatGPT sign-in in
+   `~/.codex/auth.json` (VS Code extension, **Free** plan, 30-day allowance).
+   First try failed: Codex fell back to config.toml's default `gpt-6-astra`,
+   which Free rejects; the default is now `gpt-5.6-luna` (backup
+   `~/.codex/config.toml.bak-20260921-astra`). Rerun: T3 **4/5**, 15.9 min,
+   Claude $1.63, **5% of the Free 30-day allowance** (meter 2.0%→7.0%), 0 API
+   pool tokens. Read the meter from a `codex exec` rollout's `rate_limits`.
 4. Qwen-Omni-Realtime (Alibaba, Singapore region, 90-day free quota) is the
    cloud fallback option if Unmute doesn't satisfy; needs the user's account.
 
