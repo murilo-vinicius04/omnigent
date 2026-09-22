@@ -18,6 +18,8 @@ export interface FriendlyResponseProps {
   };
   /** Stable identifier for playback tracking (the turn's responseId). */
   id?: string;
+  /** Links to workspace files from the original, shown under the rewrite. */
+  fileLinks?: React.ReactNode;
   /** The model's original reply, one click away. */
   children: React.ReactNode;
 }
@@ -31,7 +33,7 @@ export interface FriendlyResponseProps {
  * rewrite is still a second model's account of the first one's work, and for
  * anything load-bearing the reader needs the source.
  */
-export function FriendlyResponse({ summary, id, children }: FriendlyResponseProps) {
+export function FriendlyResponse({ summary, id, fileLinks, children }: FriendlyResponseProps) {
   const [showOriginal, setShowOriginal] = useState(false);
   const [audioPlaying, setAudioPlaying] = useState(false);
   // Set when the reader asks for a recording that is still being made, so the
@@ -130,6 +132,13 @@ export function FriendlyResponse({ summary, id, children }: FriendlyResponseProp
       <div data-testid="friendly-response-text" className="min-w-0 whitespace-pre-wrap">
         {summary.text}
       </div>
+
+      {/* A file the answer linked, like an attachment, is the point of the turn. */}
+      {fileLinks && (
+        <div data-testid="friendly-response-file-links" className="mt-1.5">
+          {fileLinks}
+        </div>
+      )}
 
       {/* Shown, not spoken: the voice reads the prose above only. */}
       <SummaryShowBlocks blocks={summary.show} />

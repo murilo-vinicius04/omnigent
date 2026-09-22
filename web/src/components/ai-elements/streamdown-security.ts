@@ -42,6 +42,31 @@ export const WORKSPACE_FILE_LINK_ATTR = "data-omnigent-file";
 // filename plus a line number, but is otherwise shaped exactly like a scheme.
 const NON_FILE_HREF = /^(?:[a-zA-Z][a-zA-Z0-9+.-]*:(?!\d+(?::\d+)?$)|\/\/|#)/;
 
+/** A workspace-file link as written in the markdown source. */
+export interface WorkspaceFileLinkSource {
+  label: string;
+  href: string;
+}
+
+/**
+ * The file links in *markdown*, by the same rule as {@link markWorkspaceFileLinks},
+ * first occurrence of each path only. The friendly view shows a rewrite in place
+ * of the answer, so a video or page the answer linked would otherwise sit behind
+ * "Show original".
+ */
+export function extractWorkspaceFileLinks(markdown: string): WorkspaceFileLinkSource[] {
+  const links: WorkspaceFileLinkSource[] = [];
+  const seen = new Set<string>();
+  for (const match of markdown.matchAll(/(?<!!)\[([^\]\n]+)\]\(([^)\s]+)\)/g)) {
+    const [, label, href] = match;
+    if (NON_FILE_HREF.test(href) || href.includes("?") || href.includes("#")) continue;
+    if (seen.has(href)) continue;
+    seen.add(href);
+    links.push({ label, href });
+  }
+  return links;
+}
+
 // Where a file link's href is parked once the path moves to the data
 // attribute. Must be a *named* fragment: harden passes a fragment-only href
 // through only when `new URL(href, base).hash` round-trips, and a bare "#"

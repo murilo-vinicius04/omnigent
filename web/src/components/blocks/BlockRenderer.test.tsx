@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RenderItem } from "@/lib/renderItems";
 import { ConversationScrollLockContext } from "@/components/ai-elements/conversation";
@@ -32,6 +32,16 @@ const FILE_VIEWER_NOOP = {
   conversationId: undefined,
   workspaceRoot: null,
   workspaceHome: null,
+};
+
+// A workspace holding one recorded clip, for the friendly view's file links.
+const openWorkspaceFile = vi.fn();
+const FILE_VIEWER_WITH_CLIP = {
+  ...FILE_VIEWER_NOOP,
+  openFile: openWorkspaceFile,
+  isChangedPath: (p: string) => p === "runs/clip.mp4",
+  workspaceRoot: "/home/u/ws",
+  workspaceHome: "/home/u",
 };
 
 const renderMarkdownText = (text: string) =>
@@ -73,6 +83,33 @@ describe("BlockRenderer dispatch", () => {
     expect(
       screen.getByText("This is the full detailed assistant response that should remain visible."),
     ).toBeInTheDocument();
+  });
+
+  it("keeps the answer's file links clickable under the rewrite", () => {
+    // The rewrite is prose, so a video the answer linked would sit behind
+    // "Show original" -- the reader asked "where's the video?".
+    openWorkspaceFile.mockClear();
+    const items: RenderItem[] = [
+      {
+        kind: "text",
+        itemId: "msg_1",
+        text: "Recorded it: [clip.mp4](/home/u/ws/runs/clip.mp4). It walks into the side.",
+        final: true,
+        spokenSummary: { text: "I recorded it; it walks into the side.", lang: "en-US" },
+      },
+    ];
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <FileViewerContext.Provider value={FILE_VIEWER_WITH_CLIP}>
+          <BlockRenderer items={items} sessionStatus="idle" />
+        </FileViewerContext.Provider>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.queryByTestId("friendly-response-original")).toBeNull();
+    const links = screen.getByTestId("friendly-response-file-links");
+    fireEvent.click(within(links).getByRole("button", { name: "clip.mp4" }));
+    expect(openWorkspaceFile).toHaveBeenCalledWith("runs/clip.mp4");
   });
 
   it("renders nothing extra when the spoken_summary part is absent", () => {
