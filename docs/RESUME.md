@@ -215,6 +215,12 @@ first audio ~0.25s, no dry gaps. Details and traps: memory `unmute-voice-stack`.
    `~/.codex/config.toml.bak-20260921-astra`). Rerun: T3 **4/5**, 15.9 min,
    Claude $1.63, **5% of the Free 30-day allowance** (meter 2.0%→7.0%), 0 API
    pool tokens. Read the meter from a `codex exec` rollout's `rate_limits`.
+   **NIM (free) as the worker — not usable (09-21 night):** GLM 5.3 51-73 s per
+   small prompt (stopped). DeepSeek V4.1 Flash 5 s per small prompt at 22:00,
+   but as a worker 1.5-7 min per step on real context (NIM load varies).
+   Hermes default is now DeepSeek (GLM backup `~/.hermes/config.yaml.bak-20260921-glm`).
+   The T3-hermes grade (5/5) is VOID: an outage re-ran my launch, two runs
+   shared one tree. Decision pending with the user: stick with Gemini.
 4. Qwen-Omni-Realtime (Alibaba, Singapore region, 90-day free quota) is the
    cloud fallback option if Unmute doesn't satisfy; needs the user's account.
 
