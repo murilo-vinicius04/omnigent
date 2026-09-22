@@ -4392,6 +4392,52 @@ async def test_watch_for_rotation_signals_quiescence_only_after_consecutive_idle
     assert calls == [1], "expected exactly one quiescence signal, after two idle ticks"
 
 
+@pytest.mark.asyncio
+async def test_watch_for_rotation_keeps_signalling_while_idle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every idle tick after the first two re-signals quiescence.
+
+    The backstop's task wait timeout is only checked when quiescence is
+    signalled; signalling once meant a turn held open by a stale task at that
+    moment could never time out, however long agy then stayed idle.
+    """
+    calls: list[int] = []
+
+    async def _on_quiescent() -> None:
+        calls.append(1)
+
+    idle = {"trajectorySummaries": {_BOUND_CASCADE: {"status": "CASCADE_RUN_STATUS_IDLE"}}}
+    script = [idle, idle, idle, idle]
+    seen = {"n": 0}
+
+    def _fetch(port: int) -> dict[str, object]:
+        i = seen["n"]
+        seen["n"] += 1
+        if i >= len(script):
+            raise asyncio.CancelledError()
+        return script[i]
+
+    monkeypatch.setattr(reader, "get_all_cascade_trajectories", _fetch)
+
+    async def _noop_sleep(_seconds: float) -> None:
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(reader, "_sleep", _noop_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await reader._watch_for_rotation(
+            port=_PORT,
+            bound_cascade_id=_BOUND_CASCADE,
+            interval_s=0.0,
+            skip_cascade_ids=frozenset(),
+            on_rotation=_fail_rotation,
+            on_quiescent=_on_quiescent,
+        )
+
+    assert calls == [1, 1, 1], "idle ticks 2, 3 and 4 should each signal"
+
+
 # ---------------------------------------------------------------------------
 # Sub-agents: agy runs each as its own cascade, mirrored into a child session
 # ---------------------------------------------------------------------------
@@ -5352,6 +5398,87 @@ async def test_task_completion_closes_turn_with_final_report_082f0bb4(
     )
 
     # RUNNING then IDLE once the real final report arrives (after task finished).
+    assert sink.statuses() == ["running", "idle"]
+
+
+_TIMER_CASCADE = "f6e02d0e-2ddb-496c-a54e-7592494aa711"
+
+
+def _timer_step(status: str, result: str | None) -> dict[str, Any]:
+    """agy's own ``schedule`` timer step, as recorded on 2026-09-22 (task-250)."""
+    step: dict[str, Any] = {
+        "type": "CORTEX_STEP_TYPE_GENERIC",
+        "status": status,
+        "metadata": {
+            "sourceTrajectoryStepInfo": {"trajectoryId": _TIMER_CASCADE, "stepIndex": 250}
+        },
+        "taskDetails": {
+            "id": f"{_TIMER_CASCADE}/task-250",
+            "description": "Timer: 90s, Prompt: Check task-248 recording completion",
+            "title": "Schedule wait for task-248",
+        },
+        "generic": {
+            "args": {"DurationSeconds": "90", "TimerCondition": f"{_TIMER_CASCADE}/task-248"},
+        },
+    }
+    if result is not None:
+        step["generic"]["result"] = {"result": result}
+    return step
+
+
+def test_a_timer_cancelled_early_counts_as_finished() -> None:
+    """A timer whose watched task finished first ends silently, in its own result."""
+    cancelled = _timer_step(
+        "CORTEX_STEP_STATUS_DONE",
+        f"Timer cancelled early: its early-termination condition ({_TIMER_CASCADE}/task-248) "
+        f"was met by a message from {_TIMER_CASCADE}/task-248.",
+    )
+    fired = _timer_step("CORTEX_STEP_STATUS_DONE", "Finished waiting 60 seconds.")
+    waiting = _timer_step("CORTEX_STEP_STATUS_RUNNING", None)
+
+    assert reader._extract_task_finish_id(cancelled) == f"{_TIMER_CASCADE}/task-250"
+    assert reader._extract_task_finish_id(fired) == f"{_TIMER_CASCADE}/task-250"
+    assert reader._extract_task_finish_id(waiting) is None
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_timer_does_not_hold_the_turn_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patched_discovery: None,
+) -> None:
+    """The final report closes the turn once the only in-flight task was a cancelled timer.
+
+    Before, the timer stayed "in flight" forever, so a finished Gemini worker
+    never reported idle and its orchestrator waited on it indefinitely.
+    """
+    user = _load("user_input")
+    waiting = _timer_step("CORTEX_STEP_STATUS_RUNNING", None)
+    cancelled = _timer_step(
+        "CORTEX_STEP_STATUS_DONE",
+        f"Timer cancelled early: its early-termination condition ({_TIMER_CASCADE}/task-248) "
+        f"was met by a message from {_TIMER_CASCADE}/task-248.",
+    )
+    report = _step_543_report()
+    script = _StepScript(
+        [
+            [user],
+            [user, waiting],
+            [user, cancelled],
+            [user, cancelled, report],
+            [user, cancelled, report],
+        ]
+    )
+    sink = _PostSink()
+
+    await _run(
+        bridge_dir=_bridge_dir(tmp_path),
+        sink=sink,
+        steps=script,
+        monkeypatch=monkeypatch,
+        iterations=5,
+    )
+
     assert sink.statuses() == ["running", "idle"]
 
 

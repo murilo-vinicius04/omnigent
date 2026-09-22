@@ -204,6 +204,7 @@ def _task_wait_timeout_s() -> float:
             pass
     return _DEFAULT_TASK_WAIT_TIMEOUT_S
 
+
 # RPC step type/status constants needed for the status-transition heuristic. The
 # item-mapping constants live in the mapper; the driver only needs the few it
 # keys turn transitions on.
@@ -694,6 +695,12 @@ _RE_TASK_FINISH = re.compile(
     re.IGNORECASE,
 )
 _RE_SENDER_TASK = re.compile(r"sender=([^\s\n]+)")
+# How a ``schedule`` timer's OWN step ends. A timer that fires also sends a
+# ``sender=<task>`` message, but one cancelled early (the task it watched
+# finished first) sends nothing: only its result says so. Both seen on agy
+# 2026-09-22: "Timer cancelled early: its early-termination condition (...) was
+# met by a message from ..." and "Finished waiting 60 seconds."
+_RE_TIMER_ENDED = re.compile(r"^(?:Timer cancelled\b|Finished waiting\b)", re.IGNORECASE)
 
 
 def _all_step_texts(step: dict[str, object]) -> list[str]:
@@ -745,7 +752,9 @@ def _extract_task_start_id(step: dict[str, object]) -> str | None:
         if isinstance(tid, str) and tid.strip():
             return tid.strip()
     for text in _all_step_texts(step):
-        if any(w in text.lower() for w in ("finished", "killed", "cancelled", "terminated", "sender=")):
+        if any(
+            w in text.lower() for w in ("finished", "killed", "cancelled", "terminated", "sender=")
+        ):
             continue
         m = _RE_TASK_START.search(text)
         if m:
@@ -762,7 +771,16 @@ def _extract_task_finish_id(step: dict[str, object]) -> str | None:
     Checks:
     1. ``systemMessage.agentMessage.sender`` in an agy systemMessage step.
     2. ``<SYSTEM_MESSAGE> ... sender=<task_id>`` or ``Task id "<task_id>" finished`` text.
+    3. A ``schedule`` timer's own step whose result says the timer ended.
     """
+    td = step.get("taskDetails")
+    generic = step.get("generic")
+    if isinstance(td, dict) and isinstance(generic, dict):
+        tid = td.get("id")
+        res = generic.get("result")
+        text = res.get("result") if isinstance(res, dict) else res
+        if isinstance(tid, str) and isinstance(text, str) and _RE_TIMER_ENDED.match(text.strip()):
+            return tid.strip()
     sys_msg = step.get("systemMessage")
     if isinstance(sys_msg, dict):
         agent_msg = sys_msg.get("agentMessage")
@@ -786,7 +804,8 @@ def _extract_task_finish_id(step: dict[str, object]) -> str | None:
 def _drop_running_task(running_tasks: set[str], finished_id: str) -> None:
     """Remove a finished task ID from running_tasks (matches exact or suffix task-N)."""
     to_remove = {
-        t for t in running_tasks
+        t
+        for t in running_tasks
         if t == finished_id or t.split("/")[-1] == finished_id.split("/")[-1]
     }
     running_tasks.difference_update(to_remove)
@@ -1132,7 +1151,10 @@ async def _watch_for_rotation(
         if on_quiescent is not None:
             if _cascade_is_idle(summaries, bound_cascade_id):
                 idle_ticks += 1
-                if idle_ticks == _QUIESCENT_TICKS_TO_CLOSE:
+                # Every idle tick, not just the first: with background tasks
+                # still counted, the backstop only re-arms the task wait
+                # timeout, which must be checked again to ever fire.
+                if idle_ticks >= _QUIESCENT_TICKS_TO_CLOSE:
                     await on_quiescent()
             else:
                 idle_ticks = 0
