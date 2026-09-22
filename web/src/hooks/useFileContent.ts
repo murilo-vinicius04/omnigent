@@ -58,6 +58,26 @@ function workspaceFileUrl(
   );
 }
 
+/**
+ * URL of a workspace file's complete bytes, streamed by the server with no
+ * size cap (the viewer's JSON envelope stops at the runner's read cap).
+ *
+ * :param conversationId: The session/conversation ID, e.g. ``"sess_abc123"``.
+ * :param path: Workspace-relative or host-absolute file path.
+ */
+export function workspaceFileDownloadUrl(conversationId: string, path: string): string {
+  return workspaceFileUrl(conversationId, path, { download: "true" });
+}
+
+/**
+ * Whether a plain same-origin URL reaches a workspace file here. True in a
+ * browser, where the session cookie or proxy identity header rides along. The
+ * managed embed and the mobile shells must fetch through `authenticatedFetch`.
+ */
+export function canLinkWorkspaceFilesDirectly(): boolean {
+  return !isDatabricksWorkspace() && !isIOSShell() && !isAndroidShell();
+}
+
 export async function fetchFileContent(
   conversationId: string,
   path: string,
@@ -132,9 +152,9 @@ function clickDownloadLink(href: string, filename: string): void {
  * :param path: Workspace-relative file path, e.g. ``"src/main.py"``.
  */
 export async function downloadWorkspaceFile(conversationId: string, path: string): Promise<void> {
-  const url = workspaceFileUrl(conversationId, path, { download: "true" });
+  const url = workspaceFileDownloadUrl(conversationId, path);
   const filename = path.split("/").pop() ?? path;
-  if (!isDatabricksWorkspace() && !isIOSShell() && !isAndroidShell()) {
+  if (canLinkWorkspaceFilesDirectly()) {
     clickDownloadLink(url, filename);
     return;
   }
@@ -188,5 +208,42 @@ export function useFileContent(conversationId: string | undefined, path: string 
     queryFn: () => fetchFileContent(conversationId!, path!),
     enabled: !!conversationId && !!path && serveable !== false,
     staleTime: 5_000,
+  });
+}
+
+/** Query key of {@link useFullFileText}, so callers can read its cached text. */
+export function fullFileTextQueryKey(conversationId: string | undefined, path: string | null) {
+  return ["file-content-full", conversationId, path] as const;
+}
+
+/**
+ * Fetch a workspace file's complete text, past the viewer's read cap.
+ *
+ * For previews that are useless cut short, like an HTML page whose data or
+ * closing script sits past the first 10 MiB. Goes through the uncapped
+ * download stream, which needs a live runner; on failure the caller keeps the
+ * truncated envelope it already has.
+ *
+ * :param conversationId: The session/conversation ID, e.g. ``"sess_abc123"``.
+ * :param path: Workspace-relative file path, e.g. ``"runs/viewer.html"``.
+ * :param enabled: Fetch only when the capped content came back truncated.
+ */
+export function useFullFileText(
+  conversationId: string | undefined,
+  path: string | null,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: fullFileTextQueryKey(conversationId, path),
+    queryFn: async () => {
+      const res = await authenticatedFetch(workspaceFileDownloadUrl(conversationId!, path!));
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      return res.text();
+    },
+    enabled: enabled && !!conversationId && !!path,
+    // Tens of megabytes: never refetch just because the window regained focus.
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
   });
 }

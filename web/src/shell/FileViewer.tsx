@@ -68,7 +68,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { downloadWorkspaceFile, useFileContent } from "@/hooks/useFileContent";
+import {
+  downloadWorkspaceFile,
+  fullFileTextQueryKey,
+  useFileContent,
+} from "@/hooks/useFileContent";
+import { useQueryClient } from "@tanstack/react-query";
 import { useFileDiff } from "@/hooks/useFileDiff";
 import {
   type Comment,
@@ -96,6 +101,7 @@ import {
   isModelFile,
   isNotebookPath,
   isPdfFile,
+  isVideoFile,
   openHtmlArtifactInNewTab,
 } from "./codeViewerHelpers";
 import { CommentsPanel, type ActiveSelection } from "./CommentsPanel";
@@ -374,7 +380,10 @@ function FileViewerBody({
   // visible. No-op off iOS / with the keyboard closed. Not needed frameless
   // (embedded in the desktop aside, never a fixed overlay).
   const keyboardInset = useIOSNativeKeyboardInset(!frameless && open);
-  const fileQuery = useFileContent(conversationId, path);
+  // Videos stream from the uncapped download URL; the capped JSON envelope
+  // would only fetch (and base64-encode) the first 10 MiB for nothing.
+  const fileQuery = useFileContent(conversationId, isVideoFile(path) ? null : path);
+  const queryClient = useQueryClient();
   const diffQuery = useFileDiff(conversationId, path);
   const changedFiles = useWorkspaceChangedFiles(conversationId);
 
@@ -508,13 +517,17 @@ function FileViewerBody({
   const openHtmlInNewTab = useCallback(() => {
     const data = fileQuery.data;
     if (!data) return;
-    const opened = openHtmlArtifactInNewTab(data.content, path.split("/").pop() ?? path);
+    // A page past the read cap was fetched whole for the preview; open that.
+    const full = data.truncated
+      ? queryClient.getQueryData<string>(fullFileTextQueryKey(conversationId, path))
+      : undefined;
+    const opened = openHtmlArtifactInNewTab(full ?? data.content, path.split("/").pop() ?? path);
     if (!opened) {
       // window.open returned null — almost always a popup blocker. There's no
       // toast surface here, so log it rather than failing silently.
       console.warn("Open in new tab: the browser blocked the popup window.");
     }
-  }, [fileQuery.data, path]);
+  }, [fileQuery.data, path, conversationId, queryClient]);
 
   const copyFileLink = useCallback(() => {
     if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) return;
@@ -653,6 +666,7 @@ function FileViewerBody({
   // they have no meaningful source/diff/preview text representation, so diff is
   // suppressed and they always resolve to the (viewer-owning) source surface.
   const isModel = isModelFile(path, fileQuery.data?.content_type);
+  const isVideo = isVideoFile(path);
   // Binary/base64 files render CodeViewer's "Preview not available" notice, not
   // Monaco — mirrors CodeViewer's own base64/binary-path check.
   const isBinary = fileQuery.data?.encoding === "base64" || isBinaryPath(path);
@@ -661,6 +675,7 @@ function FileViewerBody({
     !isImage &&
     !isPdf &&
     !isModel &&
+    !isVideo &&
     (changedFiles.data?.data.some((f) => f.path === path) ?? false);
   const isDeletedFile =
     changedFiles.data?.data.some((f) => f.path === path && f.status === "deleted") ?? false;

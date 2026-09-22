@@ -48,10 +48,14 @@ import { MarkdownErrorBoundary } from "@/components/ai-elements/MarkdownErrorBou
 import { Streamdown } from "streamdown";
 import type { Comment } from "@/hooks/useComments";
 import {
+  canLinkWorkspaceFilesDirectly,
   type FileContentResponse,
   fileContentToBlob,
   type useFileContent,
+  useFullFileText,
+  workspaceFileDownloadUrl,
 } from "@/hooks/useFileContent";
+import { authenticatedFetch } from "@/lib/identity";
 import { useCanEdit } from "@/hooks/usePermissions";
 import { cn } from "@/lib/utils";
 import { MarkdownRichTextViewer } from "./MarkdownRichTextViewer";
@@ -66,6 +70,7 @@ import {
   isModelFile,
   isNotebookPath,
   isPdfFile,
+  isVideoFile,
   lineOverlapsSelection,
 } from "./codeViewerHelpers";
 import { NotebookPreview } from "./NotebookPreview";
@@ -383,6 +388,113 @@ function ImageViewer({ data, path }: { data: FileContentResponse; path: string }
       <TruncatedBanner />
       {body}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// VideoViewer — play a video file from its uncapped download stream
+// ---------------------------------------------------------------------------
+
+function VideoViewer({ conversationId, path }: { conversationId: string; path: string }) {
+  const direct = canLinkWorkspaceFilesDirectly();
+  const [url, setUrl] = useState<string | null>(() =>
+    direct ? workspaceFileDownloadUrl(conversationId, path) : null,
+  );
+  const [errored, setErrored] = useState(false);
+
+  // A plain URL lets the browser stream and start playing before the file has
+  // arrived. Where auth rides on headers instead (managed embed, mobile
+  // shells), fetch the bytes and play them from a blob.
+  useEffect(() => {
+    setErrored(false);
+    if (direct) {
+      setUrl(workspaceFileDownloadUrl(conversationId, path));
+      return;
+    }
+    setUrl(null);
+    let objectUrl: string | null = null;
+    let cancelled = false;
+    authenticatedFetch(workspaceFileDownloadUrl(conversationId, path))
+      .then((res) => (res.ok ? res.blob() : Promise.reject(new Error(String(res.status)))))
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      })
+      .catch(() => !cancelled && setErrored(true));
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [conversationId, path, direct]);
+
+  if (errored) {
+    return (
+      <div className="flex items-center justify-center p-8 text-muted-foreground text-ui">
+        Unable to play this video here. Download it to watch it.
+      </div>
+    );
+  }
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-black/90 p-2">
+      {url ? (
+        // oxlint-disable-next-line media-has-caption -- agent-rendered clips carry no caption track
+        <video
+          key={url}
+          src={url}
+          controls
+          playsInline
+          preload="metadata"
+          onError={() => setErrored(true)}
+          className="max-h-full max-w-full"
+          data-testid="workspace-video"
+        />
+      ) : (
+        <span className="text-muted-foreground text-ui">Loading video…</span>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// FullHtmlPreview — an HTML page past the read cap, fetched whole
+// ---------------------------------------------------------------------------
+
+/**
+ * The HTML preview, fed the complete page when the capped content was cut.
+ *
+ * A generated page that inlines its data (a 3D viewer with its mesh) is easily
+ * past the 10 MiB read cap, and a page cut mid-script renders blank. So a
+ * truncated page is fetched whole before it is shown; if that fails (no live
+ * runner), the truncated page is shown with its banner, as before.
+ */
+function FullHtmlPreview({
+  path,
+  ...props
+}: React.ComponentProps<typeof HtmlCommentViewer> & { path: string }) {
+  return props.truncated ? (
+    <TruncatedHtmlPreview path={path} {...props} />
+  ) : (
+    <HtmlCommentViewer {...props} />
+  );
+}
+
+function TruncatedHtmlPreview({
+  path,
+  ...props
+}: React.ComponentProps<typeof HtmlCommentViewer> & { path: string }) {
+  const full = useFullFileText(props.conversationId, path, true);
+  if (full.isPending && full.fetchStatus !== "idle") {
+    return (
+      <div className="flex items-center justify-center p-8 text-muted-foreground text-ui">
+        Loading the full page…
+      </div>
+    );
+  }
+  return full.data !== undefined ? (
+    <HtmlCommentViewer {...props} content={full.data} truncated={false} />
+  ) : (
+    <HtmlCommentViewer {...props} />
   );
 }
 
@@ -732,6 +844,11 @@ export function CodeViewer({
     };
   }, [content]);
 
+  // Videos skip the capped content fetch (FileViewer disables it), so they
+  // are decided before its loading and error states.
+  if (isVideoFile(path)) {
+    return <VideoViewer conversationId={conversationId} path={path} />;
+  }
   if (fileQuery.isLoading) {
     return (
       <div className="flex items-center justify-center p-8 text-muted-foreground text-ui">
@@ -815,7 +932,8 @@ export function CodeViewer({
   // owns the truncated banner internally.
   if (viewMode === "preview" && lang === "html") {
     return (
-      <HtmlCommentViewer
+      <FullHtmlPreview
+        path={path}
         conversationId={conversationId}
         content={content}
         truncated={truncated}

@@ -86,6 +86,9 @@ const BINARY_EXTENSIONS = new Set([
   "eot",
   "mp3",
   "mp4",
+  "m4v",
+  "mov",
+  "ogv",
   "wav",
   "ogg",
   "webm",
@@ -132,6 +135,20 @@ export function isImageFile(path: string, contentType?: string | null): boolean 
   if (contentType) return contentType.startsWith("image/");
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
   return IMAGE_EXTENSIONS.has(ext);
+}
+
+// Video formats browsers play in a <video> tag. Streamed from the uncapped
+// download URL rather than the JSON envelope, which stops at 10 MiB.
+const VIDEO_EXTENSIONS = new Set(["mp4", "m4v", "mov", "webm", "ogv"]);
+
+/**
+ * Return true if `path` should be played as a video.
+ *
+ * Extension-only, unlike the image and PDF checks: the viewer skips the capped
+ * content fetch for videos, so there is no server content type to consult.
+ */
+export function isVideoFile(path: string): boolean {
+  return VIDEO_EXTENSIONS.has(path.split(".").pop()?.toLowerCase() ?? "");
 }
 
 /**
