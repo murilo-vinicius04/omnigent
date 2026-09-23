@@ -324,6 +324,7 @@ _AGY_ENABLED_TOOLS = [
     "sys_agent_download",
     "sys_agent_get",
     "sys_agent_list",
+    "sys_ask_supervisor",
     "sys_call_async",
     "sys_cancel_async",
     "sys_cancel_task",
@@ -1491,9 +1492,7 @@ def _draft_in_input_region(pane: str, needle: str, baseline_region: str) -> bool
         if norm_needle in norm_region:
             return True
         if any(
-            line == norm_needle
-            or line.startswith(norm_needle)
-            or norm_needle in line
+            line == norm_needle or line.startswith(norm_needle) or norm_needle in line
             for line in norm_lines
         ):
             return True

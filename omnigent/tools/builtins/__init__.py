@@ -30,6 +30,7 @@ from omnigent.tools.builtins.agents import (
     SysAgentGetTool,
     SysAgentListTool,
 )
+from omnigent.tools.builtins.ask_supervisor import SysAskSupervisorTool
 from omnigent.tools.builtins.async_inbox import (
     SysCallAsyncTool,
     SysCancelAsyncTool,
@@ -84,6 +85,7 @@ __all__ = [
     "SysAgentDownloadTool",
     "SysAgentGetTool",
     "SysAgentListTool",
+    "SysAskSupervisorTool",
     "SysCallAsyncTool",
     "SysCancelAsyncTool",
     "SysListModelsTool",
@@ -277,6 +279,10 @@ _BUILTIN_REGISTRY: dict[str, _BuiltinFactory | None] = {
     # name in the runner's tool dispatch — reserved here so user specs
     # cannot shadow it.
     "sys_advise_models": None,
+    # ``sys_ask_supervisor`` is auto-registered for every spec while the
+    # supervisor is switched on (omnigent/supervisor.py); reserved here so a
+    # user spec cannot shadow it.
+    "sys_ask_supervisor": None,
     # ``browser_*`` embedded-browser tools are framework-owned: always
     # auto-registered by ``ToolManager._register_browser_tools`` (the
     # single source of truth for registration), so any agent can drive

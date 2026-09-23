@@ -26,6 +26,7 @@ from omnigent.tools.builtins import (
     SysAgentDownloadTool,
     SysAgentGetTool,
     SysAgentListTool,
+    SysAskSupervisorTool,
     SysCallAsyncTool,
     SysCancelAsyncTool,
     SysListModelsTool,
@@ -500,6 +501,12 @@ class ToolManager:
     def _register_session_tools(self) -> None:
         """Register framework-owned tools for the current session."""
         self._tools[SysSessionRenameTool.name()] = SysSessionRenameTool()
+        # Only when switched on with a backend: a tool that always answers
+        # "unavailable" would just be noise in every worker's list.
+        from omnigent import supervisor
+
+        if supervisor.enabled():
+            self._tools[SysAskSupervisorTool.name()] = SysAskSupervisorTool()
 
     def _register_agent_mgmt_tools(self) -> None:
         """

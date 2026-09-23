@@ -67,6 +67,7 @@ from omnigent.session_lifecycle import (
 from omnigent.tools import ToolManager
 from omnigent.tools.base import Tool, ToolContext
 from omnigent.tools.builtins._arguments import parse_json_object_arguments
+from omnigent.tools.builtins.ask_supervisor import SysAskSupervisorTool
 from omnigent.tools.builtins.async_inbox import (
     SysCallAsyncTool,
     SysCancelAsyncTool,
@@ -298,6 +299,9 @@ _SESSION_QUERY_TOOLS = frozenset(
 
 _SESSION_SELF_WRITE_TOOLS = frozenset({SysSessionRenameTool.name()})
 
+# A worker asking its supervisor (omnigent/supervisor.py).
+_SUPERVISOR_TOOLS = frozenset({SysAskSupervisorTool.name()})
+
 # The title bound the rename tool advertises to the LLM — read once from the
 # tool schema so the dispatcher can never drift from the published contract.
 _SESSION_RENAME_TITLE_MAX_CHARS: int = SysSessionRenameTool().get_schema()["function"][
@@ -474,6 +478,8 @@ _NATIVE_RELAY_BUILTIN_TOOLS = (
     # what discovers host-scope skills (``.agents/skills`` and friends), and a
     # native session's only tool surface is this relay.
     | _SKILL_TOOLS
+    # The supervisor registers only when it is switched on and has a backend.
+    | _SUPERVISOR_TOOLS
 )
 
 
@@ -883,6 +889,7 @@ _ALL_LOCAL_TOOLS = (
     | _SESSION_CREATE_TOOLS
     | _SESSION_QUERY_TOOLS
     | _SESSION_SELF_WRITE_TOOLS
+    | _SUPERVISOR_TOOLS
     | _WEB_FETCH_TOOLS
     | _WEB_SEARCH_TOOLS
     | _NIMBLE_RESEARCH_TOOLS
@@ -1357,6 +1364,19 @@ def _subagent_message_from_args(args: _JsonObject) -> str | None:
     if isinstance(raw_message, str):
         return raw_message
     return None
+
+
+def _with_supervisor_note(message: str) -> str:
+    """Append the supervisor rule to a brief while the supervisor is on.
+
+    :param message: The brief being sent to a worker.
+    :returns: The brief, with the rule once at the end when enabled.
+    """
+    from omnigent import supervisor
+
+    if not supervisor.enabled() or supervisor.WORKER_RULE in message:
+        return message
+    return f"{message.rstrip()}\n\n{supervisor.WORKER_RULE}"
 
 
 async def _team_worker_pick(
@@ -2155,6 +2175,7 @@ async def _execute_subagent_tool(
     message = _subagent_message_from_args(args)
     if message is None or not message.strip():
         return "Error: sys_session_send requires non-empty args string or args.input string"
+    message = _with_supervisor_note(message)
     if server_client is None:
         return "Error: sys_session_send requires server_client"
     if conversation_id is None:
@@ -6261,6 +6282,10 @@ async def execute_tool(
                 conversation_id,
                 server_client,
             )
+        elif tool_name in _SUPERVISOR_TOOLS:
+            from omnigent.runner.supervisor_tool import ask_via_rest
+
+            output = await ask_via_rest(args, conversation_id, server_client)
         elif tool_name in _SESSION_QUERY_TOOLS:
             output = await _execute_session_query_tool(
                 tool_name,
