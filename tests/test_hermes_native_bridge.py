@@ -359,6 +359,19 @@ def test_write_policy_hook_config_merges_user_model(tmp_path, monkeypatch) -> No
     assert config["hooks_auto_accept"] is True
 
 
+def test_write_policy_hook_config_turns_off_the_background_review(tmp_path, monkeypatch) -> None:
+    # The review writes skills into a home that dies with the session, and a
+    # follow-up interrupting it looked like the new turn failing.
+    bridge_dir = tmp_path / "bridge"
+    bridge_dir.mkdir()
+    monkeypatch.setattr(b.Path, "home", staticmethod(lambda: tmp_path))
+
+    hermes_home = b.write_policy_hook_config(bridge_dir, "http://localhost:6767", "s3")
+
+    config = json.loads((hermes_home / "config.yaml").read_text())
+    assert config["auxiliary"]["background_review"]["enabled"] is False
+
+
 def test_write_policy_hook_config_carries_user_reasoning_effort(tmp_path, monkeypatch) -> None:
     bridge_dir = tmp_path / "bridge"
     bridge_dir.mkdir()

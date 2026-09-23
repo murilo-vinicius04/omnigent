@@ -411,6 +411,20 @@ def write_policy_hook_config(
     config: _ConfigObject = {**user_cfg}
 
     config["hooks_auto_accept"] = True
+    # After every turn Hermes forks a background review that saves skills and
+    # memory into this home, which dies with the session: two full-context model
+    # calls for nothing. Worse, a follow-up that interrupts the review logs
+    # ``Turn ended: reason=interrupted_during_api_call``, which the forwarder
+    # reads as the new turn failing and wakes the parent seconds in with the
+    # previous report.
+    auxiliary = config.get("auxiliary")
+    auxiliary = dict(auxiliary) if isinstance(auxiliary, dict) else {}
+    review = auxiliary.get("background_review")
+    auxiliary["background_review"] = {
+        **(review if isinstance(review, dict) else {}),
+        "enabled": False,
+    }
+    config["auxiliary"] = auxiliary
     existing_hooks = config.get("hooks")
     if not isinstance(existing_hooks, dict):
         existing_hooks = {}
