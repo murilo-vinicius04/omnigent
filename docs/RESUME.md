@@ -358,11 +358,13 @@ first speech after idle ~1.3 s later. Task list works after relaunch (Claude Cod
 nudges Opus into TaskCreate, so no extra instruction needed so far).
 
 **Open (ask first):**
-1. Laya test DONE 09-23 (`~/laya-test/run_laya.py`, `score.py`, `laya-routing.png`): untuned laya and
-   laya-multilingual on the companion's typed routing decisions. On the user's own 91 messages (37
-   kept) best AUC 0.62, best accuracy 58% vs 59% always-Claude, 23-50 of 54 wrongly kept; message
-   length alone scores AUC 0.75. 164 of 306 rows are nexus briefs to workers (always Claude). ~16-20 ms
-   per decision on GPU. Untuned Laya is not a routing replacement; tuning would need far more labels.
+1. Laya test DONE 09-23 (`~/laya-test/run_laya.py`, `score.py`): untuned laya/laya-multilingual vs the
+   companion's routing. Ledger "question+answer" also comes from direct `ask()` (voice/panel), so only
+   rows found as user items in the chat are routing: 63 in the user's chats, 11 kept. Laya best AUC
+   0.64, accuracy <=54% vs 83% always-Claude, 22-48 of 52 wrongly kept; length alone AUC 0.72. Keeps
+   depend on the companion's notes ("where were we?"), which a message-only model can't see. Not
+   worth pursuing. Separate idea (needs OK): worker chats' briefs (164 of 306 route() calls) always
+   forward; skip the companion for child sessions. ~16-20 ms per Laya decision on GPU.
 2. Installer: `uv sync --extra all` fails on a fresh clone (chatterbox-tts via gradio 6.8 needs
    starlette<1.0; omnigent needs >=1.0.1). `FRIENDLY_LAYER_SETUP.md` wrongly says a server restart
    interrupts sessions.
