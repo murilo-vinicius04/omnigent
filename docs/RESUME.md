@@ -368,6 +368,9 @@ nudges Opus into TaskCreate, so no extra instruction needed so far).
    Jev follow-up (same day, 62 decisions WITH the companion's notes): Jev AUC 0.66/0.63, reflex 4B
    (open, local) 0.62/0.57, Laya 0.50; every one below always-forward (73%) at default cutoff.
    Jev cost $0.011 via OpenRouter. Details: memory `jev-routing-test`, `~/laya-test/jev-routing.png`.
+   Worker-report gate WORKS (33 nexus reports, 12 hollow): Jev AUC 0.97 (11/11 caught, 4/19 false
+   at 0.5; 8/11, 0 false at 0.8), reflex 0.91 (8/11, 0 false). Waiting on the user's Opus marks for
+   the 50 messages in `~/laya-test/routing/messages_to_mark.json`.
 2. Installer: `uv sync --extra all` fails on a fresh clone (chatterbox-tts via gradio 6.8 needs
    starlette<1.0; omnigent needs >=1.0.1). `FRIENDLY_LAYER_SETUP.md` wrongly says a server restart
    interrupts sessions.
