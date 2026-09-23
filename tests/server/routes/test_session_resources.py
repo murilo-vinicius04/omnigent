@@ -3105,6 +3105,81 @@ async def test_filesystem_download_streams_runner_attachment(
     assert seen == [("data/big.bin", True)]
 
 
+class _AsleepRunnerRouter:
+    """A router whose pinned runner exited on idle, as the live registry reports it."""
+
+    def client_for_session_resources(
+        self,
+        session_id: str,
+        *,
+        conversation: Conversation | None = None,
+    ) -> _RoutedRunner:
+        del conversation
+        raise OmnigentError(
+            f"runner 'runner_one' is offline for conversation {session_id!r}",
+            code=ErrorCode.RUNNER_UNAVAILABLE,
+        )
+
+
+@pytest.mark.asyncio
+async def test_filesystem_download_wakes_a_runner_that_went_idle(
+    client: httpx.AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A video in a chat whose runner exited on idle still plays.
+
+    The host tunnel cannot stream a file, so the download wakes the runner
+    (the relaunch the next message would do) and streams from it.
+    """
+    from omnigent.server.routes.sessions import routes_resources
+
+    payload = b"\x00\x00\x00\x18ftypmp42" * 512
+    (tmp_path / "clip.mp4").write_bytes(payload)
+    runner = FastAPI()
+
+    @runner.get(_FS_ROUTE)
+    async def _serve(session_id: str, environment_id: str, relative_path: str) -> FileResponse:
+        del session_id, environment_id, relative_path
+        return FileResponse(tmp_path / "clip.mp4", filename="clip.mp4")
+
+    woken: list[str] = []
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=runner), base_url="http://runner"
+    ) as runner_http:
+
+        async def _wake(*, session_id: str, conv: Conversation, **_: Any):
+            woken.append(session_id)
+            return runner_http, conv
+
+        monkeypatch.setattr(routes_resources, "ensure_runner_connected", _wake)
+        set_runner_router(_AsleepRunnerRouter())  # type: ignore[arg-type]
+        resp = await client.get(_DOWNLOAD_URL)
+
+    assert resp.status_code == 200
+    assert resp.content == payload
+    assert woken == ["79b22ebd2309e48fdeb450c65611d51b"]
+
+
+@pytest.mark.asyncio
+async def test_filesystem_download_stays_unavailable_when_the_runner_cannot_wake(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An offline host can't relaunch the runner: the original 503 stands."""
+    from omnigent.server.routes.sessions import routes_resources
+
+    async def _no_wake(*, conv: Conversation, **_: Any):
+        return None, conv
+
+    monkeypatch.setattr(routes_resources, "ensure_runner_connected", _no_wake)
+    set_runner_router(_AsleepRunnerRouter())  # type: ignore[arg-type]
+    resp = await client.get(_DOWNLOAD_URL)
+
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "runner_unavailable"
+
+
 @pytest.mark.asyncio
 async def test_filesystem_download_rejects_runner_without_download_support(
     client: httpx.AsyncClient,

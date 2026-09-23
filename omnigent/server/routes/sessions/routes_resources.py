@@ -287,7 +287,10 @@ def register_resources_routes(
         The runner serves the bytes straight from disk; forwarding them
         chunk by chunk keeps the server's memory flat however large the
         file is. There is no host fallback: the host tunnel's filesystem
-        op answers in a single message, so it cannot stream a file.
+        op answers in a single message, so it cannot stream a file. A
+        runner that merely went to sleep (idle exit) is woken instead, the
+        same relaunch the next chat message would do, so a video in an
+        idle chat still plays.
 
         :param request: The incoming request, for the gzip opt-out.
         :param session_id: Session/conversation identifier.
@@ -297,13 +300,26 @@ def register_resources_routes(
             runner's own error body and status for a missing file, a
             directory, or an out-of-grant path.
         :raises OmnigentError: ``runner_unavailable`` when the runner
-            predates downloads.
+            predates downloads, or is offline and cannot be woken.
         :raises HTTPException: 502 when no runner can be reached.
         """
-        runner_client = await _get_runner_client_for_resource_access(
-            session_id,
-            conversation=conversation,
-        )
+        try:
+            runner_client = await _get_runner_client_for_resource_access(
+                session_id,
+                conversation=conversation,
+            )
+        except OmnigentError as exc:
+            if exc.code != ErrorCode.RUNNER_UNAVAILABLE:
+                raise
+            runner_client, _ = await ensure_runner_connected(
+                session_id=session_id,
+                conv=conversation,
+                app_state=request.app.state,
+                conversation_store=conversation_store,
+                runner_router=runner_router or get_server_runner_router(),
+            )
+            if runner_client is None:
+                raise
         if runner_client is None:
             raise HTTPException(
                 status_code=502,
