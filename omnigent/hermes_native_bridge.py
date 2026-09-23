@@ -300,34 +300,56 @@ def _load_user_hermes_config() -> _ConfigObject:
 _MCP_BRIDGE_CONFIG_FILE = "bridge.json"
 
 
-def _write_supervisor_stop_hook(
-    config: _ConfigObject, hermes_home: Path, server_url: str, session_id: str
-) -> Path | None:
-    """Register the supervisor's ``pre_verify`` check in *config* while it is on.
-
-    :returns: The hook's wrapper script, or ``None`` when the check is off.
-    """
-    from omnigent import supervisor_stop
-
-    if not supervisor_stop.enabled():
-        return None
+def _supervisor_hook(
+    hermes_home: Path, server_url: str, session_id: str, name: str, script: str
+) -> Path:
+    """Write one owner-only wrapper that launches a supervisor hook script."""
     from omnigent.native_policy_hook import policy_hook_wrapper_script
 
-    script = str(Path(__file__).resolve().parent / "inner" / "hermes_verify_hook.py")
-    wrapper = hermes_home / "omnigent-verify-hook.sh"
-    wrapper.write_text(policy_hook_wrapper_script(server_url, session_id, script))
+    wrapper = hermes_home / name
+    path = str(Path(__file__).resolve().parent / "inner" / script)
+    wrapper.write_text(policy_hook_wrapper_script(server_url, session_id, path))
     wrapper.chmod(0o700)
-    hooks = config.get("hooks")
-    config["hooks"] = {
-        **(hooks if isinstance(hooks, dict) else {}),
-        "pre_verify": [{"command": str(wrapper), "timeout": supervisor_stop.HOOK_TIMEOUT_S}],
-    }
-    agent = config.get("agent")
-    config["agent"] = {
-        "max_verify_nudges": supervisor_stop.MAX_NUDGES,
-        **(agent if isinstance(agent, dict) else {}),
-    }
     return wrapper
+
+
+def _write_supervisor_hooks(
+    config: _ConfigObject, hermes_home: Path, server_url: str, session_id: str
+) -> list[tuple[str, Path]]:
+    """Register the supervisor's checks that are on: before finishing, and next move.
+
+    :returns: ``(hook event, wrapper script)`` for each registered check.
+    """
+    from omnigent import supervisor_moves, supervisor_stop
+
+    hooks = config.get("hooks")
+    hooks = dict(hooks) if isinstance(hooks, dict) else {}
+    registered: list[tuple[str, Path]] = []
+    if supervisor_stop.enabled():
+        wrapper = _supervisor_hook(
+            hermes_home, server_url, session_id, "omnigent-verify-hook.sh", "hermes_verify_hook.py"
+        )
+        hooks["pre_verify"] = [
+            {"command": str(wrapper), "timeout": supervisor_stop.HOOK_TIMEOUT_S}
+        ]
+        agent = config.get("agent")
+        config["agent"] = {
+            "max_verify_nudges": supervisor_stop.MAX_NUDGES,
+            **(agent if isinstance(agent, dict) else {}),
+        }
+        registered.append(("pre_verify", wrapper))
+    if supervisor_moves.enabled():
+        wrapper = _supervisor_hook(
+            hermes_home, server_url, session_id, "omnigent-move-hook.sh", "hermes_move_hook.py"
+        )
+        existing = hooks.get("pre_tool_call")
+        hooks["pre_tool_call"] = [
+            *(existing if isinstance(existing, list) else []),
+            {"command": str(wrapper), "timeout": supervisor_moves.HOOK_TIMEOUT_S},
+        ]
+        registered.append(("pre_tool_call", wrapper))
+    config["hooks"] = hooks
+    return registered
 
 
 def write_policy_hook_config(
@@ -402,8 +424,8 @@ def write_policy_hook_config(
         ],
     }
 
-    # The supervisor's check before a worker that edited files finishes its turn.
-    verify_wrapper = _write_supervisor_stop_hook(config, hermes_home, server_url, session_id)
+    # The supervisor's checks: before a worker that edited files finishes, and next move.
+    supervisor_hooks = _write_supervisor_hooks(config, hermes_home, server_url, session_id)
 
     # Register the Omnigent MCP stdio server so Hermes can call
     # Omnigent builtin tools (sys_session_*, sys_agent_*, load_skill, etc.).
@@ -446,7 +468,7 @@ def write_policy_hook_config(
     allowlist_data = {
         "approvals": [
             {"event": "pre_tool_call", "command": str(wrapper)},
-            *([{"event": "pre_verify", "command": str(verify_wrapper)}] if verify_wrapper else []),
+            *({"event": event, "command": str(path)} for event, path in supervisor_hooks),
         ],
     }
     allowlist_path.write_text(json.dumps(allowlist_data, indent=2) + "\n")
