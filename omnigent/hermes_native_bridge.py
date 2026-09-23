@@ -300,6 +300,36 @@ def _load_user_hermes_config() -> _ConfigObject:
 _MCP_BRIDGE_CONFIG_FILE = "bridge.json"
 
 
+def _write_supervisor_stop_hook(
+    config: _ConfigObject, hermes_home: Path, server_url: str, session_id: str
+) -> Path | None:
+    """Register the supervisor's ``pre_verify`` check in *config* while it is on.
+
+    :returns: The hook's wrapper script, or ``None`` when the check is off.
+    """
+    from omnigent import supervisor_stop
+
+    if not supervisor_stop.enabled():
+        return None
+    from omnigent.native_policy_hook import policy_hook_wrapper_script
+
+    script = str(Path(__file__).resolve().parent / "inner" / "hermes_verify_hook.py")
+    wrapper = hermes_home / "omnigent-verify-hook.sh"
+    wrapper.write_text(policy_hook_wrapper_script(server_url, session_id, script))
+    wrapper.chmod(0o700)
+    hooks = config.get("hooks")
+    config["hooks"] = {
+        **(hooks if isinstance(hooks, dict) else {}),
+        "pre_verify": [{"command": str(wrapper), "timeout": supervisor_stop.HOOK_TIMEOUT_S}],
+    }
+    agent = config.get("agent")
+    config["agent"] = {
+        "max_verify_nudges": supervisor_stop.MAX_NUDGES,
+        **(agent if isinstance(agent, dict) else {}),
+    }
+    return wrapper
+
+
 def write_policy_hook_config(
     bridge_dir: Path,
     server_url: str,
@@ -372,6 +402,9 @@ def write_policy_hook_config(
         ],
     }
 
+    # The supervisor's check before a worker that edited files finishes its turn.
+    verify_wrapper = _write_supervisor_stop_hook(config, hermes_home, server_url, session_id)
+
     # Register the Omnigent MCP stdio server so Hermes can call
     # Omnigent builtin tools (sys_session_*, sys_agent_*, load_skill, etc.).
     existing_mcp_servers = config.get("mcp_servers")
@@ -413,6 +446,7 @@ def write_policy_hook_config(
     allowlist_data = {
         "approvals": [
             {"event": "pre_tool_call", "command": str(wrapper)},
+            *([{"event": "pre_verify", "command": str(verify_wrapper)}] if verify_wrapper else []),
         ],
     }
     allowlist_path.write_text(json.dumps(allowlist_data, indent=2) + "\n")

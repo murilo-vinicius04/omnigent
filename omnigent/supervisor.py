@@ -330,7 +330,22 @@ async def _call(
     :returns: ``(answer entry, usage)``.
     :raises RuntimeError: On a refusal, HTTP error or malformed reply.
     """
-    body = {"model": backend.model, "state": state, "questions": {"q": jev_question(question)}}
+    answers, usage = await post_questions(backend, state, {"q": jev_question(question)})
+    return answers["q"], usage
+
+
+async def post_questions(
+    backend: Backend, state: str, questions: dict[str, dict[str, Any]]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """POST one state and its questions to one backend.
+
+    :param backend: Where to send them.
+    :param state: The text the model reads.
+    :param questions: TypeSafe-format questions by id, e.g. ``{"q": {"type": "noul", ...}}``.
+    :returns: ``(answers by question id, usage)``; every id is answered.
+    :raises RuntimeError: On a refusal, HTTP error or malformed reply.
+    """
+    body = {"model": backend.model, "state": state, "questions": questions}
     headers = {"Authorization": f"Bearer {backend.key}"} if backend.key else {}
     async with _client() as client:
         resp = await client.post(backend.url, json=body, headers=headers)
@@ -340,10 +355,12 @@ async def _call(
     if resp.status_code != 200:
         raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
     data = resp.json()
-    try:
-        return data["answers"]["q"], data.get("usage") or {}
-    except (KeyError, TypeError) as exc:
-        raise RuntimeError(f"malformed reply: {str(data)[:200]}") from exc
+    answers = data.get("answers") if isinstance(data, dict) else None
+    if not isinstance(answers, dict) or any(
+        not isinstance(answers.get(k), dict) for k in questions
+    ):
+        raise RuntimeError(f"malformed reply: {str(data)[:200]}")
+    return answers, data.get("usage") or {}
 
 
 async def ask(
@@ -426,18 +443,27 @@ def _record(
     question: Question, verdict: Verdict, *, state_chars: int, session_id: str, parent_id: str
 ) -> None:
     """Append one line to the supervisor ledger; never raises."""
+    append_ledger(
+        {
+            "at": time.time(),
+            "session": session_id,
+            "parent": parent_id,
+            "kind": question.kind,
+            "question": question.question,
+            "options": list(question.options),
+            "evidence_chars": len(question.evidence),
+            "state_chars": state_chars,
+            **asdict(verdict),
+        }
+    )
+
+
+def append_ledger(line: dict[str, Any]) -> None:
+    """Append one JSON line to the supervisor ledger; never raises.
+
+    :param line: The record, e.g. ``{"at": 1790000000.0, "kind": "yes_no", ...}``.
+    """
     path = pathlib.Path(os.environ.get("OMNIGENT_SUPERVISOR_LEDGER", "").strip() or LEDGER_PATH)
-    line = {
-        "at": time.time(),
-        "session": session_id,
-        "parent": parent_id,
-        "kind": question.kind,
-        "question": question.question,
-        "options": list(question.options),
-        "evidence_chars": len(question.evidence),
-        "state_chars": state_chars,
-        **asdict(verdict),
-    }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
