@@ -69,6 +69,8 @@ _OWNER_PID_FILENAME = "owner.pid"
 # Bound for each ``tmux kill-server`` in the orphan sweep; a wedged
 # tmux must not stall runner startup.
 _REAP_KILL_TIMEOUT_S = 10.0
+# A killed tmux server stops accepting on its socket within ~0.1 s.
+_KILL_SETTLE_S = 1.0
 # Literal tmux empty option value. Passing this as an argv value clears
 # status segments and window formats; it is not an application sentinel.
 _TMUX_EMPTY_OPTION_VALUE = ""
@@ -700,6 +702,37 @@ def _terminals_tmp_root() -> Path:
     return Path(tempfile.gettempdir())
 
 
+def _tmux_server_survives(socket_path: Path) -> bool:
+    """
+    Whether a tmux server still accepts on ``socket_path`` after a kill.
+
+    A plain connect, so it answers even when the tmux binary cannot run
+    (an AppImage tmux exits 127 on a full disk, so ``kill-server`` fails
+    silently). A killed server refuses within ``_KILL_SETTLE_S``; a stale
+    socket file refuses at once.
+
+    :param socket_path: The instance's tmux socket.
+    :returns: ``True`` when a live server still answers there.
+    """
+    if IS_WINDOWS or not socket_path.exists():
+        return False
+    import socket
+
+    deadline = time.monotonic() + _KILL_SETTLE_S
+    while True:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(_KILL_SETTLE_S)
+        try:
+            sock.connect(str(socket_path))
+        except OSError:
+            return False
+        finally:
+            sock.close()
+        if time.monotonic() >= deadline:
+            return True
+        time.sleep(0.05)
+
+
 def reap_orphaned_terminals() -> int:
     """
     Kill terminal tmux servers whose owning process is gone.
@@ -738,6 +771,10 @@ def reap_orphaned_terminals() -> int:
                     capture_output=True,
                     timeout=_REAP_KILL_TIMEOUT_S,
                 )
+            if _tmux_server_survives(socket_path):
+                # Deleting the dir now would strand the server for good.
+                logger.warning("tmux server at %s survived kill-server; retrying later", entry)
+                continue
         shutil.rmtree(entry, ignore_errors=True)
         reaped += 1
     return reaped
@@ -1343,6 +1380,15 @@ class TerminalInstance:
             with contextlib.suppress(RuntimeError):
                 await self._tmux("kill-server")
         self.running = False
+        # A server that survived keeps its dir (socket + owner pid), so the
+        # next runner's orphan sweep can still reach it.
+        survived = await asyncio.to_thread(_tmux_server_survives, self.socket_path)
+        if survived:
+            logger.warning(
+                "tmux server for terminal %s:%s survived kill-server; left for the orphan sweep",
+                self.name,
+                self.session_key,
+            )
 
         if self.os_env is not None:
             self.os_env.close()
@@ -1366,7 +1412,7 @@ class TerminalInstance:
             self._egress_tmpdir = None
 
         # Clean up the private dir (contains socket + fork).
-        if self.private_dir.exists():
+        if self.private_dir.exists() and not survived:
             shutil.rmtree(self.private_dir, ignore_errors=True)
 
     def start_idle_watcher(

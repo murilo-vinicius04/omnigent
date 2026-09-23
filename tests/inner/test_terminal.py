@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -214,6 +215,75 @@ async def test_close_kills_tmux_when_socket_exists_after_running_cleared(tmp_pat
 
     assert commands == [("kill-server",)]
     assert not private_dir.exists()
+
+
+def _listening_socket(path: Path) -> socket.socket:
+    """Stand in for a live tmux server: something accepting on its socket."""
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(path))
+    server.listen(16)
+    return server
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="AF_UNIX tmux sockets are POSIX-only")
+async def test_close_keeps_the_dir_of_a_tmux_that_survived_kill_server(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A full disk makes the AppImage tmux exit 127, so kill-server fails.
+
+    Deleting the dir then strands the server (and its Claude) on an
+    unreachable socket; keeping it lets the next orphan sweep kill it.
+    """
+    monkeypatch.setattr(terminal_mod, "_KILL_SETTLE_S", 0.2)
+    private_dir = tmp_path / "t"
+    private_dir.mkdir()
+    socket_path = private_dir / "tmux.sock"
+    instance = TerminalInstance(
+        name="claude",
+        session_key="main",
+        socket_path=socket_path,
+        private_dir=private_dir,
+        running=False,
+    )
+
+    async def _tmux_cannot_run(*args: str) -> None:
+        raise RuntimeError("tmux command failed (rc=127)")
+
+    instance._tmux = _tmux_cannot_run  # type: ignore[method-assign]
+
+    with _listening_socket(socket_path):
+        await instance.close()
+
+    assert private_dir.exists()
+    assert socket_path.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="AF_UNIX tmux sockets are POSIX-only")
+def test_reap_orphaned_terminals_keeps_a_dir_whose_server_survived(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sweep whose kill-server fails leaves the dir for the next sweep."""
+    monkeypatch.setattr(terminal_mod, "_KILL_SETTLE_S", 0.2)
+    monkeypatch.setattr(terminal_mod, "_terminals_tmp_root", lambda: tmp_path)
+    monkeypatch.setattr(terminal_mod, "_tmux_available", lambda: True)
+    monkeypatch.setattr(
+        terminal_mod,
+        "subprocess",
+        SimpleNamespace(
+            run=lambda *a, **k: SimpleNamespace(returncode=127),
+            TimeoutExpired=TimeoutError,
+        ),
+    )
+    dead_dir = _write_instance_dir(tmp_path, "omnigent-terminal-dead3", _dead_pid())
+
+    with _listening_socket(dead_dir / "tmux.sock"):
+        reaped = terminal_mod.reap_orphaned_terminals()
+
+    assert reaped == 0
+    assert (dead_dir / "tmux.sock").exists()
 
 
 def test_capture_probe_logs_command_return_code_and_stderr(
