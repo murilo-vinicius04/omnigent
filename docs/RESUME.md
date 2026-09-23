@@ -319,7 +319,7 @@ memory `codex-worker-quotas`. `run_nexus.py <task> <host> [worker] [model]`.
 
 ## 2026-09-22 evening — READ FIRST (supersedes the section above)
 
-Fork `feat/friendly-layer` tip `6ef766b95`; friend's PC (clone `~/omnigent-friendly-layer`, data
+Fork `feat/friendly-layer` (see the newest commit); friend's PC (clone `~/omnigent-friendly-layer`, data
 `~/.omnigent-friendly-layer`) is on the same commit. His host+server restarted 19:47, server 20:21.
 
 **Done today (pushed):** `1b66722ed` Worker row when an uploaded nexus copy wins the new-chat picker ·
@@ -346,26 +346,25 @@ prompt: one absolute-path link per file · `6ef766b95` `CLAUDE_CODE_ENABLE_TODO_
 - Pre-existing, not ours: pyrefly errors in `runtime/telemetry.py`, `_sessions/helpers.py`; model-id
   lint (repo-wide); 8 `tests/host` failures (stale_build_info ×2, model_options ×5, session_log_dir).
 
+**Later the same evening (pushed):** `a547fa85d` a video/download in a chat whose runner idle-exited
+got 503 ("Unable to play this video here"): the host tunnel can't stream, so the download now wakes
+the runner (`ensure_runner_connected`, like the shell route); waking a claude chat relaunches its
+pane but sends nothing to the API · `ef156f243` a tmux whose `kill-server` failed (AppImage tmux exits
+127 on a full disk) was stranded: close() and the orphan sweep deleted its socket anyway; both now
+keep the dir while the socket still answers. Stranded 09-21 Claude (pid 1102933) ended by pid.
+Unmute parking is LIVE (`~/unmute` 3251893, c709f01; user service `unmute-gpu-parker`): parks both
+moshi-servers after 300 s without a non-loopback client, restores on connect; idle GPU 15.8→4.2 GB,
+first speech after idle ~1.3 s later. Task list works after relaunch (Claude Code's own reminder
+nudges Opus into TaskCreate, so no extra instruction needed so far).
+
 **Open (ask first):**
-1. Unmute GPU parking (user said go; paused). `~/unmute/docker-compose.local.yml` edited, uncommitted,
-   containers NOT recreated: explicit `/dev/nvidia*` devices for tts+stt (new processes in the running
-   containers get "Failed to initialize NVML" after a host daemon-reload) and `HF_HUB_OFFLINE=1` for
-   tts (81 of its 110 s start was HF checks of 901 voice files). `~/unmute/tools/cuda-checkpoint`
-   (driver 580 ok). Next: `docker compose -f docker-compose.local.yml up -d stt` (only stt/tts: this
-   shell lacks the backend's tokens), `cuda-checkpoint --toggle --pid 77` inside, measure VRAM freed,
-   restore time, still transcribes; then tts; then time the offline start. Idle Unmute: 11.6 GB VRAM
-   (tts 8.4, stt 3.2), ~0% GPU, stt ~18% of a core.
-2. Laya test (user: worth it). `~/laya-test/.venv` (laya 0.3.6, torch cu130); `decisions.jsonl` from
+1. Laya test (user: worth it). `~/laya-test/.venv` (laya 0.3.6, torch cu130); `decisions.jsonl` from
    `build_dataset.py`: 306 companion routing decisions, 50 kept / 256 to Claude (84% baseline; some are
    bench prompts). Next: untuned `laya` + `laya-multilingual`, chart agreement and latency.
-3. Opus may still not use the task tools unprompted (Claude Code drops its "Use TaskCreate…" line for
-   Opus). Adding an instruction changes the claude-native framework-instruction design: needs user OK.
-4. Stale duplicate Claude process on this chat's transcript: pid 1102933 (09-21 18:44); live is
-   1981374. Offered to end it.
-5. Installer: `uv sync --extra all` fails on a fresh clone (chatterbox-tts via gradio 6.8 needs
+2. Installer: `uv sync --extra all` fails on a fresh clone (chatterbox-tts via gradio 6.8 needs
    starlette<1.0; omnigent needs >=1.0.1). `FRIENDLY_LAYER_SETUP.md` wrongly says a server restart
    interrupts sessions.
-6. Older: model picker silent no-op; language cache not cleared on change (`spoken_summary.py:654`,
+3. Older: model picker silent no-op; language cache not cleared on change (`spoken_summary.py:654`,
    60 s); user runs `sudo bash ~/cleanup-sudo.sh`.
-7. XR hub: `petrobras-chains/xr/serve.py --spot <crawl-lab/xr>` serves chain `/` + Spot clips `/spot/`
+4. XR hub: `petrobras-chains/xr/serve.py --spot <crawl-lab/xr>` serves chain `/` + Spot clips `/spot/`
    on 8731 (nohup, `xr/hub.log`); idea: port the rollout viewer into the shell as a second app.
