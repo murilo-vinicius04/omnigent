@@ -358,9 +358,11 @@ first speech after idle ~1.3 s later. Task list works after relaunch (Claude Cod
 nudges Opus into TaskCreate, so no extra instruction needed so far).
 
 **Open (ask first):**
-1. Laya test (user: worth it). `~/laya-test/.venv` (laya 0.3.6, torch cu130); `decisions.jsonl` from
-   `build_dataset.py`: 306 companion routing decisions, 50 kept / 256 to Claude (84% baseline; some are
-   bench prompts). Next: untuned `laya` + `laya-multilingual`, chart agreement and latency.
+1. Laya test DONE 09-23 (`~/laya-test/run_laya.py`, `score.py`, `laya-routing.png`): untuned laya and
+   laya-multilingual on the companion's typed routing decisions. On the user's own 91 messages (37
+   kept) best AUC 0.62, best accuracy 58% vs 59% always-Claude, 23-50 of 54 wrongly kept; message
+   length alone scores AUC 0.75. 164 of 306 rows are nexus briefs to workers (always Claude). ~16-20 ms
+   per decision on GPU. Untuned Laya is not a routing replacement; tuning would need far more labels.
 2. Installer: `uv sync --extra all` fails on a fresh clone (chatterbox-tts via gradio 6.8 needs
    starlette<1.0; omnigent needs >=1.0.1). `FRIENDLY_LAYER_SETUP.md` wrongly says a server restart
    interrupts sessions.
