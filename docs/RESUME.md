@@ -378,3 +378,42 @@ nudges Opus into TaskCreate, so no extra instruction needed so far).
    60 s); user runs `sudo bash ~/cleanup-sudo.sh`.
 4. XR hub: `petrobras-chains/xr/serve.py --spot <crawl-lab/xr>` serves chain `/` + Spot clips `/spot/`
    on 8731 (nohup, `xr/hub.log`); idea: port the rollout viewer into the shell as a second app.
+
+## 2026-09-23 — READ FIRST (supersedes the sections above)
+
+**Why:** cut Claude quota (goal: back to Pro). Today's thread: fit a System One model (TypeSafe's
+Jev) into a "company" architecture — Claude = manager/orchestrator, Jev = cheap shift lead that
+workers ASK typed questions (yes/no, pick-one), cheap models = workers, companion = receptionist.
+User direction + prior art: memory `jev-company-model-direction`; test numbers: `jev-routing-test`.
+
+**Decided:** Jev is NOT a companion router (fails: answer lives in what the companion remembers)
+and NOT a pass/fail gate on Claude's worker reviews (user: no actionable feedback, retry loops).
+It IS the supervisor workers consult. Brainstorm, don't benchmark, unless asked.
+
+**Done (local commits, not pushed; fork is at c87393da1):** `8d891992d` supervisor —
+`omnigent/supervisor.py` (Jev via OpenRouter `POST /api/alpha/decisions`, model
+`typesafe/jev-1.13`, key `~/.openrouter-key`; optional local reflex fallback
+`OMNIGENT_SUPERVISOR_FALLBACK_URL`; bar 0.75 `OMNIGENT_SUPERVISOR_MIN_CONFIDENCE`; ledger
+`~/.omnigent/supervisor/asks.jsonl`), `omnigent/runner/supervisor_tool.py` (reads parent's last
+human request + its 3 latest messages + the worker's brief + its steps over REST),
+tool `sys_ask_supervisor` (ToolManager + native relay + agy allowlist), `supervisor.WORKER_RULE`
+appended to every nexus brief while on, one nexus prompt section. 18 tests `tests/test_supervisor.py`.
+Live Jev check: 0.4–1.4 s, ~$0.00002/question. **OFF until** `touch ~/.omnigent/supervisor/enabled`
+(or `OMNIGENT_SUPERVISOR=on`) + a server restart (republishes the nexus prompt).
+Also today: `a547fa85d`/`ef156f243` (pushed) video wake + stranded tmux; Unmute GPU parking live
+(`~/unmute` 3251893/c709f01, user service `unmute-gpu-parker`).
+
+**Running:** NIM latency probe, 11 worker models every 15 min until ~19:10 BRT
+(`~/worker-latency/probe.py` → `latency.jsonl`; chart it, count empty answers as failures).
+Round 1: GLM 5.3 0.8 s, Nemotron Ultra 4 s, Glimmer 6 s, Lightning 7 s, gpt-oss-20b 14 s,
+Gemma 4/Kimi K3 ~55 s; GLM Flash + DeepSeek V4.1 Flash timed out; Mistral Large 404; Nemotron
+Super empty.
+
+**Open (user's call):**
+1. Decisive arena arms (`dev/benchmarks/nexus_arena`): T4 then T3 only. Plain Opus 5.5 first (no
+   baseline yet; ~6%+2% of a 5h window, ~1% of the week), then nexus + best worker from the probe
+   + supervisor on. **Do not run GLM yet** (user). `run_nexus.py` hardcodes brain `claude-opus-5`
+   → switch to Opus 5.5 before running. Claude quota 09-23 15:10: week 72%, 5h 24%.
+2. 50 messages for the user to mark "needs Opus" (`~/laya-test/routing/messages_to_mark.json`).
+3. Rotate: OpenRouter key and HF token both appeared in chat. OpenRouter balance ≈ -$0.02 (key cap $1).
+4. Friend's PC offline — needs `git pull` + server restart for the video fix.
