@@ -365,6 +365,9 @@ nudges Opus into TaskCreate, so no extra instruction needed so far).
    depend on the companion's notes ("where were we?"), which a message-only model can't see. Not
    worth pursuing. Separate idea (needs OK): worker chats' briefs (164 of 306 route() calls) always
    forward; skip the companion for child sessions. ~16-20 ms per Laya decision on GPU.
+   Jev follow-up (same day, 62 decisions WITH the companion's notes): Jev AUC 0.66/0.63, reflex 4B
+   (open, local) 0.62/0.57, Laya 0.50; every one below always-forward (73%) at default cutoff.
+   Jev cost $0.011 via OpenRouter. Details: memory `jev-routing-test`, `~/laya-test/jev-routing.png`.
 2. Installer: `uv sync --extra all` fails on a fresh clone (chatterbox-tts via gradio 6.8 needs
    starlette<1.0; omnigent needs >=1.0.1). `FRIENDLY_LAYER_SETUP.md` wrongly says a server restart
    interrupts sessions.
