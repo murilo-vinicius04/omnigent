@@ -1099,15 +1099,16 @@ async def _run_hermes_loop(
     statuses: list[str],
     stop_after_iterations: int,
 ) -> None:
-    """Drive the real hermes forward loop with HTTP stubbed; record idle statuses."""
+    """Drive the real hermes forward loop with HTTP stubbed; record parent-waking statuses."""
 
     async def _noop_item(_client, *, session_id, item):
         pass
 
-    async def _record_status(_client, *, session_id, status, response_id=None):
-        # Idle-only: these loop tests assert the parent-wake idle dedup; the
-        # running edge has dedicated coverage in the _annotate_turn_actions tests.
-        if status == "idle":
+    async def _record_status(_client, *, session_id, status, response_id=None, output=None):
+        # Parent-waking edges only (idle, or failed for an abandoned turn): these
+        # loop tests assert the wake dedup; the running edge has dedicated
+        # coverage in the _annotate_turn_actions tests.
+        if status in ("idle", "failed"):
             statuses.append(status)
 
     monkeypatch.setattr(f, "_post_conversation_item", _noop_item)
@@ -1187,7 +1188,7 @@ async def test_forward_loop_idle_dedupes_and_posts_per_new_turn(tmp_path, monkey
     async def _noop_item(_client, *, session_id, item):
         pass
 
-    async def _record_status(_client, *, session_id, status, response_id=None):
+    async def _record_status(_client, *, session_id, status, response_id=None, output=None):
         if status == "idle":
             statuses.append(status)
 
@@ -1283,7 +1284,7 @@ async def test_forward_loop_idle_waits_for_mid_delivery_final_message(
             con.commit()
             con.close()
 
-    async def _record_status(_client, *, session_id, status, response_id=None):
+    async def _record_status(_client, *, session_id, status, response_id=None, output=None):
         events.append(("status", status))
 
     monkeypatch.setattr(f, "_post_conversation_item", _post_item)
@@ -1463,7 +1464,7 @@ async def test_forward_loop_emits_running_then_idle_for_tool_call_turn(
     async def _record_item(_client, *, session_id, item):
         posted_items.append(item)
 
-    async def _record_status(_client, *, session_id, status, response_id=None):
+    async def _record_status(_client, *, session_id, status, response_id=None, output=None):
         statuses.append((status, response_id))
 
     monkeypatch.setattr(f, "_post_conversation_item", _record_item)
@@ -1543,7 +1544,7 @@ async def test_forward_loop_reasserts_running_while_turn_in_flight(tmp_path, mon
     async def _record_item(_client, *, session_id, item):
         pass
 
-    async def _record_status(_client, *, session_id, status, response_id=None):
+    async def _record_status(_client, *, session_id, status, response_id=None, output=None):
         statuses.append((status, response_id))
 
     monkeypatch.setattr(f, "_post_conversation_item", _record_item)
@@ -1611,7 +1612,7 @@ async def _run_forward_over_seeded_rows(
     async def _record_item(_client, *, session_id, item):
         posted_items.append(item)
 
-    async def _record_status(_client, *, session_id, status, response_id=None):
+    async def _record_status(_client, *, session_id, status, response_id=None, output=None):
         statuses.append((status, response_id))
 
     monkeypatch.setattr(f, "_post_conversation_item", _record_item)
@@ -1733,7 +1734,7 @@ async def test_forward_loop_running_edge_does_not_advance_cursor_before_item(
 
     statuses: list[tuple[str, str | None]] = []
 
-    async def _record_status(_client, *, session_id, status, response_id=None):
+    async def _record_status(_client, *, session_id, status, response_id=None, output=None):
         statuses.append((status, response_id))
 
     async def _boom_item(_client, *, session_id, item):
@@ -2056,7 +2057,7 @@ async def test_forward_loop_empty_prose_terminal_closes_turn(tmp_path, monkeypat
     async def _record_item(_client, *, session_id, item):
         pass
 
-    async def _record_status(_client, *, session_id, status, response_id=None):
+    async def _record_status(_client, *, session_id, status, response_id=None, output=None):
         statuses.append((status, response_id))
 
     monkeypatch.setattr(f, "_post_conversation_item", _record_item)
@@ -2133,10 +2134,14 @@ def test_abandoned_turn_reason_newest_marker_wins() -> None:
     assert f.abandoned_turn_reason(log) is None
 
 
-async def test_forward_loop_posts_idle_once_for_abandoned_turn(
-    tmp_path, monkeypatch
-) -> None:
-    """An unfinished turn whose log shows an abandonment posts idle exactly once."""
+def test_abandoned_turn_output_names_the_reason_and_the_next_step() -> None:
+    text = f.abandoned_turn_output("api_error: Service temporarily overloaded")
+    assert "api_error: Service temporarily overloaded" in text
+    assert "send the task again" in text
+
+
+async def test_forward_loop_posts_failed_once_for_abandoned_turn(tmp_path, monkeypatch) -> None:
+    """An unfinished turn whose log shows an abandonment posts failed exactly once."""
     workspace = str(tmp_path)
     db = tmp_path / "state.db"
     # One completed turn (already the baseline) + an unfinished turn: a user
@@ -2180,14 +2185,14 @@ async def test_forward_loop_posts_idle_once_for_abandoned_turn(
         statuses=statuses,
         stop_after_iterations=3,
     )
-    assert statuses == ["idle"]
+    assert statuses == ["failed"]
     assert f._read_state(bridge_dir).abandoned_posted == "max_iterations_reached"
 
 
-async def test_forward_loop_abandoned_idle_not_reposted_on_later_polls(
+async def test_forward_loop_abandoned_failed_not_reposted_on_later_polls(
     tmp_path, monkeypatch
 ) -> None:
-    """Polling the same abandoned turn repeatedly still yields exactly one idle."""
+    """Polling the same abandoned turn repeatedly still yields exactly one failed."""
     workspace = str(tmp_path)
     db = tmp_path / "state.db"
     con = sqlite3.connect(db)
@@ -2222,5 +2227,5 @@ async def test_forward_loop_abandoned_idle_not_reposted_on_later_polls(
         statuses=statuses,
         stop_after_iterations=6,
     )
-    assert statuses == ["idle"]
+    assert statuses == ["failed"]
     assert f._read_state(bridge_dir).abandoned_posted == "max_iterations_reached"

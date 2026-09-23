@@ -991,9 +991,7 @@ def abandoned_turn_reason(log_text: str) -> str | None:
             continue
         newest = match.start()
         reason = None if match.group(1) == "text_response" else match.group(1)
-    for match in re.finditer(
-        r"API call failed after \d+ retries\. ([^\n|]*)", log_text
-    ):
+    for match in re.finditer(r"API call failed after \d+ retries\. ([^\n|]*)", log_text):
         if match.start() <= newest:
             continue
         newest = match.start()
@@ -1003,6 +1001,19 @@ def abandoned_turn_reason(log_text: str) -> str | None:
     if reason is None and newest == -1 and hermes_exited:
         return "hermes_exited"
     return reason
+
+
+def abandoned_turn_output(reason: str) -> str:
+    """The result a parent receives for a turn that ended without an answer.
+
+    :param reason: From :func:`abandoned_turn_reason`, e.g.
+        ``"api_error: Service temporarily overloaded"``.
+    :returns: A one-line notice naming the reason and what to do next.
+    """
+    return (
+        f"[The worker's turn ended without a final answer ({reason}). Its changes so far"
+        " are in the workspace; send the task again to continue it.]"
+    )
 
 
 def read_agent_log_tail(bridge_dir: Path, max_bytes: int = 65536) -> str:
@@ -1031,6 +1042,7 @@ async def _post_external_session_status(
     session_id: str,
     status: str,
     response_id: str | None = None,
+    output: str | None = None,
 ) -> None:
     """POST one ``external_session_status`` event to the Sessions API.
 
@@ -1047,11 +1059,16 @@ async def _post_external_session_status(
     ``idle`` with no id still resolves via the server popping the active id and the
     snapshot refetch — the abort / turn-spanned-a-prior-batch path.
 
+    *output*, when given, is what the parent receives as the result instead of
+    the session's latest assistant text.
+
     :raises httpx.HTTPError: If the Omnigent request fails or is rejected.
     """
     data: dict[str, object] = {"status": status}
     if response_id is not None:
         data["response_id"] = response_id
+    if output is not None:
+        data["output"] = output
     resp = await client.post(
         f"/v1/sessions/{session_id}/events",
         json={"type": "external_session_status", "data": data},
@@ -1583,17 +1600,22 @@ async def forward_hermes_store_to_session(
                             # orchestrator would hang. The reason is persisted so
                             # later polls (or a forwarder restart) do not repeat
                             # the wake; a different reason later still posts.
-                            reason = abandoned_turn_reason(
-                                read_agent_log_tail(bridge_dir)
-                            )
+                            reason = abandoned_turn_reason(read_agent_log_tail(bridge_dir))
                             if reason is not None and reason != abandoned_posted:
+                                # A failed edge, carrying why: as an idle edge the
+                                # parent got the latest assistant text, a mid-turn
+                                # line ("Let me implement...") that reads as a
+                                # hollow report rather than a turn that died.
                                 await _post_external_session_status(
                                     client,
                                     session_id=session_id,
-                                    status="idle",
+                                    status="failed",
                                     response_id=closed_turn_id,
+                                    output=abandoned_turn_output(reason),
                                 )
                                 abandoned_posted = reason
+                                # The turn is over: stop re-asserting it as running.
+                                active_turn_id = None
                                 _write_state(
                                     bridge_dir,
                                     _ForwardState(
