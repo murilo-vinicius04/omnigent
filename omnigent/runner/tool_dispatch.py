@@ -7385,6 +7385,7 @@ async def _execute_async_inbox_tool(
             session_inbox,
             server_client=server_client,
             conversation_id=conversation_id,
+            agent_spec=agent_spec,
         )
 
     if tool_name == SysCallAsyncTool.name():
@@ -7734,11 +7735,63 @@ async def _cleanup_drained_subagent_work(
         await _record_subagent_receipt(server_client, child_id, work_id)
 
 
+async def _checked_against_checklist(
+    payload: _JsonObject,
+    *,
+    inbox: asyncio.Queue[_JsonObject],
+    server_client: httpx.AsyncClient | None,
+    conversation_id: str | None,
+    agent_spec: AgentSpec | None,
+) -> _JsonObject:
+    """
+    Run the supervisor's checklist on a finished worker's result.
+
+    Unmet items send the worker back through the same path as a
+    ``sys_session_send``; the orchestrator then reads a notice instead of the
+    result. If the send fails, it gets the result with the checklist verdict.
+
+    :param payload: The drained inbox payload.
+    :param inbox: The parent's inbox, for the sent-back worker's next result.
+    :param server_client: HTTP client pointed at the Omnigent server.
+    :param conversation_id: Parent session id.
+    :param agent_spec: Parent agent's spec, to resolve the worker.
+    :returns: The payload the orchestrator reads.
+    """
+    from omnigent import supervisor_checklist
+
+    review = await supervisor_checklist.review(
+        payload, server_client=server_client, child_id=_subagent_child_id(payload)
+    )
+    if review.send_back is None or review.notice is None:
+        return review.payload
+    sent = await _execute_subagent_tool(
+        {
+            "agent": payload.get("agent") or payload.get("tool_name"),
+            "title": payload.get("title"),
+            "args": {"purpose": "implement", "input": review.send_back},
+        },
+        server_client=server_client,
+        conversation_id=conversation_id,
+        agent_spec=agent_spec,
+        session_inbox=inbox,
+    )
+    if sent.startswith("Error"):
+        _logger.warning(
+            "supervisor checklist could not send the worker back: %s",
+            sent[:300],
+            extra={"session_id": conversation_id},
+        )
+        return review.payload
+    supervisor_checklist.count_round(review.round_key)
+    return review.notice
+
+
 async def _drain_inbox(
     inbox: asyncio.Queue[_JsonObject] | None,
     *,
     server_client: httpx.AsyncClient | None = None,
     conversation_id: str | None = None,
+    agent_spec: AgentSpec | None = None,
 ) -> str:
     """
     Non-blocking drain of the per-session inbox queue.
@@ -7750,6 +7803,8 @@ async def _drain_inbox(
     :param server_client: HTTP client pointed at Omnigent server.
     :param conversation_id: Parent session id, e.g.
         ``"conv_parent123"``.
+    :param agent_spec: Parent agent's spec, for sending a worker back when
+        the supervisor's checklist finds its work unfinished.
     :returns: Formatted string of completed tasks.
     """
     if inbox is None or inbox.empty():
@@ -7785,11 +7840,19 @@ async def _drain_inbox(
             server_client=server_client,
             conversation_id=conversation_id,
         )
-        items.append(_format_async_task_item(evaluation.payload))
         if evaluation.retry_original:
+            items.append(_format_async_task_item(evaluation.payload))
             retry_payloads.append(payload)
-        else:
-            await _cleanup_drained_subagent_work(evaluation.payload, server_client=server_client)
+            continue
+        await _cleanup_drained_subagent_work(evaluation.payload, server_client=server_client)
+        delivered = await _checked_against_checklist(
+            evaluation.payload,
+            inbox=inbox,
+            server_client=server_client,
+            conversation_id=conversation_id,
+            agent_spec=agent_spec,
+        )
+        items.append(_format_async_task_item(delivered))
     for payload in retry_payloads:
         inbox.put_nowait(payload)
     return "\n\n".join(items) if items else "Inbox is empty — no completed tasks."

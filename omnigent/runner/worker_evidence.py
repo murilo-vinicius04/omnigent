@@ -176,12 +176,12 @@ async def _git(*args: str) -> str | None:
     return out.decode(errors="replace") if proc.returncode == 0 else None
 
 
-async def git_changes(dirs: list[str]) -> list[str]:
+async def repo_roots(dirs: list[str]) -> list[str]:
     """
-    One ``git status`` line per repository among ``dirs``.
+    The git repositories ``dirs`` belong to, first seen first.
 
     :param dirs: Directories the worker worked in, e.g. from :func:`worker_dirs`.
-    :returns: Evidence lines; empty when none of the directories is in a git repository.
+    :returns: Repository top-level paths, at most ``_MAX_REPOS``.
     """
     roots: list[str] = []
     for directory in dirs[:_MAX_DIRS_CHECKED]:
@@ -193,8 +193,18 @@ async def git_changes(dirs: list[str]) -> list[str]:
             roots.append(root)
             if len(roots) >= _MAX_REPOS:
                 break
+    return roots
+
+
+async def git_changes(dirs: list[str]) -> list[str]:
+    """
+    One ``git status`` line per repository among ``dirs``.
+
+    :param dirs: Directories the worker worked in, e.g. from :func:`worker_dirs`.
+    :returns: Evidence lines; empty when none of the directories is in a git repository.
+    """
     lines = []
-    for root in roots:
+    for root in await repo_roots(dirs):
         status = await _git("-C", root, "status", "--porcelain=v1", "--untracked-files=normal")
         if status is None:
             continue
