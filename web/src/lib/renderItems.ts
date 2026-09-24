@@ -1575,69 +1575,77 @@ function buildAssistantItems(
   // A native harness persists its spoken summary as its own item, because the
   // message it describes is already durable and items are append-only. That
   // item has no text of its own, so it is dropped above as an empty trailing
-  // message — lift its summary onto the turn's text before it goes.
-  // A turn can carry two summary items: the text as soon as it is written, and
-  // the same text again with its recording once synthesis finishes. Prefer the
-  // one that has audio; without it the reader would keep the silent first copy
-  // and never get the voice.
+  // message — lift its summary (and any files) onto the turn's text before it goes.
   const carriers = blocks.filter(
     (b): b is Extract<AnyBlock, { type: "text_done" }> =>
-      b.type === "text_done" && b.fullText.length === 0 && Boolean(b.spokenSummary),
+      b.type === "text_done" && b.fullText.length === 0 && Boolean(b.spokenSummary || b.files),
   );
-  // Merge rather than pick: the audio carrier has the recording, the first has
-  // the blocks to show, and taking one whole loses the other's half.
-  const carriedSummary = carriers.length
-    ? carriers.reduce<NonNullable<(typeof carriers)[number]["spokenSummary"]>>(
-        (merged, carrier) => ({
-          ...merged,
-          ...carrier.spokenSummary,
-          ...(carrier.spokenSummary?.audioFileId || !merged.audioFileId
-            ? {}
-            : { audioFileId: merged.audioFileId }),
-          ...(carrier.spokenSummary?.show?.length || !merged.show?.length
-            ? {}
-            : { show: merged.show }),
-        }),
-        carriers[0]!.spokenSummary!,
-      )
-    : undefined;
-  const carriedFiles = blocks
-    .filter(
-      (b): b is Extract<AnyBlock, { type: "text_done" }> =>
-        b.type === "text_done" && b.fullText.length === 0 && Boolean(b.files),
-    )
-    .flatMap((b) => b.files ?? []);
-  if (carriedFiles.length > 0) {
-    for (let k = items.length - 1; k >= 0; k -= 1) {
-      const item = items[k]!;
-      if (item.kind === "text" && item.text.length > 0) {
-        items[k] = { ...item, files: [...(item.files ?? []), ...carriedFiles] };
-        break;
-      }
+  // One bubble can hold several turns (one started by a background-task notice
+  // has no visible user message): each carrier goes on its own turn's last text.
+  const turnOfItem = new Map<string, string>();
+  for (const b of blocks) {
+    if (b.type === "text_done" && b.fullText.length > 0 && b.ctx.itemId) {
+      turnOfItem.set(b.ctx.itemId, b.ctx.responseId);
     }
   }
-  if (carriedSummary) {
+  const lastText = (turn: string | null): number => {
     for (let k = items.length - 1; k >= 0; k -= 1) {
       const item = items[k]!;
-      if (item.kind === "text" && item.text.length > 0) {
-        // Take the carrier when there is nothing yet, and upgrade a summary
-        // still waiting on its recording once one arrives.
-        const waitingForAudio = item.spokenSummary && !item.spokenSummary.audioFileId;
-        const gainedBlocks =
-          item.spokenSummary && !item.spokenSummary.show?.length && carriedSummary.show?.length;
-        if (
-          !item.spokenSummary ||
-          (waitingForAudio && carriedSummary.audioFileId) ||
-          gainedBlocks
-        ) {
-          items[k] = { ...item, spokenSummary: carriedSummary };
-        }
-        break;
+      if (item.kind !== "text" || item.text.length === 0) continue;
+      if (turn === null || (item.itemId !== null && turnOfItem.get(item.itemId) === turn)) {
+        return k;
       }
     }
+    return -1;
+  };
+  const byText = new Map<number, typeof carriers>();
+  for (const carrier of carriers) {
+    // A carrier whose turn has no text here (a live preview) keeps the old home.
+    const own = lastText(carrier.ctx.responseId);
+    const k = own >= 0 ? own : lastText(null);
+    if (k >= 0) byText.set(k, [...(byText.get(k) ?? []), carrier]);
   }
+  for (const [k, group] of byText) attachCarriers(items, k, group);
 
   return items;
+}
+
+/**
+ * Lift one turn's summary and file carriers onto its text item at `k`.
+ *
+ * A turn can carry two summary items: the text as soon as it is written, and
+ * the same text again with its recording once synthesis finishes.
+ */
+function attachCarriers(
+  items: RenderItem[],
+  k: number,
+  group: Extract<AnyBlock, { type: "text_done" }>[],
+): void {
+  let item = items[k] as Extract<RenderItem, { kind: "text" }>;
+  const files = group.flatMap((b) => b.files ?? []);
+  if (files.length > 0) item = { ...item, files: [...(item.files ?? []), ...files] };
+  const summaries = group.flatMap((b) => (b.spokenSummary ? [b.spokenSummary] : []));
+  // Merge rather than pick: the audio carrier has the recording, the first has
+  // the blocks to show, and taking one whole loses the other's half.
+  const carried = summaries.length
+    ? summaries.reduce((merged, summary) => ({
+        ...merged,
+        ...summary,
+        ...(summary.audioFileId || !merged.audioFileId ? {} : { audioFileId: merged.audioFileId }),
+        ...(summary.show?.length || !merged.show?.length ? {} : { show: merged.show }),
+      }))
+    : undefined;
+  if (carried) {
+    // Take the carrier when there is nothing yet, and upgrade a summary
+    // still waiting on its recording once one arrives.
+    const waitingForAudio = item.spokenSummary && !item.spokenSummary.audioFileId;
+    const gainedBlocks =
+      item.spokenSummary && !item.spokenSummary.show?.length && carried.show?.length;
+    if (!item.spokenSummary || (waitingForAudio && carried.audioFileId) || gainedBlocks) {
+      item = { ...item, spokenSummary: carried };
+    }
+  }
+  items[k] = item;
 }
 
 function trailingLiveToolCallIds(

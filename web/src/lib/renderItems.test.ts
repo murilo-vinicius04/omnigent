@@ -115,6 +115,50 @@ describe("buildBubbles — bubble grouping", () => {
     expect(item.spokenSummary).toEqual({ text: "Consertei o vazamento.", lang: "pt-BR" });
   });
 
+  it("gives each turn in one bubble its own summary", () => {
+    // A turn started by a background-task notice has no visible user message,
+    // so it joins the previous turn's bubble. Each turn still has its own
+    // summary item, and each belongs on that turn's last text -- not merged
+    // into one summary on the bubble's last text.
+    const blocks: AnyBlock[] = [
+      {
+        type: "text_done",
+        ctx: ctx({ itemId: "a1", responseId: "resp_1" }),
+        fullText: "Luna scored 13 of 14 at medium effort.",
+        hasCodeBlocks: false,
+      },
+      {
+        type: "text_done",
+        ctx: ctx({ itemId: "s1", responseId: "resp_1" }),
+        fullText: "",
+        hasCodeBlocks: false,
+        spokenSummary: { text: "Luna fez 13 de 14.", lang: "pt-BR" },
+      },
+      {
+        type: "text_done",
+        ctx: ctx({ itemId: "a2", responseId: "resp_2" }),
+        fullText: "The watch expired after the run finished.",
+        hasCodeBlocks: false,
+      },
+      {
+        type: "text_done",
+        ctx: ctx({ itemId: "s2", responseId: "resp_2" }),
+        fullText: "",
+        hasCodeBlocks: false,
+        spokenSummary: { text: "O monitor expirou.", lang: "pt-BR" },
+      },
+    ];
+    const bubbles = buildBubbles(blocks, null);
+    const asst = bubbles[bubbles.length - 1] as Extract<Bubble, { kind: "assistant" }>;
+    const texts = asst.items.filter(
+      (item): item is Extract<RenderItem, { kind: "text" }> => item.kind === "text",
+    );
+    expect(texts.map((t) => t.spokenSummary?.text)).toEqual([
+      "Luna fez 13 de 14.",
+      "O monitor expirou.",
+    ]);
+  });
+
   it("upgrades a summary already shown when its recording lands later", () => {
     // The written summary ships the moment it exists and its audio follows as
     // a second item, so the turn briefly carries both. The reader must end up
