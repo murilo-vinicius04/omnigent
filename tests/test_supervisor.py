@@ -42,6 +42,12 @@ def _answer(entry: dict[str, Any], cost: float = 0.00001) -> httpx.Response:
     return httpx.Response(200, json={"answers": {"q": entry}, "usage": {"cost": cost}})
 
 
+def _answer_all(request: httpx.Request, entry: dict[str, Any]) -> httpx.Response:
+    """Answer every question in the request with *entry*, as a real backend does."""
+    ids = json.loads(request.content)["questions"]
+    return httpx.Response(200, json={"answers": dict.fromkeys(ids, entry), "usage": {"cost": 0}})
+
+
 @pytest.mark.parametrize(
     ("question", "message"),
     [
@@ -129,8 +135,8 @@ async def test_an_unsure_answer_tells_the_worker_to_check_or_escalate(
 ) -> None:
     _serve(
         monkeypatch,
-        lambda r: _answer(
-            {"type": "choice", "choice": "a.py", "probabilities": {"a.py": 0.55, "b.py": 0.45}}
+        lambda r: _answer_all(
+            r, {"type": "choice", "choice": "a.py", "probabilities": {"a.py": 0.55, "b.py": 0.45}}
         ),
     )
     question = Question("choice", "Which file holds the bug?", ("a.py", "b.py"))
@@ -323,3 +329,57 @@ def test_workers_get_the_tool_and_the_rule_only_while_it_is_on(
         noted.startswith("Do X.\n\n[Your supervisor:")
         and tool_dispatch._with_supervisor_note(noted) == noted
     )
+
+
+@pytest.mark.asyncio
+async def test_a_choice_is_asked_without_the_askers_labels_in_both_orders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        questions = json.loads(request.content)["questions"]
+        assert [list(q["criteria"]) for q in questions.values()] == [
+            ["JSON file", "SQLite"],
+            ["SQLite", "JSON file"],
+        ]
+        entry = {"type": "choice", "probabilities": {"JSON file": 0.9, "SQLite": 0.1}}
+        return httpx.Response(200, json={"answers": dict.fromkeys(questions, entry)})
+
+    _serve(monkeypatch, handler)
+    question = Question(
+        "choice", "Where should the ledger live?", ("JSON file (recommended)", "SQLite")
+    )
+
+    verdict = await supervisor.ask(question, Knowledge(), backends=[JEV])
+
+    # The worker gets its own option back, with the two orders' average.
+    assert (verdict.answer, verdict.sure) == ("JSON file (recommended)", True)
+    assert verdict.probabilities == {"JSON file (recommended)": 0.9, "SQLite": 0.1}
+
+
+@pytest.mark.asyncio
+async def test_a_choice_that_flips_with_the_order_is_not_sure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        questions = json.loads(request.content)["questions"]
+        # Picks whichever option comes first: pure position bias.
+        answers = {
+            qid: {
+                "type": "choice",
+                "probabilities": dict(zip(q["criteria"], (0.95, 0.05), strict=True)),
+            }
+            for qid, q in questions.items()
+        }
+        return httpx.Response(200, json={"answers": answers})
+
+    _serve(monkeypatch, handler)
+    question = Question("choice", "Which file holds the bug?", ("a.py", "b.py"))
+
+    verdict = await supervisor.ask(question, Knowledge(), backends=[JEV])
+
+    assert verdict.sure is False
+
+
+def test_neutral_options_keep_labels_that_would_merge_the_options() -> None:
+    assert supervisor.neutral_options(("A (recommended)", "B - preferred")) == ("A", "B")
+    assert supervisor.neutral_options(("A (recommended)", "A")) == ("A (recommended)", "A")

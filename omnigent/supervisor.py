@@ -22,11 +22,14 @@ import json
 import logging
 import os
 import pathlib
+import re
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Final, Literal
 
 import httpx
+
+from omnigent.install_ledger import state_dir
 
 _logger = logging.getLogger(__name__)
 
@@ -53,8 +56,6 @@ _EVIDENCE_CHARS: Final[int] = 20_000
 
 MAX_QUESTION_CHARS: Final[int] = 1_000
 MAX_OPTIONS: Final[int] = 12
-
-LEDGER_PATH: Final[pathlib.Path] = pathlib.Path.home() / ".omnigent" / "supervisor" / "asks.jsonl"
 
 
 class SupervisorError(ValueError):
@@ -147,23 +148,32 @@ WORKER_RULE: Final[str] = (
     "listing an open question.]"
 )
 
-#: Touch this file to turn the supervisor on without restarting anything:
-#: runners are spawned fresh and read it when they register their tools.
-ENABLED_FLAG: Final[pathlib.Path] = pathlib.Path.home() / ".omnigent" / "supervisor" / "enabled"
+
+def supervisor_dir() -> pathlib.Path:
+    """Where the supervisor's switches and ledger live: ``<data dir>/supervisor``."""
+    return state_dir() / "supervisor"
+
+
+def switched_on(env_var: str, flag: str) -> bool:
+    """Whether a supervisor feature is on: ``env_var=on|off`` wins, else the flag file.
+
+    Touching ``<data dir>/supervisor/<flag>`` turns it on without restarting
+    anything: each runner reads it when it registers tools or reads its inbox.
+    """
+    raw = os.environ.get(env_var, "").strip().lower()
+    return raw in ("1", "on", "true", "yes") if raw else (supervisor_dir() / flag).exists()
 
 
 def enabled() -> bool:
     """Whether workers get ``sys_ask_supervisor``.
 
-    ``OMNIGENT_SUPERVISOR=on|off`` wins; otherwise the :data:`ENABLED_FLAG`
-    file decides. Either way a backend must be configured, or there is
-    nobody to ask.
+    ``OMNIGENT_SUPERVISOR=on|off`` wins; otherwise the ``enabled`` flag file
+    decides (see :func:`switched_on`). Either way a backend must be
+    configured, or there is nobody to ask.
 
     :returns: True when the tool should be offered.
     """
-    raw = os.environ.get("OMNIGENT_SUPERVISOR", "").strip().lower()
-    wanted = raw in ("1", "on", "true", "yes") if raw else ENABLED_FLAG.exists()
-    return wanted and bool(configured_backends())
+    return switched_on("OMNIGENT_SUPERVISOR", "enabled") and bool(configured_backends())
 
 
 def min_confidence() -> float:
@@ -363,6 +373,51 @@ async def post_questions(
     return answers, data.get("usage") or {}
 
 
+#: A worker's own verdict on an option ("(recommended)"), which sways the model.
+_OPTION_LABEL: Final[re.Pattern[str]] = re.compile(
+    r"\s*[(\[]\s*(?:recommended|preferred|suggested|best|safest|default)\s*[)\]]"
+    r"|\s+[-\u2013\u2014:]\s*(?:recommended|preferred)\s*$",
+    re.IGNORECASE,
+)
+
+
+def neutral_options(options: tuple[str, ...]) -> tuple[str, ...]:
+    """The options without the asker's labels; the originals if stripping merges them."""
+    stripped = tuple(_OPTION_LABEL.sub("", o).strip() for o in options)
+    if all(stripped) and len(set(stripped)) == len(stripped):
+        return stripped
+    return tuple(o.strip() for o in options)
+
+
+async def _answer(
+    backend: Backend, state: str, question: Question
+) -> tuple[str, dict[str, float], dict[str, Any], bool]:
+    """Ask one backend; a choice is asked in both option orders in one call.
+
+    The asker writes the options, so their order and labels can lean the model:
+    the two orders' probabilities are averaged, and picks that differ are unsure.
+
+    :returns: ``(answer, probabilities, usage, consistent)``, keyed by the asker's options.
+    """
+    if question.kind != "choice":
+        entry, usage = await _call(backend, state, question)
+        answer, probs = read_answer(question, entry)
+        return answer, probs, usage, True
+    neutral = neutral_options(question.options)
+    forward = replace(question, options=neutral)
+    backward = replace(question, options=tuple(reversed(neutral)))
+    answers, usage = await post_questions(
+        backend, state, {"q": jev_question(forward), "r": jev_question(backward)}
+    )
+    pick_f, probs_f = read_answer(forward, answers["q"])
+    pick_b, probs_b = read_answer(backward, answers["r"])
+    probs = {
+        original: round((probs_f.get(n, 0.0) + probs_b.get(n, 0.0)) / 2, 4)
+        for original, n in zip(question.options, neutral, strict=True)
+    }
+    return max(probs, key=lambda k: probs[k]), probs, usage, pick_f == pick_b
+
+
 async def ask(
     question: Question,
     knowledge: Knowledge,
@@ -388,9 +443,8 @@ async def ask(
     for backend in chosen:
         started = time.perf_counter()
         try:
-            entry, usage = await _call(backend, state, question)
-            answer, probs = read_answer(question, entry)
-        except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+            answer, probs, usage, consistent = await _answer(backend, state, question)
+        except (httpx.HTTPError, RuntimeError, ValueError, KeyError) as exc:
             errors.append(f"{backend.name}: {exc}")
             _logger.info("supervisor backend %s failed: %s", backend.name, exc)
             continue
@@ -399,7 +453,7 @@ async def ask(
             answer=answer,
             probabilities=probs,
             confidence=confidence,
-            sure=confidence >= bar,
+            sure=consistent and confidence >= bar,
             backend=backend.name,
             latency_ms=round((time.perf_counter() - started) * 1000),
             cost_usd=float(usage.get("cost") or 0.0),
@@ -463,7 +517,8 @@ def append_ledger(line: dict[str, Any]) -> None:
 
     :param line: The record, e.g. ``{"at": 1790000000.0, "kind": "yes_no", ...}``.
     """
-    path = pathlib.Path(os.environ.get("OMNIGENT_SUPERVISOR_LEDGER", "").strip() or LEDGER_PATH)
+    raw = os.environ.get("OMNIGENT_SUPERVISOR_LEDGER", "").strip()
+    path = pathlib.Path(raw) if raw else supervisor_dir() / "asks.jsonl"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:

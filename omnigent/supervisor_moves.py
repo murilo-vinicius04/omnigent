@@ -11,7 +11,6 @@ steered without having to ask. Every error lets the call run.
 from __future__ import annotations
 
 import os
-import pathlib
 import re
 import time
 from dataclasses import dataclass, field
@@ -27,9 +26,6 @@ from omnigent.runner.worker_evidence import (
     _arguments,
     _command_text,
 )
-
-#: Touch to run the check inside Hermes workers (also needs a backend).
-ENABLED_FLAG: Final[pathlib.Path] = supervisor.ENABLED_FLAG.with_name("next_move")
 
 #: Only a confident pick redirects; the unsure middle lets the worker carry on.
 DEFAULT_ACT_ABOVE: Final[float] = 0.8
@@ -133,13 +129,14 @@ def enabled() -> bool:
     """Whether Hermes workers get the next-move check.
 
     ``OMNIGENT_SUPERVISOR_NEXT_MOVE=on|off`` wins; otherwise the
-    :data:`ENABLED_FLAG` file decides. A backend must be configured either way.
+    ``next_move`` flag file decides (see ``supervisor.switched_on``).
+    A backend must be configured either way.
 
     :returns: True when the ``pre_tool_call`` hook should be registered.
     """
-    raw = os.environ.get("OMNIGENT_SUPERVISOR_NEXT_MOVE", "").strip().lower()
-    wanted = raw in ("1", "on", "true", "yes") if raw else ENABLED_FLAG.exists()
-    return wanted and bool(supervisor.configured_backends())
+    return supervisor.switched_on("OMNIGENT_SUPERVISOR_NEXT_MOVE", "next_move") and bool(
+        supervisor.configured_backends()
+    )
 
 
 def act_above() -> float:

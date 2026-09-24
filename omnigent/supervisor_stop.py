@@ -17,7 +17,6 @@ worker, and Hermes caps the nudges per turn anyway.
 from __future__ import annotations
 
 import os
-import pathlib
 import time
 from dataclasses import dataclass, field
 from typing import Any, Final
@@ -27,9 +26,6 @@ import httpx
 from omnigent import supervisor
 from omnigent.runner.supervisor_tool import _items, _parent_of, split_turn
 from omnigent.runner.worker_evidence import extract_evidence, git_changes, worker_dirs
-
-#: Touch to run the check at Hermes workers' turn ends (also needs a backend).
-ENABLED_FLAG: Final[pathlib.Path] = supervisor.ENABLED_FLAG.with_name("stop_check")
 
 #: The OpenRouter cookbook gates tool calls at 0.1 block / 0.9 approve: only a
 #: confident "no" acts, the unsure middle is left to the orchestrator's review.
@@ -116,13 +112,14 @@ def enabled() -> bool:
     """Whether Hermes workers get the check at their turn ends.
 
     ``OMNIGENT_SUPERVISOR_STOP_CHECK=on|off`` wins; otherwise the
-    :data:`ENABLED_FLAG` file decides. A backend must be configured either way.
+    ``stop_check`` flag file decides (see ``supervisor.switched_on``).
+    A backend must be configured either way.
 
     :returns: True when the ``pre_verify`` hook should be registered.
     """
-    raw = os.environ.get("OMNIGENT_SUPERVISOR_STOP_CHECK", "").strip().lower()
-    wanted = raw in ("1", "on", "true", "yes") if raw else ENABLED_FLAG.exists()
-    return wanted and bool(supervisor.configured_backends())
+    return supervisor.switched_on("OMNIGENT_SUPERVISOR_STOP_CHECK", "stop_check") and bool(
+        supervisor.configured_backends()
+    )
 
 
 def block_below() -> float:
