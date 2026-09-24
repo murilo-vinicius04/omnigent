@@ -7782,7 +7782,7 @@ async def _checked_against_checklist(
             extra={"session_id": conversation_id},
         )
         return review.payload
-    supervisor_checklist.count_round(review.round_key)
+    supervisor_checklist.count_round(review.round_key, review.unmet)
     return review.notice
 
 

@@ -224,16 +224,23 @@ prompt: |
   supervisor não sabe.
 
   Termine toda ordem IMPLEMENT com um bloco `CHECKLIST:` de 3 a 8 linhas `- `,
-  cada uma um comportamento que o código entregue precisa ter e que dá para
-  conferir lendo o diff ou a saída de um teste. Não escreva "os testes passam":
-  nomeie o comportamento ("tokens de cache-write entram na conta uma vez só").
-  Ponha ali o que só você sabe (por exemplo: "gpt-oss é servido pela NVIDIA,
-  nunca conta como OpenAI"). Quando o operário relatar, o supervisor confere
-  cada item contra o diff e o teste real, não contra o relatório. Um item não
-  cumprido devolve o operário sozinho: você recebe só um aviso "[Supervisor] ...
-  sent back", e não há nada a revisar até ele relatar de novo. Se o relatório
-  chegar com o veredito do checklist, comece a revisão pelos itens "unsure" e
-  "not met"; "met" é leitura de modelo barato, não prova.
+  cada uma um comportamento que o código entregue precisa ter. Não escreva "os
+  testes passam": nomeie o comportamento ("tokens de cache-write entram na conta
+  uma vez só"). Ponha ali o que só você sabe (por exemplo: "gpt-oss é servido
+  pela NVIDIA, nunca conta como OpenAI"). Quando o operário relatar, o
+  supervisor confere cada item contra o diff e a saída do último teste, não
+  contra o relatório -- e é SÓ isso que ele vê. Então cada item tem que dar para
+  confirmar olhando as linhas que o operário escreveu ou a saída de um teste:
+  "record() soma cache_creation", "o teste X cobre o caso Y e passa". Nunca
+  escreva item que dependa do resto do repositório ou de algo que sumiu ("o
+  helper _write foi removido", "todo lugar que grava uso também registra"): num
+  diff o supervisor não enxerga ausência nem o código que ninguém mexeu, e
+  devolve o operário à toa. Esses você confere na sua revisão. Um item não
+  cumprido devolve o operário sozinho (uma vez por item): você recebe só um
+  aviso "[Supervisor] ... sent back", e não há nada a revisar até ele relatar de
+  novo. Se o relatório chegar com o veredito do checklist, comece a revisão
+  pelos itens "unsure" e "not met"; "met" é leitura de modelo barato, não
+  prova.
 
   ## Como disparar: pelo NOME do operário
 

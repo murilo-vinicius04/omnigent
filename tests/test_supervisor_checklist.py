@@ -26,6 +26,7 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OMNIGENT_SUPERVISOR_MIN_CONFIDENCE", raising=False)
     monkeypatch.setattr(supervisor, "configured_backends", lambda: [JEV])
     supervisor_checklist._rounds.clear()
+    supervisor_checklist._last_unmet.clear()
 
 
 def _jev_says(monkeypatch: pytest.MonkeyPatch, p_met: dict[str, float]) -> list[dict[str, Any]]:
@@ -191,17 +192,43 @@ async def test_a_met_checklist_delivers_the_result_with_the_verdict(
     assert "unsure (0.60): gpt-oss is never recorded" in review.payload["output"]
 
 
+async def test_the_same_unmet_items_are_not_sent_back_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Jev may simply be unable to see an item in a diff ("X is gone"): the
+    # worker reporting it done again goes to the orchestrator, not round two.
+    _jev_says(monkeypatch, {"counted": 0.2, "gpt-oss": 0.9})
+    async with _server(_worker_items(_repo(tmp_path), BRIEF)) as client:
+        first = await supervisor_checklist.review(PAYLOAD, server_client=client, child_id="child")
+        supervisor_checklist.count_round(first.round_key, first.unmet)
+
+        second = await supervisor_checklist.review(PAYLOAD, server_client=client, child_id="child")
+
+    assert first.send_back is not None
+    assert second.send_back is None
+    assert "not met (0.20)" in second.payload["output"]
+    assert "already sent back on these same items" in second.payload["output"]
+
+
 async def test_a_checklist_sends_the_worker_back_at_most_twice(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _jev_says(monkeypatch, {"counted": 0.2, "gpt-oss": 0.9})
+    rounds = iter(
+        [
+            {"counted": 0.2, "gpt-oss": 0.9},
+            {"counted": 0.9, "gpt-oss": 0.2},
+            {"counted": 0.2, "gpt-oss": 0.9},
+        ]
+    )
     async with _server(_worker_items(_repo(tmp_path), BRIEF)) as client:
         for _ in range(supervisor_checklist.MAX_ROUNDS):
+            _jev_says(monkeypatch, next(rounds))
             review = await supervisor_checklist.review(
                 PAYLOAD, server_client=client, child_id="child"
             )
             assert review.send_back is not None
-            supervisor_checklist.count_round(review.round_key)
+            supervisor_checklist.count_round(review.round_key, review.unmet)
+        _jev_says(monkeypatch, next(rounds))
 
         review = await supervisor_checklist.review(PAYLOAD, server_client=client, child_id="child")
 

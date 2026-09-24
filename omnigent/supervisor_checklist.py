@@ -59,6 +59,8 @@ _ITEM: Final[re.Pattern[str]] = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(?:\[[ xX
 
 #: How many times each checklist has sent each worker back, by ``(child, checklist)``.
 _rounds: dict[tuple[str, str], int] = {}
+#: The items each checklist last sent its worker back on, by ``(child, checklist)``.
+_last_unmet: dict[tuple[str, str], tuple[str, ...]] = {}
 
 
 @dataclass(frozen=True)
@@ -308,18 +310,21 @@ class Review:
     :param send_back: The order that sends the worker back, or ``None`` to deliver.
     :param notice: The payload to deliver instead once the worker was sent back.
     :param round_key: Pass to :func:`count_round` once the order was sent.
+    :param unmet: The items the order sends the worker back on.
     """
 
     payload: dict[str, Any]
     send_back: str | None = None
     notice: dict[str, Any] | None = None
     round_key: tuple[str, str] | None = None
+    unmet: tuple[str, ...] = ()
 
 
-def count_round(key: tuple[str, str] | None) -> None:
-    """Record that a checklist sent its worker back once more."""
+def count_round(key: tuple[str, str] | None, unmet: tuple[str, ...] = ()) -> None:
+    """Record that a checklist sent its worker back once more, on ``unmet``."""
     if key is not None:
         _rounds[key] = _rounds.get(key, 0) + 1
+        _last_unmet[key] = unmet
 
 
 async def review(
@@ -372,6 +377,15 @@ async def review(
     done = _rounds.get(key, 0)
     if not verdict.unmet or done >= MAX_ROUNDS:
         return Review(annotated)
+    if done and verdict.unmet == _last_unmet.get(key):
+        # The worker was sent back on these exact items and reports them done
+        # again: the supervisor may simply be unable to see them in a diff, so
+        # a second identical round only burns the worker's quota.
+        disputed = (
+            "\n[Supervisor] It was already sent back on these same items and reported"
+            " them done again. Check them against the code yourself."
+        )
+        return Review({**annotated, "output": annotated["output"] + disputed})
     who = f"{payload.get('agent') or 'worker'}/{payload.get('title') or ''}".rstrip("/")
     notice = (
         f"[Supervisor] {who} reported done, but its diff and test output do not meet"
@@ -379,4 +393,6 @@ async def review(
         f" {done + 1} of {MAX_ROUNDS}). You will be woken when it reports again; nothing to"
         " review yet.\n" + format_verdict(verdict)
     )
-    return Review(annotated, send_back_text(verdict.unmet), {**payload, "output": notice}, key)
+    return Review(
+        annotated, send_back_text(verdict.unmet), {**payload, "output": notice}, key, verdict.unmet
+    )
