@@ -420,6 +420,17 @@ Super empty.
 
 ## 2026-09-25 night — READ FIRST (supersedes the sections above)
 
+**Update 09-25 11:30 — inbox mirror bug fixed in 1428e43f6 (NOT live: needs a host restart).**
+Cause: a claude-native session's runner is reaped when idle and its bridge dir pruned, taking the
+forwarder's `subagent_forwarder.json` with it. On the next start the forwarder re-registers every
+old Task-tool sub-agent, re-posts its whole transcript (child b34508b6 held 548 items for a
+137-record transcript) and reports running -> idle; the fresh runner has no drained-set memory,
+so it queues all their results in the parent inbox and wakes it (runner restarts 08:05, 09:36,
+10:59 = the three stale notices). Fix: the runner skips inbox delivery + wake for children
+labeled `omnigent.claude_native.subagent_id` (Claude already got the result from its Task tool;
+also stops the mid-run "finished" notices from the 5 s quiescence rule). Still open: the forwarder
+re-posting old transcripts after each restart (child history bloat, no quota cost).
+
 **Update 04:45.** Root cause shared by two night bugs: a server restart makes a live native worker's
 runner re-publish its old steps. (1) Their usage is added again (the Gemini token double-count above:
 calls unchanged, totals x2 -- only sessions whose runner was still alive). (2) The tool-loop notifier's
