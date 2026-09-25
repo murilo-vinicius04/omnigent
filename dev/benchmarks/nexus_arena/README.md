@@ -13,7 +13,7 @@ original author's private choices, so the real ceiling was 4/7 and every arm
 scored 2-4. The lesson: **a task must be open, and only behaviour a competent
 engineer would arrive at may be graded.**
 
-## The four tasks
+## The tasks
 
 | task | gold commit | graded tests | shape |
 |---|---|---|---|
@@ -21,10 +21,16 @@ engineer would arrive at may be graded.**
 | T2 | `ad763b2db` | 12 | parse the agent's to-do block, show it, keep it after a restart |
 | T3 | `02628e770` | 5 | keep Claude's plan limits on screen through Anthropic's 429 |
 | T4 | `46a0c437a` | 14 | count OpenAI tokens ourselves against the free daily pools |
+| T5 | `487e0298a` (start `602f11731`) | 21 | Usage page backend: token history per vendor, Grok usage + plan row, Pro readout (long-horizon) |
 
 Each `tasks/T*.md` is the person's **own dictated request**, verbatim, plus the
 facts known at the time and the names the hidden tests bind to. Behaviour is
 never stated: working it out is the task.
+
+A task may span several commits: T5 starts at its own `START` commit (in
+`mktree.sh` and `grade.py`) instead of `gold^`, its hidden tests are all new, and
+`grade.py` also reruns four existing test files (restored to their start version)
+as its regression guard. Calibrate it with `bin/calibrate.sh 487e0298a 602f11731 T5`.
 
 ## Fairness
 

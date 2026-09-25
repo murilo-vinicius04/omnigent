@@ -6,9 +6,11 @@ ARENA="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="${ARENA_REPO:-$(cd "$ARENA/../../.." && pwd)}"
 WORK="${ARENA_WORK:-${TMPDIR:-/tmp}/nexus-arena}"
 mkdir -p "$WORK"
-declare -A GOLD=([T1]=722d842da [T2]=ad763b2db [T3]=02628e770 [T4]=46a0c437a)
+declare -A GOLD=([T1]=722d842da [T2]=ad763b2db [T3]=02628e770 [T4]=46a0c437a [T5]=487e0298a)
+# A task built from several commits starts at its own START; the rest start at gold^.
+declare -A START=([T5]=602f11731)
 T=$1; A=$2; D=$WORK/runs/$T-$A; rm -rf $D; mkdir -p $D/tree
-git -C "$REPO" archive ${GOLD[$T]}^ | tar -x -C $D/tree
+git -C "$REPO" archive ${START[$T]:-${GOLD[$T]}^} | tar -x -C $D/tree
 ln -s $REPO/.venv $D/tree/.venv
 cd $D/tree && git init -q && git add -A && git -c user.email=b@b -c user.name=bench -c commit.gpgsign=false commit -qm "baseline" && \
   { git cat-file -e ${GOLD[$T]} 2>/dev/null && echo "LEAK $T-$A" && exit 1 || true; }

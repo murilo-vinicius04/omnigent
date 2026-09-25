@@ -1,6 +1,6 @@
 """Grade one arm of a bench2 task, as delivered.
 
-usage: grade2.py <task: T1..T4> <tree> [--json out.json]
+usage: grade2.py <task: T1..T5> <tree> [--json out.json]
 
 Writes the task's FAIRNESS-FIXED hidden tests into <tree> at their real paths
 (on a copy, never the arm's own tree), then runs every graded test in its own
@@ -17,7 +17,17 @@ WORK = pathlib.Path(os.environ.get("ARENA_WORK", os.environ.get("TMPDIR", "/tmp"
 WORK.mkdir(parents=True, exist_ok=True)
 
 B = ARENA
-GOLD = {"T1": "722d842da", "T2": "ad763b2db", "T3": "02628e770", "T4": "46a0c437a"}
+GOLD = {"T1": "722d842da", "T2": "ad763b2db", "T3": "02628e770", "T4": "46a0c437a",
+        "T5": "487e0298a"}
+# A task built from several commits starts at its own commit; the rest at gold^.
+START = {"T5": "602f11731"}
+# Existing test files the change must not break, restored to their START version
+# in the grading copy and run with the regression pass. (T5's graded files are all
+# new, so without these nothing would guard the session-usage and usage-report code.)
+REGRESSION_GUARD = {"T5": ["tests/server/routes/test_native_usage_attribution.py",
+                           "tests/server/routes/test_usage_report.py",
+                           "tests/test_openai_token_budget.py",
+                           "tests/test_usage_history.py"]}
 PER_TEST_GUARD = {"T3"}
 VENV = str(REPO / ".venv")
 
@@ -54,7 +64,10 @@ def main():
     for t in graded:
         rc, out = run([py, "-m", "pytest", t, "-q", "-p", "no:randomly", "--no-header", "-p", "no:cacheprovider"], tree, 300)
         results[t] = "pass" if rc == 0 else "fail"
-    files = sorted({t.split("::")[0] for t in graded})
+    for f in REGRESSION_GUARD.get(task, []):
+        (tree / f).write_bytes(subprocess.run(["git", "show", f"{START[task]}:{f}"], cwd=str(REPO),
+                                              capture_output=True, check=True).stdout)
+    files = sorted({t.split("::")[0] for t in graded} | set(REGRESSION_GUARD.get(task, [])))
     if task in PER_TEST_GUARD:
         # State lives at module level under names the arm chooses: isolate every test.
         _, out = run([py, "-m", "pytest", *files, "--collect-only", "-q", "-p", "no:randomly"], tree)
@@ -66,7 +79,7 @@ def main():
                        "--continue-on-collection-errors", "-p", "no:cacheprovider"], tree)
         failed = {l.split()[1] for l in out.splitlines() if l.startswith(("FAILED ", "ERROR "))}
     # A regression must reproduce when rerun alone (the suite has load-sensitive timing tests).
-    start_files = {f for f in files if subprocess.run(["git", "cat-file", "-e", f"{GOLD[task]}^:{f}"],
+    start_files = {f for f in files if subprocess.run(["git", "cat-file", "-e", f"{START.get(task, GOLD[task] + '^')}:{f}"],
                    cwd=str(REPO), capture_output=True).returncode == 0}
     regressions = sorted(f for f in failed if f not in set(graded) and f.split("::")[0] in start_files and
                          run([py, "-m", "pytest", f, "-q", "-p", "no:randomly", "-p", "no:cacheprovider"], tree, 300)[0] != 0)
