@@ -434,7 +434,10 @@ each: T1 8/8 **10.1m** $0.65 (old harness 17.1m, plain 5.9m) · T3 5/5 **7.9m** 
 usage_delta_never_raises); the team never missed the cached-token test in 6 T4 runs (13-14/14).
 Chart: scratchpad night-0925.png (bench4/morning_chart.py; values are each run's FIRST measurement
 -- re-measuring later picks up the usage double-count and late brain wake-ups). The Antigravity
-plan-limits row has read "stale" (Gemini week 17%, 5h 51%) since ~01:50; by tokens the week is ~24%.
+plan-limits row has read "stale" (Gemini week 17%, 5h 51%) since 01:47 -- not a bug: agy quota is only
+readable while a worker agy runs, and every later check fell between arms (drive.py kills finished
+workers). By tokens (~0.4M per point) the week was ~26% at 08:10. Real gap, not investigated: the
+server's own agy helper (--print, gemini-3.8-flash-low) listens on 2 ports but discovery returns none.
 
 **Update 03:50 (read this first).** T4 on the new harness, one run each: brain pinned high 13/14
 18.6m $1.10 · default 14/14 16.5m $0.76 · + edit-point pointers (62e1b3285) 14/14 26.9m $0.87 (the
