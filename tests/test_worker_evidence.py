@@ -57,7 +57,23 @@ def test_hermes_turn_lists_edits_and_the_real_test_output() -> None:
     assert evidence is not None and evidence.startswith(HEADER)
     assert "Files edited (2): /w/inventory/store.py, /w/tests/test_low_stock.py" in evidence
     assert "Last test command: python3 -m unittest discover -s tests" in evidence
+    assert "Edits after it: none" in evidence
     assert evidence.rstrip().endswith("OK")
+
+
+def test_an_edit_after_the_last_test_run_marks_its_output_stale() -> None:
+    items = [
+        _user("fix it"),
+        _call("1", "terminal", command="python3 -m pytest tests -x -q"),
+        _out("1", json.dumps({"output": "3 passed"})),
+        _call("2", "patch", path="/w/inventory/store.py", old_string="a", new_string="b"),
+        _out("2", json.dumps({"success": True})),
+    ]
+
+    evidence = extract_evidence(items)
+
+    assert evidence is not None
+    assert "Edits after it: 1 edit-tool call(s); its output may be stale." in evidence
 
 
 def test_only_the_latest_turn_counts() -> None:

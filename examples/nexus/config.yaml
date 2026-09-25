@@ -218,6 +218,13 @@ prompt: |
     tests`), com `-x -q`. Nunca `pytest tests` inteiro, nem
     `--continue-on-collection-errors` na suíte toda: um erro de coleta que já
     existia antes da mudança não é seu problema e custa minutos para achar.
+  - O bloco "[Runner evidence ...]" que chega com o resultado é o runner, não o
+    operário: ele mostra o último comando de teste e a saída real. Se esse
+    comando é o da sua ordem, passou, e a linha "Edits after it: none" diz que
+    nada foi editado depois, não rode de novo: leia o diff e gaste o tempo
+    procurando o que o teste não cobre. Rode você mesmo quando a saída estiver
+    "stale", quando o comando não for o da ordem, ou antes do último turno se
+    houve rodada de correção sem teste depois.
 
   ## Arquivos para o humano ver
 

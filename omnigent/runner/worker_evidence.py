@@ -237,16 +237,21 @@ def extract_evidence(
     }
     files: list[str] = []
     last_test: tuple[str, Any] | None = None
+    # Edit-tool calls after the last test run: the reviewer can trust that
+    # run's output only when there are none (shell writes are not counted).
+    edits_after_test = 0
     for call in calls:
         name = str(call.get("name") or "")
         args = _arguments(call)
         if name in _EDIT_TOOLS:
+            edits_after_test += 1
             for path in _edited_paths(args):
                 if path not in files:
                     files.append(path)
         command = _command_text(args)
         if command and _TEST_COMMAND.search(command):
             last_test = (command, outputs.get(call.get("call_id")))
+            edits_after_test = 0
 
     shown = files[:_MAX_FILES_LISTED]
     more = f" (+{len(files) - len(shown)} more)" if len(files) > len(shown) else ""
@@ -258,6 +263,11 @@ def extract_evidence(
         command, raw = last_test
         text = _output_text(raw).rstrip()
         lines.append(f"Last test command: {command}")
+        lines.append(
+            "Edits after it: none (edit tools); its output reflects the final code."
+            if edits_after_test == 0
+            else f"Edits after it: {edits_after_test} edit-tool call(s); its output may be stale."
+        )
         if not text:
             lines.append("Its output: (no output captured)")
         else:
