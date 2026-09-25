@@ -223,6 +223,12 @@ prompt: |
     tests`), com `-x -q`. Nunca `pytest tests` inteiro, nem
     `--continue-on-collection-errors` na suíte toda: um erro de coleta que já
     existia antes da mudança não é seu problema e custa minutos para achar.
+  - Arquivo de integração (`tests/**/integration/`) ou com mais de ~50 testes
+    (`grep -c "def test_"`) não entra inteiro, mesmo citando o que mudou: em
+    25/09 um grep trouxe `tests/server/integration/test_sessions_endpoints.py`
+    (271 testes, 5,6 min) e sua revisão levou 6,5 min de uma tarefa de 27.
+    Se quiser a cobertura dele, rode só o que cita a mudança:
+    `pytest <arquivo> -k "<função>"`.
   - O bloco "[Runner evidence ...]" que chega com o resultado é o runner, não o
     operário: ele mostra o último comando de teste e a saída real. Se esse
     comando é o da sua ordem, passou, e a linha "Edits after it: none" diz que
