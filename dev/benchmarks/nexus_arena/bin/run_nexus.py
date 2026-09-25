@@ -28,6 +28,9 @@ M = sys.argv[4] if len(sys.argv) > 4 else "gemini-3.7-flash-medium"
 # ~/.hermes/config.yaml, not in the label); ARENA_BRAIN picks the reviewing Claude.
 A = os.environ.get("ARENA_ARM") or W
 BRAIN = os.environ.get("ARENA_BRAIN") or "claude-opus-5"
+# ARENA_BRAIN_EFFORT pins the brain's reasoning effort; unset, the brain inherits the
+# host's Claude settings (effortLevel in ~/.claude/settings.json).
+EFFORT = os.environ.get("ARENA_BRAIN_EFFORT")
 D = f"{WORK}/runs/{T}-{A}"
 subprocess.run([str(ARENA / "bin" / "mktree.sh"), T, A], check=True)
 S = "http://127.0.0.1:6767"
@@ -50,11 +53,16 @@ j = httpx.patch(
     f"{S}/v1/sessions/{sid}",
     headers=h,
     timeout=60,
-    json={"model_override": BRAIN, "labels": {"team.worker": W, "team.worker_model": M}},
+    json={
+        "model_override": BRAIN,
+        "labels": {"team.worker": W, "team.worker_model": M},
+        **({"reasoning_effort": EFFORT} if EFFORT else {}),
+    },
 ).json()
 print(
     "brain:",
     j.get("model_override"),
+    j.get("reasoning_effort") or "(host default)",
     "| worker:",
     {k: v for k, v in (j.get("labels") or {}).items() if k.startswith("team.")},
 )
