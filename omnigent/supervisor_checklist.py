@@ -47,8 +47,11 @@ DEFAULT_SEND_BACK_BELOW: Final[float] = 0.5
 MAX_ITEMS: Final[int] = 12
 _ITEM_CHARS: Final[int] = 300
 _WORKER_ITEMS: Final[int] = 500
-_DIFF_CHARS: Final[int] = 45_000
-_FILE_CHARS: Final[int] = 8_000
+#: The whole change Jev reads; every file stays whole while the total fits.
+_DIFF_CHARS: Final[int] = 60_000
+#: No clipped file shrinks below this; past it, whole files are left out instead.
+_MIN_FILE_CHARS: Final[int] = 1_500
+_CUT: Final[str] = "\n[...rest of this file cut]\n"
 _NEW_FILE_BYTES: Final[int] = 200_000
 _SKIPPED_FILES: Final[re.Pattern[str]] = re.compile(
     r"(^|/)(uv\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|poetry\.lock)$"
@@ -156,14 +159,41 @@ def latest_checklist(items: list[dict[str, Any]]) -> tuple[str, ...]:
 
 
 def _clip(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[:limit] + "\n[...rest of this file cut]\n"
+    return text if len(text) <= limit else text[:limit] + _CUT
+
+
+def _fit(parts: list[str], budget: int) -> list[str]:
+    """Fit ``parts`` into ``budget`` by clipping only the largest ones, to one shared cap.
+
+    A flat per-file cap hid the end of every long new file, so Jev judged items it
+    could not see; here small files stay whole and the big ones split what is left.
+    """
+    if sum(map(len, parts)) <= budget:
+        return parts
+    room, cap = budget - len(_CUT) * len(parts), budget
+    sizes = sorted(map(len, parts))
+    for index, size in enumerate(sizes):
+        share = room // (len(sizes) - index)
+        if size > share:
+            cap = share
+            break
+        room -= size
+    fitted, used = [], 0
+    for index, part in enumerate(parts):
+        part = _clip(part, max(cap, _MIN_FILE_CHARS))
+        if used + len(part) > budget:
+            fitted.append(f"[... {len(parts) - index} more changed files cut]")
+            break
+        fitted.append(part)
+        used += len(part)
+    return fitted
 
 
 async def collect_diff(roots: list[str]) -> str:
     """The code change in ``roots``: ``git diff HEAD`` and every new file in full.
 
     :param roots: Repository top-levels, e.g. from ``repo_roots``.
-    :returns: The change, at most :data:`_DIFF_CHARS` characters, or ``""``.
+    :returns: The change, about :data:`_DIFF_CHARS` characters at most, or ``""``.
     """
     parts: list[str] = []
     for root in roots:
@@ -173,7 +203,7 @@ async def collect_diff(roots: list[str]) -> str:
                 continue
             body = await _git("-C", root, "diff", "HEAD", "--no-color", "--", name)
             if body:
-                parts.append(_clip(body, _FILE_CHARS))
+                parts.append(body)
         untracked = await _git("-C", root, "ls-files", "--others", "--exclude-standard")
         for name in (untracked or "").splitlines():
             path = pathlib.Path(root, name)
@@ -187,15 +217,8 @@ async def collect_diff(roots: list[str]) -> str:
                 continue
             if b"\0" in raw[:4096]:
                 continue
-            parts.append(_clip(f"new file {name}:\n{raw.decode(errors='replace')}", _FILE_CHARS))
-    text, used = [], 0
-    for index, part in enumerate(parts):
-        if used + len(part) > _DIFF_CHARS:
-            text.append(f"[... {len(parts) - index} more changed files cut]")
-            break
-        text.append(part)
-        used += len(part)
-    return "\n".join(text)
+            parts.append(f"new file {name}:\n{raw.decode(errors='replace')}")
+    return "\n".join(_fit(parts, _DIFF_CHARS))
 
 
 def render_checklist_state(diff: str, evidence: str) -> str:

@@ -150,6 +150,34 @@ async def test_the_diff_covers_changed_and_new_files_but_not_locks_or_tool_homes
     assert "uv.lock" not in diff and "rollout.jsonl" not in diff
 
 
+async def test_a_long_new_file_is_shown_whole_when_the_change_fits(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / "notifier.py").write_text("x = 1\n" * 3000 + "def handle_loop():\n    return 1\n")
+
+    diff = await supervisor_checklist.collect_diff([str(repo)])
+
+    assert "def handle_loop():" in diff
+    assert "rest of this file cut" not in diff
+
+
+def test_an_oversized_change_clips_only_its_largest_files() -> None:
+    small, big = "s" * 1_000, "b" * 9_000
+
+    fitted = supervisor_checklist._fit([small, big, big], 8_000)
+
+    assert fitted[0] == small
+    assert fitted[1] == fitted[2]
+    assert fitted[1].startswith("b" * 3_000) and fitted[1].endswith("cut]\n")
+    assert sum(map(len, fitted)) <= 8_000
+
+
+def test_too_many_files_leave_the_rest_out_instead_of_shrinking_to_nothing() -> None:
+    fitted = supervisor_checklist._fit(["a" * 2_000] * 10, 5_000)
+
+    assert len(fitted) == 4
+    assert fitted[-1] == "[... 7 more changed files cut]"
+
+
 async def test_items_split_at_the_send_back_and_confidence_bars(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
