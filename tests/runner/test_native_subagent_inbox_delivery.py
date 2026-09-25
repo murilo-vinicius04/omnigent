@@ -445,6 +445,28 @@ async def test_top_level_session_idle_is_noop(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("register_work", [False, True])
+async def test_claude_task_mirror_idle_never_reaches_the_parent_inbox(
+    _clean_subagent_registry: None, register_work: bool
+) -> None:
+    """A child mirrored from Claude's own Task tool is not queued for the parent.
+
+    Claude gets that result from the Task tool itself. The inbox copy woke it
+    with the same report again, and after each runner restart the forwarder
+    re-sent every old sub-agent as idle, so each restart woke it once more.
+    """
+    body = _child_snapshot(sub_agent_name="general-purpose", parent_session_id=PARENT_SESSION_ID)
+    body["labels"] = {runner_app.CLAUDE_TASK_MIRROR_LABEL_KEY: "a1897192400733854"}
+
+    http, items = await _post_native_idle(
+        child_body=body, seed_parent_inbox=True, register_work=register_work
+    )
+
+    assert http == 204
+    assert items == []
+
+
+@pytest.mark.asyncio
 async def test_runner_restart_recovers_undrained_terminal_child(
     _clean_subagent_registry: None,
 ) -> None:

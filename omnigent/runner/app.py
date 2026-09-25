@@ -468,6 +468,10 @@ _SUBAGENT_DELIVERY_MISSING_PARENT_INBOX = "missing_parent_inbox"
 # ``sys_read_inbox`` drain writes once it has consumed that turn's result.
 SUBAGENT_DISPATCH_ID_LABEL_KEY = "omnigent.subagent.dispatch_id"
 SUBAGENT_DELIVERED_ID_LABEL_KEY = "omnigent.subagent.delivered_id"
+# Stamped by the server on a child it mirrors from Claude's own Task tool (the
+# server's ``_CLAUDE_NATIVE_SUBAGENT_ID_LABEL_KEY``). Claude hands the parent
+# that result through the tool itself, so the runner never queues it again.
+CLAUDE_TASK_MIRROR_LABEL_KEY = "omnigent.claude_native.subagent_id"
 # Read budget for runner→server POSTs that can PARK behind a human-approval
 # ASK gate: policy evaluation (``_evaluate_policy_via_omnigent``) and sub-agent
 # wake-notice delivery (``_deliver_subagent_wake_post``). Both are gated at the
@@ -1056,6 +1060,8 @@ class _SessionSnapshot:
         ``"cursor-native-ui"``. Used as the sub-agent label when rebuilding a
         work entry for a child the server did not record a ``sub_agent_name``
         for. ``None`` when unbound / the fetch failed.
+    :param claude_task_mirror: ``True`` for a child mirrored from Claude's own
+        Task tool (it carries :data:`CLAUDE_TASK_MIRROR_LABEL_KEY`).
     """
 
     ok: bool
@@ -1066,6 +1072,7 @@ class _SessionSnapshot:
     sub_agent_name: str | None = None
     parent_session_id: str | None = None
     agent_name: str | None = None
+    claude_task_mirror: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -3458,6 +3465,7 @@ def create_runner_app(
             sub_agent_name: str | None = None
             parent_session_id: str | None = None
             agent_name: str | None = None
+            claude_task_mirror = False
             try:
                 resp = await server_client.get(f"/v1/sessions/{session_id}")
                 status_code = resp.status_code
@@ -3479,6 +3487,10 @@ def create_runner_app(
                     raw_agent_name = body.get("agent_name")
                     if isinstance(raw_agent_name, str) and raw_agent_name:
                         agent_name = raw_agent_name
+                    raw_labels = body.get("labels")
+                    claude_task_mirror = isinstance(raw_labels, dict) and bool(
+                        raw_labels.get(CLAUDE_TASK_MIRROR_LABEL_KEY)
+                    )
             except Exception:  # noqa: BLE001 — best-effort; created_at falls back to wall time
                 pass
             snapshot = _SessionSnapshot(
@@ -3490,6 +3502,7 @@ def create_runner_app(
                 sub_agent_name=sub_agent_name,
                 parent_session_id=parent_session_id,
                 agent_name=agent_name,
+                claude_task_mirror=claude_task_mirror,
             )
             if snapshot.ok and snapshot.agent_id is not None:
                 if _session_cache_generation_is_current(session_id, generation):
@@ -5081,6 +5094,13 @@ def create_runner_app(
             agent=agent,
             title=snapshot.sub_agent_name or "",
         )
+
+    async def _is_claude_task_mirror(conv_id: str) -> bool:
+        try:
+            snapshot = await _session_snapshot(conv_id)
+        except Exception:  # noqa: BLE001 — best-effort; unknown means deliver as before
+            return False
+        return snapshot.claude_task_mirror
 
     async def _recover_undrained_subagent_results(parent_id: str) -> None:
         """
@@ -8840,6 +8860,12 @@ def create_runner_app(
                     latest_assistant_text=output,
                     allow_history_preview_fallback=False,
                 )
+            if status in ("idle", "failed") and await _is_claude_task_mirror(conversation_id):
+                # Claude already got this result from its own Task tool. An inbox
+                # copy only woke it again with the same report, and the forwarder
+                # re-sends every old sub-agent after a runner restart (its cursor
+                # file lives in the pruned bridge dir), so each restart woke it.
+                return Response(status_code=204)
             if status in ("idle", "failed"):
                 recovered_entry = await _ensure_subagent_work_entry(conversation_id)
             if status == "idle":
