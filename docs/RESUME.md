@@ -420,6 +420,14 @@ Super empty.
 
 ## 2026-09-25 night — READ FIRST (supersedes the sections above)
 
+**Update 04:45.** Root cause shared by two night bugs: a server restart makes a live native worker's
+runner re-publish its old steps. (1) Their usage is added again (the Gemini token double-count above:
+calls unchanged, totals x2 -- only sessions whose runner was still alive). (2) The tool-loop notifier's
+in-memory streaks reset, so replayed manage_task(status) polls woke a finished orchestrator 10 min after
+its final answer. Fixed (2)'s trigger in 54caf42d2 (Antigravity's manage_task(status)/schedule polls are
+waiting, not a loop; also fired mid-run). NOT deployed (needs a server restart; do it with the host
+restart). (1) is not fixed: the usage path needs to dedupe replayed items by id.
+
 **Update 04:25 (final for the night).** New harness (prompt af30e601a) on the other tasks, one run
 each: T1 8/8 **10.1m** $0.65 (old harness 17.1m, plain 5.9m) · T3 5/5 **7.9m** $0.68 (old 9.2m, plain
 3.1m). Plain T4 repeat: 12/14 again, 11.6m $2.22, same two failures (cached-token counting and
