@@ -417,3 +417,36 @@ Super empty.
 2. 50 messages for the user to mark "needs Opus" (`~/laya-test/routing/messages_to_mark.json`).
 3. Rotate: OpenRouter key and HF token both appeared in chat. OpenRouter balance ≈ -$0.02 (key cap $1).
 4. Friend's PC offline — needs `git pull` + server restart for the video fix.
+
+## 2026-09-25 night — READ FIRST (supersedes the sections above)
+
+**Why:** user (00:05): "work through the night, run benchmarks in more tasks (incl. the robotics
+ones), improve nexus with Jev and Gemini ... improve the time of the task and the quality of the
+nexus harness". Claude week 84% resets 09-25 08:59 BRT — use it; 5h window resets 04:00 BRT, keep
+it < ~85% before then. **Careful with Gemini:** week 9% at 00:15, cap tonight ~33%; 5h < 70%.
+
+**Results, Opus 5.5 (arena T1–T4, one run each, load avg 20–30 all night):**
+plain Opus 5.5: T1 8/8 5.9 min $1.74 · T3 5/5 3.1 min $0.85 · T4 12/14 9.0 min $2.55 · T2 running.
+nexus + Gemini 3.7 Flash Medium + checklist gate: T4 **14/14** 21.7 min to final answer, $1.20;
+T3/T1/T2 running (unit `arena-nexus-gemchk`). Without checklist: T4 12/14 16.6 min, T3 4/5 8.5 min.
+T4 14/14 timeline: brain explore 1.8 · worker 9.6 (two whole-suite pytest runs) · checklist 1.4 ·
+review + 2 fix rounds ~6 · brain's final whole-suite sweep 2.5 min.
+
+**Committed tonight, NOT deployed:** `1158c60ee` (prompt: briefs/reviews run targeted tests, never
+the suite) and `327ae13a9` (runner evidence says "Edits after it: none|N"; prompt: trust it, read
+the diff instead of re-running). Deploy AFTER `arena-nexus-gemchk` ends: restart server, then host
+(`XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart omnigent-server.service` / `omnigent-host.service`;
+host restart relaunches both Claude sessions — user OK'd restarts without /compact). Then rerun
+nexus Gemini+checklist on T4 to measure. Also `d99c1f0f1` (arena: `opus55` plain arm; task rules
+say "don't sync the shared venv"). Checklist gate is live (`~/.omnigent/supervisor/checklist`).
+
+**Harness (scratchpad `…/d9653808-…/scratchpad/bench4/`):** `drive.py <T> <arm>=<worker:model[@effort]>`
+(logs `final answer X min`; `ARENA_DIR` picks another arena), `nexus_seq.sh <arm> <worker:model> <T>…`,
+`plain_run.sh <T> opus55`, `timeline.py <run dir>`, log `drive.log`, runs in `runs/<T>-<arm>/`.
+Unit `arena-venv-watchdog` repairs a worker's venv hijack within 15 s (log `venv_watchdog.log`).
+
+**Traps found:** a Gemini worker's plain `uv run` in its tree repointed the live venv (09-24
+20:26→23:50; server/host/zygote predated it, so results stand). Omnigent inbox mirror re-delivers
+old sub-agent reports on every `sys_read_inbox` and reports intermediate sub-agent turns as
+"finished" — ignore those notices, fix later. Stale duplicate Claude processes from a 23:06 relaunch
+(pids 2619293, 2622565) — cleared by the host restart.
