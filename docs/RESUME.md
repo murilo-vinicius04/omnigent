@@ -420,6 +420,21 @@ Super empty.
 
 ## 2026-09-25 night — READ FIRST (supersedes the sections above)
 
+**Update 01:50 (read this first).** Baselines done (Opus 5.5, one run each; plain vs nexus
+Gemini+checklist, old harness): T1 8/8 5.9m $1.74 vs 8/8 17.1m $0.62 · T2 10/12 19.7m $4.12 vs
+10/12 22.4m $0.87 · T3 5/5 3.1m $0.85 vs 5/5 9.2m $0.66 · T4 12/14 9.0m $2.55 vs 14/14 21.7m $1.20.
+New harness on T4 (server restarted 01:05 with 1158c60ee + checklist fix 8e0255b38): brain effort
+pinned high 13/14 18.4m $1.10; host default (xhigh) 14/14 16.5m $0.76 -> effort is not the lever,
+run-to-run variance is. **Checklist false send-backs were a clipping bug** (8e0255b38): each file was
+cut at 8,000 chars, so long new files lost their ends and Jev judged unseen code; replay flips T4's
+0.08 -> 0.88. Every observed send-back so far (5) led to no code change. 62e1b3285 (server restart
+01:46): the IMPLEMENT order names file/function/line of each edit point (T4 worker spent 18 views
+hunting in orchestration.py). 327ae13a9's runner half is NOT live (host restart deferred: it
+relaunches the other Claude session). Runs on private tasks are tracked outside this repo (private memory note). Budgets 01:47: Claude 5h 67% week 89%
+(tight: ~2 pts/h), Gemini week 17% 5h 51%. Trap: never rewrite a running bash script (bash
+re-reads by offset; cost a finished plain T2). drive.py now kills each arm's leftover agy workers.
+Chart: bench4/night_chart.py (system python3).
+
 **Why:** user (00:05): "work through the night, run benchmarks in more tasks (incl. the robotics
 ones), improve nexus with Jev and Gemini ... improve the time of the task and the quality of the
 nexus harness". Claude week 84% resets 09-25 08:59 BRT — use it; 5h window resets 04:00 BRT, keep
