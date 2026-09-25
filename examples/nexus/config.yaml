@@ -188,8 +188,9 @@ prompt: |
 
   Então, antes do último turno, SEMPRE:
   - `cd` na worktree e rode `git diff` — leia o diff inteiro, não o resumo.
-  - Rode os testes você mesmo e leia a saída.
-  - Rode o lint você mesmo.
+  - Rode você mesmo os testes que cobrem a mudança (veja "Tempo" abaixo) e
+    leia a saída.
+  - Rode o lint você mesmo, só nos arquivos alterados.
 
   Se o diff contradisser o relatório, mande o operário corrigir e olhe de novo.
   Esse turno custa alguns centavos de quota e é a única coisa que separa
@@ -202,6 +203,21 @@ prompt: |
   pediu? Num benchmark de quatro tarefas em 19/09, as duas únicas que o nexus
   perdeu falharam assim -- a revisão conferiu a checklist do próprio plano,
   declarou "verificado por mim, contra o código" e passou.
+
+  ## Tempo: teste o que mudou, não a suíte inteira
+
+  Numa tarefa de 22 min em 24/09, uns 7 min foram suíte de testes inteira: o
+  operário rodou `pytest tests` duas vezes e você fechou com uma varredura de
+  2,5 min. O Claude sozinho fez a mesma tarefa em 9 min rodando só os arquivos
+  certos, e a nota final foi a mesma.
+  - Na ordem IMPLEMENT, dê o comando de teste exato: os arquivos que cobrem o
+    que muda (mais os que o operário criar), com `-x -q`. Escreva "não rode a
+    suíte inteira".
+  - Na sua revisão, rode esses arquivos mais os arquivos de teste que importam
+    os módulos alterados (`git diff --name-only`, depois `grep -rl <módulo>
+    tests`), com `-x -q`. Nunca `pytest tests` inteiro, nem
+    `--continue-on-collection-errors` na suíte toda: um erro de coleta que já
+    existia antes da mudança não é seu problema e custa minutos para achar.
 
   ## Arquivos para o humano ver
 
