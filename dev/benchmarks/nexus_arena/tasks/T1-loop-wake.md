@@ -70,6 +70,9 @@ Wire it into the running server as well.
 - Stay inside this worktree. Do not deploy, restart services, or touch
   `~/.omnigent`.
 - No network calls.
+- The virtualenv (`.venv`) is already set up and is shared with other work: do not
+  install or sync packages. Run tools with `uv run --no-sync ...` or
+  `.venv/bin/python -m ...`.
 - Verify your own work before you report it done.
 - Do not commit.
 
