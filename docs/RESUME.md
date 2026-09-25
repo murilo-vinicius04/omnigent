@@ -420,6 +420,21 @@ Super empty.
 
 ## 2026-09-25 night — READ FIRST (supersedes the sections above)
 
+**Update 03:50 (read this first).** T4 on the new harness, one run each: brain pinned high 13/14
+18.6m $1.10 · default 14/14 16.5m $0.76 · + edit-point pointers (62e1b3285) 14/14 26.9m $0.87 (the
+brain's review grep pulled tests/server/integration/test_sessions_endpoints.py, 271 tests / 5.6 min)
+· + review-scope rule (af30e601a: no integration files, -k on big ones) 13/14 **14.9m $0.73**. Old
+harness 14/14 21.7m $1.20; plain Opus 5.5 12/14 9.0m $2.55 (a second plain T4 run was started 03:45,
+arm opus55-r2). Checklist after the clipping fix: 2 send-backs, both led to real edits (one a genuine
+gap); before it, 5 send-backs, zero edits. Bench-driver bugs fixed (scratchpad drive.py): the API
+token expired mid-arm so polls read "idle, no items" (two arms' ends missed -> 20-min stall; times
+come from measure_nexus.py, the brain's final message); leftover agy workers are killed per arm.
+**Bug found, not fixed:** Gemini worker token totals roughly doubled (calls unchanged) for workers
+still alive across the 01:05 server restart (T1 0.77M -> 1.53M, T2 0.98M -> 1.95M, T3 0.45M -> 0.89M):
+a restart re-adds a live native worker's cumulative usage. **Still pending:** host restart for
+327ae13a9's runner half (relaunches both Claude sessions); the one-worker rule (parallel impl +
+tests could cut the worker's 10-14 min first pass; the rule exists since 09-16's Gemini 5h drain).
+
 **Update 01:50 (read this first).** Baselines done (Opus 5.5, one run each; plain vs nexus
 Gemini+checklist, old harness): T1 8/8 5.9m $1.74 vs 8/8 17.1m $0.62 · T2 10/12 19.7m $4.12 vs
 10/12 22.4m $0.87 · T3 5/5 3.1m $0.85 vs 5/5 9.2m $0.66 · T4 12/14 9.0m $2.55 vs 14/14 21.7m $1.20.
