@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import hashlib
+import json
 import threading
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
@@ -17,13 +18,33 @@ WakeDispatch = Callable[[str, "Conversation", str], Awaitable[bool]]
 _THRESHOLD = 5
 _WAKE_RETRIES = 2
 _WAKE_RETRY_BACKOFF_S = 0.5
+#: Antigravity waits on a background command by polling its status and setting timers, so
+#: repeating these is waiting, not a loop (a T4 worker polled 79 times in one normal run).
+_WAIT_TOOLS = frozenset({"schedule"})
+
+
+def _is_wait(name: Any, arguments: Any) -> bool:
+    if name in _WAIT_TOOLS:
+        return True
+    if name != "manage_task":
+        return False
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except ValueError:
+            return False
+    return isinstance(arguments, dict) and str(arguments.get("Action", "")).lower() == "status"
 
 
 class SubagentLoopNotifier:
     """Observe tool-call events and wake an immediate parent once per streak."""
 
-    def __init__(self, conversation_store: ConversationStore, wake_dispatch: WakeDispatch,
-                 loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(
+        self,
+        conversation_store: ConversationStore,
+        wake_dispatch: WakeDispatch,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
         self._conversation_store = conversation_store
         self._wake_dispatch = wake_dispatch
         self._loop = loop
@@ -37,15 +58,15 @@ class SubagentLoopNotifier:
             is_function_call = isinstance(item, dict) and item.get("type") == "function_call"
         elif event.get("type") == "external_conversation_item":
             data = event.get("data")
-            is_function_call = (
-                isinstance(data, dict) and data.get("item_type") == "function_call"
-            )
+            is_function_call = isinstance(data, dict) and data.get("item_type") == "function_call"
             item = data.get("item_data") if is_function_call else None
         else:
             return
         if not is_function_call or not isinstance(item, dict):
             return
         name, arguments = item.get("name"), item.get("arguments")
+        if _is_wait(name, arguments):
+            return
         call_id = item.get("call_id")
         identity = hashlib.sha256(
             f"{name}\x00{arguments!r}".encode("utf-8", "replace")

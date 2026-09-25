@@ -77,6 +77,18 @@ async def test_breaking_and_reforming_streak_wakes_twice() -> None:
     assert len(delivered) == 2
 
 
+async def test_polling_a_background_command_is_waiting_not_a_loop() -> None:
+    status = '{"Action":"status","TaskId":"run/task-127"}'
+    timer = '{"DurationSeconds":2,"Prompt":"Check pytest","TimerCondition":"run/task-127"}'
+    events = [_tool_event("manage_task", status)] * 12 + [_tool_event("schedule", timer)] * 6
+    assert await _exercise(events) == []
+
+
+async def test_other_manage_task_actions_still_count() -> None:
+    delivered = await _exercise([_tool_event("manage_task", '{"Action":"kill","TaskId":"t"}')] * 5)
+    assert len(delivered) == 1
+
+
 async def test_parentless_session_never_wakes() -> None:
     delivered = await _exercise([_tool_event()] * 6, parent_id=None)
     assert delivered == []
