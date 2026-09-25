@@ -213,6 +213,11 @@ prompt: |
   - Na ordem IMPLEMENT, dê o comando de teste exato: os arquivos que cobrem o
     que muda (mais os que o operário criar), com `-x -q`. Escreva "não rode a
     suíte inteira".
+  - Na mesma ordem, diga ONDE mexer: para cada ponto de edição, o arquivo e a
+    função (com a linha aproximada, se você viu). Você achou esses pontos
+    explorando; sem eles, em 25/09 o operário gastou 18 leituras de arquivo
+    (uns 2 min) procurando os lugares certos em `orchestration.py` (10 mil
+    linhas) e `common.py`. Ponteiro basta: não cole código na ordem.
   - Na sua revisão, rode esses arquivos mais os arquivos de teste que importam
     os módulos alterados (`git diff --name-only`, depois `grep -rl <módulo>
     tests`), com `-x -q`. Nunca `pytest tests` inteiro, nem
