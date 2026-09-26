@@ -450,6 +450,14 @@ it fits). Replays on the final tree: lint item 0.25->0.98, _read_grok_auth 0.13-
 FINAL tree are not faithful (compare with the HEAD code, as done here, before calling a regression).
 NEXT (user decides): one more T5 team run to measure 5a447f0f0 + dd7879fce together (Gemini 3.7 FM).
 
+**T5 team v4 (runs/T5-team4, 5a447f0f0 + dd7879fce live, verified in the brain inbox):** 29.3 min to
+the final answer (v3 39.8, plain 22.2), $3.33 Claude, Gemini 1.36M tokens, 5 checklist asks, 1
+send-back. Graded 12/21, but all 8 new failures are ONE spec gap: `build_token_usage()` with no
+since/until defaulted to the last 7 days, and the hidden tests' data is dated 09-14..09-16 (the
+spec never says the default; v2 chose 30 days, v3 all time; both break once the test dates age).
+Probe with an all-time default: both hidden files 10/10 -> 20/21. PROPOSED (ask the user first,
+it changes the benchmark): spec says no bounds = the whole log, regrade every T5 tree.
+
 **Harness:** scratchpad bench4/: drive.py (CAP_S env, token refresh on 401, kills leftover agy),
 nexus_ab.sh <T> <worker:model> <arm>..., plain_seq.sh, replay_checklist.py <run dir> <nth check>
 (re-asks Jev on the final tree), dump.py, timeline.py. Profiling snippet: per-worker-turn spans from
