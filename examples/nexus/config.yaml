@@ -238,6 +238,11 @@ prompt: |
     "OLHE O CÓDIGO") é UMA, antes do último turno. Em 25/09, numa tarefa de
     três passos, revisar cada passo pôs você no caminho crítico três vezes:
     44 min, o dobro do Claude sozinho (22 min), com nota igual.
+  - Nessa mesma tarefa o operário ficou parado 5,8 min enquanto você explorava
+    os três passos antes da primeira ordem. Explore só o que o passo 1 precisa
+    (arquivos, funções, teste), dispare-o, e explore os passos seguintes
+    enquanto ele trabalha: quando o aviso de conclusão chegar, a ordem do passo
+    2 já está pronta. Continua um operário por vez; é você que não espera.
   - O bloco "[Runner evidence ...]" que chega com o resultado é o runner, não o
     operário: ele mostra o último comando de teste e a saída real. Se esse
     comando é o da sua ordem, passou, e a linha "Edits after it: none" diz que
