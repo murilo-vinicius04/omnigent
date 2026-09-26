@@ -16,6 +16,10 @@ import pytest
 
 from omnigent import grok_usage, usage_timeline
 
+# The spec leaves the default day window open; these fixtures are dated, so every
+# report names its window (a no-bounds call would depend on the day the grader runs).
+WINDOW = {"since": "2026-09-01", "until": "2026-09-30"}
+
 
 @pytest.fixture(autouse=True)
 def _data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -63,7 +67,7 @@ def _session_file(root: Path, session_id: str, turns: list[dict[str, Any]]) -> P
 
 
 def _grok() -> dict[str, Any]:
-    rows = {row["id"]: row for row in usage_timeline.build_token_usage()["providers"]}
+    rows = {row["id"]: row for row in usage_timeline.build_token_usage(**WINDOW)["providers"]}
     return rows.get("grok", {"tokens": 0, "days": [], "models": []})
 
 
@@ -135,7 +139,7 @@ def test_turns_are_dated_by_when_they_ended(tmp_path: Path) -> None:
 
     assert grok_usage.ingest(root=root, path=seen) == 2
 
-    assert [(d["day"], d["tokens"]) for d in _grok()["days"]] == [
+    assert [(d["day"], d["tokens"]) for d in _grok()["days"] if d["tokens"]] == [
         ("2026-09-15", 700),
         ("2026-09-16", 30),
     ]

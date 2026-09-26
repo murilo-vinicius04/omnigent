@@ -71,7 +71,9 @@ def test_relay_turns_show_up_under_their_vendor(db_uri: str) -> None:
     assert {m["model"]: m["tokens"] for m in providers["claude"]["models"]} == {
         "claude-opus-5": 8_400
     }
-    assert [(d["day"], d["tokens"]) for d in providers["claude"]["days"]] == [(today, 8_400)]
+    assert [(d["day"], d["tokens"]) for d in providers["claude"]["days"] if d["tokens"]] == [
+        (today, 8_400)
+    ]
     assert providers["gemini"]["tokens"] == 1_050
     assert usage_timeline.build_token_usage()["totals"]["tokens"] == 8_400 + 1_050
 

@@ -56,15 +56,25 @@ def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         plan_limits.antigravity_native_rpc, "retrieve_user_quota_summary", lambda: None
     )
-    # Isolation only: nothing may read the developer's real ~/.grok sessions.
+    _isolate_grok_sessions(tmp_path, monkeypatch)
+
+
+def _isolate_grok_sessions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolation only: nothing may read the developer's real ~/.grok sessions.
+
+    Covers ``Path.home()`` read at call time and any module constant built from
+    it at import (``SESSIONS_ROOT``, ``GROK_SESSIONS_ROOT``, ...).
+    """
+    real = Path.home() / ".grok" / "sessions"
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     try:
         from omnigent import grok_usage
     except ImportError:
         return
     empty = tmp_path / "home" / ".grok" / "sessions"
-    if isinstance(getattr(grok_usage, "SESSIONS_ROOT", None), Path):
-        monkeypatch.setattr(grok_usage, "SESSIONS_ROOT", empty)
+    for name, value in list(vars(grok_usage).items()):
+        if isinstance(value, Path) and value == real:
+            monkeypatch.setattr(grok_usage, name, empty)
 
 
 def _mock_transport(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:

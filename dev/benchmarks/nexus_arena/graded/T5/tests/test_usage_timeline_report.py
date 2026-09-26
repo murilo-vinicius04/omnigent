@@ -16,6 +16,10 @@ from typing import Any
 
 from omnigent import usage_timeline
 
+# The spec leaves the default day window open; these fixtures are dated, so every
+# report names its window (a no-bounds call would depend on the day the grader runs).
+WINDOW = {"since": "2026-09-01", "until": "2026-09-30"}
+
 
 def _openai_call(at: str, model: str, tokens: int) -> dict[str, Any]:
     """An ``openai_call`` line as the OpenAI budget writes it."""
@@ -76,12 +80,12 @@ def test_tokens_are_grouped_by_vendor_day_and_model(tmp_path: Path) -> None:
         ],
     )
 
-    report = usage_timeline.build_token_usage(path=log)
+    report = usage_timeline.build_token_usage(path=log, **WINDOW)
 
     (openai,) = report["providers"]
     assert openai["id"] == "openai"
     assert openai["tokens"] == 1_700
-    assert [(d["day"], d["tokens"]) for d in openai["days"]] == [
+    assert [(d["day"], d["tokens"]) for d in openai["days"] if d["tokens"]] == [
         ("2026-09-14", 1_500),
         ("2026-09-15", 200),
     ]
@@ -107,9 +111,9 @@ def test_day_bounds_are_inclusive_utc_days(tmp_path: Path) -> None:
         return usage_timeline.build_token_usage(path=log, **bounds)["totals"]["tokens"]
 
     assert total(since="2026-09-15", until="2026-09-16") == 11
-    assert total(since="2026-09-16") == 1_001
-    assert total(until="2026-09-14") == 100
-    assert total() == 1_111
+    assert total(since="2026-09-16", until="2026-09-30") == 1_001
+    assert total(since="2026-09-01", until="2026-09-14") == 100
+    assert total(**WINDOW) == 1_111
 
 
 def test_a_torn_or_missing_log_is_not_an_error(tmp_path: Path) -> None:
@@ -124,9 +128,9 @@ def test_a_torn_or_missing_log_is_not_an_error(tmp_path: Path) -> None:
     log = tmp_path / "usage-history.jsonl"
     log.write_text("\n".join(good) + '\n{"at": "2026-09-15T10:02', encoding="utf-8")
 
-    assert usage_timeline.build_token_usage(path=log)["totals"]["tokens"] == 42
+    assert usage_timeline.build_token_usage(path=log, **WINDOW)["totals"]["tokens"] == 42
 
-    empty = usage_timeline.build_token_usage(path=tmp_path / "never-written.jsonl")
+    empty = usage_timeline.build_token_usage(path=tmp_path / "never-written.jsonl", **WINDOW)
     assert empty["providers"] == []
     assert empty["limits"] == []
     assert empty["totals"]["tokens"] == 0
@@ -143,7 +147,10 @@ def test_plan_readings_become_one_curve_per_window(tmp_path: Path) -> None:
         ],
     )
 
-    limits = {row["provider"]: row for row in usage_timeline.build_token_usage(path=log)["limits"]}
+    limits = {
+        row["provider"]: row
+        for row in usage_timeline.build_token_usage(path=log, **WINDOW)["limits"]
+    }
 
     claude = {w["kind"]: [p["percent"] for p in w["points"]] for w in limits["claude"]["windows"]}
     assert claude == {"session": [10, 20, 35], "weekly": [5, 6, 7]}

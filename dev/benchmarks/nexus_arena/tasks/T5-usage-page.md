@@ -114,12 +114,14 @@ New module `omnigent.usage_timeline` (reads the usage history back):
 - `provider_for_model(model: str | None) -> str` — the vendor family:
   `"claude"`, `"gemini"`, `"openai"`, `"grok"`, or `"other"`.
 - `build_token_usage(*, since: str | None = None, until: str | None = None, path: Path | None = None) -> dict`
-  — `since`/`until` are inclusive UTC days (`"YYYY-MM-DD"`); `path` is the
+  — `since`/`until` are inclusive UTC days (`"YYYY-MM-DD"`); a bound left out is
+  open (no `since` reaches back to the log's first entry, no `until` runs to its
+  last); `path` is the
   usage-history log (default: `usage_history.history_path()`). Returns
   `{"since", "until", "providers", "limits", "totals"}`:
   - `providers`: one row per vendor family with tokens in the window,
     `{"id", "label", "tokens", "days": [{"day", "tokens"}, ...], "models": [{"model", "tokens"}, ...]}`,
-    days oldest first;
+    days oldest first (listing days with no tokens as 0 is fine);
   - `limits`: plan usage over time from the tray's readings,
     `{"provider", "windows": [{"kind", "points": [{"at", "percent"}, ...]}]}`,
     one row per plan-limits provider id, points oldest first;
