@@ -325,6 +325,24 @@ def send_back_text(unmet: tuple[str, ...]) -> str:
     )
 
 
+def _dead_session_output(payload: dict[str, Any]) -> str:
+    """The result an orchestrator gets from a worker session that never ran a tool.
+
+    On 09-25 a Gemini session reported "completed" without one tool call; the
+    checklist sent it back, it came back empty again, and the orchestrator only
+    then opened a new session, 6 minutes in.
+    """
+    output = payload.get("output")
+    base = output.strip() if isinstance(output, str) else ""
+    notice = (
+        "[Supervisor] This worker session reported done without running a single"
+        " tool, so nothing was built and the checklist was not checked. Sending it"
+        " back to this session tends to come back empty again: send the same order"
+        " to a NEW session (a new title)."
+    )
+    return f"{base}\n\n{notice}" if base else notice
+
+
 @dataclass(frozen=True)
 class Review:
     """What to do with a worker's result.
@@ -378,6 +396,9 @@ async def review(
         checklist = latest_checklist(items)
         if not checklist:
             return Review(payload)
+        if not any(item.get("type") == "function_call" for item in items):
+            # Nothing to check, and sending it back only repeats the empty turn.
+            return Review({**payload, "output": _dead_session_output(payload)})
         dirs = worker_dirs(items)
         diff = await collect_diff(await repo_roots(dirs))
         evidence = extract_evidence(items, await git_changes(dirs)) or ""

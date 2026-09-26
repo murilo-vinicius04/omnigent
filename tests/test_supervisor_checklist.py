@@ -264,6 +264,48 @@ async def test_a_checklist_sends_the_worker_back_at_most_twice(
     assert "not met (0.20)" in review.payload["output"]
 
 
+async def test_a_session_that_never_ran_a_tool_is_not_sent_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _jev_says(monkeypatch, dict.fromkeys(CHECKLIST, 0.05))
+    items = [_worker_items(_repo(tmp_path), BRIEF)[0]]  # the order, and no tool call since
+
+    review = await supervisor_checklist.review(
+        PAYLOAD, server_client=_server(items), child_id="child"
+    )
+
+    assert review.send_back is None
+    assert "without running a single tool" in review.payload["output"]
+    assert "NEW session" in review.payload["output"]
+    assert seen == [], "nothing to judge, so Jev is not asked"
+
+
+async def test_a_text_only_round_after_real_work_is_still_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _jev_says(monkeypatch, dict.fromkeys(CHECKLIST, 0.9))
+    items = [
+        *_worker_items(_repo(tmp_path), BRIEF),
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "IMPLEMENT (fix round): say where."}],
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Both are in budget.py."}],
+        },
+    ]
+
+    review = await supervisor_checklist.review(
+        PAYLOAD, server_client=_server(items), child_id="child"
+    )
+
+    assert "without running a single tool" not in review.payload["output"]
+    assert "Supervisor checklist" in review.payload["output"]
+
+
 async def test_nothing_changes_when_off_or_without_a_checklist(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
