@@ -76,6 +76,29 @@ def test_an_edit_after_the_last_test_run_marks_its_output_stale() -> None:
     assert "Edits after it: 1 edit-tool call(s); its output may be stale." in evidence
 
 
+def test_the_last_lint_or_type_check_is_shown_beside_the_last_test() -> None:
+    items = [
+        _user("build the page"),
+        _call("1", "run_command", CommandLine="npx vitest run src/Usage.test.tsx"),
+        _out("1", "Tests  4 passed (4)"),
+        _call("2", "run_command", CommandLine="npx tsc -b && npx oxlint src/Usage.tsx"),
+        _out("2", "Found 0 warnings and 0 errors."),
+    ]
+
+    evidence = extract_evidence(items)
+
+    assert evidence is not None
+    assert "Last test command: npx vitest run src/Usage.test.tsx" in evidence
+    assert "Last lint/type-check command: npx tsc -b && npx oxlint src/Usage.tsx" in evidence
+    assert "Found 0 warnings and 0 errors." in evidence
+
+
+def test_a_turn_with_no_lint_or_type_check_adds_no_line_for_it() -> None:
+    evidence = extract_evidence([_user("x"), _call("1", "terminal", command="pytest -q")])
+
+    assert evidence is not None and "lint/type-check" not in evidence
+
+
 def test_only_the_latest_turn_counts() -> None:
     items = [
         _user("first task"),

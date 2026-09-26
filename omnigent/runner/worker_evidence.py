@@ -49,6 +49,14 @@ _TEST_COMMAND = re.compile(
     r"\b(pytest|unittest|jest|vitest|go test|cargo test|npm (run )?test|pnpm test|yarn test"
     r"|just test|mvn test|gradle test|rspec|phpunit)\b"
 )
+# Lint and type checks: a checklist item such as "tsc and ruff are clean" needs
+# their output, and the test line alone never showed it (09-26 T5: two
+# send-backs on a clean `tsc -b` Jev could not see).
+_CHECK_COMMAND = re.compile(
+    r"\b(ruff|mypy|pyright|flake8|pylint|black --check|tsc|oxlint|eslint|prettier|biome"
+    r"|npm run (lint|typecheck|type-check|check)|pnpm (lint|typecheck))\b"
+)
+_CHECK_TAIL_CHARS = 800
 _CD_COMMAND = re.compile(r"(?:^|&&|;|\n)\s*cd\s+(?P<q>['\"]?)(?P<dir>/[^'\"\s;&|]+)(?P=q)")
 # Hermes injects these as user messages when it compacts a worker's context
 # (hermes-agent agent/context_compressor.py). They continue the same task, so
@@ -254,6 +262,8 @@ def extract_evidence(
     }
     files: list[str] = []
     last_test: tuple[str, Any] | None = None
+    last_check: tuple[str, Any] | None = None
+    edits_after_check = 0
     # Edit-tool calls after the last test run: the reviewer can trust that
     # run's output only when there are none (shell writes are not counted).
     edits_after_test = 0
@@ -262,6 +272,7 @@ def extract_evidence(
         args = _arguments(call)
         if name in _EDIT_TOOLS:
             edits_after_test += 1
+            edits_after_check += 1
             for path in _edited_paths(args):
                 if path not in files:
                     files.append(path)
@@ -269,6 +280,9 @@ def extract_evidence(
         if command and _TEST_COMMAND.search(command):
             last_test = (command, outputs.get(call.get("call_id")))
             edits_after_test = 0
+        elif command and _CHECK_COMMAND.search(command):
+            last_check = (command, outputs.get(call.get("call_id")))
+            edits_after_check = 0
 
     shown = files[:_MAX_FILES_LISTED]
     more = f" (+{len(files) - len(shown)} more)" if len(files) > len(shown) else ""
@@ -290,6 +304,20 @@ def extract_evidence(
         else:
             lines.append(f"Its output (last {_OUTPUT_TAIL_CHARS} chars):")
             lines.append(text[-_OUTPUT_TAIL_CHARS:])
+    if last_check is not None:
+        command, raw = last_check
+        text = _output_text(raw).rstrip()
+        lines.append(f"Last lint/type-check command: {command}")
+        lines.append(
+            "Edits after it: none (edit tools)."
+            if edits_after_check == 0
+            else f"Edits after it: {edits_after_check} edit-tool call(s); its output may be stale."
+        )
+        lines.append(
+            f"Its output (last {_CHECK_TAIL_CHARS} chars):\n{text[-_CHECK_TAIL_CHARS:]}"
+            if text
+            else "Its output: (none; most linters print nothing when clean)"
+        )
     return "\n".join(lines)
 
 
