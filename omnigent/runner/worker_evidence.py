@@ -129,6 +129,23 @@ def _output_text(raw: Any) -> str:
     return "" if raw is None else str(raw)
 
 
+def edited_files(items: list[dict[str, Any]]) -> list[str]:
+    """
+    Absolute paths the worker's latest turn changed with edit tools, first seen first.
+
+    :param items: The worker session's items, oldest first.
+    :returns: File paths, e.g. ``["/repo/omnigent/usage.py"]``.
+    """
+    files: list[str] = []
+    for call in _current_turn(items):
+        if call.get("type") != "function_call" or str(call.get("name") or "") not in _EDIT_TOOLS:
+            continue
+        for path in _edited_paths(_arguments(call)):
+            if path.startswith("/") and path not in files:
+                files.append(path)
+    return files
+
+
 def worker_dirs(items: list[dict[str, Any]]) -> list[str]:
     """
     Absolute directories the worker's latest turn worked in, first seen first.

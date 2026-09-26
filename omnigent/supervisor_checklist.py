@@ -30,6 +30,7 @@ from omnigent.runner.supervisor_tool import _items, _message_text
 from omnigent.runner.worker_evidence import (
     _CONTINUATION_PREFIXES,
     _git,
+    edited_files,
     extract_evidence,
     git_changes,
     repo_roots,
@@ -158,11 +159,68 @@ def latest_checklist(items: list[dict[str, Any]]) -> tuple[str, ...]:
     return ()
 
 
-def _clip(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[:limit] + _CUT
+_GAPS: Final[str] = "[...lines not about the checklist left out]\n"
+#: Lines of context kept around each line that names a checklist target.
+_FOCUS_CONTEXT: Final[int] = 8
+# Names a checklist item points at: `backticked`, dotted or snake_case, camelCase,
+# and numbers such as a status code.
+_NAME: Final[re.Pattern[str]] = re.compile(
+    r"`([^`]{3,80})`|\b([A-Za-z_]\w*(?:[._]\w+)+)\b|\b([a-z]+[A-Z]\w+|[A-Z][a-z]+[A-Z]\w*)\b"
+    r"|\b(\d{3,})\b"
+)
 
 
-def _fit(parts: list[str], budget: int) -> list[str]:
+def focus_names(checklist: tuple[str, ...]) -> tuple[str, ...]:
+    """The code names the checklist items mention, e.g. ``("tokens_today", "to_thread")``."""
+    names: list[str] = []
+    for item in checklist:
+        for match in _NAME.finditer(item):
+            raw = next(group for group in match.groups() if group)
+            for name in (raw, raw.rsplit(".", 1)[-1].strip("()")):
+                if (len(name) >= 4 or name.isdigit()) and name not in names:
+                    names.append(name)
+    return tuple(names)
+
+
+def _clip(text: str, limit: int, focus: tuple[str, ...] = ()) -> str:
+    """Cut ``text`` to about ``limit``, keeping the lines around ``focus`` names first.
+
+    Keeping only the top of a long file hid what the checklist asked about: on
+    09-26 T5 the check that ``tokens_today`` runs in a thread sat on line 809 of
+    a diff cut at 3,200 characters, and the worker was sent back for it twice.
+    """
+    if len(text) <= limit:
+        return text
+    lines = text.splitlines(keepends=True)
+    scores = {i: sum(n in line for n in focus) for i, line in enumerate(lines)} if focus else {}
+    # Lines naming the most targets first, added lines before context.
+    hits = sorted(
+        (i for i, score in scores.items() if score),
+        key=lambda i: (-scores[i], not lines[i].startswith("+"), i),
+    )
+    if not hits:
+        return text[:limit] + _CUT
+    header = next((i for i, line in enumerate(lines) if line.startswith("@@ ")), 1)
+    kept: set[int] = set(range(min(header, len(lines))))
+    used = sum(len(lines[i]) for i in kept)
+    for hit in hits:
+        window = range(max(0, hit - _FOCUS_CONTEXT), min(len(lines), hit + _FOCUS_CONTEXT + 1))
+        extra = [i for i in window if i not in kept]
+        cost = sum(len(lines[i]) for i in extra) + len(_GAPS)
+        if used + cost > limit:
+            continue
+        kept.update(extra)
+        used += cost
+    out: list[str] = []
+    for i in range(len(lines)):
+        if i in kept:
+            out.append(lines[i])
+        elif i - 1 in kept or (i == 0 and not out):
+            out.append(_GAPS)
+    return "".join(out)
+
+
+def _fit(parts: list[str], budget: int, focus: tuple[str, ...] = ()) -> list[str]:
     """Fit ``parts`` into ``budget`` by clipping only the largest ones, to one shared cap.
 
     A flat per-file cap hid the end of every long new file, so Jev judged items it
@@ -180,7 +238,7 @@ def _fit(parts: list[str], budget: int) -> list[str]:
         room -= size
     fitted, used = [], 0
     for index, part in enumerate(parts):
-        part = _clip(part, max(cap, _MIN_FILE_CHARS))
+        part = _clip(part, max(cap, _MIN_FILE_CHARS), focus)
         if used + len(part) > budget:
             fitted.append(f"[... {len(parts) - index} more changed files cut]")
             break
@@ -189,13 +247,21 @@ def _fit(parts: list[str], budget: int) -> list[str]:
     return fitted
 
 
-async def collect_diff(roots: list[str]) -> str:
+async def collect_diff(
+    roots: list[str], first: list[str] | None = None, focus: tuple[str, ...] = ()
+) -> str:
     """The code change in ``roots``: ``git diff HEAD`` and every new file in full.
 
     :param roots: Repository top-levels, e.g. from ``repo_roots``.
+    :param first: Absolute paths the worker changed this turn. They come first and
+        are kept whole when the change is too big; the rest share what is left.
+    :param focus: Names from the checklist; a file that must be cut keeps the
+        pieces that mention them (see :func:`focus_names`).
     :returns: The change, about :data:`_DIFF_CHARS` characters at most, or ``""``.
     """
     parts: list[str] = []
+    recent: list[str] = []
+    touched = {os.path.realpath(p) for p in first or []}
     for root in roots:
         listed = await _git("-C", root, "diff", "HEAD", "--name-only")
         for name in (listed or "").splitlines():
@@ -203,7 +269,7 @@ async def collect_diff(roots: list[str]) -> str:
                 continue
             body = await _git("-C", root, "diff", "HEAD", "--no-color", "--", name)
             if body:
-                parts.append(body)
+                (recent if _real(root, name) in touched else parts).append(body)
         untracked = await _git("-C", root, "ls-files", "--others", "--exclude-standard")
         for name in (untracked or "").splitlines():
             path = pathlib.Path(root, name)
@@ -217,8 +283,19 @@ async def collect_diff(roots: list[str]) -> str:
                 continue
             if b"\0" in raw[:4096]:
                 continue
-            parts.append(f"new file {name}:\n{raw.decode(errors='replace')}")
-    return "\n".join(_fit(parts, _DIFF_CHARS))
+            part = f"new file {name}:\n{raw.decode(errors='replace')}"
+            (recent if _real(root, name) in touched else parts).append(part)
+    # On a long task the change outgrows the budget; the files this turn touched
+    # are what the checklist asks about (09-26 T5: 3 false send-backs on items the
+    # worker had just fixed, in files cut to share the budget with older steps).
+    kept = _fit(recent, _DIFF_CHARS, focus)
+    room = _DIFF_CHARS - sum(map(len, kept))
+    rest = _fit(parts, max(room, 0), focus)
+    return "\n".join(kept + rest)
+
+
+def _real(root: str, name: str) -> str:
+    return os.path.realpath(os.path.join(root, name))
 
 
 def render_checklist_state(diff: str, evidence: str) -> str:
@@ -400,7 +477,9 @@ async def review(
             # Nothing to check, and sending it back only repeats the empty turn.
             return Review({**payload, "output": _dead_session_output(payload)})
         dirs = worker_dirs(items)
-        diff = await collect_diff(await repo_roots(dirs))
+        diff = await collect_diff(
+            await repo_roots(dirs), edited_files(items), focus_names(checklist)
+        )
         evidence = extract_evidence(items, await git_changes(dirs)) or ""
     except (httpx.HTTPError, OSError, ValueError):
         return Review(payload)

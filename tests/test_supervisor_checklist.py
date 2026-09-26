@@ -160,6 +160,38 @@ async def test_a_long_new_file_is_shown_whole_when_the_change_fits(tmp_path: Pat
     assert "rest of this file cut" not in diff
 
 
+async def test_the_files_this_turn_changed_stay_whole_when_the_change_is_too_big(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path)
+    (repo / "old_step.py").write_text("y = 2\n" * 1500)
+    (repo / "this_turn.py").write_text("x = 1\n" * 1500 + "def fixed_now():\n    return 1\n")
+    monkeypatch.setattr(supervisor_checklist, "_DIFF_CHARS", 12_000)
+
+    diff = await supervisor_checklist.collect_diff([str(repo)], [str(repo / "this_turn.py")])
+
+    assert diff.startswith("new file this_turn.py:")
+    assert "def fixed_now():" in diff
+    assert len(diff) <= 12_000 + 200
+
+
+def test_a_cut_file_keeps_the_parts_the_checklist_names() -> None:
+    head = "diff --git a/plan.py b/plan.py\n--- a/plan.py\n+++ b/plan.py\n"
+    hunks = [f"@@ -{i} +{i} @@\n+pad_{i} = {i}\n" + "+#\n" * 200 for i in range(1, 40)]
+    hunks.append("@@ -809 +809 @@\n+    today = await asyncio.to_thread(usage.tokens_today)\n")
+    names = supervisor_checklist.focus_names(
+        ("collect_plan_limits calls usage_timeline.tokens_today through asyncio.to_thread",)
+    )
+
+    clipped = supervisor_checklist._clip(head + "".join(hunks), 3_000, names)
+
+    assert {"collect_plan_limits", "tokens_today", "to_thread"} <= set(names)
+    assert "401" in supervisor_checklist.focus_names(("a 401 row says to sign in again",))
+    assert "asyncio.to_thread(usage.tokens_today)" in clipped
+    assert clipped.startswith(head) and "left out" in clipped
+    assert len(clipped) <= 3_000 + 100
+
+
 def test_an_oversized_change_clips_only_its_largest_files() -> None:
     small, big = "s" * 1_000, "b" * 9_000
 
