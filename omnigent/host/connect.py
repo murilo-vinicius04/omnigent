@@ -1259,10 +1259,10 @@ class HostProcess:
                 break  # children exist but none ready to reap
             pid = info.si_pid
             if pid in tracked:
-                # Leave it for _watch_runner's Popen to reap+report. Break, not
-                # continue: WNOWAIT keeps returning the same head pid, so
-                # continuing would spin. The runner is reaped within ~0.5s and
-                # the next sweep proceeds past it.
+                # WNOWAIT keeps returning this head until someone collects it,
+                # so skipping it would stop this sweep and every later one.
+                if self._collect_tracked_exit(pid):
+                    continue
                 break
             try:
                 os.waitpid(pid, 0)  # consume the orphan
@@ -1272,6 +1272,39 @@ class HostProcess:
         if reaped:
             _logger.debug("orphan reaper reaped %d process(es)", reaped)
         return reaped
+
+    def _collect_tracked_exit(self, pid: int) -> bool:
+        """Collect an exited child the reaper must not treat as an orphan.
+
+        Its owner collects it first (a runner's ``Popen``, the zygote's manager),
+        so the exit code it reports stays true. A child no owner can collect is
+        reaped here: a disabled zygote nobody polls again, a zygote runner
+        reparented to this host, or a pid whose owner already collected an
+        earlier process with that number (pids wrap). Leaving such a head
+        uncollected stopped every sweep on 09-25 and 117,616 zombies filled the
+        host's task limit until it could not fork.
+
+        :param pid: An exited direct child in :meth:`_tracked_runner_pids`.
+        :returns: ``True`` once it is collected, ``False`` if it was not ready.
+        """
+        handle = self._runner_handle_for_pid(pid)
+        if handle is not None and isinstance(handle.proc, subprocess.Popen):
+            if handle.proc.returncode is None and handle.proc.poll() is not None:
+                return True
+        zygote = self._zygote
+        if zygote is not None and zygote.pid == pid and not zygote.is_running():
+            with contextlib.suppress(ChildProcessError):
+                os.waitpid(pid, os.WNOHANG)  # gone already unless the pid was reused
+            return True
+        try:
+            waited, status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return True
+        if waited == 0:
+            return False
+        if handle is not None and handle.proc.returncode is None:
+            handle.proc.returncode = os.waitstatus_to_exitcode(status)
+        return True
 
     def _reap_orphans_waitpid(self) -> int:
         """Reap with ``waitpid(WNOHANG)``, re-injecting tracked-runner status.

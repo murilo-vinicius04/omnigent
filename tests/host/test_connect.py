@@ -60,7 +60,7 @@ from omnigent.host.frames import (
     encode_host_frame,
 )
 from omnigent.host.identity import HostIdentity
-from omnigent.host.runner_zygote import ZygoteUnavailable
+from omnigent.host.runner_zygote import ZygoteManager, ZygoteUnavailable
 from omnigent.runner.identity import (
     RUNNER_DELEGATED_AUTH_ENV_VAR,
     RUNNER_ID_ENV_VAR,
@@ -1761,6 +1761,67 @@ def test_reap_orphans_never_steals_tracked_runner_exit_code(tmp_path: Path) -> N
     assert runner.poll() == 42, "reaper corrupted the tracked runner's exit code"
 
     runner.wait()
+
+
+def _sweep_until_reaped(host: HostProcess, pid: int) -> None:
+    """Sweep until ``pid`` is collected, failing if it is still around after 5 s.
+
+    Reads ``/proc`` rather than calling ``waitpid``, which would collect it here.
+    """
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        host._reap_orphans_once()
+        if not Path(f"/proc/{pid}").exists():
+            return
+        time.sleep(0.05)
+    pytest.fail("orphan still uncollected: the reaper is stuck on a tracked head")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="reads /proc and uses os.waitid")
+def test_an_exited_zygote_nobody_polls_does_not_stop_the_reaper(tmp_path: Path) -> None:
+    """An exited zygote no one polls again must not wedge the reaper.
+
+    After the zygote is disabled nothing asks about it any more. When it exits it
+    is a tracked pid first in line for ``waitid``, and a reaper that only skips
+    tracked pids stopped every sweep there while orphans piled up (09-25:
+    117,616 tmux zombies filled the host's task limit).
+    """
+    import os
+
+    host = _make_host_process()
+    zygote = ZygoteManager()
+    zygote._proc = subprocess.Popen(["python3", "-c", "pass"])
+    host._zygote = zygote
+    time.sleep(0.3)  # the zygote exits before the orphan exists: it is first in line
+    orphan = os.fork()
+    if orphan == 0:  # pragma: no cover — child leg never returns to pytest
+        os._exit(0)
+
+    _sweep_until_reaped(host, orphan)
+    assert not zygote.is_running()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="reads /proc and uses os.waitid")
+def test_a_tracked_pid_reused_by_an_orphan_does_not_stop_the_reaper(tmp_path: Path) -> None:
+    """A stale tracked pid now naming an orphan must not wedge the reaper.
+
+    A runner's ``Popen`` keeps its pid after collecting the runner, and pids wrap
+    (4,194,304 here), so an orphan can be handed that number. The reaper left it
+    alone as "tracked" and stopped there on every sweep.
+    """
+    import os
+
+    host = _make_host_process()
+    orphan = os.fork()
+    if orphan == 0:  # pragma: no cover — child leg never returns to pytest
+        os._exit(0)
+    runner = subprocess.Popen(["python3", "-c", "pass"])
+    runner.wait()
+    runner.pid = orphan  # the collected runner's number, now an orphan's
+    host._runners["runner_done"] = _RunnerHandle(proc=runner, log_path=tmp_path / "r.log")
+
+    _sweep_until_reaped(host, orphan)
+    assert runner.returncode == 0, "the collected runner's own exit code must not change"
 
 
 def test_reaper_does_not_steal_host_owned_subprocess_exit_code(tmp_path: Path) -> None:
