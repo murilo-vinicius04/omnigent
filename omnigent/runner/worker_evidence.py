@@ -56,7 +56,13 @@ _CHECK_COMMAND = re.compile(
     r"\b(ruff|mypy|pyright|flake8|pylint|black --check|tsc|oxlint|eslint|prettier|biome"
     r"|npm run (lint|typecheck|type-check|check)|pnpm (lint|typecheck))\b"
 )
-_CHECK_TAIL_CHARS = 800
+_CHECK_TAIL_CHARS = 600
+_MAX_CHECKS_SHOWN = 6
+# One key per tool, so "tsc, oxlint and prettier are clean" can be checked
+# against each tool's own last run (09-26 T5-team3: only the last of the three
+# was shown, and a send-back turn that re-ran none showed no lint at all).
+_RUFF_SUBCOMMAND = re.compile(r"\bruff\s+(format|check)\b")
+_COMMAND_SEPARATORS = re.compile(r"&&|\|\||;|\|")
 _CD_COMMAND = re.compile(r"(?:^|&&|;|\n)\s*cd\s+(?P<q>['\"]?)(?P<dir>/[^'\"\s;&|]+)(?P=q)")
 # Hermes injects these as user messages when it compacts a worker's context
 # (hermes-agent agent/context_compressor.py). They continue the same task, so
@@ -135,6 +141,60 @@ def _output_text(raw: Any) -> str:
             return parsed["output"]
         return raw
     return "" if raw is None else str(raw)
+
+
+def _check_tools(command: str) -> list[str]:
+    """The lint/type-check tools a shell command runs, e.g. ``["tsc", "oxlint"]``."""
+    tools: list[str] = []
+    for segment in _COMMAND_SEPARATORS.split(command):
+        match = _CHECK_COMMAND.search(segment)
+        if match is None:
+            continue
+        ruff = _RUFF_SUBCOMMAND.search(segment)
+        tool = f"ruff {ruff.group(1)}" if ruff else match.group(1)
+        if tool not in tools:
+            tools.append(tool)
+    return tools
+
+
+def _last_checks(items: list[dict[str, Any]]) -> list[tuple[list[str], str, Any, int]]:
+    """
+    The last run of each lint/type-check tool over the worker's whole session.
+
+    A send-back turn often re-runs only the tests, so the current turn alone
+    would hide a clean ``tsc -b`` from the turn before.
+
+    :param items: The worker session's items, oldest first.
+    :returns: ``(tools, command, raw output, edit-tool calls since)`` per command, oldest first.
+    """
+    outputs = {
+        i.get("call_id"): i.get("output") for i in items if i.get("type") == "function_call_output"
+    }
+    runs: list[tuple[str, str, Any]] = []  # (call_id, command, output)
+    latest: dict[str, int] = {}  # tool -> index into runs
+    edits_at: list[int] = []  # edit-tool calls seen before each run
+    edits = 0
+    for call in items:
+        if call.get("type") != "function_call":
+            continue
+        args = _arguments(call)
+        if str(call.get("name") or "") in _EDIT_TOOLS:
+            edits += 1
+        command = _command_text(args)
+        tools = _check_tools(command) if command else []
+        if not tools:
+            continue
+        runs.append((str(call.get("call_id")), command or "", outputs.get(call.get("call_id"))))
+        edits_at.append(edits)
+        for tool in tools:
+            latest[tool] = len(runs) - 1
+    by_run: dict[int, list[str]] = {}
+    for tool, index in latest.items():
+        by_run.setdefault(index, []).append(tool)
+    return [
+        (by_run[index], runs[index][1], runs[index][2], edits - edits_at[index])
+        for index in sorted(by_run)[-_MAX_CHECKS_SHOWN:]
+    ]
 
 
 def edited_files(items: list[dict[str, Any]]) -> list[str]:
@@ -262,8 +322,6 @@ def extract_evidence(
     }
     files: list[str] = []
     last_test: tuple[str, Any] | None = None
-    last_check: tuple[str, Any] | None = None
-    edits_after_check = 0
     # Edit-tool calls after the last test run: the reviewer can trust that
     # run's output only when there are none (shell writes are not counted).
     edits_after_test = 0
@@ -272,7 +330,6 @@ def extract_evidence(
         args = _arguments(call)
         if name in _EDIT_TOOLS:
             edits_after_test += 1
-            edits_after_check += 1
             for path in _edited_paths(args):
                 if path not in files:
                     files.append(path)
@@ -280,9 +337,6 @@ def extract_evidence(
         if command and _TEST_COMMAND.search(command):
             last_test = (command, outputs.get(call.get("call_id")))
             edits_after_test = 0
-        elif command and _CHECK_COMMAND.search(command):
-            last_check = (command, outputs.get(call.get("call_id")))
-            edits_after_check = 0
 
     shown = files[:_MAX_FILES_LISTED]
     more = f" (+{len(files) - len(shown)} more)" if len(files) > len(shown) else ""
@@ -304,19 +358,24 @@ def extract_evidence(
         else:
             lines.append(f"Its output (last {_OUTPUT_TAIL_CHARS} chars):")
             lines.append(text[-_OUTPUT_TAIL_CHARS:])
-    if last_check is not None:
-        command, raw = last_check
-        text = _output_text(raw).rstrip()
-        lines.append(f"Last lint/type-check command: {command}")
+    checks = _last_checks(items)
+    if checks:
         lines.append(
-            "Edits after it: none (edit tools)."
-            if edits_after_check == 0
-            else f"Edits after it: {edits_after_check} edit-tool call(s); its output may be stale."
+            "Lint/type-check runs (the last run of each tool in this worker's session,"
+            " earlier turns included):"
         )
+    for tools, command, raw, edits_since in checks:
+        text = _output_text(raw).rstrip()
+        stale = (
+            "no edits after it"
+            if edits_since == 0
+            else f"{edits_since} edit-tool call(s) after it; may be stale"
+        )
+        lines.append(f"- {', '.join(tools)}: {command} ({stale})")
         lines.append(
-            f"Its output (last {_CHECK_TAIL_CHARS} chars):\n{text[-_CHECK_TAIL_CHARS:]}"
+            f"  Output (last {_CHECK_TAIL_CHARS} chars):\n{text[-_CHECK_TAIL_CHARS:]}"
             if text
-            else "Its output: (none; most linters print nothing when clean)"
+            else "  Output: (none; most linters print nothing when clean)"
         )
     return "\n".join(lines)
 

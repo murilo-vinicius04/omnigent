@@ -89,8 +89,42 @@ def test_the_last_lint_or_type_check_is_shown_beside_the_last_test() -> None:
 
     assert evidence is not None
     assert "Last test command: npx vitest run src/Usage.test.tsx" in evidence
-    assert "Last lint/type-check command: npx tsc -b && npx oxlint src/Usage.tsx" in evidence
+    assert "- tsc, oxlint: npx tsc -b && npx oxlint src/Usage.tsx (no edits after it)" in evidence
     assert "Found 0 warnings and 0 errors." in evidence
+
+
+def test_each_check_tool_shows_its_own_last_run_even_from_an_earlier_turn() -> None:
+    items = [
+        _user("build the page"),
+        _call("1", "run_command", CommandLine="node node_modules/typescript/bin/tsc -b"),
+        _out("1", ""),
+        _call("2", "run_command", CommandLine="npx oxlint src/Usage.tsx"),
+        _out("2", "Found 0 warnings and 0 errors."),
+        _call("3", "replace_file_content", TargetFile="/w/src/Usage.tsx"),
+        _call("4", "run_command", CommandLine="npx prettier --check src/Usage.tsx"),
+        _out("4", "All matched files use Prettier code style!"),
+        _user("IMPLEMENT (supervisor check before your report goes to the orchestrator)"),
+        _call(
+            "5",
+            "run_command",
+            CommandLine="pytest -q && ruff check x.py && ruff format --check x.py",
+        ),
+        _out("5", "3 passed\nAll checks passed!\n1 file already formatted"),
+    ]
+
+    evidence = extract_evidence(items)
+
+    assert evidence is not None
+    assert (
+        "- tsc: node node_modules/typescript/bin/tsc -b"
+        " (1 edit-tool call(s) after it; may be stale)" in evidence
+    )
+    assert "  Output: (none; most linters print nothing when clean)" in evidence
+    assert "- oxlint: npx oxlint src/Usage.tsx (1 edit-tool call(s)" in evidence
+    assert "- prettier: npx prettier --check src/Usage.tsx (no edits after it)" in evidence
+    # A chained command is both the last test and the last ruff run.
+    assert "Last test command: pytest -q && ruff check" in evidence
+    assert "- ruff check, ruff format: pytest -q && ruff check" in evidence
 
 
 def test_a_turn_with_no_lint_or_type_check_adds_no_line_for_it() -> None:
