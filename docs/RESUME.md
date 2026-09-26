@@ -455,8 +455,14 @@ the final answer (v3 39.8, plain 22.2), $3.33 Claude, Gemini 1.36M tokens, 5 che
 send-back. Graded 12/21, but all 8 new failures are ONE spec gap: `build_token_usage()` with no
 since/until defaulted to the last 7 days, and the hidden tests' data is dated 09-14..09-16 (the
 spec never says the default; v2 chose 30 days, v3 all time; both break once the test dates age).
-Probe with an all-time default: both hidden files 10/10 -> 20/21. PROPOSED (ask the user first,
-it changes the benchmark): spec says no bounds = the whole log, regrade every T5 tree.
+Probe with an all-time default: both hidden files 10/10 -> 20/21. DONE with the user's go (d4ee3ca08):
+the T5 tests had three artifacts (day-dependent no-bounds calls; the route test read this machine's
+real ~/.grok sessions when an arm ingests Grok in the route; exact day lists failed zero-filled days).
+Gold 21/21, start 0/21. Regrade (bench4/t5_regrade.txt, runs/*/grade_v2.json): EVERY T5 run is
+21/21 (plain 18->21, v1 17->21, v2 20->21, v3 20->21, v4 12->21). T5 does not separate quality;
+compare time and spend only: plain 22.2m $4.89 · v1 44.1m $2.20 · v2 41.7m $3.11 · v3 39.8m $4.06
+· v4 29.3m $3.33 (Gemini 1.36M). Chart: bench4/t5_chart.py. v4 timeline: step 1 out at 4.9m, step 2
+12.8, step 3 17.8, one fix round 24.9-28.5, final 29.3; brain idle-waiting on Gemini most of it.
 
 **Harness:** scratchpad bench4/: drive.py (CAP_S env, token refresh on 401, kills leftover agy),
 nexus_ab.sh <T> <worker:model> <arm>..., plain_seq.sh, replay_checklist.py <run dir> <nth check>
