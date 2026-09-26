@@ -420,6 +420,15 @@ Super empty.
 
 ## 2026-09-25 night — READ FIRST (supersedes the sections above)
 
+**Update 09-26 13:40 — team vs plain, Jev ablation, long task T5 (all one run each unless noted).**
+T4 without Jev (checklist + asks off): 12/14 10.3m, 13/14 17.1m — both failed the cached-token test,
+as did plain Opus x2; with Jev 0/5 runs failed it. T5 (98093dcbd, Usage page backend, 21 tests):
+plain Opus 5.5 18/21 22.2m $4.89 · team 17/21 44.1m $2.20 (dead first Gemini session, launch
+timeout while the host leaked) · team after 2f3f5cfd3 (dead-session check) + d33d84a83 (checklist
+gates steps, one full review at the end) **20/21** 41.7m $3.11. Host wedge fixed 0be307de0 (orphan
+reaper stuck on a tracked pid; verified with the zygote disabled 09-26). User: Gemini stays the
+worker (the point is Claude quota); plain Opus + Jev was rejected for that reason.
+
 **Update 09-25 11:30 — inbox mirror bug fixed in 1428e43f6 (NOT live: needs a host restart).**
 Cause: a claude-native session's runner is reaped when idle and its bridge dir pruned, taking the
 forwarder's `subagent_forwarder.json` with it. On the next start the forwarder re-registers every
