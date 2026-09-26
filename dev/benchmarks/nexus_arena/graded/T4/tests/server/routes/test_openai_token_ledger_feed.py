@@ -97,3 +97,26 @@ def test_native_cumulative_reports_add_only_their_growth(db_uri: str) -> None:
 
     # Ledger = the final cumulative total (80k input incl. cached + 1.5k output).
     assert _small_pool_tokens() == {"gpt-5.6-terra": 81_500}
+
+
+def test_a_failing_ledger_never_breaks_session_usage(
+    db_uri: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # [fairness] replaces test_usage_delta_never_raises (until 09-26), which pinned
+    # the catch inside record_usage_delta. Where it is caught is the solver's call;
+    # what the person needs is that session usage is still saved.
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(budget, "ledger_path", lambda: blocker / "ledger.json")
+    store = SqlAlchemyConversationStore(db_uri)
+    conv = store.create_conversation(title="relay", agent_id=_AGENT_ID)
+
+    _accumulate_session_usage(
+        {"usage": {"model": "gpt-5.6-luna", "input_tokens": 40, "output_tokens": 2}},
+        conv.id,
+        store,
+    )
+
+    usage = store.get_conversation(conv.id).session_usage or {}
+    assert usage.get("input_tokens") == 40
+    assert usage.get("output_tokens") == 2

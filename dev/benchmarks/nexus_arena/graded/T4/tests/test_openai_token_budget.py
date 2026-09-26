@@ -34,20 +34,22 @@ def test_pools_follow_the_model_family() -> None:
 
 
 def test_every_token_counts_including_cached_and_cache_writes() -> None:
-    recorded = budget.record(
-        "gpt-5.6-luna",
-        {
-            "input_tokens": 27,
-            "cache_read_input_tokens": 107_814,
-            "cache_creation_input_tokens": 15_814,
-            "output_tokens": 3_298,
-            "total_tokens": 999_999,  # not summed: it would double-count
-        },
-    )
-    assert recorded == 126_953
+    parts = {
+        "input_tokens": 27,
+        "cache_read_input_tokens": 107_814,
+        "cache_creation_input_tokens": 15_814,
+        "output_tokens": 3_298,
+    }
+    # [fairness] realistic totals only. The task never says whether to trust
+    # total_tokens, so a total equal to the parts and one that leaves the cache
+    # out must both give the parts' sum; adding the total on top of the parts,
+    # or counting only the total, still fails. (It used 999_999 until 09-26,
+    # which failed the defensible "never under-count: max(total, parts)" rule.)
+    assert budget.record("gpt-5.6-luna", {**parts, "total_tokens": 126_953}) == 126_953
+    assert budget.record("gpt-5.6-luna", {**parts, "total_tokens": 3_325}) == 126_953
     small = next(row for row in budget.pool_usage() if row["id"] == "small")
-    assert small["tokens"] == 126_953
-    assert small["models"] == {"gpt-5.6-luna": 126_953}
+    assert small["tokens"] == 2 * 126_953
+    assert small["models"] == {"gpt-5.6-luna": 2 * 126_953}
 
 
 def test_pools_accumulate_across_models_and_calls() -> None:
@@ -91,15 +93,6 @@ def test_usage_delta_records_only_openai_models() -> None:
     }
     assert budget.record_usage_delta(delta) == 100
     assert budget.record_usage_delta({"input_tokens": 5}) == 0
-
-
-def test_usage_delta_never_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    # [fairness] an unwritable ledger instead of patching an internal function.
-    blocker = tmp_path / "not-a-dir"
-    blocker.write_text("x", encoding="utf-8")
-    monkeypatch.setattr(budget, "ledger_path", lambda: blocker / "ledger.json")
-    result = budget.record_usage_delta({"by_model": {"gpt-5.6-luna": {"input_tokens": 1}}})
-    assert isinstance(result, int)
 
 
 def test_manual_add_is_tagged_by_source(capsys: pytest.CaptureFixture[str]) -> None:
