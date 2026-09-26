@@ -192,6 +192,26 @@ def test_a_cut_file_keeps_the_parts_the_checklist_names() -> None:
     assert len(clipped) <= 3_000 + 100
 
 
+def test_a_function_the_checklist_names_is_kept_whole_over_frequent_names() -> None:
+    head = "diff --git a/plan.py b/plan.py\n--- a/plan.py\n+++ b/plan.py\n@@ -1 +1 @@\n"
+    noise = "".join(f"+row_{i} = grok_usage.tier(500)\n" + "+#\n" * 30 for i in range(60))
+    body = "".join(f"+    step_{i} = {i}\n" for i in range(40))
+    function = (
+        "+def _read_grok_auth() -> str:\n" + body + "+    return grok_usage.parse_timestamp(raw)\n"
+    )
+    names = supervisor_checklist.focus_names(
+        (
+            "`_read_grok_auth` calls the shared `grok_usage` timestamp parser and has no regex",
+            "The grok row has no `tier` key; a Grok 500 keeps the cached percent",
+        )
+    )
+
+    clipped = supervisor_checklist._clip(head + noise + function + "+#\n" * 50, 3_000, names)
+
+    assert function in clipped
+    assert len(clipped) <= 3_000 + 100
+
+
 def test_an_oversized_change_clips_only_its_largest_files() -> None:
     small, big = "s" * 1_000, "b" * 9_000
 

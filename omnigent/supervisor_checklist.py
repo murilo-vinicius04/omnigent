@@ -162,6 +162,8 @@ def latest_checklist(items: list[dict[str, Any]]) -> tuple[str, ...]:
 _GAPS: Final[str] = "[...lines not about the checklist left out]\n"
 #: Lines of context kept around each line that names a checklist target.
 _FOCUS_CONTEXT: Final[int] = 8
+# A function the checklist names is kept whole, up to this many lines.
+_DEFINITION_LINES: Final[int] = 120
 # Names a checklist item points at: `backticked`, dotted or snake_case, camelCase,
 # and numbers such as a status code.
 _NAME: Final[re.Pattern[str]] = re.compile(
@@ -182,21 +184,63 @@ def focus_names(checklist: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(names)
 
 
+def _definition(line: str, focus: tuple[str, ...]) -> bool:
+    """Whether ``line`` defines one of the ``focus`` names (a def, class, function or const)."""
+    return any(
+        re.match(
+            rf"\s*(export\s+)?(async\s+)?(def|class|function|const|let)\s+{re.escape(n)}\b", line
+        )
+        for n in focus
+    )
+
+
+def _block_end(lines: list[str], start: int, marker: bool) -> int:
+    """Index just past the definition that starts at ``lines[start]``, found by indentation."""
+
+    def code(line: str) -> str:
+        return line[1:] if marker and line[:1] in "+- " else line
+
+    head = code(lines[start])
+    indent = len(head) - len(head.lstrip())
+    end = start + 1
+    while end < len(lines) and end - start < _DEFINITION_LINES:
+        line = lines[end]
+        if line.startswith(("@@ ", "diff --git ")):
+            break
+        body = code(line)
+        if body.strip() and len(body) - len(body.lstrip()) <= indent:
+            if body.lstrip().startswith(("}", ")", "]")):
+                end += 1
+            break
+        end += 1
+    return end
+
+
 def _clip(text: str, limit: int, focus: tuple[str, ...] = ()) -> str:
     """Cut ``text`` to about ``limit``, keeping the lines around ``focus`` names first.
 
     Keeping only the top of a long file hid what the checklist asked about: on
     09-26 T5 the check that ``tokens_today`` runs in a thread sat on line 809 of
     a diff cut at 3,200 characters, and the worker was sent back for it twice.
+    A name the checklist gives weighs more the rarer it is in the file, and a
+    function it names is kept whole: in T5-team3 "``_read_grok_auth`` contains
+    no regex" was sent back twice because lines naming ``tier`` and ``500``
+    filled the room and the function itself was left out.
     """
     if len(text) <= limit:
         return text
     lines = text.splitlines(keepends=True)
-    scores = {i: sum(n in line for n in focus) for i, line in enumerate(lines)} if focus else {}
-    # Lines naming the most targets first, added lines before context.
+    marker = text.startswith("diff --git ")
+    present = [n for n in focus if n in text]
+    weight = {n: 1 / sum(n in line for line in lines) for n in present}
+    scores = {i: sum(weight[n] for n in present if n in line) for i, line in enumerate(lines)}
+    defines = {
+        i for i in scores if scores[i] and _definition(lines[i][1:] if marker else lines[i], focus)
+    }
+    # Lines naming the rarest targets first; on a tie, definitions and added lines first.
     hits = sorted(
         (i for i, score in scores.items() if score),
-        key=lambda i: (-scores[i], not lines[i].startswith("+"), i),
+        key=lambda i: (-scores[i], i not in defines, not lines[i].startswith("+"), i),
     )
     if not hits:
         return text[:limit] + _CUT
@@ -204,13 +248,16 @@ def _clip(text: str, limit: int, focus: tuple[str, ...] = ()) -> str:
     kept: set[int] = set(range(min(header, len(lines))))
     used = sum(len(lines[i]) for i in kept)
     for hit in hits:
-        window = range(max(0, hit - _FOCUS_CONTEXT), min(len(lines), hit + _FOCUS_CONTEXT + 1))
-        extra = [i for i in window if i not in kept]
-        cost = sum(len(lines[i]) for i in extra) + len(_GAPS)
-        if used + cost > limit:
-            continue
-        kept.update(extra)
-        used += cost
+        # A whole named function when it fits, else the lines around the name.
+        ends = [_block_end(lines, hit, marker), hit + 1] if hit in defines else [hit + 1]
+        for last in ends:
+            window = range(max(0, hit - _FOCUS_CONTEXT), min(len(lines), last + _FOCUS_CONTEXT))
+            extra = [i for i in window if i not in kept]
+            cost = sum(len(lines[i]) for i in extra) + len(_GAPS)
+            if used + cost <= limit:
+                kept.update(extra)
+                used += cost
+                break
     out: list[str] = []
     for i in range(len(lines)):
         if i in kept:
