@@ -420,6 +420,16 @@ Super empty.
 
 ## 2026-09-25 night — READ FIRST (supersedes the sections above)
 
+**Update 09-26 16:30 — CORRECTION: T4's "cached-token" gap was a test artifact (fixed 1bcd6f6ce).**
+Every T4 arm counts cached tokens right; the failing ones chose max(total_tokens, parts) ("never
+under-count"), which the old test's bogus total_tokens=999_999 punished. The brain writes that rule
+in its order; Jev only checks the brain's rule, so "Jev catches the cached-token bug" (below) is
+wrong. Regraded with fair tests (runs/*/grade_v2.json, bench4/t4_regrade.txt): plain Opus 5.5 14,
+14 · Gemini team with the checklist gate 14 in all 7 runs · without it 12, 13, 14 (manual-add
+source tag missed twice). T4 quality is a tie; the team's edge there is ~60% less Claude.
+Regression check after 2f3f5cfd3 + d33d84a83: T1 8/8 14.6m, T3 5/5 9.7m, T4 14 and 14 (v2).
+Parallel workers parked by the user (Gemini spend).
+
 **Update 09-26 13:40 — team vs plain, Jev ablation, long task T5 (all one run each unless noted).**
 T4 without Jev (checklist + asks off): 12/14 10.3m, 13/14 17.1m — both failed the cached-token test,
 as did plain Opus x2; with Jev 0/5 runs failed it. T5 (98093dcbd, Usage page backend, 21 tests):
