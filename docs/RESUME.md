@@ -418,6 +418,35 @@ Super empty.
 3. Rotate: OpenRouter key and HF token both appeared in chat. OpenRouter balance ≈ -$0.02 (key cap $1).
 4. Friend's PC offline — needs `git pull` + server restart for the video fix.
 
+## 2026-09-26 — READ FIRST: long-task speed of the nexus team (supersedes the 09-25 notes below)
+
+**Goal (user):** keep Gemini 3.7 Flash Medium as the worker (the point is cutting Claude quota; plain
+Opus + Jev was rejected for that reason); quality is settled; make LONG tasks faster. Parallel Gemini
+workers are PARKED (user: raises Gemini spend). Gemini 3.8 is NOT worth testing: 09-16 measured 25-33
+min/step vs 5-8 for 3.7 and 1.28 vs 0.47 weekly pts/step (memory claude-max-worker-economics).
+
+**Results (Opus 5.5 brain, one run each unless noted):** T4 fair tests (1bcd6f6ce): plain 14,14 ·
+team+Jev 14 x7 · team no-Jev 12,13,14 -> quality tie, team ~60% less Claude. T5 long task (98093dcbd,
+21 tests): plain 18/21 22.2m $4.89 · team v1 17/21 44.1m $2.20 · team v2 (2f3f5cfd3 + d33d84a83)
+20/21 41.7m $3.11. Regression after v2: T1 8/8, T3 5/5, T4 14,14. T5 v2 time: Gemini working 29.1
+min (309 calls ~5-6 s each, 137 file views), brain-only 12.6 (explore 5.8, reviews 6.8).
+
+**Speed fixes committed 09-26 (server restarted 16:41; runner code loads in new runners):**
+a6d4b9f8d Jev sees the lines each checklist item names when the diff passes 60k (replay: false
+send-backs 0.29->0.95, 0.22->0.96) · f786ea263 prompt: dispatch step 1 early, explore later steps
+while the worker runs · 0a806f2fb evidence shows last lint/type-check command + output (NOT live in
+run T5-team3). Also live: 0be307de0 host reaper fix (verified with zygote disabled), 1428e43f6 inbox fix.
+
+**In flight:** T5 team v3 (arm `team3`, unit `arena-t5-team4`, started 16:42, runs/T5-team3). At 31
+min it was in the final review; 2 false send-backs on "tsc/oxlint/prettier clean" (fixed by 0a806f2fb)
+and an absence item ("no duplicate helper"). NEXT: grade it (drive.log / outcome.txt; measure with
+bin/measure_nexus.py), compare to 41.7m, then decide with the user on one more T5 run (~4-5% Gemini).
+
+**Harness:** scratchpad bench4/: drive.py (CAP_S env, token refresh on 401, kills leftover agy),
+nexus_ab.sh <T> <worker:model> <arm>..., plain_seq.sh, replay_checklist.py <run dir> <nth check>
+(re-asks Jev on the final tree), dump.py, timeline.py. Profiling snippet: per-worker-turn spans from
+session items (function_call timestamps only; trailing items at session end distort spans).
+
 ## 2026-09-25 night — READ FIRST (supersedes the sections above)
 
 **Update 09-26 16:30 — CORRECTION: T4's "cached-token" gap was a test artifact (fixed 1bcd6f6ce).**
