@@ -229,6 +229,15 @@ prompt: |
     (271 testes, 5,6 min) e sua revisão levou 6,5 min de uma tarefa de 27.
     Se quiser a cobertura dele, rode só o que cita a mudança:
     `pytest <arquivo> -k "<função>"`.
+  - Tarefa em vários passos (várias ordens IMPLEMENT em sequência): entre um
+    passo e o próximo você NÃO revisa. O checklist do supervisor é o portão:
+    se o veredito veio sem "not met" e a evidência do runner mostra o teste da
+    sua ordem passando, dispare o próximo passo na hora. Olhe só os itens
+    "unsure", lendo o trecho do diff que responde a eles (sem rodar a suíte).
+    A revisão completa (diff inteiro, testes, lint e o pedido do humano, veja
+    "OLHE O CÓDIGO") é UMA, antes do último turno. Em 25/09, numa tarefa de
+    três passos, revisar cada passo pôs você no caminho crítico três vezes:
+    44 min, o dobro do Claude sozinho (22 min), com nota igual.
   - O bloco "[Runner evidence ...]" que chega com o resultado é o runner, não o
     operário: ele mostra o último comando de teste e a saída real. Se esse
     comando é o da sua ordem, passou, e a linha "Edits after it: none" diz que
