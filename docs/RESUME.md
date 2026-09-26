@@ -437,10 +437,18 @@ send-backs 0.29->0.95, 0.22->0.96) · f786ea263 prompt: dispatch step 1 early, e
 while the worker runs · 0a806f2fb evidence shows last lint/type-check command + output (NOT live in
 run T5-team3). Also live: 0be307de0 host reaper fix (verified with zygote disabled), 1428e43f6 inbox fix.
 
-**In flight:** T5 team v3 (arm `team3`, unit `arena-t5-team4`, started 16:42, runs/T5-team3). At 31
-min it was in the final review; 2 false send-backs on "tsc/oxlint/prettier clean" (fixed by 0a806f2fb)
-and an absence item ("no duplicate helper"). NEXT: grade it (drive.log / outcome.txt; measure with
-bin/measure_nexus.py), compare to 41.7m, then decide with the user on one more T5 run (~4-5% Gemini).
+**T5 team v3 (runs/T5-team3, a6d4b9f8d + f786ea263 live):** 20/21 (same failing test as v2), 39.8 min
+to the final answer (v2 41.7), $4.06 Claude (v2 $3.11, plain $4.89), Gemini 2.1M tokens. Step 1 went
+out at 4.5 min (v2 5.2) and steps 2-3 went out as soon as the previous passed; still 6 Jev
+send-backs, all false: 3 on "tsc/oxlint/prettier clean" (evidence showed only the last lint command
+of the current turn), 2 on "_read_grok_auth has no regex" (focus clipping kept frequent names, not
+the function), 1-2 on an ambiguous try-block item. Fixed after the run: 5a447f0f0 (evidence: last
+run of EACH lint/type-check tool across the worker session; chained "pytest && ruff" counts as both)
+and dd7879fce (focus: names weighted by rarity; a function the checklist names is kept whole when
+it fits). Replays on the final tree: lint item 0.25->0.98, _read_grok_auth 0.13->0.94, Grok 500
+0.52->0.93, shared helper 0.30->0.66; T5-team2 fixes unchanged (0.97). Replays of early rows on the
+FINAL tree are not faithful (compare with the HEAD code, as done here, before calling a regression).
+NEXT (user decides): one more T5 team run to measure 5a447f0f0 + dd7879fce together (Gemini 3.7 FM).
 
 **Harness:** scratchpad bench4/: drive.py (CAP_S env, token refresh on 401, kills leftover agy),
 nexus_ab.sh <T> <worker:model> <arm>..., plain_seq.sh, replay_checklist.py <run dir> <nth check>
