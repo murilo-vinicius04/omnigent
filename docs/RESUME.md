@@ -464,6 +464,17 @@ compare time and spend only: plain 22.2m $4.89 · v1 44.1m $2.20 · v2 41.7m $3.
 · v4 29.3m $3.33 (Gemini 1.36M). Chart: bench4/t5_chart.py. v4 timeline: step 1 out at 4.9m, step 2
 12.8, step 3 17.8, one fix round 24.9-28.5, final 29.3; brain idle-waiting on Gemini most of it.
 
+**09-26 evening — quota per run (bench4/account.py: each run's OWN tokens and worker minutes, since
+other sessions share the quota bars) + regression reg3 (T1/T3/T4, dd7879fce + 5a447f0f0 live; T3/T4
+also b8d69d344).** Pro 5h % per task, plain vs team: T5 45 vs 32 · T4 18-22 vs 12-18 · T1 14 vs
+10-12 · T3 6 vs 8. Gemini week % per team task: 0.7 (T3) to 2.2 (T5). Time: team 1.3x (T5) to 3x
+(T3) slower. reg3: T1 7/8 21.2m (real miss: wakes the parent once per child, not per streak; 5
+send-backs, 3 false on a repo lint script Jev could not see -> fixed b8d69d344, replay 0.47->0.98),
+T3 5/5 9.1m, T4 13/14 19.2m (real miss: manual add drops cached tokens; Jev passed all 3 checks).
+Chart: bench4/quota_chart.py. Takeaway: the team saves Pro quota only on big tasks; small ones
+cost as much or more and take 2-3x longer. Biggest remaining team cost is the brain's output (orders,
+check-ins) and cache reads per turn, not cache writes.
+
 **Harness:** scratchpad bench4/: drive.py (CAP_S env, token refresh on 401, kills leftover agy),
 nexus_ab.sh <T> <worker:model> <arm>..., plain_seq.sh, replay_checklist.py <run dir> <nth check>
 (re-asks Jev on the final tree), dump.py, timeline.py. Profiling snippet: per-worker-turn spans from
