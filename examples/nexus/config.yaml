@@ -15,6 +15,11 @@ spawn: true
 executor:
   type: omnigent
   context_window: 1000000
+  # Esforço padrão do cérebro (o seletor da UI ainda manda). Sem isto ele
+  # herda o effortLevel do ~/.claude/settings.json (xhigh), que em 09-26
+  # dobrou o custo de Claude nas tarefas pequenas sem ganho de nota:
+  # T3 7.7% -> 5.4% da janela 5h do Pro, T1 11.6% -> 8.9%, ambos nota cheia.
+  reasoning_effort: high
   config:
     harness: claude-sdk
     # Sem modelo fixado de propósito, por dois motivos: fixar aqui puxaria o
