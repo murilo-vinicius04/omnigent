@@ -475,6 +475,15 @@ Chart: bench4/quota_chart.py. Takeaway: the team saves Pro quota only on big tas
 cost as much or more and take 2-3x longer. Biggest remaining team cost is the brain's output (orders,
 check-ins) and cache reads per turn, not cache writes.
 
+**09-27 — the team's small-task saving shrank because the BRAIN got ~2x dearer, not plain Opus.**
+Pro 5h % per run, 09-25 night -> 09-26: T1 5.3 -> 10.5-11.6, T3 5.9 -> 7.7-8.0, T4 5.9-6.7 ->
+11.5-18.3; scores equal or better at night (T1 8/8, T3 5/5, T4 14/14 x4). Likely cause: the brain
+runs unpinned ("host default") and reads ~/.claude/settings.json (changed 09-25 13:20, now xhigh for
+opus-5-5), while plain arms are pinned --effort high. At night the unpinned brain spent less than
+one pinned to high (T4 12.8k vs 19.4k output); T3 kept the same 21 brain calls but 1.8x output
+(longer thinking); T4 also ran 2-3x more review calls. NEXT (user's go, Gemini 3.7 FM): T3 + T1 with
+ARENA_BRAIN_EFFORT=high to confirm, then pin the brain's effort in the nexus config.
+
 **Harness:** scratchpad bench4/: drive.py (CAP_S env, token refresh on 401, kills leftover agy),
 nexus_ab.sh <T> <worker:model> <arm>..., plain_seq.sh, replay_checklist.py <run dir> <nth check>
 (re-asks Jev on the final tree), dump.py, timeline.py. Profiling snippet: per-worker-turn spans from
