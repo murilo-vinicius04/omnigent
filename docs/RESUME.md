@@ -487,6 +487,15 @@ T1-hi1, ARENA_BRAIN_EFFORT=high): T3 5/5 6.7m 5.4% Pro 5h (11.0k output, = night
 7b5615404 (executor.reasoning_effort: high; UI picker still overrides). LIVE ONLY AFTER a server
 restart (bundle change). Open: the night default spent LESS than high on T4 (12.8k vs 19.4k output),
 so night was probably below high; medium is untested.
+Long-task check on the live default (server restarted 12:20 09-27, runs/T4-hi2, T5-hi2): T4 13/14
+15.5m 11.2% Pro 5h (xhigh 18.3%); T5 21/21 33.1m 23.4% (xhigh 29.3m 32.1%; brain chose 4 steps + a
+fix round instead of 3). No quality regression; T5 +3.8 min is one run. T4's miss every time on the
+team is test_manual_add_is_tagged_by_source: the spec gives `add [--input N] [--cached N] [--output N]`
+with no rule on whether --cached is inside --input (OpenAI's own fields) or on top (the gold). Arms
+that read OpenAI semantics count 0 for a lone --cached. Unfair test candidate; ask before changing.
+account.py now ignores items outside [start, end]: a server restart RE-POSTS finished worker
+transcripts with new timestamps (T3-hi1 replayed at 12:21 in 3 s, plus a MODEL_PLACEHOLDER_M299
+usage row of 252k tokens) -- the known forwarder re-post bug, now shown to add bogus usage too.
 
 **Harness:** scratchpad bench4/: drive.py (CAP_S env, token refresh on 401, kills leftover agy),
 nexus_ab.sh <T> <worker:model> <arm>..., plain_seq.sh, replay_checklist.py <run dir> <nth check>
