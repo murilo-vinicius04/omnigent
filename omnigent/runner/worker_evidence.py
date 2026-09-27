@@ -54,7 +54,10 @@ _TEST_COMMAND = re.compile(
 # send-backs on a clean `tsc -b` Jev could not see).
 _CHECK_COMMAND = re.compile(
     r"\b(ruff|mypy|pyright|flake8|pylint|black --check|tsc|oxlint|eslint|prettier|biome"
-    r"|npm run (lint|typecheck|type-check|check)|pnpm (lint|typecheck))\b"
+    r"|npm run (lint|typecheck|type-check|check)|pnpm (lint|typecheck)"
+    # A repo's own lint script, e.g. dev/lint/lint_no_global_asyncio_patch.py
+    # (09-26 T1: run four times, clean, yet three send-backs on "it exits 0").
+    r"|[\w./-]*lint[\w-]*\.(?:py|sh|js|mjs|cjs|ts))\b"
 )
 _CHECK_TAIL_CHARS = 600
 _MAX_CHECKS_SHOWN = 6
@@ -151,7 +154,7 @@ def _check_tools(command: str) -> list[str]:
         if match is None:
             continue
         ruff = _RUFF_SUBCOMMAND.search(segment)
-        tool = f"ruff {ruff.group(1)}" if ruff else match.group(1)
+        tool = f"ruff {ruff.group(1)}" if ruff else os.path.basename(match.group(1))
         if tool not in tools:
             tools.append(tool)
     return tools

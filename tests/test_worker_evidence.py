@@ -127,6 +127,24 @@ def test_each_check_tool_shows_its_own_last_run_even_from_an_earlier_turn() -> N
     assert "- ruff check, ruff format: pytest -q && ruff check" in evidence
 
 
+def test_a_repo_lint_script_counts_as_a_check() -> None:
+    items = [
+        _user("fix it"),
+        _call(
+            "1",
+            "run_command",
+            CommandLine=".venv/bin/python dev/lint/lint_no_global_asyncio_patch.py tests/a.py",
+        ),
+        _out("1", ""),
+    ]
+
+    evidence = extract_evidence(items)
+
+    assert evidence is not None
+    assert "- lint_no_global_asyncio_patch.py: .venv/bin/python dev/lint/" in evidence
+    assert "(none; most linters print nothing when clean)" in evidence
+
+
 def test_a_turn_with_no_lint_or_type_check_adds_no_line_for_it() -> None:
     evidence = extract_evidence([_user("x"), _call("1", "terminal", command="pytest -q")])
 
