@@ -50,6 +50,7 @@ import asyncio
 import json
 import logging
 import re
+import secrets
 import time
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -962,13 +963,114 @@ async def collect_plan_limits() -> dict[str, Any]:
     return payload
 
 
+#: How long the route waits on a host's reading before trying the next one.
+#: A host older than the ``host.plan_limits`` frame ignores it, so this is
+#: also how long such a host delays the fallback.
+_HOST_PLAN_LIMITS_TIMEOUT_S = 5.0
+
+#: Per-user copy of the last host reading. The host keeps its own
+#: ``_CACHE_TTL_SECONDS`` cache, so this only saves the tunnel round-trip for
+#: a user with several tabs polling.
+_user_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+#: A user with no answering host gets an empty reading, cached briefly so a
+#: host that comes online shows up without waiting out the full TTL.
+_EMPTY_CACHE_TTL_SECONDS = 15.0
+
+
+async def _request_host_plan_limits(host_registry: Any, host_conn: Any) -> dict[str, Any] | None:
+    """Ask one host for plan limits read with its own logins.
+
+    :returns: The host's ``/plan-limits`` payload, or ``None`` when the host
+        dropped, did not answer in time (e.g. a build without this frame), or
+        reported a failure.
+    """
+    from omnigent.host.frames import HostPlanLimitsFrame, encode_host_frame
+
+    request_id = secrets.token_hex(8)
+    future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+    host_conn.pending_plan_limits[request_id] = future
+    try:
+        host_registry.send_text(
+            host_conn, encode_host_frame(HostPlanLimitsFrame(request_id=request_id))
+        )
+        result = await asyncio.wait_for(future, timeout=_HOST_PLAN_LIMITS_TIMEOUT_S)
+    except (ConnectionError, TimeoutError) as exc:
+        logger.debug("host %s plan-limit read unavailable: %r", host_conn.host_id, exc)
+        return None
+    finally:
+        host_conn.pending_plan_limits.pop(request_id, None)
+    payload = result.get("payload")
+    if result.get("status") != "ok" or not isinstance(payload, dict):
+        logger.debug("host %s plan-limit read failed: %s", host_conn.host_id, result.get("error"))
+        return None
+    return payload
+
+
+def _owns_server_machine_host(request: Request, user_id: str) -> bool:
+    """Whether *user_id* owns the host identity of the machine the server runs on.
+
+    Only that user's vendor logins are the ones the server process can read
+    itself, so only they may fall back to the server-side reading.
+    """
+    from omnigent.host.identity import load_host_identity_if_present
+
+    identity = load_host_identity_if_present()
+    host_store = getattr(request.app.state, "host_store", None)
+    if identity is None or host_store is None:
+        return False
+    host = host_store.get_host(identity.host_id)
+    return host is not None and host.user_id == user_id
+
+
+async def plan_limits_for_user(request: Request, user_id: str) -> dict[str, Any]:
+    """Plan limits for the logins *user_id*'s sessions actually run on.
+
+    The server process can only read its own OS user's credential files, so on
+    a multi-user server it would show everyone the operator's limits. Instead
+    ask the user's own online hosts (newest connection first), which read their
+    OS user's logins. With no host answering, fall back to the server-side
+    reading only for the owner of the server machine's own host; anyone else
+    gets no providers, which the tray renders as nothing rather than someone
+    else's numbers.
+    """
+    now = time.monotonic()
+    cached = _user_cache.get(user_id)
+    if cached is not None and now < cached[0]:
+        return cached[1]
+
+    host_registry = getattr(request.app.state, "host_registry", None)
+    if host_registry is not None:
+        conns = [
+            conn
+            for host_id in host_registry.online_host_ids()
+            if (conn := host_registry.get(host_id)) is not None and conn.owner == user_id
+        ]
+        conns.sort(key=lambda conn: conn.connected_at, reverse=True)
+        for conn in conns:
+            payload = await _request_host_plan_limits(host_registry, conn)
+            if payload is not None:
+                _user_cache[user_id] = (now + _CACHE_TTL_SECONDS, payload)
+                return payload
+
+    if await asyncio.to_thread(_owns_server_machine_host, request, user_id):
+        return await collect_plan_limits()
+
+    payload = {"providers": [], "fetched_at": time.time()}
+    _user_cache[user_id] = (now + _EMPTY_CACHE_TTL_SECONDS, payload)
+    return payload
+
+
 def create_plan_limits_router(*, auth_provider: AuthProvider | None = None) -> APIRouter:
     """Build the router for ``GET /plan-limits``."""
     router = APIRouter()
 
     @router.get("/plan-limits")
     async def read_plan_limits(request: Request) -> dict[str, Any]:
-        require_user(request, auth_provider)
-        return await collect_plan_limits()
+        user_id = require_user(request, auth_provider)
+        if auth_provider is None or not user_id:
+            # Single-user server: its OS user is the only one there is.
+            return await collect_plan_limits()
+        return await plan_limits_for_user(request, user_id)
 
     return router

@@ -74,6 +74,8 @@ class HostFrameKind(str, Enum):
     FS_RESULT = "host.fs_result"
     MODEL_OPTIONS = "host.model_options"
     MODEL_OPTIONS_RESULT = "host.model_options_result"
+    PLAN_LIMITS = "host.plan_limits"
+    PLAN_LIMITS_RESULT = "host.plan_limits_result"
     IMPORT_LOCAL = "host.import_local"
     IMPORT_LOCAL_BY_ID = "host.import_local_by_id"
     IMPORT_LOCAL_SESSION = "host.import_local_session"
@@ -873,6 +875,34 @@ class HostModelOptionsResultFrame:
 
 
 @dataclass
+class HostPlanLimitsFrame:
+    """Server → host: read subscription plan limits with the host's own logins.
+
+    Plan windows belong to whoever is signed in to each vendor CLI, which is
+    the host's OS user — not the server's. Asking the host keeps a multi-user
+    server from showing every user the server operator's limits, and keeps
+    each user's OAuth token on their own host.
+    """
+
+    request_id: str
+
+
+@dataclass
+class HostPlanLimitsResultFrame:
+    """Host → server: plan limits read on that machine.
+
+    :param payload: The ``/plan-limits`` body, e.g.
+        ``{"providers": [...], "fetched_at": 1790000000.0}``. ``None`` when
+        *status* is not ``"ok"``.
+    """
+
+    request_id: str
+    status: str
+    payload: _JsonObject | None = None
+    error: str | None = None
+
+
+@dataclass
 class HostImportedLocalSession:
     """One local transcript the host read, normalized for import.
 
@@ -994,6 +1024,8 @@ HostFrame = (
     | HostFsResultFrame
     | HostModelOptionsFrame
     | HostModelOptionsResultFrame
+    | HostPlanLimitsFrame
+    | HostPlanLimitsResultFrame
     | HostImportLocalFrame
     | HostImportLocalByIdFrame
     | HostImportLocalSessionFrame
@@ -1360,6 +1392,23 @@ def encode_host_frame(frame: HostFrame) -> str:
                 "routable_models": frame.routable_models,
             }
         )
+    if isinstance(frame, HostPlanLimitsFrame):
+        return _encode_payload(
+            {
+                "kind": HostFrameKind.PLAN_LIMITS.value,
+                "request_id": frame.request_id,
+            }
+        )
+    if isinstance(frame, HostPlanLimitsResultFrame):
+        return _encode_payload(
+            {
+                "kind": HostFrameKind.PLAN_LIMITS_RESULT.value,
+                "request_id": frame.request_id,
+                "status": frame.status,
+                "payload": frame.payload,
+                "error": frame.error,
+            }
+        )
     if isinstance(frame, HostImportLocalFrame):
         return _encode_payload(
             {
@@ -1532,6 +1581,10 @@ def _decode_known_host_frame(
             return _decode_model_options(msg)
         case HostFrameKind.MODEL_OPTIONS_RESULT:
             return _decode_model_options_result(msg)
+        case HostFrameKind.PLAN_LIMITS:
+            return HostPlanLimitsFrame(request_id=_required_str(msg, "request_id"))
+        case HostFrameKind.PLAN_LIMITS_RESULT:
+            return _decode_plan_limits_result(msg)
         case HostFrameKind.IMPORT_LOCAL:
             return _decode_import_local(msg)
         case HostFrameKind.IMPORT_LOCAL_BY_ID:
@@ -2031,6 +2084,19 @@ def _decode_fs_result(msg: _JsonObject) -> HostFsResultFrame:
         payload=payload,
         error_status=error_status,
         error_code=_optional_nullable_str(msg, "error_code"),
+        error=_optional_nullable_str(msg, "error"),
+    )
+
+
+def _decode_plan_limits_result(msg: _JsonObject) -> HostPlanLimitsResultFrame:
+    """Decode a host.plan_limits_result frame."""
+    payload = msg.get("payload")
+    if payload is not None and not isinstance(payload, dict):
+        raise ValueError("frame field must be a JSON object or null: 'payload'")
+    return HostPlanLimitsResultFrame(
+        request_id=_required_str(msg, "request_id"),
+        status=_required_str(msg, "status"),
+        payload=payload,
         error=_optional_nullable_str(msg, "error"),
     )
 

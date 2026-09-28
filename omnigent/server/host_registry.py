@@ -259,6 +259,8 @@ class HostConnection:
         ``error_code``, and ``error``.
     :param pending_model_options: Per-``request_id`` futures for pre-launch
         model catalogs resolved by the selected host.
+    :param pending_plan_limits: Per-``request_id`` futures for plan-limit
+        readings taken with the host's own vendor logins.
     """
 
     workspace_id: int
@@ -313,6 +315,9 @@ class HostConnection:
         default_factory=dict,
     )
     pending_model_options: dict[str, asyncio.Future[dict[str, Any]]] = field(
+        default_factory=dict,
+    )
+    pending_plan_limits: dict[str, asyncio.Future[dict[str, Any]]] = field(
         default_factory=dict,
     )
     # Import streams one session per frame, so the tunnel pushes each onto a

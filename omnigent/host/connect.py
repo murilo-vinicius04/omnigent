@@ -70,6 +70,8 @@ from omnigent.host.frames import (
     HostListWorktreesResultFrame,
     HostModelOptionsFrame,
     HostModelOptionsResultFrame,
+    HostPlanLimitsFrame,
+    HostPlanLimitsResultFrame,
     HostRemoveWorktreeFrame,
     HostRemoveWorktreeResultFrame,
     HostRunnerExitedFrame,
@@ -2981,6 +2983,20 @@ class HostProcess:
             error="the claude model probe failed — see the host log",
         )
 
+    async def _handle_plan_limits(self, frame: HostPlanLimitsFrame) -> HostPlanLimitsResultFrame:
+        """Read plan limits with this host's own vendor logins.
+
+        Runs the same collector the server's ``/plan-limits`` route uses, but
+        here, so the credential files it reads (``~/.claude`` and friends)
+        are the host OS user's. Imported lazily: the collector lives with the
+        server routes and pulls in FastAPI, which a host that never gets this
+        frame has no reason to load.
+        """
+        from omnigent.server.routes.plan_limits import collect_plan_limits
+
+        payload = await collect_plan_limits()
+        return HostPlanLimitsResultFrame(request_id=frame.request_id, status="ok", payload=payload)
+
     @staticmethod
     def _dispatch_fs_op(
         reader: object,
@@ -4095,6 +4111,17 @@ class HostProcess:
                     error=f"model options resolution crashed for {frame.harness!r}",
                 )
             await ws.send(encode_host_frame(options_result))
+        elif isinstance(frame, HostPlanLimitsFrame):
+            try:
+                limits_result = await self._handle_plan_limits(frame)
+            except Exception:
+                _logger.exception("Plan limits read crashed")
+                limits_result = HostPlanLimitsResultFrame(
+                    request_id=frame.request_id,
+                    status="failed",
+                    error="plan limits read crashed — see the host log",
+                )
+            await ws.send(encode_host_frame(limits_result))
         elif isinstance(frame, (HostImportLocalFrame, HostImportLocalByIdFrame)):
             # Streams one host.import_local_session per session (reads run off the
             # event loop inside), then a terminal host.import_local_done.
