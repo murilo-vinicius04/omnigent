@@ -15,7 +15,11 @@ git -C "$REPO" archive ${START[$T]:-${GOLD[$T]}^} | tar -x -C $D/tree
 # arena (other tasks' hidden tests) and the handoff notes, and give the tree a venv
 # without the editable omnigent install, whose finder leads to the live checkout.
 if [ "${ARENA_ISOLATE:-0}" = "1" ]; then
-  rm -rf $D/tree/dev/benchmarks $D/tree/docs/RESUME.md
+  rm -rf $D/tree/dev/benchmarks $D/tree/docs/RESUME.md $D/tree/docs/FRIENDLY_LAYER_SESSION.md
+  # Per-task extra paths that describe this bug's cause (listed in evidence/<task>/STRIP).
+  [ -f $ARENA/evidence/$T/STRIP ] && (cd $D/tree && xargs -a $ARENA/evidence/$T/STRIP rm -rf --)
+  # What the person would hand over with the report (logs, ps output), sanitized.
+  [ -d $ARENA/evidence/$T/bug-report ] && cp -r $ARENA/evidence/$T/bug-report $D/tree/bug-report
   ln -s "${ARENA_VENV:?ARENA_VENV must name the isolated venv}" $D/tree/.venv
 else
   ln -s $REPO/.venv $D/tree/.venv
