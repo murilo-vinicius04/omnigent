@@ -96,7 +96,10 @@ def test_usage_delta_records_only_openai_models() -> None:
 
 
 def test_manual_add_is_tagged_by_source(capsys: pytest.CaptureFixture[str]) -> None:
-    assert budget._main(["add", "gpt-5.6-terra", "--cached", "37598", "--output", "2004"]) == 0
+    # [fairness] no lone --cached: the spec never says whether --cached is part of
+    # --input (OpenAI's own usage fields) or added on top (the gold); arms that read
+    # it OpenAI's way counted 0 for it. --input alone means the same under both.
+    assert budget._main(["add", "gpt-5.6-terra", "--input", "37598", "--output", "2004"]) == 0
     bucket = budget.read_day()["gpt-5.6-terra"]
     assert bucket["tokens"] == 39_602
     assert bucket["by_source"] == {"manual": 39_602}
