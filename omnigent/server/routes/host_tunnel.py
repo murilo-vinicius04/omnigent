@@ -42,6 +42,7 @@ from omnigent.host.frames import (
     HostListDirResultFrame,
     HostListWorktreesResultFrame,
     HostModelOptionsResultFrame,
+    HostPlanLimitsResultFrame,
     HostRemoveWorktreeResultFrame,
     HostRunnerExitedFrame,
     HostRunnerStatusResultFrame,
@@ -762,6 +763,17 @@ async def _receive_loop(
                         "status": frame.status,
                         "models": frame.models,
                         "routable_models": frame.routable_models,
+                        "error": frame.error,
+                    }
+                )
+            continue
+        if isinstance(frame, HostPlanLimitsResultFrame):
+            limits_future = conn.pending_plan_limits.pop(frame.request_id, None)
+            if limits_future is not None and not limits_future.done():
+                limits_future.set_result(
+                    {
+                        "status": frame.status,
+                        "payload": frame.payload,
                         "error": frame.error,
                     }
                 )
