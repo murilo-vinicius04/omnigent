@@ -418,6 +418,53 @@ Super empty.
 3. Rotate: OpenRouter key and HF token both appeared in chat. OpenRouter balance ≈ -$0.02 (key cap $1).
 4. Friend's PC offline — needs `git pull` + server restart for the video fix.
 
+## 2026-09-29 — READ FIRST: harder benchmark (bug-hunt set H1-H4), isolation, Sonnet 5.5
+
+**Why:** T1-T5 saturated (every arm 21/21 on T5, 14/14 on T4 once the unfair tests were fixed), so
+scores no longer separated setups. User: "build it, use real prompts from me, do not give away the
+task... make sure the model is not cheating and it's isolated".
+
+**The set (83899e809):** four real bugs of this project, stated only in the person's own words +
+the evidence they would hand over (sanitized real logs / stored items in `evidence/H*/bug-report`,
+copied into the tree as `bug-report/`), hidden tests through entry points that exist at start,
+each rejecting the plausible wrong fixes (verified by applying them), gold full / start 0
+(calibrated twice): H1 host died (0be307de0, 3 tests), H2 compaction undone (842f2acca, 2), H3
+"still checking" starting before the real wrong fix 6c8997b26 (9db4ba9be from 6528e1c86, 3), H4 video
+in idle chat (a547fa85d, 2). Known weakness: H3 also passes with a blind ~1.5 s sleep.
+
+**Isolation:** H* trees are always isolated (mktree: no dev/benchmarks, docs/RESUME.md,
+docs/FRIENDLY_LAYER_SESSION.md; archive = no git history; `.venv` -> `~/nexus-bench/venv`, a copy of
+the live venv WITHOUT the editable omnigent, plus opentelemetry-sdk). Plain arms run in
+`~/nexus-bench/sandbox.sh` (bwrap: /home hidden except the tree, venv, node, uv pythons and the Claude
+credentials file; /tmp and pids private; clearenv) with no web tools. Nexus arms cannot be
+sandboxed (the host spawns brain tools and workers), so `~/nexus-bench/audit.py` scans every tool
+call of a run (plain stream, brain + worker items, Claude workers' transcripts) and TAINTS reads of
+other checkouts, transcripts, Omnigent state, notes, other runs, git remotes/GitHub, web tools, or
+foreign sessions. Verified on a fake cheating run; all real runs so far CLEAN.
+
+**Screening, plain Sonnet 5.5 low, sandboxed:** H1 2/3 (1.1 min, found the stale-pid half, missed the
+unpolled zygote), H2 0/2 (trimmed records = symptom fix), H3 2/3 (found the timing, fell into the
+own-messages trap), H4 0/2 (host-tunnel shortcut, dies >10 MiB). All four discriminate.
+
+**Other results 09-29 (one run each):** Sonnet 5.5 low as the nexus WORKER on T4: 14/14 6.6 min ~12% Pro
+5h (brain 7.3 + worker ~4.9 est. by price). Plain Sonnet 5.5 on T4: low 14/14 3.4 min ~2.7%, high
+14/14 4.8 min ~8.8% (both pass the ORIGINAL manual-add test; the Gemini team failed it every time --
+report T4 on both test versions, 218a36a25). Jev ablation (Gemini worker, brain high): T4 without Jev
+13/14 orig / 14 fixed, 12.7 min 7.9% (with Jev 15.5 min 11.2%); T5 without Jev 20/21 -- a REAL
+double-count bug (test_native_reports_count_their_growth_once) -- 38.4 min 27.4% (with Jev 21/21
+33.1 min 23.4%).
+
+**Harness now lives in `~/nexus-bench`** (the /tmp copy died in the 09-27 shutdown; rebuilt from the
+transcript archive, REBUILD.md). New: plain_seq.sh, sandbox.sh, audit.py, nojev_run.sh (moves the Jev
+flag files aside and restores them on exit), account.py counts Claude workers from their transcripts
+and plain Sonnet by price.
+
+**Also found:** the Claude plan-limits tray freezes when api.anthropic.com/api/oauth/usage returns 429
+with retry-after 0 (140 times since 09-28); the server retries every minute. The token-ledger timer
+(claude-history-archive) did not come back after the reboot (ledger stops 09-27 13:24).
+NEXT (user decides): which arms to run on H1-H4 (plain Opus, plain Sonnet high, team Gemini+Jev, team
+Sonnet worker+Jev, team without Jev), x2 each.
+
 ## 2026-09-26 — READ FIRST: long-task speed of the nexus team (supersedes the 09-25 notes below)
 
 **Goal (user):** keep Gemini 3.7 Flash Medium as the worker (the point is cutting Claude quota; plain
