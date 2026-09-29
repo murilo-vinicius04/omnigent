@@ -31,6 +31,9 @@ BRAIN = os.environ.get("ARENA_BRAIN") or "claude-opus-5"
 # ARENA_BRAIN_EFFORT pins the brain's reasoning effort; unset, the brain inherits the
 # host's Claude settings (effortLevel in ~/.claude/settings.json).
 EFFORT = os.environ.get("ARENA_BRAIN_EFFORT")
+# ARENA_WORKER_EFFORT sets the worker's effort (the Worker control's label); unset,
+# the worker runs its own default.
+WORKER_EFFORT = os.environ.get("ARENA_WORKER_EFFORT")
 D = f"{WORK}/runs/{T}-{A}"
 subprocess.run([str(ARENA / "bin" / "mktree.sh"), T, A], check=True)
 S = "http://127.0.0.1:6767"
@@ -55,7 +58,8 @@ j = httpx.patch(
     timeout=60,
     json={
         "model_override": BRAIN,
-        "labels": {"team.worker": W, "team.worker_model": M},
+        "labels": {"team.worker": W, "team.worker_model": M,
+                   **({"team.worker_effort": WORKER_EFFORT} if WORKER_EFFORT else {})},
         **({"reasoning_effort": EFFORT} if EFFORT else {}),
     },
 ).json()
