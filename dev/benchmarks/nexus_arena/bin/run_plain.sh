@@ -20,6 +20,6 @@ fi
 D=$WORK/runs/$T-$A; cd $D/tree
 date -Iseconds > $D/start.txt
 # ARENA_SANDBOX names a wrapper (<wrapper> <tree> <cmd...>) that confines the arm to its tree.
-timeout 5400 ${ARENA_SANDBOX:+$ARENA_SANDBOX $D/tree} claude -p --model ${M[${A%%-*}]} --effort $EFFORT --permission-mode bypassPermissions \
+timeout 5400 ${ARENA_SANDBOX:+$ARENA_SANDBOX $D/tree} claude -p --model ${M[${A%%-*}]} --effort $EFFORT --permission-mode bypassPermissions ${ARENA_SANDBOX:+--disallowedTools WebFetch WebSearch} \
   --output-format stream-json --verbose < $D/task.md > $D/run.jsonl 2> $D/err.txt
 echo $? > $D/exit.txt; date -Iseconds > $D/end.txt
