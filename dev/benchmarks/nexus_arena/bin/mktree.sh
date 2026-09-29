@@ -11,7 +11,15 @@ declare -A GOLD=([T1]=722d842da [T2]=ad763b2db [T3]=02628e770 [T4]=46a0c437a [T5
 declare -A START=([T5]=602f11731)
 T=$1; A=$2; D=$WORK/runs/$T-$A; rm -rf $D; mkdir -p $D/tree
 git -C "$REPO" archive ${START[$T]:-${GOLD[$T]}^} | tar -x -C $D/tree
-ln -s $REPO/.venv $D/tree/.venv
+# ARENA_ISOLATE=1 (the bug-hunt set): nothing in the tree may point at a fix. Drop the
+# arena (other tasks' hidden tests) and the handoff notes, and give the tree a venv
+# without the editable omnigent install, whose finder leads to the live checkout.
+if [ "${ARENA_ISOLATE:-0}" = "1" ]; then
+  rm -rf $D/tree/dev/benchmarks $D/tree/docs/RESUME.md
+  ln -s "${ARENA_VENV:?ARENA_VENV must name the isolated venv}" $D/tree/.venv
+else
+  ln -s $REPO/.venv $D/tree/.venv
+fi
 cd $D/tree && git init -q && git add -A && git -c user.email=b@b -c user.name=bench -c commit.gpgsign=false commit -qm "baseline" && \
   { git cat-file -e ${GOLD[$T]} 2>/dev/null && echo "LEAK $T-$A" && exit 1 || true; }
 cp $ARENA/tasks/$T-*.md $D/task.md
@@ -19,5 +27,5 @@ cp $ARENA/tasks/$T-*.md $D/task.md
 # anything in its tree repoints it at that snapshot, and the live server then
 # imports old code. Catch it at the start of each run, while the cause is still
 # the previous run rather than a mystery a week later.
-"$ARENA/bin/venv_guard.sh" --repair
+[ "${ARENA_ISOLATE:-0}" = "1" ] || "$ARENA/bin/venv_guard.sh" --repair
 echo "$D ready"

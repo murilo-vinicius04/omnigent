@@ -19,6 +19,7 @@ fi
 "$ARENA/bin/mktree.sh" $T $A || exit 1
 D=$WORK/runs/$T-$A; cd $D/tree
 date -Iseconds > $D/start.txt
-timeout 5400 claude -p --model ${M[${A%%-*}]} --effort $EFFORT --permission-mode bypassPermissions \
+# ARENA_SANDBOX names a wrapper (<wrapper> <tree> <cmd...>) that confines the arm to its tree.
+timeout 5400 ${ARENA_SANDBOX:+$ARENA_SANDBOX $D/tree} claude -p --model ${M[${A%%-*}]} --effort $EFFORT --permission-mode bypassPermissions \
   --output-format stream-json --verbose < $D/task.md > $D/run.jsonl 2> $D/err.txt
 echo $? > $D/exit.txt; date -Iseconds > $D/end.txt
