@@ -462,8 +462,31 @@ and plain Sonnet by price.
 **Also found:** the Claude plan-limits tray freezes when api.anthropic.com/api/oauth/usage returns 429
 with retry-after 0 (140 times since 09-28); the server retries every minute. The token-ledger timer
 (claude-history-archive) did not come back after the reboot (ledger stops 09-27 13:24).
-NEXT (user decides): which arms to run on H1-H4 (plain Opus, plain Sonnet high, team Gemini+Jev, team
-Sonnet worker+Jev, team without Jev), x2 each.
+**Update 09-29 13:45 -- STATE AT COMPACTION:**
+- Running: unit `arena-sonhigh` = plain Sonnet 5.5 HIGH, sandboxed, H1..H4 in order (user asked
+  for it before the team arms). So far H1 3/3 5.1 min (low was 2/3), H2 0/2 + 2 regressions in
+  tests/test_claude_native_forwarder.py (worse than low). H3, H4 pending. After each: grade is
+  automatic; run `PYTHONPATH=~/wt/friendly-layer ~/wt/friendly-layer/.venv/bin/python
+  ~/nexus-bench/audit.py ~/nexus-bench/runs/<T>-sonnet55-high`.
+- Then (user decides): plain Opus 5.5, team Gemini+Jev, team Sonnet-worker+Jev on H1-H4 (asked
+  "Core 3", user first wanted Sonnet high). Launch plain: `systemd-run --user --unit arena-X
+  --setenv=HOME=/home/nexus --setenv=ARENA_VENV=/home/nexus/nexus-bench/venv
+  --setenv=ARENA_SANDBOX=/home/nexus/nexus-bench/sandbox.sh ~/nexus-bench/plain_seq.sh <T>
+  <arm>@<effort>` (arms: opus55, sonnet55). Team: `nexus_ab.sh <T> gemini:gemini-3.7-flash-medium
+  <arm>` or `claude:claude-sonnet-5-5` with `--setenv=ARENA_WORKER_EFFORT=low`; ALSO set
+  ARENA_VENV for H tasks (mktree needs it); audit every team run.
+- Quota 13:02: Claude 5h 48% (resets 15:20), week 24%; Gemini week 60%.
+
+**Summarizer bug fixed, 9f43de163 (NOT LIVE -- needs a server restart; user not yet asked/answered):**
+chat f4239d3f ("Get pot-rl-example URL", created 13:09) stored every message after the first with a
+`translated_text` block = the companion's routing JSON `{"forward": true, "english": "..."}` (the
+model nested its previous reply inside "english"); Claude received that JSON as the message and the
+summary, fed input_text+translated_text joined as "the question", restated the question. Fix:
+discussion._unwrap_english, validate_inbound_translation refuses/unwraps JSON, _turn_user_questions
+skips translated_text. Why only that chat is NOT known (fresh companion, 1st message fine, 2..6
+bad; other chats with routing unaffected). That chat's companion ledger
+~/.omnigent/companion/f4239d3f...json holds "summary" entries equal to the questions (may keep
+priming it). A server restart re-posts old worker transcripts + bogus usage (known bug, unfixed).
 
 ## 2026-09-26 — READ FIRST: long-task speed of the nexus team (supersedes the 09-25 notes below)
 
