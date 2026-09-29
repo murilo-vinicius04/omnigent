@@ -1,0 +1,2 @@
+tests/server/routes/test_session_download_idle_chat.py::test_after_the_first_video_plays_the_next_requests_need_no_new_runner
+tests/server/routes/test_session_download_idle_chat.py::test_video_in_an_idle_chat_downloads_whole

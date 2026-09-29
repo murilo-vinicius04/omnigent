@@ -1,0 +1,45 @@
+# 2026-09-25 22:05-22:09 (local, -03), a few minutes after the restart. New host pid 3513520.
+# Commands and output as run.
+
+$ P=$(systemctl --user show omnigent-host -p ExecMainPID --value); D=/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/omnigent-host.service
+$ echo "now $(date +%T): charged=$(cat $D/pids.current) max=$(cat $D/pids.max) zombies=$(ps -eo ppid=,stat= | awk -v p=$P '$1==p && $2~/^Z/' | wc -l)"; ps -eo ppid=,stat=,comm= | awk -v p=$P '$1==p && $2~/^Z/ {print $3}' | sort | uniq -c
+now 22:05:47: charged=119 max=117681 zombies=8
+      8 tmux
+
+# the host's direct children (pid ppid stat etimes comm)
+$ ps -eo pid,ppid,stat,comm | awk -v p=$P '$2==p && $3!~/^Z/' | head
+3514163 3513520 S    python
+3517710 3513520 Ssl  tmux
+3517717 3513520 Ss   tmux: server
+3517890 3513520 Ssl  tmux
+3522442 3513520 Ssl  tmux
+3522449 3513520 Ss   tmux: server
+3523376 3513520 Ssl  tmux
+3525548 3513520 Ssl  tmux
+$ for p in 3517710 3517890 3522442; do echo "$p: $(tr '\0' ' ' < /proc/$p/cmdline | cut -c1-120)"; done
+3517710: tmux -S /tmp/omnigent-terminal-6b1h2w6k/tmux.sock -f /dev/null set-option -g history-limit 50000 ; set-option -sq extend
+3517890: /home/user/.local/bin/tmux -S /tmp/omnigent-terminal-6b1h2w6k/tmux.sock -f /dev/null -C attach -t main
+3522442: tmux -S /tmp/omnigent-terminal-i3rxw1mr/tmux.sock -f /dev/null set-option -g history-limit 50000 ; set-option -sq extend
+
+# zombie children of the host seen over three seconds
+$ for i in 1 2 3; do ps -eo pid,ppid,stat,lstart,comm | awk -v p=$P '$2==p && $3~/^Z/'; sleep 1; done | sort -u | head
+3567558 3513520 Zs   Fri Sep 25 22:08:06 2026 tmux <defunct>
+3567565 3513520 Zs   Fri Sep 25 22:08:06 2026 tmux <defunct>
+3567589 3513520 Zs   Fri Sep 25 22:08:06 2026 tmux <defunct>
+3567594 3513520 Zs   Fri Sep 25 22:08:06 2026 tmux <defunct>
+3567607 3513520 Zs   Fri Sep 25 22:08:06 2026 tmux <defunct>
+3567613 3513520 Zs   Fri Sep 25 22:08:06 2026 tmux <defunct>
+3567652 3513520 Zs   Fri Sep 25 22:08:06 2026 tmux <defunct>
+3567653 3513520 Zs   Fri Sep 25 22:08:06 2026 tmux <defunct>
+3567671 3513520 Zs   Fri Sep 25 22:08:06 2026 tmux <defunct>
+3567673 3513520 Zs   Fri Sep 25 22:08:06 2026 tmux <defunct>
+
+# zombie count and oldest zombie age, every 5 s
+$ for i in 1 2 3 4 5 6; do z=$(ps -eo ppid=,stat=,etimes= | awk -v p=$P '$1==p && $2~/^Z/'); echo "$(date +%T) zombies=$(echo "$z" | grep -c .) oldest=$(echo "$z" | awk '{print $3}' | sort -n | tail -1)s"; sleep 5; done; echo "charged=$(cat $D/pids.current)"
+22:08:51 zombies=9 oldest=0s
+22:08:56 zombies=26 oldest=1s
+22:09:01 zombies=10 oldest=0s
+22:09:06 zombies=30 oldest=1s
+22:09:11 zombies=9 oldest=0s
+22:09:16 zombies=30 oldest=2s
+charged=125

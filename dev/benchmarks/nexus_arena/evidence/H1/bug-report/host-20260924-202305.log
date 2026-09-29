@@ -1,0 +1,219 @@
+INFO  09-24 20:23:06.009 claude_native                    ...nfig_from_entry | native-claude routing: Claude CLI login (subscription provider 'claude')
+INFO  09-24 20:23:06.024 codex_native_app_server          ...cription_launch | native-codex routing: Codex CLI login (subscription provider 'codex'; Codex is logged in)
+INFO  09-24 20:23:12.454 host.connect                     run                | Reaped 8 orphaned native bridge dir(s) from prior runs
+INFO  09-24 20:23:12.552 host.connect                     _connect_and_serve | Connecting to ws://127.0.0.1:6767/v1/hosts/1ecf4bfd24964169db2f811e69336005/tunnel
+INFO  09-24 20:23:53.510 host.connect                     _spawn_runner_proc | Forked runner via zygote (zygote pid=2166854, runner pid=2167995)
+INFO  09-24 20:23:53.511 host.connect                     _handle_launch     | Launched runner runner_token_2212693aee2532cf6df7e69f5aaf4b76 for workspace /home/user/bench/runs/run-01/tree (pid=2167995)
+INFO  09-24 21:42:54.888 host.connect                     _watch_runner      | Runner runner_token_2212693aee2532cf6df7e69f5aaf4b76 exited cleanly (code 0); no crash report
+INFO  09-24 23:05:53.526 pi_native_credentials            ...native_provider | pi-native: no omnigent-configured provider for the pi/anthropic/openai surface; Pi will use its own login.
+WARN  09-24 23:06:16.844 cli_auth                         _warn_expired_once | Stored login session for http://127.0.0.1:6767 expired on 2026-09-25 00:18:58 UTC; refresh will be attempted on the next command if possible
+INFO  09-24 23:06:16.865 cli_auth                         _refresh_locked    | Refreshed login session for http://127.0.0.1:6767
+INFO  09-24 23:06:16.874 host.connect                     _spawn_runner_proc | Forked runner via zygote (zygote pid=2166854, runner pid=2619031)
+INFO  09-24 23:06:16.875 host.connect                     _handle_launch     | Launched runner runner_token_a53971979f3989bf4d9dca30bd1d6570 for workspace /home/user (pid=2619031)
+INFO  09-24 23:06:40.879 host.connect                     _spawn_runner_proc | Forked runner via zygote (zygote pid=2166854, runner pid=2621467)
+INFO  09-24 23:06:40.880 host.connect                     _handle_launch     | Launched runner runner_token_934616d878879fd1ae5aff13479ef824 for workspace /home/user (pid=2621467)
+INFO  09-24 23:18:07.504 pi_native_credentials            ...native_provider | pi-native: no omnigent-configured provider for the pi/anthropic/openai surface; Pi will use its own login.
+INFO  09-24 23:23:58.135 pi_native_credentials            ...native_provider | pi-native: no omnigent-configured provider for the pi/anthropic/openai surface; Pi will use its own login.
+INFO  09-24 23:24:10.003 host.connect                     _spawn_runner_proc | Forked runner via zygote (zygote pid=2166854, runner pid=2814528)
+INFO  09-24 23:24:10.004 host.connect                     _handle_launch     | Launched runner runner_token_202c452a9e7d5908cfbbb501b201de36 for workspace /home/user (pid=2814528)
+INFO  09-24 23:24:10.877 host.connect                     _spawn_runner_proc | Forked runner via zygote (zygote pid=2166854, runner pid=2814536)
+INFO  09-24 23:24:10.878 host.connect                     _handle_launch     | Launched runner runner_token_a495f21c06e556889aecfc82e0bbb95c for workspace /home/user (pid=2814536)
+INFO  09-24 23:24:10.879 host.connect                     _stop_and_log      | Stopped superseded runner runner_token_202c452a9e7d5908cfbbb501b201de36 for session 252e5464b9b6a92d5df8cb0961981374
+WARN  09-24 23:24:11.383 host.connect                     _watch_runner      | Runner runner_token_a495f21c06e556889aecfc82e0bbb95c died unexpectedly: runner process exited with code 120 (log on host: ~/.omnigent/logs/runner/runner-252e5464b9b6a92d5df8cb0961981374-20260924-232410-860553.log)
+INFO  09-24 23:43:14.056 pi_native_credentials            ...native_provider | pi-native: no omnigent-configured provider for the pi/anthropic/openai surface; Pi will use its own login.
+INFO  09-24 23:46:39.694 pi_native_credentials            ...native_provider | pi-native: no omnigent-configured provider for the pi/anthropic/openai surface; Pi will use its own login.
+INFO  09-24 23:47:55.386 pi_native_credentials            ...native_provider | pi-native: no omnigent-configured provider for the pi/anthropic/openai surface; Pi will use its own login.
+INFO  09-25 00:07:14.031 host.connect                     _spawn_runner_proc | Forked runner via zygote (zygote pid=2166854, runner pid=3112581)
+INFO  09-25 00:07:14.032 host.connect                     _handle_launch     | Launched runner runner_token_8e9af07afd923f38d10b960c0530ad05 for workspace /home/user/bench/runs/run-02/tree (pid=3112581)
+WARN  09-25 00:18:53.653 host.connect                     _spawn_runner_proc | Runner zygote unavailable (zygote fork failed: omnigent changed on disk after the zygote imported its graph; refusing to fork a mixed-version runner); disabling it and falling back to direct spawn
+INFO  09-25 00:18:53.657 host.connect                     _handle_launch     | Launched runner runner_token_14c52684c93d30274aa9d47572420e6f for workspace /home/user/bench/runs/run-03/tree (pid=3286208)
+INFO  09-25 00:38:44.215 host.connect                     _handle_launch     | Launched runner runner_token_06895c82928dde465c6cf7e312c5e0e6 for workspace /home/user/bench/runs/run-04/tree (pid=3660297)
+WARN  09-25 01:05:06.379 host.connect                     run                | Host tunnel disconnected: received 1012 (service restart); then sent 1012 (service restart). Reconnecting in 0.5s (recycle — prompt reconnect)
+INFO  09-25 01:05:06.883 host.connect                     _connect_and_serve | Connecting to ws://127.0.0.1:6767/v1/hosts/1ecf4bfd24964169db2f811e69336005/tunnel
+WARN  09-25 01:05:06.884 host.connect                     run                | Host tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 6767). Reconnecting in 0.5s
+INFO  09-25 01:05:07.389 host.connect                     _connect_and_serve | Connecting to ws://127.0.0.1:6767/v1/hosts/1ecf4bfd24964169db2f811e69336005/tunnel
+WARN  09-25 01:05:07.390 host.connect                     run                | Host tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 6767). Reconnecting in 1.0s
+INFO  09-25 01:05:08.421 host.connect                     _connect_and_serve | Connecting to ws://127.0.0.1:6767/v1/hosts/1ecf4bfd24964169db2f811e69336005/tunnel
+WARN  09-25 01:05:08.428 host.connect                     run                | Host tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 6767). Reconnecting in 2.7s
+INFO  09-25 01:05:11.174 host.connect                     _connect_and_serve | Connecting to ws://127.0.0.1:6767/v1/hosts/1ecf4bfd24964169db2f811e69336005/tunnel
+WARN  09-25 01:05:11.174 host.connect                     run                | Host tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 6767). Reconnecting in 3.0s
+INFO  09-25 01:05:14.179 host.connect                     _connect_and_serve | Connecting to ws://127.0.0.1:6767/v1/hosts/1ecf4bfd24964169db2f811e69336005/tunnel
+WARN  09-25 01:05:14.180 host.connect                     run                | Host tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 6767). Reconnecting in 3.0s
+INFO  09-25 01:05:17.182 host.connect                     _connect_and_serve | Connecting to ws://127.0.0.1:6767/v1/hosts/1ecf4bfd24964169db2f811e69336005/tunnel
+INFO  09-25 01:06:23.998 host.connect                     _handle_launch     | Launched runner runner_token_a1486a54e90bec38e45a1e91b34c52ad for workspace /home/user/bench/runs/run-05/tree (pid=220074)
+INFO  09-25 01:27:24.430 host.connect                     _handle_launch     | Launched runner runner_token_85b8e33706d30644831251296ddcbf7d for workspace /home/user/bench/runs/run-06/tree (pid=1503245)
+WARN  09-25 01:46:15.077 host.connect                     run                | Host tunnel disconnected: received 1012 (service restart); then sent 1012 (service restart). Reconnecting in 0.5s (recycle — prompt reconnect)
+INFO  09-25 01:46:15.578 host.connect                     _connect_and_serve | Connecting to ws://127.0.0.1:6767/v1/hosts/1ecf4bfd24964169db2f811e69336005/tunnel
+WARN  09-25 01:46:15.579 host.connect                     run                | Host tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 6767). Reconnecting in 0.5s
+INFO  09-25 01:46:16.080 host.connect                     _connect_and_serve | Connecting to ws://127.0.0.1:6767/v1/hosts/1ecf4bfd24964169db2f811e69336005/tunnel
+WARN  09-25 01:46:16.081 host.connect                     run                | Host tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 6767). Reconnecting in 1.3s
+INFO  09-25 01:46:17.362 host.connect                     _connect_and_serve | Connecting to ws://127.0.0.1:6767/v1/hosts/1ecf4bfd24964169db2f811e69336005/tunnel
+INFO  09-25 01:46:19.011 host.connect                     _handle_launch     | Launched runner runner_token_a00131216f7be274f8c5507f807d6504 for workspace /home/user/bench/runs/run-07/tree (pid=2790747)
+INFO  09-25 02:00:31.551 host.connect                     _handle_launch     | Launched runner runner_token_91f1917ad73fe686a1e4d61fe9efcb7e for workspace /home/user/bench/runs/run-08/tree (pid=3917864)
+INFO  09-25 02:26:53.294 host.connect                     _handle_launch     | Launched runner runner_token_a349210627339a162f834fbdf893823b for workspace /home/user/bench/runs/run-09/tree (pid=848896)
+INFO  09-25 02:37:25.765 host.connect                     _handle_launch     | Launched runner runner_token_fa0a06fc11d8f456f83d7a53e10eeb2c for workspace /home/user/bench/runs/run-10/tree (pid=1165065)
+INFO  09-25 02:46:39.561 host.connect                     _watch_runner      | Runner runner_token_8e9af07afd923f38d10b960c0530ad05 exited cleanly (code 0); no crash report
+INFO  09-25 02:46:50.608 host.connect                     _watch_runner      | Runner runner_token_a1486a54e90bec38e45a1e91b34c52ad exited cleanly (code 0); no crash report
+INFO  09-25 02:46:56.632 host.connect                     _watch_runner      | Runner runner_token_14c52684c93d30274aa9d47572420e6f exited cleanly (code 0); no crash report
+INFO  09-25 02:46:58.136 host.connect                     _watch_runner      | Runner runner_token_85b8e33706d30644831251296ddcbf7d exited cleanly (code 0); no crash report
+INFO  09-25 02:47:00.144 host.connect                     _watch_runner      | Runner runner_token_06895c82928dde465c6cf7e312c5e0e6 exited cleanly (code 0); no crash report
+INFO  09-25 02:58:24.795 host.connect                     _watch_runner      | Runner runner_token_a00131216f7be274f8c5507f807d6504 exited cleanly (code 0); no crash report
+INFO  09-25 03:07:33.777 host.connect                     _watch_runner      | Runner runner_token_91f1917ad73fe686a1e4d61fe9efcb7e exited cleanly (code 0); no crash report
+WARN  09-25 03:14:21.421 host.connect                     run                | Host tunnel disconnected: received 1012 (service restart); then sent 1012 (service restart). Reconnecting in 0.5s (recycle — prompt reconnect)
+INFO  09-25 03:14:21.923 host.connect                     _connect_and_serve | Connecting to ws://127.0.0.1:6767/v1/hosts/1ecf4bfd24964169db2f811e69336005/tunnel
+WARN  09-25 03:14:21.924 host.connect                     run                | Host tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 6767). Reconnecting in 0.5s
+INFO  09-25 03:14:22.425 host.connect                     _connect_and_serve | Connecting to ws://127.0.0.1:6767/v1/hosts/1ecf4bfd24964169db2f811e69336005/tunnel
+WARN  09-25 03:14:22.426 host.connect                     run                | Host tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 6767). Reconnecting in 1.2s
+INFO  09-25 03:14:23.585 host.connect                     _connect_and_serve | Connecting to ws://127.0.0.1:6767/v1/hosts/1ecf4bfd24964169db2f811e69336005/tunnel
+WARN  09-25 03:14:23.586 host.connect                     run                | Host tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 6767). Reconnecting in 2.3s
+INFO  09-25 03:14:25.909 host.connect                     _connect_and_serve | Connecting to ws://127.0.0.1:6767/v1/hosts/1ecf4bfd24964169db2f811e69336005/tunnel
+INFO  09-25 03:14:29.986 host.connect                     _handle_launch     | Launched runner runner_token_b6670b86f3462a312b2438441e02880c for workspace /home/user/bench/runs/run-11/tree (pid=1833394)
+INFO  09-25 03:54:43.959 host.connect                     _handle_launch     | Launched runner runner_token_e8287faca5f7777c98883dd1477b86c7 for workspace /home/user/bench/runs/run-12/tree (pid=520536)
+INFO  09-25 04:07:30.153 host.connect                     _handle_launch     | Launched runner runner_token_d359dcbb2d6859e89f2dbd1f4ca04ee1 for workspace /home/user/bench/runs/run-13/tree (pid=1435176)
+INFO  09-25 04:14:40.267 host.connect                     _watch_runner      | Runner runner_token_a349210627339a162f834fbdf893823b exited cleanly (code 0); no crash report
+INFO  09-25 04:14:48.296 host.connect                     _watch_runner      | Runner runner_token_fa0a06fc11d8f456f83d7a53e10eeb2c exited cleanly (code 0); no crash report
+INFO  09-25 04:28:10.498 host.connect                     _watch_runner      | Runner runner_token_b6670b86f3462a312b2438441e02880c exited cleanly (code 0); no crash report
+INFO  09-25 05:04:30.849 host.connect                     _watch_runner      | Runner runner_token_e8287faca5f7777c98883dd1477b86c7 exited cleanly (code 0); no crash report
+INFO  09-25 05:07:11.896 host.connect                     _watch_runner      | Runner runner_token_934616d878879fd1ae5aff13479ef824 exited cleanly (code 0); no crash report
+INFO  09-25 05:14:49.209 host.connect                     _watch_runner      | Runner runner_token_d359dcbb2d6859e89f2dbd1f4ca04ee1 exited cleanly (code 0); no crash report
+INFO  09-25 05:27:44.348 host.connect                     _watch_runner      | Runner runner_token_a53971979f3989bf4d9dca30bd1d6570 exited cleanly (code 0); no crash report
+INFO  09-25 08:04:07.005 pi_native_credentials            ...native_provider | pi-native: no omnigent-configured provider for the pi/anthropic/openai surface; Pi will use its own login.
+WARN  09-25 08:05:36.772 cli_auth                         _warn_expired_once | Stored login session for http://127.0.0.1:6767 expired on 2026-09-25 07:40:45 UTC; refresh will be attempted on the next command if possible
+INFO  09-25 08:05:36.791 cli_auth                         _refresh_locked    | Refreshed login session for http://127.0.0.1:6767
+INFO  09-25 08:05:36.794 host.connect                     _handle_launch     | Launched runner runner_token_651736f62b39809fca4106793bb9ac74 for workspace /home/user (pid=3240474)
+INFO  09-25 08:05:36.795 host.connect                     _stop_and_log      | Stopped superseded runner runner_token_a53971979f3989bf4d9dca30bd1d6570 for session b5f54b9c3b45b5589294b104af402a7b
+INFO  09-25 09:14:55.721 host.connect                     _watch_runner      | Runner runner_token_651736f62b39809fca4106793bb9ac74 exited cleanly (code 0); no crash report
+INFO  09-25 09:35:15.139 pi_native_credentials            ...native_provider | pi-native: no omnigent-configured provider for the pi/anthropic/openai surface; Pi will use its own login.
+WARN  09-25 09:36:02.732 cli_auth                         _warn_expired_once | Stored login session for http://127.0.0.1:6767 expired on 2026-09-25 12:05:36 UTC; refresh will be attempted on the next command if possible
+INFO  09-25 09:36:02.749 cli_auth                         _refresh_locked    | Refreshed login session for http://127.0.0.1:6767
+INFO  09-25 09:36:02.752 host.connect                     _handle_launch     | Launched runner runner_token_5aaa29d563d527e7224d9ce9762a064b for workspace /home/user (pid=3742147)
+INFO  09-25 09:36:02.753 host.connect                     _stop_and_log      | Stopped superseded runner runner_token_651736f62b39809fca4106793bb9ac74 for session b5f54b9c3b45b5589294b104af402a7b
+INFO  09-25 09:37:05.394 host.connect                     _handle_launch     | Launched runner runner_token_96082de4a7292cf7cbdda7a4d7acc818 for workspace /home/user (pid=3748705)
+INFO  09-25 09:37:05.395 host.connect                     _stop_and_log      | Stopped superseded runner runner_token_934616d878879fd1ae5aff13479ef824 for session da496e906ada30317a8a864f8f985bf1
+INFO  09-25 10:43:01.490 host.connect                     _watch_runner      | Runner runner_token_5aaa29d563d527e7224d9ce9762a064b exited cleanly (code 0); no crash report
+INFO  09-25 10:46:24.961 host.connect                     _watch_runner      | Runner runner_token_96082de4a7292cf7cbdda7a4d7acc818 exited cleanly (code 0); no crash report
+WARN  09-25 10:59:26.663 cli_auth                         _warn_expired_once | Stored login session for http://127.0.0.1:6767 expired on 2026-09-25 13:36:02 UTC; refresh will be attempted on the next command if possible
+INFO  09-25 10:59:26.680 cli_auth                         _refresh_locked    | Refreshed login session for http://127.0.0.1:6767
+INFO  09-25 10:59:26.682 host.connect                     _handle_launch     | Launched runner runner_token_c0bd95363c098c9adac0a575b51d49e2 for workspace /home/user (pid=373584)
+INFO  09-25 10:59:26.683 host.connect                     _stop_and_log      | Stopped superseded runner runner_token_5aaa29d563d527e7224d9ce9762a064b for session b5f54b9c3b45b5589294b104af402a7b
+INFO  09-25 10:59:30.775 host.connect                     _handle_launch     | Launched runner runner_token_782f1e0d292318d844929f0541af12f4 for workspace /home/user (pid=373686)
+INFO  09-25 10:59:30.776 host.connect                     _stop_and_log      | Stopped superseded runner runner_token_96082de4a7292cf7cbdda7a4d7acc818 for session da496e906ada30317a8a864f8f985bf1
+INFO  09-25 12:10:39.445 host.connect                     _handle_launch     | Launched runner runner_token_655b1bc77954b9443b7271787a08fd37 for workspace /home/user/bench/runs/run-14/tree (pid=1215217)
+INFO  09-25 12:23:20.273 host.connect                     _handle_launch     | Launched runner runner_token_1aaa1a036911e4f5d218a10c694214ac for workspace /home/user/bench/runs/run-15/tree (pid=1394093)
+INFO  09-25 12:49:43.523 host.connect                     _handle_launch     | Launched runner runner_token_3771d10aa94152365e50e0b11589666b for workspace /home/user/bench/runs/run-16/tree (pid=1787054)
+INFO  09-25 12:51:21.019 host.connect                     _handle_launch     | Launched runner runner_token_5a522dc860214db58c40d215bc22d1ec for workspace /home/user/bench/runs/run-16/tree (pid=1811619)
+INFO  09-25 13:20:43.728 host.connect                     _watch_runner      | Runner runner_token_655b1bc77954b9443b7271787a08fd37 exited cleanly (code 0); no crash report
+INFO  09-25 13:38:42.967 host.connect                     _watch_runner      | Runner runner_token_1aaa1a036911e4f5d218a10c694214ac exited cleanly (code 0); no crash report
+INFO  09-25 13:50:38.742 host.connect                     _watch_runner      | Runner runner_token_3771d10aa94152365e50e0b11589666b exited cleanly (code 0); no crash report
+INFO  09-25 14:41:21.274 host.connect                     _watch_runner      | Runner runner_token_5a522dc860214db58c40d215bc22d1ec exited cleanly (code 0); no crash report
+INFO  09-25 14:41:25.283 host.connect                     _watch_runner      | Runner runner_token_c0bd95363c098c9adac0a575b51d49e2 exited cleanly (code 0); no crash report
+INFO  09-25 14:41:34.305 host.connect                     _watch_runner      | Runner runner_token_782f1e0d292318d844929f0541af12f4 exited cleanly (code 0); no crash report
+WARN  09-25 15:01:02.521 cli_auth                         _warn_expired_once | Stored login session for http://127.0.0.1:6767 expired on 2026-09-25 17:10:57 UTC; refresh will be attempted on the next command if possible
+INFO  09-25 15:01:02.540 cli_auth                         _refresh_locked    | Refreshed login session for http://127.0.0.1:6767
+INFO  09-25 15:01:02.542 host.connect                     _handle_launch     | Launched runner runner_token_cff0e402d57e02a764b674bd3f32a8dd for workspace /home/user (pid=2880042)
+INFO  09-25 15:01:02.544 host.connect                     _stop_and_log      | Stopped superseded runner runner_token_782f1e0d292318d844929f0541af12f4 for session da496e906ada30317a8a864f8f985bf1
+INFO  09-25 18:29:42.024 host.connect                     _watch_runner      | Runner runner_token_cff0e402d57e02a764b674bd3f32a8dd exited cleanly (code 0); no crash report
+WARN  09-25 22:00:51.670 runner.github_resource           _run               | github_resource: ['git', 'rev-parse', '--abbrev-ref', 'HEAD'] in /home/user could not run: [Errno 11] Resource temporarily unavailable
+WARN  09-25 22:00:51.743 cli_auth                         _warn_expired_once | Stored login session for http://127.0.0.1:6767 expired on 2026-09-25 19:01:02 UTC; refresh will be attempted on the next command if possible
+INFO  09-25 22:00:51.771 cli_auth                         _refresh_locked    | Refreshed login session for http://127.0.0.1:6767
+INFO  09-25 22:00:51.781 host.connect                     _handle_stop       | Stopped runner runner_token_cff0e402d57e02a764b674bd3f32a8dd
+INFO  09-25 22:00:53.543 host.connect                     _handle_launch     | Launched runner runner_token_785ba78d942b4ac19856287a184b86fd for workspace /home/user (pid=3509701)
+WARN  09-25 22:00:54.760 model_catalog_store              _run               | background claude-native catalog refresh failed
+Traceback (most recent call last):
+  File "/home/user/omnigent/omnigent/model_catalog_store.py", line 245, in _run
+    rows = await resolve()
+           ^^^^^^^^^^^^^^^
+  File "/home/user/omnigent/omnigent/claude_native.py", line 1367, in claude_model_catalog
+    probe = await probe_claude_model_options(claude_config)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/omnigent/omnigent/claude_native.py", line 1287, in probe_claude_model_options
+    resolutions = await _resolve_claude_model_aliases(claude_config, aliases)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/omnigent/omnigent/claude_native.py", line 990, in _resolve_claude_model_aliases
+    await asyncio.gather(*tasks.values())
+  File "/home/user/omnigent/omnigent/claude_native.py", line 985, in _bounded
+    return await _resolve_claude_model_alias(claude_config, alias)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/omnigent/omnigent/claude_native.py", line 934, in _resolve_claude_model_alias
+    process = await asyncio.create_subprocess_exec(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/asyncio/subprocess.py", line 224, in create_subprocess_exec
+    transport, protocol = await loop.subprocess_exec(
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 1756, in subprocess_exec
+    transport = await self._make_subprocess_transport(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 215, in _make_subprocess_transport
+    watcher.add_child_handler(transp.get_pid(),
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 1393, in add_child_handler
+    thread.start()
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/threading.py", line 994, in start
+    _start_new_thread(self._bootstrap, ())
+RuntimeError: can't start new thread
+INFO  09-25 22:01:20.489 host.connect                     _handle_launch     | Launched runner runner_token_dabfaa603352c0a6cdc8029777676b90 for workspace /home/user (pid=3510864)
+INFO  09-25 22:01:20.490 host.connect                     _stop_and_log      | Stopped superseded runner runner_token_c0bd95363c098c9adac0a575b51d49e2 for session b5f54b9c3b45b5589294b104af402a7b
+WARN  09-25 22:01:21.995 host.connect                     _watch_runner      | Runner runner_token_dabfaa603352c0a6cdc8029777676b90 died unexpectedly: runner process exited with code 1 (log on host: ~/.omnigent/logs/runner/runner-b5f54b9c3b45b5589294b104af402a7b-20260925-220120-488705.log)
+--- runner log tail ---
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 194, in run
+    with Runner(debug=debug, loop_factory=loop_factory) as runner:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 62, in __exit__
+    self.close()
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 72, in close
+    loop.run_until_complete(
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 602, in shutdown_default_executor
+    thread.start()
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/threading.py", line 994, in start
+    _start_new_thread(self._bootstrap, ())
+RuntimeError: can't start new thread
+INFO  09-25 22:01:22.997 host.connect                     _handle_launch     | Launched runner runner_token_88529303c512a23268c772a31d67536a for workspace /home/user (pid=3510936)
+INFO  09-25 22:01:22.998 host.connect                     _stop_and_log      | Stopped superseded runner runner_token_dabfaa603352c0a6cdc8029777676b90 for session b5f54b9c3b45b5589294b104af402a7b
+WARN  09-25 22:01:24.503 host.connect                     _watch_runner      | Runner runner_token_88529303c512a23268c772a31d67536a died unexpectedly: runner process exited with code 1 (log on host: ~/.omnigent/logs/runner/runner-b5f54b9c3b45b5589294b104af402a7b-20260925-220122-996602.log)
+--- runner log tail ---
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 194, in run
+    with Runner(debug=debug, loop_factory=loop_factory) as runner:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 62, in __exit__
+    self.close()
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 72, in close
+    loop.run_until_complete(
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 602, in shutdown_default_executor
+    thread.start()
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/threading.py", line 994, in start
+    _start_new_thread(self._bootstrap, ())
+RuntimeError: can't start new thread
+INFO  09-25 22:01:40.637 host.connect                     _handle_launch     | Launched runner runner_token_2bffeb73a794630054e8dfd684f82e7b for workspace /home/user (pid=3511314)
+INFO  09-25 22:01:40.638 host.connect                     _stop_and_log      | Stopped superseded runner runner_token_88529303c512a23268c772a31d67536a for session b5f54b9c3b45b5589294b104af402a7b
+WARN  09-25 22:01:41.141 host.connect                     _watch_runner      | Runner runner_token_2bffeb73a794630054e8dfd684f82e7b died unexpectedly: runner process exited with code 1 (log on host: ~/.omnigent/logs/runner/runner-b5f54b9c3b45b5589294b104af402a7b-20260925-220140-636555.log)
+--- runner log tail ---
+RuntimeError: can't start new thread
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/user/omnigent/omnigent/runner/_entry.py", line 2068, in <module>
+    main()
+  File "/home/user/omnigent/omnigent/runner/_entry.py", line 2054, in main
+    _maybe_prewarm_ambient_detection()
+  File "/home/user/omnigent/omnigent/runner/_entry.py", line 2035, in _maybe_prewarm_ambient_detection
+    prewarm_detect_providers()
+  File "/home/user/omnigent/omnigent/onboarding/ambient.py", line 663, in prewarm_detect_providers
+    threading.Thread(target=_run, name="ambient-detect-prewarm", daemon=True).start()
+  File "/home/user/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/lib/python3.12/threading.py", line 994, in start
+    _start_new_thread(self._bootstrap, ())
+RuntimeError: can't start new thread
+WARN  09-25 22:01:52.040 claude_native                    ...e_model_options | Claude model probe exited -6: executable claude_code 
+Builtins: "bun:main" "node:crypto" "node:fs" "node:fs/promises" "node:os" "node:path" "node:process" 
+
+Elapsed: 17ms | User: 5ms | Sys: 6ms
+RSS: 41.42 MB | Peak: 0.17 GB | Commit: 41.16 MB | Faults: 0 | Machine: 0.10 TB
+
+panic(main thread): abort() called
+oh no: Bun has crashed. This indicates a bug in Bun, not your code.
+
+[... crash-report link removed ...]

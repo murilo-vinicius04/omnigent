@@ -6,14 +6,18 @@ ARENA="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="${ARENA_REPO:-$(cd "$ARENA/../../.." && pwd)}"
 WORK="${ARENA_WORK:-${TMPDIR:-/tmp}/nexus-arena}"
 mkdir -p "$WORK"
-declare -A GOLD=([T1]=722d842da [T2]=ad763b2db [T3]=02628e770 [T4]=46a0c437a [T5]=487e0298a)
+declare -A GOLD=([T1]=722d842da [T2]=ad763b2db [T3]=02628e770 [T4]=46a0c437a [T5]=487e0298a
+  [H1]=0be307de0 [H2]=842f2acca [H3]=9db4ba9be [H4]=a547fa85d)
 # A task built from several commits starts at its own START; the rest start at gold^.
-declare -A START=([T5]=602f11731)
+# H3 starts before the historical wrong fix (6c8997b26), so that trap is live.
+declare -A START=([T5]=602f11731 [H3]=6528e1c86)
 T=$1; A=$2; D=$WORK/runs/$T-$A; rm -rf $D; mkdir -p $D/tree
 git -C "$REPO" archive ${START[$T]:-${GOLD[$T]}^} | tar -x -C $D/tree
 # ARENA_ISOLATE=1 (the bug-hunt set): nothing in the tree may point at a fix. Drop the
 # arena (other tasks' hidden tests) and the handoff notes, and give the tree a venv
 # without the editable omnigent install, whose finder leads to the live checkout.
+# The bug-hunt tasks (H*) always run isolated.
+[[ $T == H* ]] && ARENA_ISOLATE=1
 if [ "${ARENA_ISOLATE:-0}" = "1" ]; then
   rm -rf $D/tree/dev/benchmarks $D/tree/docs/RESUME.md $D/tree/docs/FRIENDLY_LAYER_SESSION.md
   # Per-task extra paths that describe this bug's cause (listed in evidence/<task>/STRIP).

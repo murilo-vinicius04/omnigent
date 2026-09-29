@@ -1,0 +1,7 @@
+What the file viewer showed, 2026-09-22 around 23:05-23:09.
+
+In the other chat, the file panel listed the folder experiments/renders/ normally
+and showed compare_v2_1x.mp4 in it. Clicking the file opened the viewer, which
+showed only this text where the video should be:
+
+    Unable to play this video here. Download it to watch it.

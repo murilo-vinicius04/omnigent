@@ -1,0 +1,31 @@
+{
+  "_note": "my other chat, compaction record stored 2026-09-21 15:26:04 (-03), item position 7179. Cut down: 1,535 of the 1,541 compacted_messages are left out, texts removed.",
+  "type": "compaction",
+  "summary": "<text removed>",
+  "last_item_id": "<item id>",
+  "model": "unknown",
+  "token_count": 0,
+  "compacted_messages": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": "This session is being continued from a previous conversation that ran out of context. <text removed: 24,671 characters in all>"
+    },
+    {"type": "message", "role": "user", "content": "<text removed: 134 characters>"},
+    {"type": "message", "role": "user", "content": "<text removed: 373 characters>"},
+    "... 1,535 more messages here (591 user and 950 assistant in the whole list) ...",
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {"tool_use_id": "<id>", "type": "tool_result", "content": "<text removed>", "is_error": false}
+      ]
+    },
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [{"type": "text", "text": "<text removed>"}]
+    },
+    {"type": "message", "role": "user", "content": "/compact"}
+  ]
+}

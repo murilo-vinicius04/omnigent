@@ -1,0 +1,54 @@
+Context size of each Claude request, from my token log.
+context = input + cache_read + cache_write tokens of that request. The window is 1M
+tokens, so 461,000 shows as 46% on the context ring.
+
+A request that reads ~26.5k from cache and writes everything else is the first one
+after that chat's Claude session was started again (only the fixed system prompt was
+still cached).
+
+
+=== this chat, 2026-09-15 ============================================================
+(my token log only starts on 09-18, so for this day I only have what I saw)
+
+12:54        compaction finished (Omnigent stored its record at 12:54:41, see
+             stored-compactions.txt)
+14:54        Omnigent host restarted; this chat's Claude session came back up with it
+15:07        context ring at 46% (461k of 1M)
+               me: "bro, i compacted, but it's already at 46%, wtf"
+15:14        /compact again (record stored 15:15:58)
+
+
+=== my other chat, 2026-09-20 .. 09-21 ================================================
+
+time               context   cache_read  cache_write
+09-20 22:48:43     601,326     599,699       1,625
+09-20 22:50:19     606,813     605,580       1,231
+09-20 22:50:55     609,376     608,162       1,212
+      22:53        compaction (record stored 22:53:25)
+09-20 22:55:17      53,506      36,276      17,228    <- compacted, as expected
+09-20 22:56:38      70,732      69,838         892
+09-20 23:20:05     143,185     142,103       1,080
+09-21 00:13:27     273,644     272,259       1,383
+09-21 01:28:37     306,706     304,443       2,261    <- last request that night
+
+09-21 10:37:28     584,469      26,504     557,963    <- first request next morning,
+                                                         session started again
+09-21 10:38:20     588,817     588,278         537
+09-21 14:53:34     589,071      26,504     562,565    <- started again
+09-21 14:58:28     594,941     593,443       1,496
+09-21 15:14:45     598,616     597,065       1,549
+09-21 15:24:50     610,488     608,523       1,963    <- ring at 61%
+      15:25:03     /compact sent
+      15:26:04     compaction record stored (1,541 messages, see stored-compactions.txt)
+                   Claude's own transcript for this compaction (its compact_boundary
+                   line): preTokens ~611k, postTokens ~7.4k
+      15:57        me: "context was not compacted in my other session, even with /compact
+                   being triggered"
+09-21 16:04:13      42,373      26,504      15,867    <- compacted, as expected
+09-21 16:05:04      56,327      55,505         820
+09-21 16:11:08      59,640      59,319         319    <- last request before the next restart
+
+later the same day:
+09-21 19:04:54     613,831      26,504     587,325    <- started again
+09-21 19:05:07     618,492     613,829       4,661
+09-21 19:11:07     628,059     626,830       1,227

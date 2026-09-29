@@ -1,0 +1,26 @@
+Session and file requests the browser made while opening the video once (23:05:09 - 23:05:15), in order.
+Message, comment and health polling omitted.
+Chat id: 5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21
+
+Method  Status  Path
+GET     200     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21?include_items=false&include_liveness=false
+GET     200     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21/resources/environments/default/changes
+GET     200     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21/resources/environments/default/filesystem?limit=1000&order=asc
+GET     200     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21/resources/environments/default
+GET     200     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21?include_items=false&include_liveness=false&refresh_state=true
+GET     503     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21/resources/terminals?order=asc&limit=1000
+GET     200     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21/resources/environments/default
+GET     200     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21/resources/github
+GET     200     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21/resources/environments/default/changes
+GET     200     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21/resources/environments/default/filesystem?limit=1000&order=asc
+GET     200     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21/resources/environments/default/filesystem/experiments/renders?limit=1000&order=asc
+GET     200     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21
+GET     200     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21/resources/environments/default/changes
+GET     200     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21/resources/environments/default/filesystem?limit=1000&order=asc
+GET     200     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21/resources/environments/default
+GET     200     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21/resources/environments/default/filesystem/experiments/renders?limit=1000&order=asc
+GET     503     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21/resources/environments/default/filesystem/experiments/renders/compare_v2_1x.mp4?download=true
+GET     503     /v1/sessions/5b0f3c9e1a7d4e2f8c6b1a0d9e7f3c21/resources/environments/default/filesystem/experiments/renders/compare_v2_1x.mp4?download=true
+
+The later attempts (23:05:25, 23:05:44, 23:09:23) looked the same: both
+compare_v2_1x.mp4?download=true requests came back 503; the folder listing came back 200.

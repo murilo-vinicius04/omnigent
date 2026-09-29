@@ -1,0 +1,14 @@
+# 2026-09-25 22:02 (local, -03): the person asked for the host to be restarted.
+# Commands (abridged) and output as run, paths anonymized.
+
+$ D=/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/omnigent-host.service
+$ echo "before: charge=$(cat $D/pids.current) real=$(wc -l < $D/cgroup.threads)"; systemctl --user restart omnigent-host.service; echo "restart exit: $?"; sleep 10; echo "after: charge=$(cat $D/pids.current) real=$(wc -l < $D/cgroup.threads)"
+before: charge=117679 real=57
+restart exit: 0
+after: charge=4 real=4
+
+# 22:04:53
+$ uptime
+ 22:04:53 up 14 days, 10:05,  1 user,  load average: 6,10, 5,29, 4,80
+$ systemctl --user show omnigent-host.service -p ActiveState,SubState,ActiveEnterTimestamp,ExecMainStartTimestamp,NRestarts,Result,ExecMainStatus,ExecMainCode
+Result=success NRestarts=0 ExecMainStartTimestamp=Fri 2026-09-25 22:02:38 -03 ExecMainCode=0 ExecMainStatus=0 ActiveState=active SubState=running ActiveEnterTimestamp=Fri 2026-09-25 22:02:38 -03

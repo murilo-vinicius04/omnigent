@@ -1,0 +1,36 @@
+# Captured 2026-09-25 around 15:10 (local time, -03), while the host was still up but
+# nothing new would start. The host daemon (omni host) runs as the systemd user unit
+# omnigent-host.service. Commands and output as run, paths anonymized.
+
+$ date +%T; D=/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/omnigent-host.service
+$ echo "charge=$(cat $D/pids.current) max=$(cat $D/pids.max) real=$(wc -l < $D/cgroup.threads) refused-forks=$(awk '{print $2}' $D/pids.events)"
+$ systemctl --user show omnigent-host -p ActiveState,ExecMainStartTimestamp,NRestarts
+$ echo "zombies whose parent is in host cgroup:"; for p in $(cat $D/cgroup.procs); do ps -o stat= --ppid $p | grep -c '^Z'; done | awk '{s+=$1} END {print s+0}'
+$ f=$(ls -t ~/.omnigent/logs/host/*.log | head -1); echo "EAGAIN lines in host log: $(grep -c 'Errno 11' $f)  last: $(grep 'Errno 11' $f | tail -1 | cut -c1-24)"
+15:10:44
+charge=117679 max=117681 real=61 refused-forks=20180
+NRestarts=0
+ExecMainStartTimestamp=Thu 2026-09-24 20:23:05 -03
+ActiveState=active
+zombies whose parent is in host cgroup:
+117618
+EAGAIN lines in host log: 10  last: WARN  09-25 03:14:23.586
+
+# which process in the cgroup is the parent of those zombies (pid, elapsed time, command line)
+$ for p in $(cat $D/cgroup.procs); do n=$(ps -o stat= --ppid $p | grep -c '^Z'); [ "$n" -gt 0 ] && echo "$n zombies <- pid $p ($(ps -o etime= -p $p | tr -d ' ')) $(tr '\0' ' ' < /proc/$p/cmdline | cut -c1-150)"; done
+117616 zombies <- pid 2166506 (18:49:40) /home/user/omnigent/.venv/bin/python /home/user/omnigent/.venv/bin/omni host --server http://127.0.0.1:6767
+1 zombies <- pid 2748592 (01:32:48) tmux -S /tmp/omnigent-terminal-ww7se_kg/tmux.sock -f /dev/null capture-pane -t main -p -e
+1 zombies <- pid 2887097 (08:50) tmux -S /tmp/omnigent-terminal-o2099q9z/tmux.sock -f /dev/null list-panes -t main -F #{pane_dead}
+
+# children of the host pid by command name (zombies included)
+$ ps -eo ppid=,comm= | awk '$1==2166506 {print $2}' | sort | uniq -c | sort -rn | head -5
+ 117592 tmux
+     12 tmux:
+      7 bash
+      6 agy
+      5 python
+
+# age in seconds of the youngest and the oldest zombie child of the host
+$ ps -eo ppid=,stat=,etimes= | awk '$1==2166506 && $2 ~ /^Z/ {print $3}' | sort -n | sed -n '1p;$p'
+556
+15315

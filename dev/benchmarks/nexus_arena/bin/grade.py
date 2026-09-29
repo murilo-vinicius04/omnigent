@@ -18,18 +18,36 @@ WORK.mkdir(parents=True, exist_ok=True)
 
 B = ARENA
 GOLD = {"T1": "722d842da", "T2": "ad763b2db", "T3": "02628e770", "T4": "46a0c437a",
-        "T5": "487e0298a"}
+        "T5": "487e0298a", "H1": "0be307de0", "H2": "842f2acca", "H3": "9db4ba9be",
+        "H4": "a547fa85d"}
 # A task built from several commits starts at its own commit; the rest at gold^.
-START = {"T5": "602f11731"}
+START = {"T5": "602f11731", "H3": "6528e1c86"}
 # Existing test files the change must not break, restored to their START version
 # in the grading copy and run with the regression pass. (T5's graded files are all
 # new, so without these nothing would guard the session-usage and usage-report code.)
 REGRESSION_GUARD = {"T5": ["tests/server/routes/test_native_usage_attribution.py",
                            "tests/server/routes/test_usage_report.py",
                            "tests/test_openai_token_budget.py",
-                           "tests/test_usage_history.py"]}
+                           "tests/test_usage_history.py"],
+                    # Host suites that pass whole at gold; test_connect.py, test_runner_zygote.py
+                    # and test_frames.py carry environment failures at start and gold alike.
+                    "H1": ["tests/host/test_cli_diagnose.py", "tests/host/test_cli_host.py",
+                           "tests/host/test_cli_session_export.py", "tests/host/test_cli_session_import.py",
+                           "tests/host/test_daemon_launch.py", "tests/host/test_daemon_lifecycle.py",
+                           "tests/host/test_git_worktree.py", "tests/host/test_identity.py",
+                           "tests/host/test_local_server.py", "tests/host/test_service.py"],
+                    "H3": ["tests/server/test_spoken_summary.py", "tests/server/test_summary_tts.py",
+                           "tests/server/integration/test_sessions_endpoints.py"],
+                    # Needs opentelemetry-sdk (the isolated bench venv has it, the repo .venv does not).
+                    "H2": ["tests/test_claude_native_forwarder.py"],
+                    "H4": ["tests/server/routes/test_session_resources.py",
+                           "tests/server/routes/test_ensure_runner_connected.py",
+                           "tests/server/routes/test_host_filesystem.py"]}
+# Tests that fail about half the time at start and gold alike: never a regression.
+FLAKY = {"H4": {"tests/server/routes/test_session_resources.py::test_kiro_native_dispatch_forwards_without_persisting"}}
 PER_TEST_GUARD = {"T3"}
-VENV = str(REPO / ".venv")
+# ARENA_VENV grades in the same venv the isolated arms ran in (the bug-hunt set).
+VENV = os.environ.get("ARENA_VENV") or str(REPO / ".venv")
 
 GUARD = str(ARENA / "bin")
 
@@ -65,7 +83,7 @@ def main():
         rc, out = run([py, "-m", "pytest", t, "-q", "-p", "no:randomly", "--no-header", "-p", "no:cacheprovider"], tree, 300)
         results[t] = "pass" if rc == 0 else "fail"
     for f in REGRESSION_GUARD.get(task, []):
-        (tree / f).write_bytes(subprocess.run(["git", "show", f"{START[task]}:{f}"], cwd=str(REPO),
+        (tree / f).write_bytes(subprocess.run(["git", "show", f"{START.get(task, GOLD[task] + '^')}:{f}"], cwd=str(REPO),
                                               capture_output=True, check=True).stdout)
     files = sorted({t.split("::")[0] for t in graded} | set(REGRESSION_GUARD.get(task, [])))
     if task in PER_TEST_GUARD:
@@ -81,7 +99,8 @@ def main():
     # A regression must reproduce when rerun alone (the suite has load-sensitive timing tests).
     start_files = {f for f in files if subprocess.run(["git", "cat-file", "-e", f"{START.get(task, GOLD[task] + '^')}:{f}"],
                    cwd=str(REPO), capture_output=True).returncode == 0}
-    regressions = sorted(f for f in failed if f not in set(graded) and f.split("::")[0] in start_files and
+    regressions = sorted(f for f in failed if f not in set(graded) and f not in FLAKY.get(task, set()) and
+                         f.split("::")[0] in start_files and
                          run([py, "-m", "pytest", f, "-q", "-p", "no:randomly", "-p", "no:cacheprovider"], tree, 300)[0] != 0)
     score = sum(v == "pass" for v in results.values())
     report = {"task": task, "tree": str(src), "score": score, "total": len(graded), "tests": results,

@@ -1,0 +1,18 @@
+What I copied while this was happening. Times are local (UTC-3).
+
+Two chats are involved, both Claude Code sessions run through Omnigent:
+  - "this chat": the one I wrote the first report in (2026-09-15)
+  - "my other chat": the one in the second report (2026-09-21), "my other session"
+
+Files:
+  context-readings.txt        how big the context was, request by request, around each
+                              /compact (from my token log: input + cache read + cache
+                              write of each Claude request), plus what the context ring
+                              showed
+  stored-compactions.txt      the compaction records Omnigent keeps for both chats
+                              (read from Omnigent's database, one row per compaction)
+  stored-compaction-0921.json one of those records, the 2026-09-21 15:26 one from my
+                              other chat, cut down
+
+Conversation text is replaced by "<text removed>", except where the text is the point
+(the "/compact" command, and the first sentence Claude puts at the top of a summary).

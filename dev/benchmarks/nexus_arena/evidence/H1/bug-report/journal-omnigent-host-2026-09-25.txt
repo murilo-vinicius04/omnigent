@@ -1,0 +1,98 @@
+$ journalctl --user -u omnigent-host --since 2026-09-25 --until "2026-09-25 22:05" -o short-iso
+2026-09-25T00:07:14-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_8e9af07afd923f38d10b960c0530ad05 (pid=3112581)
+2026-09-25T00:07:14-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-e27515352dd911b9cc49c6a9ce06b757-20260925-000714-019864.log
+2026-09-25T00:07:14-0300 devbox omni[2166506]:     session: e27515352dd911b9cc49c6a9ce06b757
+2026-09-25T00:18:53-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_14c52684c93d30274aa9d47572420e6f (pid=3286208)
+2026-09-25T00:18:53-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-ba4d7a583af2683eb2a52e07e986c116-20260925-001853-641833.log
+2026-09-25T00:18:53-0300 devbox omni[2166506]:     session: ba4d7a583af2683eb2a52e07e986c116
+2026-09-25T00:38:44-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_06895c82928dde465c6cf7e312c5e0e6 (pid=3660297)
+2026-09-25T00:38:44-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-7207c3488a144996c01127812889c7cf-20260925-003844-214380.log
+2026-09-25T00:38:44-0300 devbox omni[2166506]:     session: 7207c3488a144996c01127812889c7cf
+2026-09-25T01:05:17-0300 devbox omni[2166506]: ✓ Connected as 'devbox' (1ecf4bfd24964169db2f811e69336005), 5 live runner(s). Listening for sessions — Ctrl-C to disconnect.
+2026-09-25T01:06:23-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_a1486a54e90bec38e45a1e91b34c52ad (pid=220074)
+2026-09-25T01:06:23-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-3fd832a841ea9b3fc5f7f73688bcec3b-20260925-010623-995948.log
+2026-09-25T01:06:23-0300 devbox omni[2166506]:     session: 3fd832a841ea9b3fc5f7f73688bcec3b
+2026-09-25T01:27:24-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_85b8e33706d30644831251296ddcbf7d (pid=1503245)
+2026-09-25T01:27:24-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-0d95d0a9974de6cc4c621a9047c74bb2-20260925-012724-429849.log
+2026-09-25T01:27:24-0300 devbox omni[2166506]:     session: 0d95d0a9974de6cc4c621a9047c74bb2
+2026-09-25T01:46:17-0300 devbox omni[2166506]: ✓ Connected as 'devbox' (1ecf4bfd24964169db2f811e69336005), 7 live runner(s). Listening for sessions — Ctrl-C to disconnect.
+2026-09-25T01:46:19-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_a00131216f7be274f8c5507f807d6504 (pid=2790747)
+2026-09-25T01:46:19-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-2cd971e6f6e19289952b9dd37980282c-20260925-014619-010187.log
+2026-09-25T01:46:19-0300 devbox omni[2166506]:     session: 2cd971e6f6e19289952b9dd37980282c
+2026-09-25T02:00:31-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_91f1917ad73fe686a1e4d61fe9efcb7e (pid=3917864)
+2026-09-25T02:00:31-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-3983569e2ff9766a20f90bac7072e65a-20260925-020031-551061.log
+2026-09-25T02:00:31-0300 devbox omni[2166506]:     session: 3983569e2ff9766a20f90bac7072e65a
+2026-09-25T02:26:53-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_a349210627339a162f834fbdf893823b (pid=848896)
+2026-09-25T02:26:53-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-45a47fc46bc379d5db06a007a8559a9d-20260925-022653-293480.log
+2026-09-25T02:26:53-0300 devbox omni[2166506]:     session: 45a47fc46bc379d5db06a007a8559a9d
+2026-09-25T02:37:25-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_fa0a06fc11d8f456f83d7a53e10eeb2c (pid=1165065)
+2026-09-25T02:37:25-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-b12936bc32a39803d9a2ca6dcdcf5cd2-20260925-023725-764791.log
+2026-09-25T02:37:25-0300 devbox omni[2166506]:     session: b12936bc32a39803d9a2ca6dcdcf5cd2
+2026-09-25T03:14:25-0300 devbox omni[2166506]: ✓ Connected as 'devbox' (1ecf4bfd24964169db2f811e69336005), 4 live runner(s). Listening for sessions — Ctrl-C to disconnect.
+2026-09-25T03:14:29-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_b6670b86f3462a312b2438441e02880c (pid=1833394)
+2026-09-25T03:14:29-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-40007ecc83a7f17fbccb89a3a7b9e8f9-20260925-031429-985051.log
+2026-09-25T03:14:29-0300 devbox omni[2166506]:     session: 40007ecc83a7f17fbccb89a3a7b9e8f9
+2026-09-25T03:54:43-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_e8287faca5f7777c98883dd1477b86c7 (pid=520536)
+2026-09-25T03:54:43-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-cc64313614a1230659ffcca02648be2a-20260925-035443-959097.log
+2026-09-25T03:54:43-0300 devbox omni[2166506]:     session: cc64313614a1230659ffcca02648be2a
+2026-09-25T04:07:30-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_d359dcbb2d6859e89f2dbd1f4ca04ee1 (pid=1435176)
+2026-09-25T04:07:30-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-ee0b9377b43f3e92c33a3f886f4bee5e-20260925-040730-152462.log
+2026-09-25T04:07:30-0300 devbox omni[2166506]:     session: ee0b9377b43f3e92c33a3f886f4bee5e
+2026-09-25T08:05:36-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_651736f62b39809fca4106793bb9ac74 (pid=3240474)
+2026-09-25T08:05:36-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-b5f54b9c3b45b5589294b104af402a7b-20260925-080536-793368.log
+2026-09-25T08:05:36-0300 devbox omni[2166506]:     session: b5f54b9c3b45b5589294b104af402a7b
+2026-09-25T09:36:02-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_5aaa29d563d527e7224d9ce9762a064b (pid=3742147)
+2026-09-25T09:36:02-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-b5f54b9c3b45b5589294b104af402a7b-20260925-093602-751228.log
+2026-09-25T09:36:02-0300 devbox omni[2166506]:     session: b5f54b9c3b45b5589294b104af402a7b
+2026-09-25T09:37:05-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_96082de4a7292cf7cbdda7a4d7acc818 (pid=3748705)
+2026-09-25T09:37:05-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-da496e906ada30317a8a864f8f985bf1-20260925-093705-393801.log
+2026-09-25T09:37:05-0300 devbox omni[2166506]:     session: da496e906ada30317a8a864f8f985bf1
+2026-09-25T10:59:26-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_c0bd95363c098c9adac0a575b51d49e2 (pid=373584)
+2026-09-25T10:59:26-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-b5f54b9c3b45b5589294b104af402a7b-20260925-105926-682245.log
+2026-09-25T10:59:26-0300 devbox omni[2166506]:     session: b5f54b9c3b45b5589294b104af402a7b
+2026-09-25T10:59:30-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_782f1e0d292318d844929f0541af12f4 (pid=373686)
+2026-09-25T10:59:30-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-da496e906ada30317a8a864f8f985bf1-20260925-105930-774446.log
+2026-09-25T10:59:30-0300 devbox omni[2166506]:     session: da496e906ada30317a8a864f8f985bf1
+2026-09-25T12:10:39-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_655b1bc77954b9443b7271787a08fd37 (pid=1215217)
+2026-09-25T12:10:39-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-70b2d1d08f210006d7aa4b1c536f34ae-20260925-121039-444559.log
+2026-09-25T12:10:39-0300 devbox omni[2166506]:     session: 70b2d1d08f210006d7aa4b1c536f34ae
+2026-09-25T12:23:20-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_1aaa1a036911e4f5d218a10c694214ac (pid=1394093)
+2026-09-25T12:23:20-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-f28453d736973a0cb5b2b830bb91ca8f-20260925-122320-272035.log
+2026-09-25T12:23:20-0300 devbox omni[2166506]:     session: f28453d736973a0cb5b2b830bb91ca8f
+2026-09-25T12:49:43-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_3771d10aa94152365e50e0b11589666b (pid=1787054)
+2026-09-25T12:49:43-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-5120a48bab9dad2308d0a822d9ed554c-20260925-124943-521624.log
+2026-09-25T12:49:43-0300 devbox omni[2166506]:     session: 5120a48bab9dad2308d0a822d9ed554c
+2026-09-25T12:51:21-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_5a522dc860214db58c40d215bc22d1ec (pid=1811619)
+2026-09-25T12:51:21-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-0bbc02d744ec0ff27c51e0a4892e11d8-20260925-125121-018809.log
+2026-09-25T12:51:21-0300 devbox omni[2166506]:     session: 0bbc02d744ec0ff27c51e0a4892e11d8
+2026-09-25T15:01:02-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_cff0e402d57e02a764b674bd3f32a8dd (pid=2880042)
+2026-09-25T15:01:02-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-da496e906ada30317a8a864f8f985bf1-20260925-150102-541971.log
+2026-09-25T15:01:02-0300 devbox omni[2166506]:     session: da496e906ada30317a8a864f8f985bf1
+2026-09-25T22:00:51-0300 devbox omni[2166506]:   ↓ Runner stopped: runner_token_cff0e402d57e02a764b674bd3f32a8dd
+2026-09-25T22:00:53-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_785ba78d942b4ac19856287a184b86fd (pid=3509701)
+2026-09-25T22:00:53-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-da496e906ada30317a8a864f8f985bf1-20260925-220053-542388.log
+2026-09-25T22:00:53-0300 devbox omni[2166506]:     session: da496e906ada30317a8a864f8f985bf1
+2026-09-25T22:01:20-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_dabfaa603352c0a6cdc8029777676b90 (pid=3510864)
+2026-09-25T22:01:20-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-b5f54b9c3b45b5589294b104af402a7b-20260925-220120-488705.log
+2026-09-25T22:01:20-0300 devbox omni[2166506]:     session: b5f54b9c3b45b5589294b104af402a7b
+2026-09-25T22:01:22-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_88529303c512a23268c772a31d67536a (pid=3510936)
+2026-09-25T22:01:22-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-b5f54b9c3b45b5589294b104af402a7b-20260925-220122-996602.log
+2026-09-25T22:01:22-0300 devbox omni[2166506]:     session: b5f54b9c3b45b5589294b104af402a7b
+2026-09-25T22:01:40-0300 devbox omni[2166506]:   ↑ Runner started: runner_token_2bffeb73a794630054e8dfd684f82e7b (pid=3511314)
+2026-09-25T22:01:40-0300 devbox omni[2166506]:     log: ~/.omnigent/logs/runner/runner-b5f54b9c3b45b5589294b104af402a7b-20260925-220140-636555.log
+2026-09-25T22:01:40-0300 devbox omni[2166506]:     session: b5f54b9c3b45b5589294b104af402a7b
+2026-09-25T22:02:25-0300 devbox systemd[6211]: Stopping Omnigent host...
+2026-09-25T22:02:38-0300 devbox systemd[6211]: Stopped Omnigent host.
+2026-09-25T22:02:38-0300 devbox systemd[6211]: omnigent-host.service: Consumed 1d 4h 37min 26.475s CPU time.
+2026-09-25T22:02:38-0300 devbox systemd[6211]: Started Omnigent host.
+2026-09-25T22:02:49-0300 devbox omni[3513520]: Connecting to http://127.0.0.1:6767 as 'devbox' (1ecf4bfd24964169db2f811e69336005)
+2026-09-25T22:02:49-0300 devbox omni[3513520]: Session logs: ~/.omnigent/logs/runner/
+2026-09-25T22:02:49-0300 devbox omni[3513520]: This host's log: ~/.omnigent/logs/host/host-20260925-220239-018178.log
+2026-09-25T22:02:49-0300 devbox omni[3513520]: CLI diagnostics: ~/.omnigent/logs/cli/cli-20260925-220238-3513520-e4dca4.log
+2026-09-25T22:02:49-0300 devbox omni[3513520]: ✓ Connected as 'devbox' (1ecf4bfd24964169db2f811e69336005), 0 live runner(s). Listening for sessions — Ctrl-C to disconnect.
+2026-09-25T22:04:02-0300 devbox omni[3513520]:   ↑ Runner started: runner_token_3efe19e43792b0d0d4d41158503e7f15 (pid=3517311)
+2026-09-25T22:04:02-0300 devbox omni[3513520]:     log: ~/.omnigent/logs/runner/runner-b5f54b9c3b45b5589294b104af402a7b-20260925-220402-375780.log
+2026-09-25T22:04:02-0300 devbox omni[3513520]:     session: b5f54b9c3b45b5589294b104af402a7b
+2026-09-25T22:04:36-0300 devbox omni[3513520]:   ↑ Runner started: runner_token_c6a7890f45d44ebb1f4dd137d4d77c99 (pid=3521017)
+2026-09-25T22:04:36-0300 devbox omni[3513520]:     log: ~/.omnigent/logs/runner/runner-da496e906ada30317a8a864f8f985bf1-20260925-220436-132463.log
+2026-09-25T22:04:36-0300 devbox omni[3513520]:     session: da496e906ada30317a8a864f8f985bf1
