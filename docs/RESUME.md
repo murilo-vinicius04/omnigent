@@ -583,8 +583,8 @@ relaunches the other Claude session). Runs on private tasks are tracked outside 
 re-reads by offset; cost a finished plain T2). drive.py now kills each arm's leftover agy workers.
 Chart: bench4/night_chart.py (system python3).
 
-**Why:** user (00:05): "work through the night, run benchmarks in more tasks (incl. the robotics
-ones), improve nexus with Jev and Gemini ... improve the time of the task and the quality of the
+**Why:** user (00:05): "work through the night, run benchmarks in more tasks,
+improve nexus with Jev and Gemini ... improve the time of the task and the quality of the
 nexus harness". Claude week 84% resets 09-25 08:59 BRT — use it; 5h window resets 04:00 BRT, keep
 it < ~85% before then. **Careful with Gemini:** week 9% at 00:15, cap tonight ~33%; 5h < 70%.
 
