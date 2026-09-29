@@ -24,6 +24,7 @@ it bills that CLI's own account and needs no API key.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 
@@ -196,6 +197,17 @@ def validate_inbound_translation(translated: str, original: str) -> str | None:
     :returns: The cleaned translation, or ``None`` when implausible.
     """
     cleaned = translated.strip()
+    if cleaned.startswith("{") and cleaned.endswith("}"):
+        # The warm companion also answers routing turns in JSON and can slip
+        # into that shape here. Take the restatement it carries, never the JSON.
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            return None
+        inner = parsed.get("english") if isinstance(parsed, dict) else None
+        cleaned = inner.strip() if isinstance(inner, str) else ""
+        if not cleaned or cleaned.startswith("{"):
+            return None
     if not cleaned:
         return None
     source = original.strip()

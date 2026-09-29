@@ -8587,7 +8587,10 @@ async def _turn_user_questions(
             continue
         said: list[str] = []
         for block in getattr(data, "content", None) or []:
-            if not isinstance(block, dict):
+            # The English sent to Claude rides along as translated_text; the
+            # summary is spoken to the reader, so it takes their own words
+            # once (09-29: a bad restatement here was echoed as the summary).
+            if not isinstance(block, dict) or block.get("type") == "translated_text":
                 continue
             text = block.get("text")
             if isinstance(text, str) and text.strip():

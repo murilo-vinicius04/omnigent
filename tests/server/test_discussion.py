@@ -423,6 +423,22 @@ def test_routing_tolerates_a_model_that_wraps_its_json():
     assert decision.answer == "Hey."
 
 
+def test_routing_unwraps_a_reply_nested_in_its_own_english():
+    # 09-29: a fresh chat's companion put its whole previous JSON reply in the
+    # "english" field, and Claude and the summary received the JSON.
+    inner = json.dumps({"forward": True, "english": "Is main the newest branch?"})
+    nested = json.dumps({"forward": True, "english": inner})
+    decision = discussion._parse_routing(nested)
+    assert decision.forward is True
+    assert decision.english == "Is main the newest branch?"
+
+
+def test_routing_drops_an_english_that_is_json_without_a_restatement():
+    decision = discussion._parse_routing('{"forward": true, "english": "{\\"forward\\": true}"}')
+    assert decision.forward is True
+    assert decision.english is None
+
+
 def test_every_unreadable_reply_forwards():
     # Forwarding costs seconds; a confident wrong answer from something
     # that cannot see the code costs much more. So every failure forwards.

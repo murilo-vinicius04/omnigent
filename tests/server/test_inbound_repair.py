@@ -15,6 +15,7 @@ from omnigent.server.inbound_translation import (
     inbound_translation_enabled,
     reader_writes_english,
     translate_inbound_message,
+    validate_inbound_translation,
 )
 
 
@@ -93,3 +94,22 @@ def test_the_translation_prompt_is_untouched() -> None:
     prompt = build_inbound_translation_prompt("oi", "pt-BR", "DELIM")
     assert "Restate the message below in English" in prompt
     assert "pt-BR" in prompt
+
+
+def test_a_routing_reply_is_never_stored_as_the_repair() -> None:
+    # The warm companion answers routing turns in JSON and can slip into that
+    # shape on a repair; its restatement is usable, the JSON around it is not.
+    original = "is main the newest branch? does it deploy"
+    reply = '{"forward": true, "english": "Is main the newest branch? Does it deploy?"}'
+    assert (
+        validate_inbound_translation(reply, original)
+        == "Is main the newest branch? Does it deploy?"
+    )
+    assert validate_inbound_translation('{"forward": true}', original) is None
+    assert validate_inbound_translation("{not json at all}", original) is None
+    nested = '{"english": "{\\"english\\": \\"x\\"}"}'
+    assert validate_inbound_translation(nested, original) is None
+
+
+def test_a_plain_repair_still_passes() -> None:
+    assert validate_inbound_translation("Run the tests.", "run the tests") == "Run the tests."

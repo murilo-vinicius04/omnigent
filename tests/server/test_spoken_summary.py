@@ -3222,3 +3222,29 @@ def test_the_rewrite_is_asked_for_numbers_as_digits() -> None:
     instructions = build_spoken_summary_instructions()
     assert "writing numbers as digits" in instructions
     assert "forty" not in instructions
+
+
+def test_the_summary_is_given_the_readers_words_not_the_restatement_sent_to_claude() -> None:
+    """09-29: the restatement for Claude held the companion's JSON, and the
+    summary echoed it. The question the summary sees is the reader's own text."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from omnigent.server.routes._sessions.helpers import _turn_user_questions
+
+    said = "most recent branch is main? does it deploy"
+    item = SimpleNamespace(
+        data=SimpleNamespace(
+            role="user",
+            content=[
+                {"type": "input_text", "text": said},
+                {"type": "translated_text", "text": '{"forward": true, "english": "Is main..."}'},
+            ],
+        )
+    )
+
+    class _Store:
+        def list_items(self, *args, **kwargs):
+            return SimpleNamespace(data=[item])
+
+    assert asyncio.run(_turn_user_questions(_Store(), "conv_1")) == [said]

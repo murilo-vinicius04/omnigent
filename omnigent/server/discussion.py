@@ -903,6 +903,32 @@ class DiscussionSession:
         return " | ".join(self._stderr) or "no stderr"
 
 
+def _unwrap_english(value: object) -> str | None:
+    """The restatement inside a routing reply, never the reply itself.
+
+    A companion that has only its own JSON answers in context can nest one
+    whole routing reply inside the "english" field (09-29: every message
+    after the first in a fresh chat reached Claude, and the summary, as
+    ``{"forward": true, "english": "..."}``). Unwrap such nesting; a JSON
+    object with no restatement inside counts as none.
+
+    :param value: The parsed "english" field, e.g. ``"run the tests"``.
+    :returns: The restated text, or ``None``.
+    """
+    for _ in range(3):
+        text = str(value or "").strip()
+        if not (text.startswith("{") and text.endswith("}")):
+            return text or None
+        try:
+            inner = json.loads(text)
+        except json.JSONDecodeError:
+            return text or None
+        if not isinstance(inner, dict):
+            return text or None
+        value = inner.get("english")
+    return None
+
+
 def _parse_routing(reply: str, *, spoken: bool = False) -> Routing:
     """Read the model's routing reply, falling back to the safe side.
 
@@ -927,7 +953,7 @@ def _parse_routing(reply: str, *, spoken: bool = False) -> Routing:
         return fallback
     if not isinstance(parsed, dict):
         return fallback
-    english = str(parsed.get("english") or "").strip() or None
+    english = _unwrap_english(parsed.get("english"))
     if spoken:
         # The voice speaks for itself, so an answer here would reach no one.
         return Routing(forward=parsed.get("forward") is True, english=english)
