@@ -294,27 +294,58 @@ def _fit(parts: list[str], budget: int, focus: tuple[str, ...] = ()) -> list[str
     return fitted
 
 
+#: git's empty tree: the base when the worker's first commit is the repository's first.
+_EMPTY_TREE: Final[str] = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+async def _base(root: str, since: float | None) -> str:
+    """The commit ``root`` stood at before the worker's own commits, or ``HEAD``.
+
+    Workers are told to commit when done, and ``git diff HEAD`` then shows nothing:
+    on 09-30 the gate judged empty diffs as all items unmet and sent committed work
+    back (DeepSWE sqlite-utils, 8 of 8 items; langchain and sqlfmt, 7-8 of 8).
+
+    :param root: A repository top-level.
+    :param since: Unix time the worker session started; ``None`` keeps ``HEAD``.
+    :returns: The parent of the oldest commit made since then, else ``HEAD``.
+    """
+    if since is None:
+        return "HEAD"
+    listed = await _git("-C", root, "rev-list", "--reverse", f"--since={int(since)}", "HEAD")
+    oldest = (listed or "").split()
+    if not oldest:
+        return "HEAD"
+    parent = await _git("-C", root, "rev-parse", "--verify", "--quiet", f"{oldest[0]}^")
+    return parent.strip() if parent else _EMPTY_TREE
+
+
 async def collect_diff(
-    roots: list[str], first: list[str] | None = None, focus: tuple[str, ...] = ()
+    roots: list[str],
+    first: list[str] | None = None,
+    focus: tuple[str, ...] = (),
+    since: float | None = None,
 ) -> str:
-    """The code change in ``roots``: ``git diff HEAD`` and every new file in full.
+    """The code change in ``roots`` and every new file in full.
 
     :param roots: Repository top-levels, e.g. from ``repo_roots``.
     :param first: Absolute paths the worker changed this turn. They come first and
         are kept whole when the change is too big; the rest share what is left.
     :param focus: Names from the checklist; a file that must be cut keeps the
         pieces that mention them (see :func:`focus_names`).
+    :param since: Unix time the worker started. The change then includes what it
+        committed since (see :func:`_base`); ``None`` diffs against ``HEAD``.
     :returns: The change, about :data:`_DIFF_CHARS` characters at most, or ``""``.
     """
     parts: list[str] = []
     recent: list[str] = []
     touched = {os.path.realpath(p) for p in first or []}
     for root in roots:
-        listed = await _git("-C", root, "diff", "HEAD", "--name-only")
+        base = await _base(root, since)
+        listed = await _git("-C", root, "diff", base, "--name-only")
         for name in (listed or "").splitlines():
             if not name or _SKIPPED_FILES.search(name):
                 continue
-            body = await _git("-C", root, "diff", "HEAD", "--no-color", "--", name)
+            body = await _git("-C", root, "diff", base, "--no-color", "--", name)
             if body:
                 (recent if _real(root, name) in touched else parts).append(body)
         untracked = await _git("-C", root, "ls-files", "--others", "--exclude-standard")
@@ -492,6 +523,19 @@ def count_round(key: tuple[str, str] | None, unmet: tuple[str, ...] = ()) -> Non
         _last_unmet[key] = unmet
 
 
+async def _started(server_client: httpx.AsyncClient, child_id: str) -> float | None:
+    """When the worker session was created, as Unix time; ``None`` when unknown."""
+    try:
+        response = await server_client.get(
+            f"/v1/sessions/{child_id}", params={"include_items": "false"}
+        )
+        response.raise_for_status()
+        started = response.json().get("created_at")
+    except (httpx.HTTPError, ValueError):
+        return None
+    return float(started) if isinstance(started, (int, float)) else None
+
+
 async def review(
     payload: dict[str, Any],
     *,
@@ -525,7 +569,10 @@ async def review(
             return Review({**payload, "output": _dead_session_output(payload)})
         dirs = worker_dirs(items)
         diff = await collect_diff(
-            await repo_roots(dirs), edited_files(items), focus_names(checklist)
+            await repo_roots(dirs),
+            edited_files(items),
+            focus_names(checklist),
+            await _started(server_client, child_id),
         )
         evidence = extract_evidence(items, await git_changes(dirs)) or ""
     except (httpx.HTTPError, OSError, ValueError):

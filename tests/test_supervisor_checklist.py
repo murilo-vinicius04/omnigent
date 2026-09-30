@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -148,6 +150,38 @@ async def test_the_diff_covers_changed_and_new_files_but_not_locks_or_tool_homes
     assert "+    return u['input'] + u['output']" in diff
     assert "new file ledger.py:\nLEDGER = {}" in diff
     assert "uv.lock" not in diff and "rollout.jsonl" not in diff
+
+
+async def test_work_the_worker_committed_is_part_of_the_diff(tmp_path: Path) -> None:
+    # Workers are told to commit when done; judged on ``git diff HEAD`` alone, a
+    # committed change read as empty and every item was sent back (09-30 DeepSWE).
+    repo = _repo(tmp_path)
+    started = time.time() - 5
+    git = ["git", "-C", str(repo), "-c", "user.email=w@w", "-c", "user.name=w"]
+    subprocess.run([*git, "add", "budget.py"], check=True)
+    subprocess.run([*git, "commit", "-qm", "worker: count output"], check=True)
+
+    diff = await supervisor_checklist.collect_diff([str(repo)], since=started)
+
+    assert "+    return u['input'] + u['output']" in diff
+    assert "new file ledger.py:\nLEDGER = {}" in diff
+
+
+async def test_commits_from_before_the_worker_started_are_the_base(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    git = ["git", "-C", str(repo), "-c", "user.email=w@w", "-c", "user.name=w"]
+    old = {
+        **os.environ,
+        "GIT_COMMITTER_DATE": "2020-01-01T00:00:00",
+        "GIT_AUTHOR_DATE": "2020-01-01T00:00:00",
+    }
+    subprocess.run([*git, "add", "budget.py"], check=True, env=old)
+    subprocess.run([*git, "commit", "-qm", "earlier work"], check=True, env=old)
+
+    diff = await supervisor_checklist.collect_diff([str(repo)], since=time.time() - 5)
+
+    assert "budget.py" not in diff
+    assert "new file ledger.py" in diff
 
 
 async def test_a_long_new_file_is_shown_whole_when_the_change_fits(tmp_path: Path) -> None:
