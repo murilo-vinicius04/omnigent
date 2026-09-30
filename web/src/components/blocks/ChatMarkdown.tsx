@@ -231,13 +231,22 @@ function WorkspaceFileLink({
 }
 
 /**
- * One workspace file as a clickable name, or nothing at all when *path* names
- * no workspace file. For file lists lifted out of an answer, where a name that
- * does not resolve (a typo, a shorthand like `still_0/1/2.png`) is only noise.
+ * One workspace file as a clickable name, or *fallback* (nothing by default)
+ * when *path* names no workspace file. For file lists lifted out of an answer,
+ * where a name that does not resolve (a typo, a shorthand like
+ * `still_0/1/2.png`) is only noise.
  */
-export function WorkspaceFileChip({ path, label }: { path: string; label?: string }) {
+export function WorkspaceFileChip({
+  path,
+  label,
+  fallback = null,
+}: {
+  path: string;
+  label?: string;
+  fallback?: React.ReactNode;
+}) {
   const openWorkspaceFile = useWorkspaceFileOpener(path);
-  if (!openWorkspaceFile) return null;
+  if (!openWorkspaceFile) return <>{fallback}</>;
   return (
     <a
       role="button"
@@ -258,6 +267,17 @@ export function WorkspaceFileChip({ path, label }: { path: string; label?: strin
   );
 }
 
+/**
+ * Whether a link or image target is a file path on the host
+ * (`/home/u/ws/plot.png`, `~/ws/a.png`) rather than a URL the server answers.
+ * The session's own stored files (`/v1/sessions/.../resources/files/...`) are URLs.
+ */
+export function isHostFilePath(url: string): boolean {
+  if (url.startsWith("~/")) return true;
+  if (!url.startsWith("/") || url.startsWith("//")) return false;
+  return !url.startsWith("/v1/");
+}
+
 // Markdown images open in the shared lightbox on click, matching uploaded and
 // generated images. (Remote `src`s are still gated by Streamdown's image
 // security; this only adds the zoom affordance to whatever does render.)
@@ -268,6 +288,12 @@ function ZoomableMarkdownImage({
   ...props
 }: WithHastNode<React.ComponentProps<"img">>) {
   const resolvedSrc = typeof src === "string" ? src : undefined;
+  // A host path (`/home/u/ws/plot.png`) is no URL: as a src it asks the server
+  // for a page that doesn't exist. Offer it through the file viewer instead.
+  if (resolvedSrc && isHostFilePath(resolvedSrc)) {
+    const label = alt || resolvedSrc.split("/").pop() || resolvedSrc;
+    return <WorkspaceFileChip path={resolvedSrc} label={label} fallback={label} />;
+  }
   return <ZoomableImage {...props} src={resolvedSrc} alt={alt ?? ""} />;
 }
 

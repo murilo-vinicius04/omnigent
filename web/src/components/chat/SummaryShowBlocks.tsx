@@ -1,12 +1,31 @@
 import type { SummaryShowBlock } from "@/lib/blockStream";
 import { AttachedFiles } from "@/components/chat/AttachedFiles";
-import { FilePathAwareMessageResponse } from "@/components/blocks/ChatMarkdown";
+import {
+  FilePathAwareMessageResponse,
+  WorkspaceFileChip,
+  isHostFilePath,
+} from "@/components/blocks/ChatMarkdown";
 import { SessionImage } from "@/components/SessionImage";
 import { visibleShowBlocks } from "@/lib/summaryShowPreferences";
 
 /** Whether a URL is one of this session's stored files, safe to embed. */
 function isSessionFilePath(url: string): boolean {
   return url.startsWith("/v1/sessions/") && url.includes("/resources/files/");
+}
+
+
+/**
+ * A host file path under the summary (`/home/u/ws/plot.png`). As an href it
+ * resolves against the server and lands on its 404, so it opens through the
+ * file viewer instead, or stays plain text when it is outside the workspace.
+ */
+function HostFileBlock({ block }: { block: SummaryShowBlock }) {
+  const label = block.label || block.content;
+  return (
+    <span className="text-ui text-muted-foreground" title={block.content} data-testid="summary-show-host-file">
+      <WorkspaceFileChip path={block.content} label={label} fallback={label} />
+    </span>
+  );
 }
 
 export interface SummaryShowBlocksProps {
@@ -52,6 +71,7 @@ export function SummaryShowBlocks({ blocks }: SummaryShowBlocksProps) {
               </div>
             );
           }
+          if (isHostFilePath(block.content)) return <HostFileBlock key={key} block={block} />;
           return (
             <a
               key={key}
@@ -66,6 +86,7 @@ export function SummaryShowBlocks({ blocks }: SummaryShowBlocksProps) {
           );
         }
         if (block.kind === "link") {
+          if (isHostFilePath(block.content)) return <HostFileBlock key={key} block={block} />;
           return (
             <a
               key={key}

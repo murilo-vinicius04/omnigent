@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { SummaryShowBlock } from "@/lib/blockStream";
 import { SummaryShowBlocks } from "./SummaryShowBlocks";
 import { FriendlyResponse } from "./FriendlyResponse";
@@ -46,6 +47,26 @@ describe("SummaryShowBlocks", () => {
     localStorage.setItem(SUMMARY_SHOW_STORAGE_KEY, JSON.stringify({ code: true }));
     render(<SummaryShowBlocks blocks={[code]} />);
     expect(screen.getByTestId("summary-show-code").textContent).toContain("x = 1");
+  });
+
+  it("never turns a host file path into a link to the server", () => {
+    // /home/... as an href lands on the server's 404 page. It opens in the
+    // file viewer when it is a workspace file, and is plain text otherwise.
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SummaryShowBlocks
+          blocks={[
+            { kind: "image", label: "arm traces", content: "/home/u/ws/runs/arm_traces.png" },
+            { kind: "link", label: "notes", content: "~/ws/notes.md" },
+          ]}
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByTestId("summary-show-link")).toBeNull();
+    expect(screen.queryByTestId("summary-show-image")).toBeNull();
+    const shown = screen.getAllByTestId("summary-show-host-file");
+    expect(shown.map((el) => el.textContent)).toEqual(["arm traces", "notes"]);
+    expect(document.querySelector('a[href^="/home"], a[href^="~"]')).toBeNull();
   });
 
   it("links a remote image rather than fetching it", () => {
