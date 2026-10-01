@@ -33,9 +33,13 @@ Matplotlib lives in `~/pi05-lora/openpi/.venv`; DB reads in the friendly-layer v
   existing broken / Claude / min: plain Opus high 309/8/204%/82 · **Opus brain + Gemini worker
   309/4/67% (+8.8 Gemini pts)/125** (ran with the old blind Jev) · plain Sonnet high 309/19/104%/56.
 - Held-out 6 (random v1.1, never tuned on), hidden of 269: plain Sonnet high 267, 4/6, 60%, 33 min ·
-  Sonnet brain + Sonnet low worker + acceptance tests first 261, 5/6, 86%, 44 min · plain Opus high
-  (unit dswe-ho-opus, 5 of 6 done): go-genai ✓ 14.3%, ipython 14/17 22.9%, koota ✓ 63.8%,
-  participle 90/91 17.3%, query-persist ✓ 23.7%; true-myth pending.
+  Sonnet brain + Sonnet low worker + acceptance tests first 261, 5/6, 86%, 44 min · **plain Opus high
+  265, 4/6, 159%, 67 min** (ipython 14/17: kept the quotes on a quoted path; chart
+  ~/deepswe/heldout_6_opus_sonnet_team.png). On random tasks Opus is NOT ahead of Sonnet high.
+  participle: all 3 arms miss TestAnalyzeCleanGrammarIsClean — the statement says String() is
+  "multi-line, non-empty even when clean"; a stated detail nobody read closely (statement_first target).
+  Opus audit flags were benign (koota wrote its own memory note in the sandbox's empty home after
+  finishing; ipython tried `pip install mypy` in the offline container).
 - Sonnet-low workers lose: Opus brain 191/195 on the 3 tuning tasks for 63%, Sonnet brain 193/195 44%.
 - **Luna worker** (`codex:gpt-5.6-luna`, medium, OpenAI free pool): Opus brain + Luna solved kombu-sac,
   8.2 min, 8.1% Claude — but used **2.3M of the 2.5M/day pool** (resets 21:00) ⇒ ~1 task/day; it ran
@@ -58,7 +62,6 @@ in the tree (ACP/Grok permission mode) belong to another session — don't touch
    `ARENA_BRAIN_MODEL=claude-opus-5-5 ARENA_BRAIN_EFFORT=high ARENA_TEAM_NOTE=~/deepswe/team_notes/statement_first.md
    python ~/deepswe/team.py <task> team-opushigh-gem-stmt gemini:gemini-3.7-flash-medium` (in a systemd-run unit).
 2. Set `gate_pushes: true` in examples/nexus/agents/codex/config.yaml?
-3. When dswe-ho-opus ends: account + audit, then chart all held-out arms per hidden test.
 
 ## What we're doing and why
 
