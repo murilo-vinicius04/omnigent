@@ -34,8 +34,8 @@ Matplotlib lives in `~/pi05-lora/openpi/.venv`; DB reads in the friendly-layer v
   309/4/67% (+8.8 Gemini pts)/125** (ran with the old blind Jev) · plain Sonnet high 309/19/104%/56.
 - Held-out 6 (random v1.1, never tuned on), hidden of 269: plain Sonnet high 267, 4/6, 60%, 33 min ·
   Sonnet brain + Sonnet low worker + acceptance tests first 261, 5/6, 86%, 44 min · plain Opus high
-  (unit dswe-ho-opus, 4 of 6 done): go-genai ✓ 14.3%, ipython 14/17 22.9%, koota ✓ 63.8%,
-  participle 90/91 17.3%; query-persist, true-myth pending.
+  (unit dswe-ho-opus, 5 of 6 done): go-genai ✓ 14.3%, ipython 14/17 22.9%, koota ✓ 63.8%,
+  participle 90/91 17.3%, query-persist ✓ 23.7%; true-myth pending.
 - Sonnet-low workers lose: Opus brain 191/195 on the 3 tuning tasks for 63%, Sonnet brain 193/195 44%.
 - **Luna worker** (`codex:gpt-5.6-luna`, medium, OpenAI free pool): Opus brain + Luna solved kombu-sac,
   8.2 min, 8.1% Claude — but used **2.3M of the 2.5M/day pool** (resets 21:00) ⇒ ~1 task/day; it ran
