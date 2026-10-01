@@ -14,6 +14,52 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-01 — READ FIRST (DeepSWE team benchmark; session d9653808)
+
+**Goal (user):** Opus-level results with Opus *orchestrating* and a cheaper model doing the work,
+to save Claude quota (back to Pro) at about the same speed. Count **individual hidden tests**, not
+only all-or-nothing solves — the user insists on it. Don't swap models without root-causing first.
+
+**Harness:** `~/deepswe` (not a repo). `dswe.sh prepare|fork|grade|stop` (env container runs as
+ROOT since 10-01; Go's module cache was unreadable as uid 1000), `plain.sh <task> <model> <effort>`,
+`team.py <task> <arm> [worker:model]` (env ARENA_BRAIN_MODEL/_EFFORT, ARENA_WORKER_EFFORT,
+ARENA_TEAM_NOTE=team_notes/*.md, CAP_S), `quota_guard.py 70`, `heldout_6.json`, `FORENSICS.md`.
+Runs in `~/deepswe/runs/<task>--<arm>` (app/ deleted after grading; model.patch, reward.json,
+account.json, audit.json kept). Cost/audit: `~/nexus-bench/{account,audit,attach_png}.py`.
+Matplotlib lives in `~/pi05-lora/openpi/.venv`; DB reads in the friendly-layer venv.
+
+**Measured (single runs; Pro 5h %, Max ≈ 5×):**
+- 6 near-miss tasks (kombu-sac, sqlite-utils, langchain, gql, bandit-nosec, sqlfmt), hidden of 313 /
+  existing broken / Claude / min: plain Opus high 309/8/204%/82 · **Opus brain + Gemini worker
+  309/4/67% (+8.8 Gemini pts)/125** (ran with the old blind Jev) · plain Sonnet high 309/19/104%/56.
+- Held-out 6 (random v1.1, never tuned on), hidden of 269: plain Sonnet high 267, 4/6, 60%, 33 min ·
+  Sonnet brain + Sonnet low worker + acceptance tests first 261, 5/6, 86%, 44 min · plain Opus high
+  (unit dswe-ho-opus, 4 of 6 done): go-genai ✓ 14.3%, ipython 14/17 22.9%, koota ✓ 63.8%,
+  participle 90/91 17.3%; query-persist, true-myth pending.
+- Sonnet-low workers lose: Opus brain 191/195 on the 3 tuning tasks for 63%, Sonnet brain 193/195 44%.
+- **Luna worker** (`codex:gpt-5.6-luna`, medium, OpenAI free pool): Opus brain + Luna solved kombu-sac,
+  8.2 min, 8.1% Claude — but used **2.3M of the 2.5M/day pool** (resets 21:00) ⇒ ~1 task/day; it ran
+  `git push` + `gh pr create` unasked (failed: no remote). codex worker has `gate_pushes: false`.
+
+**Root causes (FORENSICS.md):** Gemini = 70–88% of team time (80–220 calls × ~7 s); routing 0–4 s,
+Jev 2–4 s/run. Misses were born in the **Opus brain's orders** (kombu: dropped "demoted consumer is
+notified" for promote_consumer in 2 of 3 orders; sqlite: "copy enable-counts" ⇒ exists=True) or in
+worker self-tests (langchain: callbacks merged into a set ⇒ TypeError with langchain's own
+FakeCallbackHandler). Jev only checks the brain's checklist; the brain reviews against its own order.
+
+**Committed (unpushed, 13 ahead):** 42dcdc349 host-path images open in the file viewer; 435f88109 +
+ba7a7f3fd Jev sees committed work and falls back to the session workspace. Other uncommitted edits
+in the tree (ACP/Grok permission mode) belong to another session — don't touch.
+
+**Open, waiting on the user:**
+1. Go for `team_notes/statement_first.md` (statement verbatim + authoritative, every event path,
+   repo test helpers, sentence-by-sentence final review) with Opus brain + Gemini on kombu-sac,
+   sqlite-utils, langchain (~7% Max, ~4 Gemini pts). Launch like:
+   `ARENA_BRAIN_MODEL=claude-opus-5-5 ARENA_BRAIN_EFFORT=high ARENA_TEAM_NOTE=~/deepswe/team_notes/statement_first.md
+   python ~/deepswe/team.py <task> team-opushigh-gem-stmt gemini:gemini-3.7-flash-medium` (in a systemd-run unit).
+2. Set `gate_pushes: true` in examples/nexus/agents/codex/config.yaml?
+3. When dswe-ho-opus ends: account + audit, then chart all held-out arms per hidden test.
+
 ## What we're doing and why
 
 Getting the work onto **one Claude Pro plan**. Max was bought for one month to
