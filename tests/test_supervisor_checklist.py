@@ -293,6 +293,40 @@ async def test_an_unmet_item_sends_the_worker_back_and_tells_the_orchestrator(
     assert "not met (0.30): Cache-write tokens are counted" in review.payload["output"]
 
 
+async def test_a_worker_that_never_cds_is_judged_in_its_root_sessions_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 09-30: a Sonnet worker ran every command with relative paths, so no directory
+    # was found, Jev judged an empty diff and sent finished work back.
+    repo = _repo(tmp_path)
+    seen = _jev_says(monkeypatch, {"counted": 0.9, "gpt-oss": 0.9})
+    items = _worker_items(repo, BRIEF)
+    items[1]["arguments"] = json.dumps({"command": "uv run pytest -q"})
+    sessions = {
+        "child": {
+            "created_at": time.time() - 60,
+            "workspace": None,
+            "root_conversation_id": "root",
+        },
+        "root": {"workspace": str(repo)},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/sessions/child/items":
+            return httpx.Response(200, json={"data": list(reversed(items))})
+        name = request.url.path.rsplit("/", 1)[-1]
+        return (
+            httpx.Response(200, json=sessions[name]) if name in sessions else httpx.Response(404)
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://server") as client:
+        review = await supervisor_checklist.review(PAYLOAD, server_client=client, child_id="child")
+
+    assert "u['input'] + u['output']" in seen[0]["state"]
+    assert review.send_back is None
+
+
 async def test_a_met_checklist_delivers_the_result_with_the_verdict(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -523,17 +523,37 @@ def count_round(key: tuple[str, str] | None, unmet: tuple[str, ...] = ()) -> Non
         _last_unmet[key] = unmet
 
 
-async def _started(server_client: httpx.AsyncClient, child_id: str) -> float | None:
-    """When the worker session was created, as Unix time; ``None`` when unknown."""
+async def _session(server_client: httpx.AsyncClient, session_id: str) -> dict[str, Any]:
+    """A session's info without its items; empty on any failure."""
     try:
         response = await server_client.get(
-            f"/v1/sessions/{child_id}", params={"include_items": "false"}
+            f"/v1/sessions/{session_id}", params={"include_items": "false"}
         )
         response.raise_for_status()
-        started = response.json().get("created_at")
+        info = response.json()
     except (httpx.HTTPError, ValueError):
-        return None
-    return float(started) if isinstance(started, (int, float)) else None
+        return {}
+    return info if isinstance(info, dict) else {}
+
+
+async def _worker_session(
+    server_client: httpx.AsyncClient, child_id: str
+) -> tuple[float | None, str | None]:
+    """When the worker session started (Unix time) and the directory it runs in.
+
+    A sub-agent records no workspace of its own; it runs in its root session's,
+    so that one is used.
+    """
+    info = await _session(server_client, child_id)
+    started = info.get("created_at")
+    workspace = info.get("workspace")
+    root = info.get("root_conversation_id")
+    if not workspace and isinstance(root, str) and root != child_id:
+        workspace = (await _session(server_client, root)).get("workspace")
+    return (
+        float(started) if isinstance(started, (int, float)) else None,
+        workspace if isinstance(workspace, str) and workspace.startswith("/") else None,
+    )
 
 
 async def review(
@@ -567,12 +587,14 @@ async def review(
         if not any(item.get("type") == "function_call" for item in items):
             # Nothing to check, and sending it back only repeats the empty turn.
             return Review({**payload, "output": _dead_session_output(payload)})
+        started, workspace = await _worker_session(server_client, child_id)
         dirs = worker_dirs(items)
+        if workspace and workspace not in dirs:
+            # A worker that never `cd`s and edits through relative paths names no
+            # directory; it worked in its session's (09-30: 0 characters judged).
+            dirs.append(workspace)
         diff = await collect_diff(
-            await repo_roots(dirs),
-            edited_files(items),
-            focus_names(checklist),
-            await _started(server_client, child_id),
+            await repo_roots(dirs), edited_files(items), focus_names(checklist), started
         )
         evidence = extract_evidence(items, await git_changes(dirs)) or ""
     except (httpx.HTTPError, OSError, ValueError):
