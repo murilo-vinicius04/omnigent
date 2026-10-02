@@ -35,7 +35,10 @@ Matplotlib lives in `~/pi05-lora/openpi/.venv`; DB reads in the friendly-layer v
 - Held-out 6 (random v1.1, never tuned on), hidden of 269: plain Sonnet high 267, 4/6, 60%, 33 min ·
   Sonnet brain + Sonnet low worker + acceptance tests first 261, 5/6, 86%, 44 min · **plain Opus high
   265, 4/6, 159%, 67 min** (ipython 14/17: kept the quotes on a quoted path; chart
-  ~/deepswe/heldout_6_opus_sonnet_team.png). On random tasks Opus is NOT ahead of Sonnet high.
+  ~/deepswe/heldout_6_opus_sonnet_team.png). NOT evidence Sonnet ≥ Opus: public DeepSWE (Opus 5/Sonnet 5,
+  mini-swe-agent, 4 trials) has Opus high 21/24 vs Sonnet high 12/24 on these same 6 tasks, 73% vs 49% on
+  39 tasks; a 6-task single run ties ~9% of the time. Public Luna: medium 10%, high 42%, xhigh 62%, max 68%;
+  Gemini 3.8 Flash medium 70% (3.7 = 63%). Parser: scratchpad public_rates.py over ~/deepswe/pages*.
   participle: all 3 arms miss TestAnalyzeCleanGrammarIsClean — the statement says String() is
   "multi-line, non-empty even when clean"; a stated detail nobody read closely (statement_first target).
   Opus audit flags were benign (koota wrote its own memory note in the sandbox's empty home after
