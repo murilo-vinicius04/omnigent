@@ -39,6 +39,9 @@ Matplotlib lives in `~/pi05-lora/openpi/.venv`; DB reads in the friendly-layer v
   mini-swe-agent, 4 trials) has Opus high 21/24 vs Sonnet high 12/24 on these same 6 tasks, 73% vs 49% on
   39 tasks; a 6-task single run ties ~9% of the time. Public Luna: medium 10%, high 42%, xhigh 62%, max 68%;
   Gemini 3.8 Flash medium 70% (3.7 = 63%). Parser: scratchpad public_rates.py over ~/deepswe/pages*.
+  **Why the gap is small (FORENSICS.md 10-02):** public site = Opus 5/Sonnet 5; published 5.5 DeepSWE is Opus
+  74.2% vs Sonnet 71.0% (benchlm.ai). Sonnet 5.5 jumped (solved kombu-sac/sqlite, Sonnet 5 0/4 each). agy has
+  gemini-3.8-flash-medium (public 72%). apimix is NOT configured on this host (searched 10-02).
   participle: all 3 arms miss TestAnalyzeCleanGrammarIsClean — the statement says String() is
   "multi-line, non-empty even when clean"; a stated detail nobody read closely (statement_first target).
   Opus audit flags were benign (koota wrote its own memory note in the sandbox's empty home after
