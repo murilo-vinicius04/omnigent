@@ -61,6 +61,12 @@ FakeCallbackHandler). Jev only checks the brain's checklist; the brain reviews a
 ba7a7f3fd Jev sees committed work and falls back to the session workspace. Other uncommitted edits
 in the tree (ACP/Grok permission mode) belong to another session — don't touch.
 
+**Running (10-03 12:01): gap screening, unit `dswe-screen20`** — `~/deepswe/screen.sh screen_20.json 70 25`:
+20 unused mid-difficulty v1.1 tasks (seed 20261003, difficulty from non-Opus/Sonnet public configs). Per task:
+Sonnet 5.5 high → Opus 5.5 high if it fails → Sonnet again (r2) if Opus solves; GAP = Opus solves, Sonnet fails twice.
+Results `~/deepswe/screen_20_results.tsv`; pauses at 5h 70%, halts at week 25% or bad login; one image on disk at a time,
+run working copies deleted after grading (patch/transcript/grades kept). Restarting the unit resumes where it stopped.
+
 **Open, waiting on the user:**
 1. Go for `team_notes/statement_first.md` (statement verbatim + authoritative, every event path,
    repo test helpers, sentence-by-sentence final review) with Opus brain + Gemini on kombu-sac,
