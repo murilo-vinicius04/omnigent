@@ -66,6 +66,9 @@ in the tree (ACP/Grok permission mode) belong to another session — don't touch
 Sonnet 5.5 high → Opus 5.5 high if it fails → Sonnet again (r2) if Opus solves; GAP = Opus solves, Sonnet fails twice.
 Results `~/deepswe/screen_20_results.tsv`; pauses at 5h 70%, halts at week 25% or bad login; one image on disk at a time,
 run working copies deleted after grading (patch/transcript/grades kept). Restarting the unit resumes where it stopped.
+10-03 14:05 it HALTED on disk (8 GB free; old task images + a 2.1 GB node core dump in /var/lib/apport/coredump +
+chat.db growth) and sat 9 h unnoticed (background-bash watch died at 13:32). 23:00: freed graded runs' working copies
++ npm cache (13 GB free), disk check now 10 GB before a pull / 4 GB per run, restarted. Watch = Monitor, re-arm every 30 min.
 
 **Open, waiting on the user:**
 1. Go for `team_notes/statement_first.md` (statement verbatim + authoritative, every event path,
