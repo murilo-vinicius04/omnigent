@@ -78,6 +78,11 @@ roundtrip). Cost 353% Pro (Sonnet 22 runs 248%, Opus 4 runs 105%), ~5 Max-week p
 git-fetched tc39/test262 from GitHub (agent shell has internet; bwrap can't cut it since claude needs the API) — public
 conformance suite, run still failed. Yield 1 gap/20 ⇒ ~6 gap tasks would need ~100+ tasks screened.
 
+**Running 10-04 10:30: team on the 4 Sonnet-fail tasks, unit `dswe-team-gap4`** — `~/deepswe/team_queue.sh team_gap4.queue 70 30`:
+Opus 5.5 high brain (+ Jev as configured) with Gemini 3.8 Flash medium (`team-opushigh-gem38`) and Luna xhigh
+(`team-opushigh-luna-xhigh`) on koota-entity, koota-query, arktype, meriyah. Luna lines wait for ≥2.3M left in the
+OpenAI free pool (resets 00:00 UTC) ⇒ ~1 Luna task/day; apimix still unconfigured. Re-running the unit resumes.
+
 **Open, waiting on the user:**
 1. Go for `team_notes/statement_first.md` (statement verbatim + authoritative, every event path,
    repo test helpers, sentence-by-sentence final review) with Opus brain + Gemini on kombu-sac,
