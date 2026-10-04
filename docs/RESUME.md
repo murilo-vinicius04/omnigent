@@ -82,6 +82,10 @@ conformance suite, run still failed. Yield 1 gap/20 ⇒ ~6 gap tasks would need 
 Opus 5.5 high brain (+ Jev as configured) with Gemini 3.8 Flash medium (`team-opushigh-gem38`) and Luna xhigh
 (`team-opushigh-luna-xhigh`) on koota-entity, koota-query, arktype, meriyah. Luna lines wait for ≥2.3M left in the
 OpenAI free pool (resets 00:00 UTC) ⇒ ~1 Luna task/day; apimix still unconfigured. Re-running the unit resumes.
+Results: koota-entity Gemini3.8 SOLVED 84/84, 21.6 min, 9.6% Pro, 1.4 Gem pts · Luna xhigh SOLVED 84/84, 6.9 min,
+5.7% Pro — Luna wrote all 17 files in 6 min / 2.33M tokens, then the proxy refused (pool spent); I interrupted the brain
+(it had only read/tested, no edits). Plain Opus 84/84 7.3 min 18.4%. Remaining Luna lines would die the same way:
+stop the unit when it logs WAIT (after the Gemini lines). Luna needs apimix (user to send base URL/key path/model).
 
 **Open, waiting on the user:**
 1. Go for `team_notes/statement_first.md` (statement verbatim + authoritative, every event path,
