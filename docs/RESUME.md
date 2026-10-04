@@ -70,6 +70,14 @@ run working copies deleted after grading (patch/transcript/grades kept). Restart
 chat.db growth) and sat 9 h unnoticed (background-bash watch died at 13:32). 23:00: freed graded runs' working copies
 + npm cache (13 GB free), disk check now 10 GB before a pull / 4 GB per run, restarted. Watch = Monitor, re-arm every 30 min.
 
+**Gap screening DONE 10-04 01:40** (`~/deepswe/screen_20_results.tsv`, chart `~/deepswe/screen20_gap_results.png`):
+Sonnet 5.5 high solved 16/20 first try; of its 4 misses Opus 5.5 high solved 2 (koota-entity-snapshot-rollback,
+koota-query-predicates) and failed 2 (arktype-json-schema-refs, meriyah-explicit-resource). Sonnet retry solved
+koota-query ⇒ only **1 GAP: koota-entity-snapshot-rollback** (Sonnet 83/84 twice, same test: snapshot→rollback→snapshot
+roundtrip). Cost 353% Pro (Sonnet 22 runs 248%, Opus 4 runs 105%), ~5 Max-week points, 3.2 h. Audit: Opus meriyah
+git-fetched tc39/test262 from GitHub (agent shell has internet; bwrap can't cut it since claude needs the API) — public
+conformance suite, run still failed. Yield 1 gap/20 ⇒ ~6 gap tasks would need ~100+ tasks screened.
+
 **Open, waiting on the user:**
 1. Go for `team_notes/statement_first.md` (statement verbatim + authoritative, every event path,
    repo test helpers, sentence-by-sentence final review) with Opus brain + Gemini on kombu-sac,
