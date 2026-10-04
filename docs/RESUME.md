@@ -86,6 +86,11 @@ Results: koota-entity Gemini3.8 SOLVED 84/84, 21.6 min, 9.6% Pro, 1.4 Gem pts ·
 5.7% Pro — Luna wrote all 17 files in 6 min / 2.33M tokens, then the proxy refused (pool spent); I interrupted the brain
 (it had only read/tested, no edits). Plain Opus 84/84 7.3 min 18.4%. Remaining Luna lines would die the same way:
 stop the unit when it logs WAIT (after the Gemini lines). Luna needs apimix (user to send base URL/key path/model).
+**gap4 DONE 13:02 (unit stopped at the Luna WAIT; 3 Luna lines not run).** Chart ~/deepswe/team_gap4_results.png.
+Gemini-3.8 team: koota-entity ✓ 9.6% 22m · koota-query 41/43 13.3% 43m (brain's order invented 'first run = all false'
+baseline, FORENSICS.md) · arktype ✓ 9.5% 38m (plain Opus AND Sonnet failed it) · meriyah 47/49 7.8% 25m.
+Totals on 4: team 2/4 solved, 197/201 hidden, 40% Pro + 8.9 Gemini pts, 128 min | plain Opus 2/4, 195/201, 106%, 42 min |
+plain Sonnet (1st try) 0/4, 195/201, 49%, 25 min. Next idea: statement_first.md note to stop order-born misses.
 
 **Open, waiting on the user:**
 1. Go for `team_notes/statement_first.md` (statement verbatim + authoritative, every event path,
