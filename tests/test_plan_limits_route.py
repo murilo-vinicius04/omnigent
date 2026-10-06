@@ -54,6 +54,8 @@ def _clear_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     monkeypatch.setattr(plan_limits, "_grok_fetch_counter", 0, raising=False)
     monkeypatch.setattr(plan_limits, "_grok_lock", None, raising=False)
     monkeypatch.setattr(plan_limits, "GROK_AUTH_PATH", tmp_path / "grok_auth.json", raising=False)
+    monkeypatch.setattr(plan_limits, "CODEX_AUTH_PATH", tmp_path / "codex_auth.json")
+    monkeypatch.setattr(plan_limits, "CODEX_CACHE_PATH", tmp_path / "plan-limits-codex.json")
     monkeypatch.setattr(plan_limits.grok_usage, "SESSIONS_ROOT", tmp_path / "grok_sessions")
     monkeypatch.setattr(
         plan_limits.grok_usage, "sessions_root", lambda: tmp_path / "grok_sessions"
@@ -871,9 +873,7 @@ def test_grok_429_sets_cooldown_and_serves_stale_or_error(
     assert calls == 1
 
 
-def test_grok_network_failure_is_contained(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
-) -> None:
+def test_grok_network_failure_is_contained(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     _mock_grok_auth(tmp_path, monkeypatch, token="tok")
 
     def boom(request: httpx.Request) -> httpx.Response:
@@ -940,7 +940,6 @@ def test_grok_ingest_runs_during_provider_call(
     assert ingest_called
 
 
-
 # --- tokens burned today ----------------------------------------------------
 
 
@@ -994,8 +993,9 @@ def test_every_provider_row_carries_todays_counted_tokens(
     # the tokens are the vendor's.
     assert _by_id(payload, "antigravity")["tokens_today"] == 3_000
     assert _by_id(payload, "grok")["tokens_today"] == 500
-    # Nothing recorded for OpenAI today: no line rather than a zero.
-    assert "tokens_today" not in _by_id(payload, "openai")
+    # The Codex plan row carries no token line: Omnigent's OpenAI counts also
+    # include API-key traffic that never touches the plan.
+    assert "tokens_today" not in _by_id(payload, "codex")
 
 
 def test_todays_token_line_is_not_appended_twice_to_a_replayed_row(
@@ -1021,3 +1021,130 @@ def test_todays_token_line_is_not_appended_twice_to_a_replayed_row(
     assert [line for line in grok["details"] if "tokens today" in line] == [
         "2k tokens today · 1 call"
     ]
+
+
+# --- codex provider ---------------------------------------------------------
+
+
+_CODEX_USAGE = {
+    "plan_type": "plus",
+    "rate_limit": {
+        "primary_window": {
+            "used_percent": 12,
+            "limit_window_seconds": 18000,
+            "reset_at": 1791328614,
+        },
+        "secondary_window": {
+            "used_percent": 3,
+            "limit_window_seconds": 604800,
+            "reset_at": 1791915414,
+        },
+    },
+}
+
+
+def _codex_login(tmp_path: Path) -> None:
+    (tmp_path / "codex_auth.json").write_text(
+        json.dumps(
+            {"auth_mode": "chatgpt", "tokens": {"access_token": "acc", "account_id": "acct-1"}}
+        )
+    )
+
+
+def _codex_only(handler: Any) -> Any:
+    """Answer Codex's usage URL with *handler* and every other vendor with a 500."""
+
+    def route(request: httpx.Request) -> httpx.Response:
+        return handler(request) if "wham/usage" in str(request.url) else httpx.Response(500)
+
+    return route
+
+
+def test_codex_reports_five_hour_and_weekly_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _codex_login(tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == "Bearer acc"
+        assert request.headers["ChatGPT-Account-Id"] == "acct-1"
+        return httpx.Response(200, json=_CODEX_USAGE)
+
+    _mock_transport(monkeypatch, _codex_only(handler))
+
+    codex = _by_id(_collect(), "codex")
+
+    assert codex["state"] == "ok"
+    assert codex["tier"] == "ChatGPT Plus"
+    assert [(w["kind"], w["label"], w["percent"]) for w in codex["windows"]] == [
+        ("session", "5h", 12),
+        ("weekly", "week", 3),
+    ]
+    assert codex["windows"][0]["resets_at"] == "2026-10-06T23:16:54Z"
+
+
+def test_codex_replaces_the_openai_pool_row(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _codex_login(tmp_path)
+    _mock_transport(monkeypatch, _codex_only(lambda r: httpx.Response(200, json=_CODEX_USAGE)))
+
+    ids = [p["id"] for p in _collect()["providers"]]
+
+    assert "codex" in ids
+    assert "openai" not in ids
+
+
+def test_codex_without_a_chatgpt_login_is_signed_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # An API-key login has no plan windows.
+    (tmp_path / "codex_auth.json").write_text(
+        json.dumps({"OPENAI_API_KEY": "sk-x", "tokens": None})
+    )
+    _mock_transport(monkeypatch, lambda r: httpx.Response(500))
+
+    codex = _by_id(_collect(), "codex")
+
+    assert codex["state"] == "signed-out"
+    assert codex["windows"] == []
+
+
+def test_codex_expired_login_replays_the_last_reading_as_stale(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _codex_login(tmp_path)
+    answers = iter([httpx.Response(200, json=_CODEX_USAGE), httpx.Response(401)])
+    _mock_transport(monkeypatch, _codex_only(lambda r: next(answers)))
+    _collect()
+    monkeypatch.setattr(plan_limits, "_cache", None)
+
+    codex = _by_id(_collect(), "codex")
+
+    assert codex["state"] == "stale"
+    assert [w["percent"] for w in codex["windows"]] == [12, 3]
+    assert codex["tier"] == "ChatGPT Plus"
+    assert "sign in again" in codex["reason"]
+
+
+def test_codex_failure_with_no_reading_is_an_error_row(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _codex_login(tmp_path)
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("offline", request=request)
+
+    _mock_transport(monkeypatch, _codex_only(boom))
+
+    payload = _collect()
+
+    assert _by_id(payload, "codex")["state"] == "error"
+    assert _by_id(payload, "claude")["id"] == "claude"
+
+
+def test_codex_window_labels_follow_the_window_length() -> None:
+    assert plan_limits._codex_window_label(18000) == "5h"
+    assert plan_limits._codex_window_label(604800) == "week"
+    assert plan_limits._codex_window_label(86400) == "1d"
+    assert plan_limits._codex_window_label(None) == ""

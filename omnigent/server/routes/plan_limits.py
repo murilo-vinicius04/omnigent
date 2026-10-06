@@ -39,6 +39,10 @@ Sources, and why each is what it is:
   replayed with ``state="stale"`` plus an ``as_of`` stamp, so the UI can show
   the number while being explicit that it is not live.
 
+- ``codex`` — ``GET https://chatgpt.com/backend-api/wham/usage`` with the
+  ChatGPT login Codex CLI persists in ``~/.codex/auth.json``. This is the call
+  Codex's own ``/status`` makes, so the 5-hour and weekly windows match it.
+
 Percentages are whole numbers 0-100 and measure the share **consumed** (agy
 reports the reciprocal, ``remainingFraction``). ``resets_at`` is ISO-8601 UTC
 or ``None``.
@@ -49,6 +53,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import secrets
 import time
@@ -98,6 +103,15 @@ GROK_USAGE_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 
 #: Last good Grok reading, replayed during expiration or cooldown.
 GROK_CACHE_PATH = state_dir() / "plan-limits-grok.json"
+
+#: Codex CLI's login file (``$CODEX_HOME`` when set, as Codex itself resolves it).
+CODEX_AUTH_PATH = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "auth.json"
+
+#: Same endpoint Codex's ``/status`` reads for ChatGPT-plan rate limits.
+CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+
+#: Last good Codex reading, replayed when the live read fails.
+CODEX_CACHE_PATH = state_dir() / "plan-limits-codex.json"
 
 _claude_cache: dict[str, Any] | None = None
 _claude_cooldown_until: float = 0.0
@@ -587,6 +601,152 @@ def _openai_provider() -> dict[str, Any]:
     return row
 
 
+def _read_codex_login() -> tuple[str, str] | None:
+    """Return the ChatGPT access token and account id Codex CLI signed in with.
+
+    ``None`` when there is no login or it is an API-key login, which has no
+    plan windows.
+    """
+    try:
+        blob = json.loads(CODEX_AUTH_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    tokens = blob.get("tokens") if isinstance(blob, dict) else None
+    if not isinstance(tokens, dict):
+        return None
+    access_token, account_id = tokens.get("access_token"), tokens.get("account_id")
+    if (
+        isinstance(access_token, str)
+        and access_token
+        and isinstance(account_id, str)
+        and account_id
+    ):
+        return access_token, account_id
+    return None
+
+
+def _codex_window_label(seconds: Any) -> str:
+    """Label a Codex window by its length: ``18000`` -> ``5h``, ``604800`` -> ``week``."""
+    if not isinstance(seconds, (int, float)) or seconds <= 0:
+        return ""
+    if seconds == 7 * 86400:
+        return "week"
+    if seconds % 86400 == 0:
+        return f"{int(seconds // 86400)}d"
+    return f"{round(seconds / 3600)}h"
+
+
+def _codex_windows(rate_limit: Any) -> list[dict[str, Any]]:
+    """Normalize Codex's ``rate_limit`` object into the 5-hour and weekly windows."""
+    if not isinstance(rate_limit, dict):
+        return []
+    windows: list[dict[str, Any]] = []
+    for key, kind, fallback in (
+        ("primary_window", "session", "5h"),
+        ("secondary_window", "weekly", "week"),
+    ):
+        payload = rate_limit.get(key)
+        if not isinstance(payload, dict):
+            continue
+        reset_at = payload.get("reset_at")
+        window = _window(
+            kind,
+            _codex_window_label(payload.get("limit_window_seconds")) or fallback,
+            {
+                "percent": payload.get("used_percent"),
+                "resets_at": (
+                    datetime.fromtimestamp(reset_at, UTC).isoformat().replace("+00:00", "Z")
+                    if isinstance(reset_at, (int, float))
+                    else None
+                ),
+            },
+        )
+        if window is not None:
+            windows.append(window)
+    return windows
+
+
+def _read_codex_cache() -> dict[str, Any] | None:
+    """Return the persisted last-good Codex reading, or ``None``."""
+    try:
+        blob = json.loads(CODEX_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(blob, dict) or not isinstance(blob.get("windows"), list):
+        return None
+    return blob
+
+
+def _write_codex_cache(windows: list[dict[str, Any]], tier: str | None) -> None:
+    """Persist a fresh Codex reading; write failures never break the route."""
+    payload = {
+        "windows": windows,
+        "tier": tier,
+        "as_of": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }
+    try:
+        CODEX_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CODEX_CACHE_PATH.write_text(json.dumps(payload), encoding="utf-8")
+    except OSError as exc:
+        logger.debug("codex plan-limit cache write failed: %s", exc)
+
+
+async def _codex_provider(client: httpx.AsyncClient) -> dict[str, Any]:
+    """Build the ``codex`` provider row from the ChatGPT plan Codex CLI signs in with.
+
+    The login's token is used as is, never refreshed here: a refresh rotates the
+    refresh token and would sign the Codex CLI itself out. A failed read
+    replays the last good one, marked stale.
+    """
+    row: dict[str, Any] = {"id": "codex", "label": "Codex", "windows": []}
+    login = _read_codex_login()
+    if login is None:
+        row["state"] = "signed-out"
+        return row
+    access_token, account_id = login
+    try:
+        response = await client.get(
+            CODEX_USAGE_URL,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "ChatGPT-Account-Id": account_id,
+                "Accept": "application/json",
+            },
+        )
+        if response.status_code == 200:
+            data = response.json()
+            windows = _codex_windows(data.get("rate_limit")) if isinstance(data, dict) else []
+            if windows:
+                plan = data.get("plan_type")
+                tier = f"ChatGPT {plan.title()}" if isinstance(plan, str) and plan else None
+                _write_codex_cache(windows, tier)
+                row["windows"] = windows
+                row["state"] = "ok"
+                if tier:
+                    row["tier"] = tier
+                return row
+            reason = "no rate-limit windows in the usage response"
+        elif response.status_code in (401, 403):
+            reason = "Codex login expired; run codex to sign in again"
+        else:
+            reason = f"usage endpoint answered {response.status_code}"
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.debug("codex plan-limit fetch failed: %s", exc)
+        reason = "usage endpoint unreachable"
+
+    cached = _read_codex_cache()
+    if cached is not None:
+        row["windows"] = cached["windows"]
+        row["state"] = "stale"
+        row["as_of"] = cached.get("as_of")
+        if cached.get("tier"):
+            row["tier"] = cached["tier"]
+    else:
+        row["state"] = "error"
+    row["reason"] = reason
+    return row
+
+
 def _get_grok_lock() -> asyncio.Lock:
     global _grok_lock
     if _grok_lock is None:
@@ -935,16 +1095,18 @@ async def collect_plan_limits() -> dict[str, Any]:
         # Antigravity's lookup does blocking port discovery (lsof / procfs), so
         # it goes to a worker thread; running it concurrently with Claude's HTTP
         # call keeps the route's latency at the slower of the two, not the sum.
-        claude_row, antigravity_row, openai_row, grok_row = await asyncio.gather(
+        # The Codex plan's windows replace the OpenAI API-pool row for now: the
+        # Codex worker runs on the ChatGPT plan, not the API key's free pools.
+        claude_row, antigravity_row, codex_row, grok_row = await asyncio.gather(
             _claude_provider(client),
             asyncio.to_thread(_antigravity_provider),
-            asyncio.to_thread(_openai_provider),
+            _codex_provider(client),
             _grok_provider(client),
         )
         # Parsing the usage log is file work; keep it off the event loop.
         claude_row = _with_pro_equivalent(claude_row)
         providers = await asyncio.to_thread(
-            _with_tokens_today, [claude_row, antigravity_row, openai_row, grok_row]
+            _with_tokens_today, [claude_row, antigravity_row, codex_row, grok_row]
         )
 
     payload = {"providers": providers, "fetched_at": time.time()}
