@@ -14,6 +14,43 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-06 — READ FIRST (lean nexus brain; session d9653808)
+
+**Goal (user):** Opus-level coding with Opus only orchestrating and a cheap worker doing the work, to save Claude
+quota at about the same speed. Judge every arm by hidden tests passed per task, Claude cost (Pro 5h %), and minutes.
+
+**What we learned (DeepSWE v1.1, single runs):**
+- Published 5.5 DeepSWE: Opus 74.2 vs Sonnet 71.0 (small gap). Screening 20 unused mid tasks: plain Sonnet 5.5 high
+  solved 16/20 first try; only 1 confirmed Opus-only task (koota-entity-snapshot-rollback).
+- The 4 Sonnet-fail tasks (koota-entity, koota-query, arktype, meriyah): plain Opus 2/4 (195/201 hidden, 106% Pro,
+  42 min); Opus brain + Gemini 3.8 Flash 2/4 (197/201, 40% Pro + 8.9 Gemini pts, 128 min).
+- Luna (gpt-5.6-luna xhigh): koota-entity solved 6.9 min / 5.7% Pro (API pool, ran it dry). On ChatGPT Plus
+  (codex-plan): koota-query 41/43 (11.4%, 23 min), retry solved (16.3%, 15 min). Plain Sonnet on koota-query: 41/43,
+  retry solved (14.8%, 7.7 min). Retries were verified independent (same prompt, fresh repo, no cross-run access).
+- **Root cause:** the brain wrote 0 lines but made 16 code reads + 7 diffs + 7 test runs ≈ a whole Sonnet run, and in
+  try 1 its review overrode Luna's correct design (koota's change tracking) with its own "baseline diffing".
+  Details: ~/deepswe/FORENSICS.md.
+
+**Done 10-06:** lean-brain nexus prompt `34eb963d1` (orders open with the request verbatim under "O PEDIDO (manda)",
+no exploring to find edit points, review = diff + test output, keep the worker's design unless a request sentence or a
+failing test contradicts it); live after a server restart (check `~/.omnigent/artifacts/.cache/06ec6c26f28940a0b77e83c16acaba3d/config.yaml`).
+Usage ring shows Codex Plus 5h + week (`42b3713f4`, server restart is enough). `dswe.sh` keeps `.codex-tmp/` (holds a
+copy of the ChatGPT login) out of git at prepare and grade. Disk cleanup: crawl-lab 5.0 GB
+(`crawl-lab/logs/CHECKPOINT_CLEANUP_2026-10-06.txt`), wandb dup copies 9.1 GB; 22 GB free.
+
+**Next, waiting on the user's go:** validate the lean brain with Opus + Luna xhigh (Codex Plus) on koota-query,
+arktype, meriyah (~20-30% Pro, ~15% Codex 5h). Target: brain <7% Pro/task (was 11-16%). Run it like this:
+`~/deepswe/team_queue.sh <queue> 70 30` in a `systemd-run --user` unit; queue lines are
+`<task> <arm> codex-plan:gpt-5.6-luna xhigh`; use a new arm name (e.g. `team-opushigh-lean-codexplus-luna-xhigh`).
+Codex meter: `python3 ~/deepswe/codex_quota.py` (16% 5h / 2% week at 16:50). Watch the unit by polling journalctl;
+`journalctl -f` fails here (inotify watch limit). The partial arktype run is `...-aborted` (ignore it).
+
+**Open questions for the user:** `gate_pushes: true` for codex/codex-plan (Luna runs `git push` + `gh pr create`
+after finishing); wandb cache groups B (17.5 GB screening runs) and C (2.8 GB strict run); faster + spot-locomanipulation
+cleanup (mostly root-owned: sudo command vs docker; safe 4.9 GB + broken `faster/.venv` 7.4 GB; audit in
+`isaac-sim_ws/CHECKPOINT_AUDIT_faster_locomanip_2026-10-06.md`). apmix key no longer exists (user spells it "apimix").
+Unmute heard the user fine on 10-04; the two 10-03 failures stayed unexplained.
+
 ## 2026-10-01 — READ FIRST (DeepSWE team benchmark; session d9653808)
 
 **Goal (user):** Opus-level results with Opus *orchestrating* and a cheaper model doing the work,
