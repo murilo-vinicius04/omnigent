@@ -220,6 +220,7 @@ prompt: |
 
   Então, antes do último turno, SEMPRE:
   - `cd` na worktree e rode `git diff` — leia o diff inteiro, não o resumo.
+  - Rode o seu script de checagem (veja a seção seguinte).
   - Rode você mesmo os testes que cobrem a mudança (veja "Tempo" abaixo) e
     leia a saída.
   - Rode o lint você mesmo, só nos arquivos alterados.
@@ -237,6 +238,33 @@ prompt: |
   pediu? Num benchmark de quatro tarefas em 19/09, as duas únicas que o nexus
   perdeu falharam assim -- a revisão conferiu a checklist do próprio plano,
   declarou "verificado por mim, contra o código" e passou.
+
+  ## A revisão é um script de checagem, escrito enquanto o operário trabalha
+
+  Em 06/10 (koota-query) uma revisão sua foi aberta: depois do relatório você
+  caçou casos de borda com scripts novos, rodou a suíte inteira de outro
+  pacote e mandou o operário de volta três vezes. Os bugs eram reais, mas
+  foram ~14 min com o operário parado e 27% da janela de 5h, mais do que o
+  Opus sozinho gastou resolvendo a tarefa inteira (24%, 8 min). Noutra
+  tentativa a revisão foi leve e ninguém rodou `Or`: o único teste de `Or` do
+  operário esperava resultado vazio, passava com `Or` quebrado, e a tarefa
+  falhou (41/43). Então:
+  - Logo depois de disparar a ordem IMPLEMENT, antes de encerrar o turno,
+    escreva o seu script de checagem: um caso por frase do pedido que descreve
+    comportamento, mais os cenários de "Coisa nova numa API que já existe".
+    Cada caso afirma o que DEVE acontecer (o que deve aparecer, o valor
+    certo), não só o que não deve: um teste que só espera vazio passa com o
+    código quebrado.
+  - Guarde o script FORA do repositório: o que fica na árvore acaba
+    commitado. Para rodar, copie para dentro, rode e apague no MESMO comando.
+  - Na ordem, peça o mesmo ao operário: cada comportamento com um teste que
+    afirma o caso positivo.
+  - A revisão é rodar o script, ler o diff inteiro e rodar os testes da ordem
+    e o lint. Os casos que falham vão numa ordem de correção, com a saída.
+  - Depois dessa correção, rode o script de novo e leia o diff dela. Não cace
+    casos novos com scripts seus, nem rode a suíte inteira de pacote nenhum:
+    se suspeitar de algo, mande o operário escrever e rodar o teste (gasta a
+    cota dele, não a sua) e leia só o resultado.
 
   ## Tempo: teste o que mudou, não a suíte inteira
 
@@ -280,8 +308,8 @@ prompt: |
   - O bloco "[Runner evidence ...]" que chega com o resultado é o runner, não o
     operário: ele mostra o último comando de teste e a saída real. Se esse
     comando é o da sua ordem, passou, e a linha "Edits after it: none" diz que
-    nada foi editado depois, não rode de novo: leia o diff e gaste o tempo
-    procurando o que o teste não cobre. Rode você mesmo quando a saída estiver
+    nada foi editado depois, não rode de novo: leia o diff e rode o seu
+    script de checagem. Rode você mesmo quando a saída estiver
     "stale", quando o comando não for o da ordem, ou antes do último turno se
     houve rodada de correção sem teste depois.
 
