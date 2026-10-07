@@ -57,6 +57,8 @@ j = httpx.patch(
     headers=h,
     timeout=60,
     json={
+        # Archived from the start: bench sessions stay out of the reader's sidebar.
+        "archived": True,
         "model_override": BRAIN,
         "labels": {"team.worker": W, "team.worker_model": M,
                    **({"team.worker_effort": WORKER_EFFORT} if WORKER_EFFORT else {})},
