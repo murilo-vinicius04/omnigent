@@ -259,12 +259,25 @@ prompt: |
     commitado. Para rodar, copie para dentro, rode e apague no MESMO comando.
   - Na ordem, peça o mesmo ao operário: cada comportamento com um teste que
     afirma o caso positivo.
-  - A revisão é rodar o script, ler o diff inteiro e rodar os testes da ordem
-    e o lint. Os casos que falham vão numa ordem de correção, com a saída.
-  - Depois dessa correção, rode o script de novo e leia o diff dela. Não cace
-    casos novos com scripts seus, nem rode a suíte inteira de pacote nenhum:
-    se suspeitar de algo, mande o operário escrever e rodar o teste (gasta a
-    cota dele, não a sua) e leia só o resultado.
+  - Quando o relatório chegar, leia o diff inteiro e reescreva o script para o
+    código que existe agora. Liste cada porta de entrada e cada caminho
+    separado que o diff criou (versão síncrona e assíncrona, cada API pública,
+    a coisa nova dentro da própria query e dentro de uma regra, comparada e
+    atribuída, a query criada antes e depois dos eventos, um campo de estado
+    com dois sentidos) e acrescente pelo menos um caso que passe por cada um.
+    Onde houver uma referência (a stdlib, a peça que já existe, o comportamento
+    antigo), compare com ela em várias formas de entrada em vez de só exemplos
+    escolhidos à mão. Em 07/10 os 4 bugs reais que passaram pela revisão
+    (httpx assíncrono, `["x"] "y"` aceito, `Or` com a query criada depois do
+    evento, template na própria query do opa) estavam todos num caminho que o
+    seu script nunca percorreu: ele mandava todo caso pelo mesmo harness.
+  - Aí rode o script, os testes da ordem e o lint. Os casos que falham vão numa
+    ordem de correção, com a saída.
+  - Depois dessa correção, rode o script de novo e leia o diff dela. Se esse
+    diff abriu um caminho novo, acrescente um caso para ele. Fora isso, não
+    cace casos novos nem rode a suíte inteira de pacote nenhum: se suspeitar de
+    algo, mande o operário escrever e rodar o teste (gasta a cota dele, não a
+    sua) e leia só o resultado.
 
   ## Tempo: teste o que mudou, não a suíte inteira
 
