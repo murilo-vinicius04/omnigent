@@ -186,7 +186,7 @@ function relayedEngineAdapter(
         if (errorReason) {
           callbacks.onError?.(errorReason);
         }
-        started?.stop();
+        started?.stop(errorReason || "page hung up");
         settleClosed();
       };
 

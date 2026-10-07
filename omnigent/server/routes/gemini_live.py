@@ -20,6 +20,7 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, Final
 
 import websockets
@@ -170,6 +171,95 @@ class _ReplyMeter:
         span = self.last_at - self.first_at
         ratio = f"{self.audio_s / span:.2f}" if span > 0 else "inf"
         return f"{self.audio_s:.1f}s@{ratio}x/{self.dry}dry{self.dry_s:.1f}s"
+
+
+class _TurnLog:
+    """What became of each thing the reader said: when Google heard it, what came back.
+
+    The session counters cannot tell a slow reply from none, nor say whether
+    Google's own speech detection ever closed the reader's turn. Per turn this
+    records the transcribed span, the first reply (audio or a tool call) and its
+    delay, and keeps the last frames that were not audio so an unanswered turn
+    can be read raw.
+    """
+
+    def __init__(self, start: float) -> None:
+        self.start = start
+        self.kinds: dict[str, int] = {}
+        self.turns: list[_HeardTurn] = []
+        self.usage: dict[str, int] = {}
+        self.recent: list[str] = []
+
+    def _open_turn(self) -> _HeardTurn | None:
+        if self.turns and self.turns[-1].reply is None:
+            return self.turns[-1]
+        return None
+
+    def frame(self, now: float, parsed: object, raw: str | bytes) -> None:
+        """Account one upstream frame received at monotonic time *now*."""
+        if not isinstance(parsed, dict):
+            self.kinds["unparsed"] = self.kinds.get("unparsed", 0) + 1
+            return
+        at = now - self.start
+        content = parsed.get("serverContent")
+        content = content if isinstance(content, dict) else {}
+        for kind in [
+            *(k for k in parsed if k != "serverContent"),
+            *(f"serverContent.{k}" for k in content),
+        ]:
+            self.kinds[kind] = self.kinds.get(kind, 0) + 1
+        usage = parsed.get("usageMetadata")
+        if isinstance(usage, dict):
+            self.usage = {k: v for k, v in usage.items() if isinstance(v, int)}
+        heard = content.get("inputTranscription")
+        text = heard.get("text") if isinstance(heard, dict) else None
+        if isinstance(text, str) and text.strip():
+            turn = self._open_turn()
+            if turn is None:
+                turn = _HeardTurn(start=at)
+                self.turns.append(turn)
+            turn.end = at
+            turn.chars += len(text)
+        model_turn = content.get("modelTurn")
+        parts = model_turn.get("parts") if isinstance(model_turn, dict) else None
+        audio = isinstance(parts, list) and any(
+            isinstance(p, dict) and "inlineData" in p for p in parts
+        )
+        reply = "toolCall" if "toolCall" in parsed else ("audio" if audio else None)
+        turn = self._open_turn()
+        if reply and turn is not None:
+            turn.reply = reply
+            turn.after = at - turn.end
+        if not audio:
+            body = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
+            self.recent.append(f"{at:.1f}s {body[:240]}")
+            del self.recent[:-12]
+
+    def unanswered(self) -> bool:
+        """Whether the last thing Google heard got no reply at all."""
+        return self._open_turn() is not None
+
+    def summary(self, end: float) -> str:
+        """Return one ``heard@<from>-<to>s(<chars>ch)-><reply>+<delay>s`` per turn."""
+        parts = []
+        for turn in self.turns[:30]:
+            span = f"heard@{turn.start:.1f}-{turn.end:.1f}s({turn.chars}ch)"
+            if turn.reply is None:
+                parts.append(f"{span}->NONE(waited {end - self.start - turn.end:.1f}s)")
+            else:
+                parts.append(f"{span}->{turn.reply}+{turn.after:.1f}s")
+        return "[" + ",".join(parts) + "]"
+
+
+@dataclass
+class _HeardTurn:
+    """One stretch of the reader's speech as Google transcribed it, and its reply."""
+
+    start: float
+    end: float = 0.0
+    chars: int = 0
+    reply: str | None = None
+    after: float = 0.0
 
 
 def _realtime_factor(audio_bytes: int, first_at: float | None, last_at: float | None) -> str:
@@ -337,6 +427,7 @@ def create_gemini_live_router(
         tool_latencies: list[str] = []
         reply = _ReplyMeter()
         replies: list[str] = []
+        turn_log = _TurnLog(session_start)
         pending_tool_calls: list[tuple[float, asyncio.Task[None]]] = []
 
         def _contains(msg: str | bytes | None, target: str) -> bool:
@@ -492,6 +583,10 @@ def create_gemini_live_router(
                     except websockets.ConnectionClosed as exc:
                         record_upstream_close(exc)
                         return
+                    try:
+                        turn_log.frame(time.monotonic(), json.loads(message), message)
+                    except ValueError:
+                        turn_log.frame(time.monotonic(), None, message)
                     if _contains(message, '"setupComplete"'):
                         setup_complete_count += 1
                         if setup_ms is None:
@@ -606,7 +701,7 @@ def create_gemini_live_router(
                 "events={setupComplete:%d,inputTranscription:%d,outputTranscription:%d,"
                 "interrupted:%d,turnComplete:%d,generationComplete:%d,toolCall:%d,"
                 "goAway:%d,toolResponse:%d,audioStreamEnd:%d,pings:%d} "
-                "timeline=%s tool_latencies=%s replies=%s",
+                "timeline=%s tool_latencies=%s replies=%s turns=%s kinds=%s usage=%s",
                 client_frames,
                 upstream_frames,
                 duration_s,
@@ -635,7 +730,16 @@ def create_gemini_live_router(
                 # Per reply: audio, delivery rate, and how often and how long
                 # the browser's queue ran dry -- i.e. the freezes it heard.
                 "[" + ",".join([*replies, *filter(None, [reply.summary()])]) + "]",
+                turn_log.summary(time.monotonic()),
+                json.dumps(turn_log.kinds, separators=(",", ":")),
+                json.dumps(turn_log.usage, separators=(",", ":")),
             )
+            if turn_log.unanswered():
+                # Heard and never answered: the raw non-audio frames are the evidence.
+                _logger.warning(
+                    "gemini live unanswered turn | last upstream frames: %s",
+                    " || ".join(turn_log.recent),
+                )
         if close_reason is None:
             with contextlib.suppress(RuntimeError):
                 await websocket.close()

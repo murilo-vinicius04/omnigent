@@ -206,7 +206,7 @@ export function classifyClose(code: number): "normal" | "policy" | "error" {
 
 export interface GeminiLiveSession {
   /** Tear down: close socket with 1000, release mic and audio contexts. */
-  stop: () => void;
+  stop: (reason?: string) => void;
   sendToolResponse: (responses: GeminiToolResponseItem[]) => void;
   /** Resolves when all currently scheduled audio playback has completed. */
   untilPlaybackDrained: () => Promise<void>;
@@ -297,6 +297,38 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
       const resolvers = drainResolvers;
       drainResolvers = [];
       for (const r of resolvers) r();
+    }
+  };
+
+  // Why the page hung up, and whether it was still owed an answer. The server
+  // only sees "the client closed", which cannot tell a hang-up from a freeze.
+  const sendStats = (closeReason: string) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      const round = (n: number) => Math.round(n * 100) / 100;
+      const now = Date.now();
+      ws.send(
+        JSON.stringify({
+          omnigentStats: {
+            closeReason,
+            owedMs: lastSpeechAt && lastAnswerAt < lastSpeechAt ? now - lastSpeechAt : 0,
+            sinceSpeechMs: lastSpeechAt ? now - lastSpeechAt : -1,
+            sinceAnswerMs: lastAnswerAt ? now - lastAnswerAt : -1,
+            chunks: heard.chunks,
+            receivedS: round(heard.receivedS),
+            playedS: round(heard.playedS),
+            cutS: round(heard.cutS),
+            interrupts: heard.interrupts,
+            firstState: heard.firstState,
+            state: playbackCtx?.state ?? "none",
+            clockS: round(playbackCtx?.currentTime ?? 0),
+            rate: playbackCtx?.sampleRate ?? 0,
+            outputLatencyS: round(playbackCtx?.outputLatency ?? 0),
+          },
+        }),
+      );
+    } catch {
+      // Diagnostics only: never let them break hang-up.
     }
   };
 
@@ -562,6 +594,7 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
         onStateChange?.({ state: "waiting", sinceMs: owedMs });
       }
       if (owedMs < REPLY_STALL_MS) return;
+      sendStats(`no reply ${Math.round(owedMs / 1000)}s after speech`);
       lastSpeechAt = 0;
       releaseAll();
       reportClosed("error", 4000, "gemini stopped responding");
@@ -625,32 +658,10 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
         drainResolvers.push(resolve);
       });
     },
-    stop() {
+    stop(reason = "stop") {
       if (stopped) return;
       stopped = true;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        try {
-          const round = (n: number) => Math.round(n * 100) / 100;
-          ws.send(
-            JSON.stringify({
-              omnigentStats: {
-                chunks: heard.chunks,
-                receivedS: round(heard.receivedS),
-                playedS: round(heard.playedS),
-                cutS: round(heard.cutS),
-                interrupts: heard.interrupts,
-                firstState: heard.firstState,
-                state: playbackCtx?.state ?? "none",
-                clockS: round(playbackCtx?.currentTime ?? 0),
-                rate: playbackCtx?.sampleRate ?? 0,
-                outputLatencyS: round(playbackCtx?.outputLatency ?? 0),
-              },
-            }),
-          );
-        } catch {
-          // Diagnostics only: never let them break hang-up.
-        }
-      }
+      sendStats(reason);
       releaseAll();
       if (ws && ws.readyState === WebSocket.OPEN) {
         try {

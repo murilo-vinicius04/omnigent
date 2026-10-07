@@ -1079,3 +1079,79 @@ def test_conversation_needs_clear_speech_before_it_counts_as_an_interruption():
     assert vad["startOfSpeechSensitivity"] == "START_SENSITIVITY_LOW"
     # Narration never listens, so it gets no speech detection settings.
     assert "realtimeInputConfig" not in gemini_live.setup_frame(mode="narrate")["setup"]
+
+
+def _heard(text: str) -> dict:
+    return {"serverContent": {"inputTranscription": {"text": text}}}
+
+
+def _audio_reply() -> dict:
+    return {
+        "serverContent": {
+            "modelTurn": {"parts": [{"inlineData": {"mimeType": "audio/pcm", "data": "AAAA"}}]}
+        }
+    }
+
+
+def test_turn_log_times_each_reply_from_the_end_of_what_was_heard():
+    """A slow answer and no answer look alike in the counters; per turn they do not."""
+    log = gemini_live_routes._TurnLog(100.0)
+    for at, frame in [
+        (102.0, _heard("can you")),
+        (103.5, _heard(" hear me")),
+        (106.0, _audio_reply()),
+    ]:
+        log.frame(at, frame, json.dumps(frame))
+    log.frame(107.0, {"serverContent": {"turnComplete": True}}, "{}")
+    log.frame(110.0, _heard("and the tests?"), "{}")
+    log.frame(111.0, {"toolCall": {"functionCalls": [{"name": "ask_claude"}]}}, "{}")
+
+    assert (
+        log.summary(120.0)
+        == "[heard@2.0-3.5s(15ch)->audio+2.5s,heard@10.0-10.0s(14ch)->toolCall+1.0s]"
+    )
+    assert not log.unanswered()
+
+
+def test_turn_log_flags_a_turn_google_heard_but_never_answered():
+    """The 10-07 freeze: transcribed three times, no audio, no error, no close."""
+    log = gemini_live_routes._TurnLog(0.0)
+    log.frame(1.0, {"setupComplete": {}}, '{"setupComplete": {}}')
+    log.frame(5.0, _heard("hello"), json.dumps(_heard("hello")))
+    log.frame(9.0, _heard(" are you there"), json.dumps(_heard(" are you there")))
+    log.frame(
+        12.0,
+        {"usageMetadata": {"promptTokenCount": 900, "totalTokenCount": 900}},
+        '{"usageMetadata": {}}',
+    )
+    log.frame(13.0, {"someNewEvent": {}}, '{"someNewEvent": {}}')
+
+    assert log.unanswered()
+    assert log.summary(40.0) == "[heard@5.0-9.0s(19ch)->NONE(waited 31.0s)]"
+    assert log.usage == {"promptTokenCount": 900, "totalTokenCount": 900}
+    # A frame type nobody handles is counted rather than lost.
+    assert log.kinds["someNewEvent"] == 1
+    assert log.kinds["serverContent.inputTranscription"] == 2
+    assert log.recent[-1].startswith("13.0s ")
+
+
+def test_unanswered_turn_logs_the_raw_frames(monkeypatch, tmp_path, caplog) -> None:
+    """When Google hears the reader and never answers, the log keeps what it did send."""
+    _with_key(monkeypatch, tmp_path)
+    upstream = _FakeUpstream()
+
+    async def fake_connect(url: str):
+        upstream.loop = asyncio.get_running_loop()
+        return upstream
+
+    caplog.set_level(logging.INFO)
+    with TestClient(_proxy_app(upstream_connect=fake_connect)) as tc:
+        with tc.websocket_connect("/v1/live/gemini/ws") as ws:
+            upstream.push_from_test_thread(json.dumps(_heard("hello?")))
+            assert ws.receive_text()
+
+    messages = [r.getMessage() for r in caplog.records]
+    ended = next(m for m in messages if "gemini live session ended" in m)
+    assert "turns=[heard@" in ended and "->NONE(" in ended
+    assert '"serverContent.inputTranscription":1' in ended
+    assert any("gemini live unanswered turn" in m and "hello?" in m for m in messages)
