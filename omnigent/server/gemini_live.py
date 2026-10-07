@@ -47,11 +47,11 @@ VOICE: Final[str] = DEFAULT_VOICE
 
 #: The handoff tool, as every live voice declares it (Unmute's brain too).
 ASK_CLAUDE_DESCRIPTION: Final[str] = (
-    "Send a settled request to Claude, AFTER the user has agreed "
-    "to send it. Calling this ends the call, so never call it on "
-    "your own initiative: talk the request through first, ask "
-    "whether to send it, and call this only once they say yes -- "
-    "then call it at once. This is the only way to reach Claude: "
+    "Send a request to Claude once the user wants it sent: they "
+    "told you to send it or to ask Claude, or they said yes when "
+    "you asked once. Calling this ends the call, so never call it "
+    "on your own initiative, and never ask twice: once they want "
+    "it sent, then call it at once. This is the only way to reach Claude: "
     "never say you are asking or waiting on Claude without "
     "calling it. "
     "What needs Claude: a fact the session notes do not cover "

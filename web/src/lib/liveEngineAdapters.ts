@@ -22,6 +22,11 @@ const CONFIRM_BEFORE_SENDING =
 
 /** The voice's last words asked whether to send something to Claude. */
 const ASKED_TO_SEND = /\b(claude|cloud|clod)\b[^?]*\?\s*$/i;
+/** The voice was cut off while offering to send: no question mark survives. */
+const OFFERED_TO_SEND = /\b(claude|cloud|clod|send)\b/i;
+/** The reader asked for it themselves ("ask Claude", "send it"): that is the yes. */
+const ASKED_FOR_SEND =
+  /\b(ask|tell|send|forward|pass)\b[^.?!]{0,40}\b(claude|cloud|clod)\b|\bsend (it|that|this)\b/i;
 /** A reply that agrees; one that opens with a refusal does not. */
 const SAID_YES = /\b(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|send it)\b/i;
 const SAID_NO = /^\W*(no|nope|not|wait|don't|do not)\b/i;
@@ -151,11 +156,11 @@ function relayedEngineAdapter(
         }
       };
 
-      const flushVoice = (): void => {
+      const flushVoice = (cutOff = false): void => {
         const text = voiceBuf.trim();
         voiceBuf = "";
         if (text) {
-          if (ASKED_TO_SEND.test(text)) {
+          if (ASKED_TO_SEND.test(text) || (cutOff && OFFERED_TO_SEND.test(text))) {
             askedToSend = true;
             readerSinceAsk = "";
           } else if (text.endsWith("?")) {
@@ -167,7 +172,10 @@ function relayedEngineAdapter(
 
       // The voice already asked to send and the reader said yes: asking again
       // is the double question, so the send goes through.
+      // Or the reader asked for the send in their own words: asking them back is
+      // the same double question.
       const alreadyAgreed = (): boolean => {
+        if (ASKED_FOR_SEND.test(readerSinceDelegation)) return true;
         const reply = readerSinceAsk.trim();
         return askedToSend && SAID_YES.test(reply) && !SAID_NO.test(reply);
       };
@@ -206,7 +214,7 @@ function relayedEngineAdapter(
         } else if (ev.type === "audio") {
           callbacks.onSpeech?.("voice");
         } else if (ev.type === "interrupted" || ev.type === "turnComplete") {
-          flushVoice();
+          flushVoice(ev.type === "interrupted");
           if (ev.type === "turnComplete" && waitForTurnCompleteResolve) {
             waitForTurnCompleteResolve();
             waitForTurnCompleteResolve = null;
@@ -237,6 +245,8 @@ function relayedEngineAdapter(
                 },
               ]);
             } else {
+              // Only a call's first hand-off is ever questioned.
+              handoffOffered = true;
               // Claude gets the reader's own words, as GPT Live sends them. The
               // model's `question` is its paraphrase, used only with no transcript.
               const spoken = readerSinceDelegation.trim();

@@ -998,9 +998,25 @@ def test_the_voice_must_ask_before_sending_anything_to_claude():
     tool = setup["tools"][0]["functionDeclarations"][0]
     assert tool["name"] == "ask_claude"
     description = tool["description"].lower()
-    assert "after the user has agreed" in description
     assert "ends the call" in description
-    assert "only once they say yes" in description
+    assert "never call it on your own initiative" in description
+    # Their own "ask Claude" is the yes; one question at most (10-07: asked twice).
+    assert "told you to send it or to ask claude" in description
+    assert "never ask twice" in description
+
+
+def test_the_voice_answers_instead_of_parroting_and_asks_once():
+    """10-07: it restated every request back in its own words, and asked to send
+    after the reader had already said "ask Claude"."""
+    from omnigent.server.discussion import LIVE_VOICE_ROLE
+
+    role = LIVE_VOICE_ROLE.lower()
+    assert "never repeat or rephrase what they just said" in role
+    assert "one or two short sentences" in role
+    assert "that is their yes" in role
+    assert "without asking again" in role
+    assert "ask once" in role
+    assert "talk it through with them" not in role
 
 
 def test_realtime_factor_shows_when_audio_arrives_slower_than_it_plays():

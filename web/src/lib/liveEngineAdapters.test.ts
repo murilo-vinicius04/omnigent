@@ -217,6 +217,39 @@ describe("liveEngineAdapters", () => {
       expect(currentSession.sendToolResponse).not.toHaveBeenCalled();
     });
 
+    it("sends at once when the reader asked for it themselves", async () => {
+      // 10-07: "can you ask Claude about that?" drew "do you want me to send
+      // that to Claude?", and the page then made it ask a second time.
+      const onDelegation = vi.fn();
+      await geminiEngineAdapter.open("session_2", { onUtterance: vi.fn(), onDelegation });
+
+      capturedOpts.onEvent?.({
+        type: "inputTranscript",
+        text: "Yes, so can you ask Claude about that?",
+      });
+      capturedOpts.onEvent?.({ type: "toolCall", calls: [{ id: "c1", name: "ask_claude" }] });
+
+      expect(onDelegation).toHaveBeenCalledTimes(1);
+      expect(currentSession.sendToolResponse).not.toHaveBeenCalled();
+    });
+
+    it("takes a yes to an offer to send that was cut off mid-question", async () => {
+      const onDelegation = vi.fn();
+      await geminiEngineAdapter.open("session_2", { onUtterance: vi.fn(), onDelegation });
+
+      capturedOpts.onEvent?.({ type: "inputTranscript", text: "Look into the voice freezes." });
+      capturedOpts.onEvent?.({
+        type: "outputTranscript",
+        text: "Do you want me to send that to Claude now, covering both",
+      });
+      capturedOpts.onEvent?.({ type: "interrupted" });
+      capturedOpts.onEvent?.({ type: "inputTranscript", text: "Yes." });
+      capturedOpts.onEvent?.({ type: "toolCall", calls: [{ id: "c1", name: "ask_claude" }] });
+
+      expect(onDelegation).toHaveBeenCalledTimes(1);
+      expect(currentSession.sendToolResponse).not.toHaveBeenCalled();
+    });
+
     it("still asks when the reader turned the question down or it moved on", async () => {
       const onDelegation = vi.fn();
       await geminiEngineAdapter.open("session_2", { onUtterance: vi.fn(), onDelegation });
@@ -475,10 +508,8 @@ describe("liveEngineAdapters", () => {
       capturedOpts.onEvent?.({ type: "inputTranscript", text: " with the history." });
       capturedOpts.onEvent?.({ type: "outputTranscript", text: "Got it." });
       capturedOpts.onEvent?.({ type: "turnComplete" });
+      // "Can you ask Claude?" is the reader's own yes, so the first call sends.
       capturedOpts.onEvent?.({ type: "inputTranscript", text: " Can you ask Claude?" });
-      // The first ask_claude only buys the question; prime it so this test
-      // still exercises the send.
-      capturedOpts.onEvent?.({ type: "toolCall", calls: [{ id: "prime", name: "ask_claude" }] });
       capturedOpts.onEvent?.({
         type: "toolCall",
         calls: [{ id: "call_v", name: "ask_claude", args: { question: "Build a UI feature" } }],
