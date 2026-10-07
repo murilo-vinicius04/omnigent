@@ -14,6 +14,50 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-07 — READ FIRST (fresh-12 team vs Sonnet; voice fixes; session d9653808)
+
+**Benchmark: is the team (Opus 5.5 high brain + gpt-5.6-luna MEDIUM on Codex Plus) as good as plain
+Sonnet 5.5 high for less Claude?** 12 never-used DeepSWE tasks, seed 20261007 (`~/deepswe/fresh_12.json`),
+both arms side by side per task (`~/deepswe/fresh_lanes.sh`, log `~/deepswe/fresh12.log`, runs
+`~/deepswe/runs/<task>--{sonnet-5-5-high,team-opushigh-check-codexplus-luna-medium}`).
+- First pass (eicrud excluded: its reference solution also fails, Mongo E11000; replaced by
+  numba-stencil-boundary-modes, oracle 29/29, running at 16:05 as unit `dswe-fresh12-extra`):
+  Sonnet 9/11 solved, team 8/11. Disagree on 5: httpx (S; T 104/108), opa (S; T 2/5, 75 min), drizzle
+  (S; T 129/130), koota-pair (T; S 37/38), abs (T; S 5/6). Team is slower on most tasks (opa 75 vs 19 min).
+- **Next:** check quota, then second runs of both arms on the 5 disagreeing tasks (approved plan: "second run
+  wherever they disagree"), then report per task: hidden tests, minutes, Pro est. (`account.json`), real
+  meter, Codex; chart it (user wants plots). Claim target is only "same quality, less Claude" — Opus-vs-Sonnet
+  5.5 is not measurable on DeepSWE at our budget; ProgramBench is private.
+- **The team arm ran WITHOUT Jev**: OpenRouter answers 402 "insufficient credits" since 10-06 22:02, and another
+  session renamed `~/.omnigent/supervisor/{enabled,checklist}` to `*.off-ablation` at 12:22 for its no-Jev
+  ablation. User not yet asked to buy credits; continuing without Jev.
+- Brain prompt: `0637fb737` parity rule (new API piece behaves like the existing one; check by running it;
+  lean-brain 34eb963d1 reverted), `1df1ee728` review = check script written while the worker builds.
+- Traps: a plain run dies with 401 when the shared Claude login refreshes mid-run (fresh_lanes.sh reruns once);
+  never edit a running bash queue in place; a server restart makes quota reads fail (lanes now retry 6x);
+  `team_queue.sh` global grade cleanup can kill other queues' grades (fresh_lanes.sh doesn't).
+- Bench sessions are archived at creation (team.py, `64e2c8b95` run_nexus.py); 132 old ones archived.
+
+**Gemini/Unmute voice** (user: Gemini freezes, "still thinking", hard to interrupt; Unmute parrots and asks twice):
+- Diagnosed: Google side — 3.1 Flash Live ignores speech ~8-17 s at session start (forum bug 2026-05-21),
+  stalls after a barge-in (ACTIVITY_END then no reply), tool calls synchronous (~9-10 s silent per hand-off).
+  Ours: every hand-off hangs up and reopens (pays the deaf start); start sensitivity LOW + page ignoring speech
+  while it talks + 2-4x audio buffering make interrupting slow. Memory: `omnigent-live-voice.md` (10-07).
+- `43f8ca0e2` per-turn logging: "gemini live session ended ... turns=[heard@a-bs->audio+Xs|NONE] kinds={...}"
+  (kinds include voiceActivity ACTIVITY_START/END and sessionResumptionUpdate), WARN "unanswered turn" with raw
+  frames; page stats carry closeReason/owedMs. Logs: `~/.omnigent/logs/server/server-*.log`.
+- `887b2a5d5` voice rules: no parroting, 1-2 sentences, "ask Claude"/"send it" = yes, ask once at most; page
+  gate accepts explicit asks and cut-off offers. Page deployed; **server restart pending** (background
+  `~/deepswe/restart_after_numba.sh`, runs after numba) — verify it happened.
+- Open options (user to pick): nudge after ACTIVITY_END with no reply ~4 s; resume sessions with the handles
+  Google sends; log VAD timing every turn; tap-to-interrupt in the page; higher sensitivity with headphones.
+- Build the page only from a clean `git archive HEAD web` copy: another session has uncommitted edits in
+  ChatPage.tsx / chatStore.ts and server routes — never touch or ship them.
+- Unmute's brain = gpt-5.6-terra via the OpenAI API key `~/.omnigent/openai-key` + budget proxy (free daily
+  pool), not ChatGPT Plus. That key was pasted in chat in September: remind the user to rotate it.
+- Pre-existing failure: `tests/server/test_live_voice.py::test_the_voice_is_told_when_to_delegate` (expects
+  wording the role no longer has).
+
 ## 2026-10-06 — READ FIRST (lean nexus brain; session d9653808)
 
 **Goal (user):** Opus-level coding with Opus only orchestrating and a cheap worker doing the work, to save Claude
