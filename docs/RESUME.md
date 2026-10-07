@@ -24,10 +24,12 @@ both arms side by side per task (`~/deepswe/fresh_lanes.sh`, log `~/deepswe/fres
   numba-stencil-boundary-modes, oracle 29/29, running at 16:05 as unit `dswe-fresh12-extra`):
   Sonnet 9/11 solved, team 8/11. Disagree on 5: httpx (S; T 104/108), opa (S; T 2/5, 75 min), drizzle
   (S; T 129/130), koota-pair (T; S 37/38), abs (T; S 5/6). Team is slower on most tasks (opa 75 vs 19 min).
-- **Next:** check quota, then second runs of both arms on the 5 disagreeing tasks (approved plan: "second run
-  wherever they disagree"), then report per task: hidden tests, minutes, Pro est. (`account.json`), real
-  meter, Codex; chart it (user wants plots). Claim target is only "same quality, less Claude" — Opus-vs-Sonnet
-  5.5 is not measurable on DeepSWE at our budget; ProgramBench is private.
+- **FINAL (17:53, second runs done, `~/deepswe/fresh12_report.py` -> `.png`):** both arms 11/17 runs solved,
+  9.0/12 per-task rate; Sonnet 154 min / 211% Pro est. vs team 298 min / 232%. Same quality, ~1.9x time,
+  ~1.1x Claude: the Opus brain alone costs about what Sonnet spends on the whole task. Details and per-task
+  repeats in `~/deepswe/FORENSICS.md` "fresh-12 FINAL". Numba's first Sonnet zero was a grader bug (image ships
+  an uncommitted edit; dswe.sh now re-applies on a clean tree). Workers try `git push && gh pr create` (Omnigent
+  default worker config) — failed, no remote; dswe.sh now strips remotes, audit calls it REVIEW.
 - **The team arm ran WITHOUT Jev**: OpenRouter answers 402 "insufficient credits" since 10-06 22:02, and another
   session renamed `~/.omnigent/supervisor/{enabled,checklist}` to `*.off-ablation` at 12:22 for its no-Jev
   ablation. User not yet asked to buy credits; continuing without Jev.
