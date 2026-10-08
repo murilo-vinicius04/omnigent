@@ -14,6 +14,38 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-08 evening — READ FIRST (team-vs-plain verdict; routing research in flight; session d9653808)
+
+**Goal (user):** Opus-level coding for less Claude quota, to leave Max for Pro. **Verdict (data, user agreed):**
+no brain+worker team beats plain Sonnet 5.5 high. Hard 5 DeepSWE tasks x2 runs, runs-with-real-bug / Pro-5h%
+per run: plain Sonnet 0/14.7, plain Opus 0/27.2, Opus brain+Luna 2/14.8 (first rule 4/15.8), Opus+Haiku 5.5
+0/18.2, Sonnet brain+Luna 5/7.7 (17 runs: 5/17 vs plain Sonnet 0/17). Solved counts (4-7/10) are noise and
+teams "win" by dodging traps (drizzle wording, abs s[-1]). Opus-brain team = Opus score at ~half plain-Opus
+quota, but its floor (~12-14%/task) ~= plain Sonnet's whole bill. Why bugs ship (transcripts, FORENSICS
+"17:30"): plain Opus prevents bug classes by DESIGN while writing; the brain reads the buggy lines but its checks
+only run its own call shapes; fix rounds regress. Opus brain + Sonnet LOW worker (09-30) lost to plain Sonnet.
+Chart `~/deepswe/verdict_hard5.png`; all numbers `~/deepswe/FORENSICS.md` (10-07/10-08), `fresh12_report.py`.
+- **In flight: deep research** (skill deep-research, 5 researchers) -> notes in
+  `/home/nexus/research_notes/Coding agent routing and orchestration/` (routing_research, products_and_quota,
+  decomposition_and_merge, verifiers_and_review, projects_sessions_caching .md). NEXT: once all 5 notes exist,
+  spawn ONE report writer (general-purpose, foreground) reading
+  `~/.claude/skills/synced/c315e4ec-*/deep-research/references/report-writer.md`, writing
+  `/home/nexus/reports/Coding agent routing and orchestration.md`; give it our data above + the user's ideas
+  (per-task model picker by difficulty AND remaining quota, maybe a fine-tuned open router on our logs;
+  parallel parts by Sonnet/Luna/Haiku merged by a stronger model; a hub of projects with many sessions to avoid
+  cache rewrites when bringing Opus in). Then send the user a 3-5 sentence summary + path.
+- **Awaiting user go (spends quota, name the model):** plain Codex Luna xhigh on hard 5 (Codex only); plain
+  Haiku 5.5 on hard 5 (Claude). Prior router test: Jev/reflex/Laya AUC 0.43-0.66 on 62 decisions (memory
+  jev-routing-test). Model switch mid-session = full re-cache on the new model (~context/46k Pro pts);
+  Claude Code advisor re-reads the transcript uncached (~3-4%/call).
+- **Harness state (~/deepswe):** `fresh_lanes.sh <queue> <lanes> <5h%> <week%>` with env PULL_GB, BRAIN_MODEL,
+  BRAIN_EFFORT; arms `plain:claude-*` or `codex-plan:gpt-5.6-luna` / `claude:claude-haiku-5-5`; every graded run
+  is sealed (`seal_run.sh`); runs get `checks/`; dswe.sh strips git remotes + regrades on a clean tree;
+  `~/nexus-bench/audit.py` (own-session + glob-cd false flags handled by hand, note in audit.json) and
+  `account.py` (Haiku 5.5 priced: 1/40 Opus <=100K prompt, 5x above). Meter blank ~6-10 min after each 5h reset.
+- Quota at 14:10: Claude week 52%, Codex week 26%. Server restarts: no need to ask (user). Nothing running
+  except the research agents.
+
 ## 2026-10-07 — READ FIRST (fresh-12 team vs Sonnet; voice fixes; session d9653808)
 
 **Benchmark: is the team (Opus 5.5 high brain + gpt-5.6-luna MEDIUM on Codex Plus) as good as plain
