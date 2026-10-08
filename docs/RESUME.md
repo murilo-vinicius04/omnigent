@@ -37,6 +37,15 @@ both arms side by side per task (`~/deepswe/fresh_lanes.sh`, log `~/deepswe/fres
   AFTER the adds + required trait; the brain varied timing on one case only), 15.4 min / 14.4% Pro per run vs
   Sonnet 10.7 min / 14.7% on the same tasks. Next idea: build each variation INTO the harness (every case through
   every path), as the httpx `paths()` helper did.
+- **17 vs 17 FINAL (10-08 00:40, FORENSICS):** new-rule team 13/17 solved, 7 missed tests (5 real, in dateutil +
+  2x koota), 12.6 min / 13.8% Pro per run; plain Sonnet 11/17, 6 missed (all traps/corner, 0 real bugs), 9.1 min /
+  12.4%. Team wins the scoreboard on traps; Sonnet still more reliable on real behaviour.
+- **LEAK found + closed (10-08):** a Luna worker `rg`-ed ~/deepswe/runs and applied an earlier run's graded patch
+  (numba; excluded, clean rerun). `~/deepswe/seal_run.sh` now compresses/removes every run's code after grading
+  (fresh_lanes.sh calls it); audit.py flags searches aimed at runs/ or above. Workers still run unsandboxed.
+- **Haiku 5.5 exists** (`claude-haiku-5-5`, the `haiku` alias resolves to it). Team with a Haiku 5.5 worker running
+  on the 5 hard tasks (unit dswe-fresh12-haiku, arm team-opushigh-paths-claude-haiku55-medium); httpx 107/108
+  (trap), 9.5 min, 18.8% Pro (worker 8.6). Ask before extending to all 17 (Claude quota).
 - **The team arm ran WITHOUT Jev**: OpenRouter answers 402 "insufficient credits" since 10-06 22:02, and another
   session renamed `~/.omnigent/supervisor/{enabled,checklist}` to `*.off-ablation` at 12:22 for its no-Jev
   ablation. User not yet asked to buy credits; continuing without Jev.
