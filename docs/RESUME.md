@@ -30,6 +30,13 @@ both arms side by side per task (`~/deepswe/fresh_lanes.sh`, log `~/deepswe/fres
   repeats in `~/deepswe/FORENSICS.md` "fresh-12 FINAL". Numba's first Sonnet zero was a grader bug (image ships
   an uncommitted edit; dswe.sh now re-applies on a clean tree). Workers try `git push && gh pr create` (Omnigent
   default worker config) — failed, no remote; dswe.sh now strips remotes, audit calls it REVIEW.
+- **Why the team missed real bugs (FORENSICS 19:30–21:40):** Sonnet's 6 misses were test traps; the team's 12 had
+  4 real + 3 edge bugs, all in Luna code on call shapes the brain's check never used (one harness, written before
+  the code; told not to add cases after the diff). `cf7a98695`: rewrite the check from the diff, >=1 case per
+  entry point/path. Team-only rerun of the 5 disagreeing tasks: 4/5 solved, 1 real bug left (koota: query created
+  AFTER the adds + required trait; the brain varied timing on one case only), 15.4 min / 14.4% Pro per run vs
+  Sonnet 10.7 min / 14.7% on the same tasks. Next idea: build each variation INTO the harness (every case through
+  every path), as the httpx `paths()` helper did.
 - **The team arm ran WITHOUT Jev**: OpenRouter answers 402 "insufficient credits" since 10-06 22:02, and another
   session renamed `~/.omnigent/supervisor/{enabled,checklist}` to `*.off-ablation` at 12:22 for its no-Jev
   ablation. User not yet asked to buy credits; continuing without Jev.
