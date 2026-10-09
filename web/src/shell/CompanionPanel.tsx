@@ -11,9 +11,9 @@ const LABEL: Record<CompanionEntry["kind"], string> = {
   activity: "You asked Claude",
   summary: "Claude said",
   question: "You said",
-  answer: "It answered",
+  answer: "Companion answered",
   note: "Note",
-  command: "It ran (read-only)",
+  command: "Companion ran (read-only)",
 };
 
 const ACCENT: Record<CompanionEntry["kind"], string> = {

@@ -59,7 +59,7 @@ describe("CompanionPanel", () => {
     render(<CompanionPanel conversationId="conv_abc" />);
     const banner = await screen.findByTestId("companion-activity");
     expect(banner.textContent).toBe("Running now (read-only): df -h /");
-    expect(screen.getByText("It ran (read-only)")).toBeInTheDocument();
+    expect(screen.getByText("Companion ran (read-only)")).toBeInTheDocument();
     expect(screen.getByText("$ du -sh ~/.cache [exit 0] 15G")).toBeInTheDocument();
   });
 
