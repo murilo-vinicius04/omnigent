@@ -212,6 +212,8 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
   lastCheck: null,
 
   start: async (sessionId: string, agentId: string | null = null) => {
+    // The hub is a second open mic; this call takes over from it.
+    void import("@/lib/voiceHub").then((m) => m.useVoiceHubStore.getState().stop());
     // Opening a second would be two voices and two meters.
     if (get().sessionId || get().connecting) return;
     set({

@@ -1436,7 +1436,17 @@ LIVE_VOICE_CHECK_RULES: Final[str] = (
 )
 
 
-def voice_briefing(session: DiscussionSession | None, *, can_check: bool = False) -> str:
+#: Added for a voice that has the claude_status tool (the Gemini relay).
+LIVE_VOICE_WATCH_RULE: Final[str] = (
+    "The notes only hold what Claude last said. When they ask what Claude is "
+    "doing right now, whether it finished, or about work still in progress, "
+    "call claude_status: it reads the session live, even mid-task."
+)
+
+
+def voice_briefing(
+    session: DiscussionSession | None, *, can_check: bool = False, can_watch: bool = False
+) -> str:
     """Build the session prompt for a spoken conversation.
 
     The live model has no memory between sessions and no access to the
@@ -1448,6 +1458,7 @@ def voice_briefing(session: DiscussionSession | None, *, can_check: bool = False
         exists. ``None`` yields the role alone, which is correct for a
         conversation opened before anything has happened.
     :param can_check: Whether this voice has the ``check_machine`` tool.
+    :param can_watch: Whether this voice has the ``claude_status`` tool.
     :returns: Instructions for the live session.
     """
     # Its own past replies are left out: the voice imitates them, and a few
@@ -1458,6 +1469,8 @@ def voice_briefing(session: DiscussionSession | None, *, can_check: bool = False
         else []
     )
     role = f"{LIVE_VOICE_ROLE} {LIVE_VOICE_CHECK_RULES}" if can_check else LIVE_VOICE_ROLE
+    if can_watch:
+        role = f"{role} {LIVE_VOICE_WATCH_RULE}"
     if not entries:
         return (
             f"{role}\n\n"

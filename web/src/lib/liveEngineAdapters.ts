@@ -24,6 +24,9 @@ export const SEND_SETTLE_MS = 1800;
 export const SEND_SETTLE_MAX_MS = 10_000;
 
 /** Returned to the voice the first time it reaches for Claude, instead of sending. */
+/** Tools the server relay answers itself (omnigent/server/voice_hub.py). */
+const SERVER_TOOLS = new Set(["claude_status"]);
+
 const CONFIRM_BEFORE_SENDING =
   "Not sent yet. Sending ends the call, so ask them first, in one short " +
   "question, whether to send this to Claude. Call ask_claude again only if " +
@@ -270,6 +273,8 @@ function relayedEngineAdapter(
           }
         } else if (ev.type === "toolCall") {
           for (const call of ev.calls) {
+            // The relay answers these itself; a reply from here would be a second one.
+            if (SERVER_TOOLS.has(call.name)) continue;
             if (call.id) toolNames.set(call.id, call.name);
             if (call.name === "check_machine" && callbacks.onCheck) {
               const asked =

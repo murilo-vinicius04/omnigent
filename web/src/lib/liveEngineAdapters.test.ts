@@ -695,6 +695,12 @@ describe("liveEngineAdapters", () => {
       expect(session.stop).not.toHaveBeenCalled();
     });
 
+    it("leaves claude_status to the relay, which answers it itself", async () => {
+      await geminiEngineAdapter.open("s_status", { onUtterance: vi.fn(), onDelegation: vi.fn() });
+      opts.onEvent?.({ type: "toolCall", calls: [{ id: "w1", name: "claude_status" }] });
+      expect(session.sendToolResponse).not.toHaveBeenCalled();
+    });
+
     it("refuses check_machine on a page that cannot answer it", async () => {
       await geminiEngineAdapter.open("s_nocheck", { onUtterance: vi.fn(), onDelegation: vi.fn() });
       opts.onEvent?.({ type: "toolCall", calls: [{ id: "k2", name: "check_machine" }] });

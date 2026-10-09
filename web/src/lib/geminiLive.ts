@@ -131,7 +131,9 @@ export type GeminiLiveEvent =
   | { type: "setupComplete" }
   | { type: "toolCall"; calls: GeminiToolCallItem[] }
   | { type: "toolCancel"; ids: string[] }
-  | { type: "session"; model: string; toolsBlock: boolean };
+  // A tool the relay ran itself (the hub's, live status) and has answered.
+  | { type: "toolDone"; id?: string; name: string; project: string; output: string }
+  | { type: "session"; model: string; toolsBlock: boolean; hub: boolean };
 
 /**
  * Parse a server frame: string OR binary JSON (Google sends binary).
@@ -164,6 +166,17 @@ export function parseServerMessages(data: string | ArrayBuffer): GeminiLiveEvent
       type: "session",
       model: typeof own.model === "string" ? own.model : "",
       toolsBlock: own.toolsBlock !== false,
+      hub: own.hub === true,
+    });
+  }
+  const done = msgRec.omnigentToolDone as Record<string, unknown> | undefined;
+  if (done && typeof done === "object") {
+    events.push({
+      type: "toolDone",
+      id: typeof done.id === "string" ? done.id : undefined,
+      name: typeof done.name === "string" ? done.name : "",
+      project: typeof done.project === "string" ? done.project : "",
+      output: typeof done.output === "string" ? done.output : "",
     });
   }
   const cancel = msgRec.toolCallCancellation as Record<string, unknown> | undefined;
@@ -435,6 +448,11 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
     if (event.type === "toolCall") {
       for (const call of event.calls) pendingTools.add(call.id ?? call.name);
     }
+    if (event.type === "toolDone") {
+      // The relay answered it; the model owes the reader what it found.
+      pendingTools.delete(event.id ?? event.name);
+      if (!owedSince) owedSince = Date.now();
+    }
     if (event.type === "toolCancel") {
       // The reader talked over a running call and the model dropped it: it
       // is listening again, so its silence counts from here.
@@ -579,7 +597,9 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
     socket.addEventListener("message", (ev: MessageEvent<string | ArrayBuffer>) => {
       const events = parseServerMessages(ev.data);
       // Our relay's own hello is not Gemini answering.
-      if (!(events.length === 1 && events[0].type === "session")) receivedAnyMessage = true;
+      if (!events.every((e) => e.type === "session" || e.type === "toolDone")) {
+        receivedAnyMessage = true;
+      }
       for (const event of events) handleEvent(event);
     });
 

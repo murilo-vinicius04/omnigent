@@ -2700,7 +2700,11 @@ def create_app(
     # Gemini Live sits beside the OpenAI live voice: same keyless browser,
     # but a WebSocket the server proxies, not a WebRTC handshake.
     app.include_router(
-        create_gemini_live_router(auth_provider=auth_provider),
+        create_gemini_live_router(
+            auth_provider=auth_provider,
+            conversation_store=conversation_store,
+            project_store=project_store,
+        ),
         prefix="/v1",
         tags=["live-voice"],
     )

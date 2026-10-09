@@ -1205,7 +1205,11 @@ def test_the_page_is_told_whether_tools_leave_the_voice_deaf(monkeypatch, tmp_pa
             hello = json.loads(ws.receive_text())
     model = gemini_live.MODEL.removeprefix("models/")
     assert hello == {
-        "omnigentSession": {"model": model, "toolsBlock": gemini_live.tools_block()}
+        "omnigentSession": {
+            "model": model,
+            "toolsBlock": gemini_live.tools_block(),
+            "hub": False,
+        }
     }
 
 

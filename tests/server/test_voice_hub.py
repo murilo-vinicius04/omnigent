@@ -1,0 +1,309 @@
+"""The voice hub: one call across projects — names, live status, tools, and the relay."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+from types import SimpleNamespace
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from omnigent.server import discussion, gemini_live, voice_hub
+from omnigent.server.discussion import DiscussionRegistry
+from omnigent.server.routes.gemini_live import create_gemini_live_router
+from omnigent.server.voice_hub import HubBackend, HubProject, render_activity, resolve
+
+PROJECTS = [
+    HubProject(id="p1", name="Amarras", session_id="s-amarras", session_title="Chain scanner"),
+    HubProject(id="p2", name="Brasa", session_id="s-brasa", session_title="Orders SaaS"),
+    HubProject(id="p3", name="Áudio", session_id="s-audio", live_status="running"),
+    HubProject(id="p4", name="Empty", session_id=None),
+]
+
+
+@pytest.mark.parametrize(
+    ("spoken", "expected"),
+    [
+        ("amarras", "Amarras"),
+        ("Amarras.", "Amarras"),
+        ("a marras", "Amarras"),
+        ("the brasa project", "Brasa"),
+        ("brassa", "Brasa"),
+        ("audio", "Áudio"),
+        ("kitchen", None),
+        ("", None),
+    ],
+)
+def test_spoken_project_names_resolve_forgivingly(spoken, expected) -> None:
+    found = resolve(PROJECTS, spoken)
+    assert (found.name if found else None) == expected
+
+
+def _item(kind: str, response_id: str, **data) -> dict:
+    return {"type": kind, "response_id": response_id, "data": data}
+
+
+def test_live_status_reads_the_current_turn_mid_task() -> None:
+    items = [  # newest first, as the store returns them
+        _item("function_call", "r2", name="Bash", arguments='{"command": "pytest -q"}', call_id="c3"),
+        _item("function_call_output", "r2", call_id="c2", output="ok"),
+        _item("function_call", "r2", name="Edit", arguments='{"file_path": "/x/scanner.py"}', call_id="c2"),
+        _item("message", "r2", role="assistant", content=[{"type": "output_text", "text": "Fixing the scan."}]),
+        _item("message", "r1u", role="user", content=[{"type": "input_text", "text": "fix the scanner"}]),
+        _item("function_call", "r0", name="Bash", arguments='{"command": "old"}', call_id="c0"),
+    ]
+    text = render_activity(items, "running", writing="Now running the tests")
+    assert text.startswith("Claude is working on it right now.")
+    assert "The task: fix the scanner" in text
+    assert "- Edit: scanner.py" in text
+    assert "- Bash: pytest -q (running now)" in text
+    assert "old" not in text  # the previous turn is not this one
+    assert "Writing right now: Now running the tests" in text
+
+
+def test_live_status_of_an_idle_session_says_it_finished() -> None:
+    items = [
+        _item("message", "r1", role="assistant", content=[{"type": "output_text", "text": "Done: 3 fixed."}]),
+    ]
+    text = render_activity(items, "idle", writing="stale")
+    assert text.startswith("Claude is idle")
+    assert "Said last: Done: 3 fixed." in text
+    assert "stale" not in text
+
+
+def test_the_briefing_names_every_project_with_its_latest_update() -> None:
+    briefing = voice_hub.hub_briefing(PROJECTS, {"p1": "Scan coverage is 92%.", "p3": None})
+    assert "Projects: Amarras, Brasa, Áudio, Empty." in briefing
+    assert "Claude's latest update: Scan coverage is 92%." in briefing
+    assert "## Áudio" in briefing and "Claude is working right now." in briefing
+    assert "## Empty\nNo session yet" in briefing
+
+
+class _FakeBackend:
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str]] = []
+        self.checked: list[tuple[str, str]] = []
+        self.projects_list = list(PROJECTS)
+
+    def backend(self) -> HubBackend:
+        async def projects():
+            return self.projects_list
+
+        async def activity(session_id):
+            return f"status of {session_id}"
+
+        async def send(session_id, text):
+            self.sent.append((session_id, text))
+
+        async def check(session_id, question):
+            self.checked.append((session_id, question))
+            return "18 GB free"
+
+        return HubBackend(projects=projects, activity=activity, send=send, check=check)
+
+
+async def test_tools_route_to_the_named_projects_session() -> None:
+    fake = _FakeBackend()
+    b = fake.backend()
+    assert await voice_hub.run_hub_tool(b, "project_status", {"project": "amarras"}) == (
+        "Amarras",
+        "Amarras: status of s-amarras",
+    )
+    project, out = await voice_hub.run_hub_tool(
+        b, "ask_claude", {"project": "brassa", "message": "run the order tests"}
+    )
+    assert project == "Brasa" and "Sent to Brasa" in out
+    assert fake.sent == [("s-brasa", "run the order tests")]
+    assert await voice_hub.run_hub_tool(
+        b, "check_machine", {"project": "amarras", "question": "disk?"}
+    ) == ("Amarras", "18 GB free")
+    assert fake.checked == [("s-amarras", "disk?")]
+
+
+async def test_unknown_or_sessionless_projects_send_nothing() -> None:
+    fake = _FakeBackend()
+    b = fake.backend()
+    _, out = await voice_hub.run_hub_tool(b, "ask_claude", {"project": "kitchen", "message": "x"})
+    assert "No project called 'kitchen'" in out and "Amarras, Brasa" in out
+    _, out = await voice_hub.run_hub_tool(b, "ask_claude", {"project": "empty", "message": "x"})
+    assert "no session yet" in out
+    assert fake.sent == []
+
+
+async def test_a_project_added_mid_call_is_reachable() -> None:
+    fake = _FakeBackend()
+    b = fake.backend()
+    fake.projects_list.append(HubProject(id="p9", name="Garden", session_id="s-garden"))
+    assert (await voice_hub.run_hub_tool(b, "project_status", {"project": "garden"}))[0] == "Garden"
+
+
+async def test_all_projects_at_once() -> None:
+    project, out = await voice_hub.run_hub_tool(_FakeBackend().backend(), "project_status", {"project": "all"})
+    assert project == "all"
+    assert "Amarras:\nstatus of s-amarras" in out and "Empty: no session yet." in out
+
+
+async def test_a_failing_tool_still_answers_the_model() -> None:
+    fake = _FakeBackend()
+    b = fake.backend()
+
+    async def boom(session_id, text):
+        raise RuntimeError("runner gone")
+
+    b.send = boom
+    _, out = await voice_hub.run_hub_tool(b, "ask_claude", {"project": "amarras", "message": "x"})
+    assert out == "That failed (RuntimeError); nothing was done."
+
+
+# --- The relay: hub mode end to end, with fake stores and a fake Google ---
+
+
+class _FakeUpstream:
+    def __init__(self) -> None:
+        self.sent: list[object] = []
+        self.incoming: asyncio.Queue[object] = asyncio.Queue()
+        self.loop: asyncio.AbstractEventLoop | None = None
+
+    async def send(self, message: object) -> None:
+        self.sent.append(message)
+
+    async def recv(self) -> object:
+        return await self.incoming.get()
+
+    async def close(self) -> None:
+        pass
+
+    def push(self, item: object) -> None:
+        assert self.loop is not None
+        asyncio.run_coroutine_threadsafe(self.incoming.put(item), self.loop).result()
+
+
+class _Stores:
+    """Projects and sessions as the real stores hand them out."""
+
+    def __init__(self) -> None:
+        self.projects = [SimpleNamespace(id="p1", name="Amarras"), SimpleNamespace(id="p2", name="Brasa")]
+        self.sessions = {
+            "Amarras": SimpleNamespace(
+                id="s-amarras", title="Scanner", workspace="/tmp", live_status="running", project_id="p1"
+            )
+        }
+
+    def list(self, *, user_id):
+        return self.projects
+
+    def list_conversations(self, *, limit, project, owned_by, sort_by, order):
+        conv = self.sessions.get(project)
+        return SimpleNamespace(data=[conv] if conv else [])
+
+    def get_conversation(self, session_id):
+        return next(c for c in self.sessions.values() if c.id == session_id)
+
+    def list_items(self, session_id, limit, order):
+        return SimpleNamespace(
+            data=[_item("function_call", "r1", name="Bash", arguments='{"command": "make scan"}', call_id="c1")]
+        )
+
+
+def _hub_app(monkeypatch, tmp_path, upstream: _FakeUpstream) -> FastAPI:
+    env = tmp_path / "gemini.env"
+    env.write_text("GEMINI_API_KEY=test-key\n", encoding="utf-8")
+    monkeypatch.setattr(gemini_live, "KEY_PATH", env)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(discussion, "LEDGER_DIR", tmp_path / "ledgers")
+
+    async def connect(url: str):
+        upstream.loop = asyncio.get_running_loop()
+        return upstream
+
+    stores = _Stores()
+    companions = DiscussionRegistry()
+    # A chat voice is only briefed (and given tools) once its companion has notes.
+    companions.note("s-amarras", "summary", "Scan coverage is 92%.")
+    app = FastAPI()
+    app.include_router(
+        create_gemini_live_router(
+            upstream_connect=connect,
+            registry_provider=lambda: companions,
+            conversation_store=stores,
+            project_store=stores,
+        ),
+        prefix="/v1",
+    )
+    return app
+
+
+def _wait_for(predicate, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.02)
+    raise AssertionError("timed out")
+
+
+def test_the_hub_is_briefed_on_every_project_and_answers_its_own_tools(monkeypatch, tmp_path) -> None:
+    upstream = _FakeUpstream()
+    with TestClient(_hub_app(monkeypatch, tmp_path, upstream)) as tc:
+        with tc.websocket_connect("/v1/live/gemini/ws?mode=hub") as ws:
+            hello = json.loads(ws.receive_text())
+            assert hello["omnigentSession"]["hub"] is True
+            _wait_for(lambda: upstream.sent)
+            setup = json.loads(upstream.sent[0])["setup"]
+            names = [d["name"] for d in setup["tools"][0]["functionDeclarations"]]
+            assert names == ["project_status", "ask_claude", "check_machine"]
+            instruction = setup["systemInstruction"]["parts"][0]["text"]
+            assert "Projects: Amarras, Brasa." in instruction
+            assert "## Brasa\nNo session yet" in instruction
+
+            call = {"id": "t1", "name": "project_status", "args": {"project": "a marras"}}
+            upstream.push(json.dumps({"toolCall": {"functionCalls": [call]}}))
+            assert "toolCall" in ws.receive_text()  # the page sees the call, to show it
+            done = json.loads(ws.receive_text())["omnigentToolDone"]
+            assert done["project"] == "Amarras"
+            assert "Bash: make scan (running now)" in done["output"]
+            _wait_for(lambda: any("toolResponse" in str(m) for m in upstream.sent))
+    response = next(json.loads(m) for m in upstream.sent if "toolResponse" in str(m))
+    reply = response["toolResponse"]["functionResponses"][0]
+    assert reply["id"] == "t1" and reply["name"] == "project_status"
+    assert reply["response"]["scheduling"] == "WHEN_IDLE"
+    assert "Claude is working on it right now." in reply["response"]["output"]
+
+
+def test_the_chat_voice_can_ask_what_claude_is_doing_now(monkeypatch, tmp_path) -> None:
+    upstream = _FakeUpstream()
+    with TestClient(_hub_app(monkeypatch, tmp_path, upstream)) as tc:
+        with tc.websocket_connect("/v1/live/gemini/ws?session_id=s-amarras") as ws:
+            ws.receive_text()  # hello
+            _wait_for(lambda: upstream.sent)
+            setup = json.loads(upstream.sent[0])["setup"]
+            names = [d["name"] for d in setup["tools"][0]["functionDeclarations"]]
+            assert names == ["ask_claude", "check_machine", "claude_status"]
+            upstream.push(json.dumps({"toolCall": {"functionCalls": [{"id": "t2", "name": "claude_status"}]}}))
+            ws.receive_text()  # the call, relayed
+            done = json.loads(ws.receive_text())["omnigentToolDone"]
+            assert done["name"] == "claude_status" and "make scan" in done["output"]
+            # ask_claude is still the page's to answer, not the relay's.
+            upstream.push(json.dumps({"toolCall": {"functionCalls": [{"id": "t3", "name": "ask_claude"}]}}))
+            ws.receive_text()
+            time.sleep(0.1)
+    answered = [json.loads(m)["toolResponse"]["functionResponses"][0]["id"] for m in upstream.sent if "toolResponse" in str(m)]
+    assert answered == ["t2"]
+
+
+def test_no_stores_no_hub(monkeypatch, tmp_path) -> None:
+    env = tmp_path / "gemini.env"
+    env.write_text("GEMINI_API_KEY=test-key\n", encoding="utf-8")
+    monkeypatch.setattr(gemini_live, "KEY_PATH", env)
+    app = FastAPI()
+    app.include_router(create_gemini_live_router(), prefix="/v1")
+    from starlette.websockets import WebSocketDisconnect
+
+    with TestClient(app) as tc:
+        with tc.websocket_connect("/v1/live/gemini/ws?mode=hub") as ws:
+            with pytest.raises(WebSocketDisconnect) as closed:
+                ws.receive_text()
+    assert closed.value.code == 1008

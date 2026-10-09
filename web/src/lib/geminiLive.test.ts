@@ -868,6 +868,14 @@ describe("startGeminiLive (stubbed)", () => {
     });
   });
 
+  it("parses the relay's tool-done frame, and it clears the pending call", async () => {
+    expect(
+      parseServerMessages(
+        JSON.stringify({ omnigentToolDone: { id: "t1", name: "claude_status", project: "", output: "idle" } }),
+      ),
+    ).toEqual([{ type: "toolDone", id: "t1", name: "claude_status", project: "", output: "idle" }]);
+  });
+
   it("does not count the relay's own hello as Gemini answering", async () => {
     const { socket, states } = await startSession();
     socket.emit("message", {

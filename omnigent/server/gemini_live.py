@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import pathlib
-from typing import Final
+from typing import Any, Final
 
 from omnigent.server.live_voice import NARRATOR_INSTRUCTIONS
 
@@ -130,8 +130,14 @@ def setup_frame(
     system_instruction: str | None = None,
     mode: str | None = None,
     voice: str | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    extra_tools: list[dict[str, Any]] | None = None,
 ) -> dict:
-    """Return the proven setup frame for the WebSocket's first message."""
+    """Return the proven setup frame for the WebSocket's first message.
+
+    :param tools: Declarations to use instead of the per-chat pair (the hub's).
+    :param extra_tools: Declarations added to the per-chat pair.
+    """
     name = model or (NARRATOR_MODEL if mode == "narrate" else MODEL)
     if not name.startswith("models/"):
         name = f"models/{name}"
@@ -174,6 +180,16 @@ def setup_frame(
         # Spelled out although it is 3.8's default: a check that leaves the
         # voice deaf for its 10-30 s is the dead air this exists to remove.
         behavior = {} if tools_block(name) else {"behavior": "NON_BLOCKING"}
+        if tools is not None:
+            setup["tools"] = [
+                {
+                    "functionDeclarations": [
+                        {k: v for k, v in d.items() if k != "behavior" or not tools_block(name)}
+                        for d in tools
+                    ]
+                }
+            ]
+            return {"setup": setup}
         setup["tools"] = [
             {
                 "functionDeclarations": [
@@ -207,6 +223,7 @@ def setup_frame(
                             "required": ["question"],
                         },
                     },
+                    *({**behavior, **d} for d in extra_tools or []),
                 ]
             }
         ]
