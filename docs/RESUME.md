@@ -25,6 +25,13 @@ quota, but its floor (~12-14%/task) ~= plain Sonnet's whole bill. Why bugs ship 
 "17:30"): plain Opus prevents bug classes by DESIGN while writing; the brain reads the buggy lines but its checks
 only run its own call shapes; fix rounds regress. Opus brain + Sonnet LOW worker (09-30) lost to plain Sonnet.
 Chart `~/deepswe/verdict_hard5.png`; all numbers `~/deepswe/FORENSICS.md` (10-07/10-08), `fresh12_report.py`.
+- **Companion can look things up (10-09, af6be0658, server restarted 13:13, page built from clean archive):**
+  voice gets `check_machine` (Gemini Live + Unmute; GPT Live not yet) -> `POST /v1/discussion/{id}/check` ->
+  companion picks read-only commands, `omnigent/server/companion_commands.py` runs them (allowlist + bwrap ro /,
+  no net, private /run, creds hidden, output scrubbed). Code/file changes stay Claude's. Sends to Claude now wait
+  ~1.8 s of reader silence (cap 10 s); words after the send go as a follow-up message. Status line + Companion
+  panel show the live command. Not yet: GPT Live engine, typed composer route. Agy returns an EMPTY reply when
+  the model tries its own tools (no permission in print mode) -> check() re-asks once.
 - **Research DONE (10-08 18:50):** report `/home/nexus/reports/Coding agent routing and orchestration.md`
   (notes in `/home/nexus/research_notes/Coding agent routing and orchestration/`). Verdicts: split-task-merge
   CONTRADICTED (Kim et al. -2..-15% on SWE-bench V; Cursor dropped its integrator); LLM-judge difficulty router
