@@ -9,7 +9,7 @@ description: OpenAI Codex coding sub-agent on the ChatGPT plan's own Codex allow
 # see it, so read usage from the plan's rate-limit percentages instead.
 executor:
   type: omnigent
-  model: gpt-5.6-luna
+  model: gpt-6-luna
   config:
     harness: codex
 
