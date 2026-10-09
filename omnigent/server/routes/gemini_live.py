@@ -54,6 +54,12 @@ _WS_CLOSE_POLICY_VIOLATION: Final[int] = 1008
 #: billed session relaying with nothing to end it.
 MAX_SESSION_S: Final[float] = 30 * 60
 
+#: The hub is meant to stay on while they work, so its guard is a working day.
+MAX_HUB_SESSION_S: Final[float] = 8 * 3600
+
+#: New connections one session may resume onto before the relay gives up.
+MAX_RESUMES: Final[int] = 100
+
 #: The handshake is one round trip; a slow one means a broken session.
 _HANDSHAKE_TIMEOUT_S: Final[float] = 30.0
 
@@ -285,6 +291,19 @@ class _HeardTurn:
     after_speech: float | None = None
 
 
+def _resumption_update(message: str | bytes) -> str | None:
+    """The new handle in a ``sessionResumptionUpdate``, when it is resumable."""
+    try:
+        parsed = json.loads(message)
+    except ValueError:
+        return None
+    update = parsed.get("sessionResumptionUpdate") if isinstance(parsed, dict) else None
+    if not isinstance(update, dict) or not update.get("resumable"):
+        return None
+    handle = update.get("newHandle")
+    return handle if isinstance(handle, str) and handle else None
+
+
 def _realtime_factor(audio_bytes: int, first_at: float | None, last_at: float | None) -> str:
     """Return audio delivered per second of delivery, as a printable ratio.
 
@@ -308,6 +327,7 @@ def create_gemini_live_router(
     registry_provider: Callable[[], DiscussionRegistry] | None = None,
     conversation_store: Any = None,
     max_session_s: float = MAX_SESSION_S,
+    max_hub_session_s: float = MAX_HUB_SESSION_S,
     handshake_timeout_s: float = _HANDSHAKE_TIMEOUT_S,
     client_idle_timeout_s: float = _CLIENT_IDLE_TIMEOUT_S,
 ) -> APIRouter:
@@ -570,21 +590,22 @@ def create_gemini_live_router(
 
         try:
             # The proven setup frame must precede anything else upstream.
+            setup_kwargs: dict[str, Any]
             if narrating:
-                frame = gemini_live.setup_frame(mode="narrate")
+                setup_kwargs = {"mode": "narrate"}
             elif hub:
-                frame = gemini_live.setup_frame(
-                    system_instruction=system_instruction, tools=voice_hub.HUB_TOOLS
-                )
+                setup_kwargs = {
+                    "system_instruction": system_instruction,
+                    "tools": voice_hub.HUB_TOOLS,
+                }
             else:
                 watch = (
                     [voice_hub.CLAUDE_STATUS_TOOL]
                     if conversation_store is not None and session_id_clean
                     else None
                 )
-                frame = gemini_live.setup_frame(
-                    system_instruction=system_instruction, extra_tools=watch
-                )
+                setup_kwargs = {"system_instruction": system_instruction, "extra_tools": watch}
+            frame = gemini_live.setup_frame(**setup_kwargs)
             await upstream.send(json.dumps(frame))
             if not narrating:
                 # The page's stall watchdog needs to know whether silence during
@@ -602,7 +623,63 @@ def create_gemini_live_router(
                     )
                 )
 
-            session_cap = asyncio.create_task(asyncio.sleep(max_session_s))
+            session_cap = asyncio.create_task(
+                asyncio.sleep(max_hub_session_s if hub else max_session_s)
+            )
+            resume_handle: str | None = None
+            resumes = 0
+            resuming: asyncio.Task[bool] | None = None
+
+            async def resume_upstream() -> bool:
+                """Carry the session onto a new connection with the latest handle."""
+                nonlocal upstream, resumes
+                if narrating or not resume_handle or resumes >= MAX_RESUMES:
+                    return False
+                fresh: Any = None
+                try:
+                    fresh = await asyncio.wait_for(
+                        connect(gemini_live.socket_url(key)), timeout=handshake_timeout_s
+                    )
+                    await fresh.send(
+                        json.dumps(
+                            gemini_live.setup_frame(**setup_kwargs, resume_handle=resume_handle)
+                        )
+                    )
+                    first = await asyncio.wait_for(fresh.recv(), timeout=handshake_timeout_s)
+                    if not _contains(first, '"setupComplete"'):
+                        raise RuntimeError(f"no setupComplete: {str(first)[:200]}")
+                except Exception as exc:  # noqa: BLE001 - a failed resume ends the call
+                    _logger.warning("gemini live resume failed: %r", exc)
+                    if fresh is not None:
+                        with contextlib.suppress(Exception):
+                            await fresh.close()
+                    return False
+                old, upstream = upstream, fresh
+                resumes += 1
+                record_timeline_event("resumed")
+                _logger.info("gemini live resumed onto a new connection | resumes=%d", resumes)
+                with contextlib.suppress(Exception):
+                    await old.close()
+                return True
+
+            def resume_soon() -> None:
+                """Start one resume, unless one is already under way."""
+                nonlocal resuming
+                if resuming is None or resuming.done():
+                    resuming = asyncio.create_task(resume_upstream())
+                    server_tasks.add(resuming)
+
+            async def send_up(payload: str | bytes) -> None:
+                """Send upstream, following the session onto a resumed connection."""
+                target = upstream
+                try:
+                    await target.send(payload)
+                except websockets.ConnectionClosed:
+                    if resuming is not None:
+                        await resuming
+                    if upstream is target and not await resume_upstream():
+                        raise
+                    await upstream.send(payload)
 
             def _server_answers(call: dict[str, Any]) -> bool:
                 """Whether the relay runs this tool itself instead of the page."""
@@ -633,9 +710,7 @@ def create_gemini_live_router(
                     response["scheduling"] = "WHEN_IDLE"
                 reply = {"id": call.get("id"), "name": name, "response": response}
                 with contextlib.suppress(Exception):
-                    await upstream.send(
-                        json.dumps({"toolResponse": {"functionResponses": [reply]}})
-                    )
+                    await send_up(json.dumps({"toolResponse": {"functionResponses": [reply]}}))
                     on_tool_response_received()
                 with contextlib.suppress(Exception):
                     await websocket.send_text(
@@ -711,7 +786,7 @@ def create_gemini_live_router(
                                 pass
                         if '"audioStreamEnd"' in text_payload:
                             audio_stream_end_count += 1
-                        await upstream.send(text_payload)
+                        await send_up(text_payload)
                         client_frames += 1
                     else:
                         raw_bytes = message.get("bytes") or b""
@@ -722,7 +797,7 @@ def create_gemini_live_router(
                             on_tool_response_received()
                         if b'"audioStreamEnd"' in raw_bytes:
                             audio_stream_end_count += 1
-                        await upstream.send(raw_bytes)
+                        await send_up(raw_bytes)
                         client_frames += 1
 
             async def upstream_to_client() -> None:
@@ -730,15 +805,28 @@ def create_gemini_live_router(
                 nonlocal setup_complete_count, setup_ms, input_transcription_count
                 nonlocal output_transcription_count, interrupted_count
                 nonlocal turn_complete_count, generation_complete_count, first_audio_ms
-                nonlocal audio_pcm_bytes, first_audio_at, last_audio_at, reply
+                nonlocal audio_pcm_bytes, first_audio_at, last_audio_at, reply, resume_handle
                 while True:
+                    reading = upstream
                     try:
-                        message = await upstream.recv()
+                        message = await reading.recv()
                     except asyncio.CancelledError:
                         raise
                     except websockets.ConnectionClosed as exc:
+                        if resuming is not None and not resuming.done():
+                            await resuming
+                        # Swapped for a resumed connection, or resumable now.
+                        if upstream is not reading or await resume_upstream():
+                            continue
                         record_upstream_close(exc)
                         return
+                    # Resumption bookkeeping is the relay's, not the page's: a
+                    # frame the page counted as Gemini talking would hide a stall.
+                    if _contains(message, '"sessionResumptionUpdate"'):
+                        update = _resumption_update(message)
+                        if update:
+                            resume_handle = update
+                        continue
                     try:
                         turn_log.frame(time.monotonic(), json.loads(message), message)
                     except ValueError:
@@ -783,6 +871,9 @@ def create_gemini_live_router(
                             pass
                     if _contains(message, '"goAway"'):
                         on_go_away_received()
+                        # Move before Google closes this connection.
+                        resume_soon()
+                        continue
                     if _contains(message, '"inlineData"') or _contains(message, '"audio/pcm"'):
                         now_mono = time.monotonic()
                         if first_audio_ms is None:
@@ -819,7 +910,7 @@ def create_gemini_live_router(
                             f"[Update, not something they said: {entry.text}] "
                             "Tell them this in one short sentence now, then carry on."
                         )
-                        await upstream.send(
+                        await send_up(
                             json.dumps(
                                 {
                                     "clientContent": {

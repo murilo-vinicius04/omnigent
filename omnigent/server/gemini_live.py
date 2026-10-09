@@ -54,6 +54,7 @@ def tools_block(model: str | None = None) -> bool:
     name = (model or MODEL).removeprefix("models/")
     return not name.startswith("gemini-3.8-live")
 
+
 #: Default prebuilt voice for narration and speech output.
 DEFAULT_VOICE: Final[str] = "Aoede"
 VOICE: Final[str] = DEFAULT_VOICE
@@ -132,11 +133,14 @@ def setup_frame(
     voice: str | None = None,
     tools: list[dict[str, Any]] | None = None,
     extra_tools: list[dict[str, Any]] | None = None,
+    resume_handle: str | None = None,
 ) -> dict:
     """Return the proven setup frame for the WebSocket's first message.
 
     :param tools: Declarations to use instead of the per-chat pair (the hub's).
     :param extra_tools: Declarations added to the per-chat pair.
+    :param resume_handle: Continue the session this handle names, after
+        Google closed its connection.
     """
     name = model or (NARRATOR_MODEL if mode == "narrate" else MODEL)
     if not name.startswith("models/"):
@@ -174,6 +178,11 @@ def setup_frame(
         "realtimeInputConfig": {
             "automaticActivityDetection": {"startOfSpeechSensitivity": "START_SENSITIVITY_LOW"}
         },
+        # A connection lasts about ten minutes and an audio session fifteen.
+        # Handles let the relay carry the session onto a new connection, and
+        # a sliding window lifts the length cap.
+        "sessionResumption": {"handle": resume_handle} if resume_handle else {},
+        "contextWindowCompression": {"slidingWindow": {}},
     }
     if system_instruction and system_instruction.strip():
         setup["systemInstruction"] = {"parts": [{"text": system_instruction}]}

@@ -1241,9 +1241,7 @@ def test_narration_keeps_its_own_model_and_gets_no_hello(monkeypatch, tmp_path) 
             assert ws.receive_text() == '{"serverContent":{}}'
 
 
-def test_a_hang_up_while_google_is_talking_is_not_an_error(
-    monkeypatch, tmp_path, caplog
-) -> None:
+def test_a_hang_up_while_google_is_talking_is_not_an_error(monkeypatch, tmp_path, caplog) -> None:
     """The page closing as a frame is relayed to it is the normal end of a call."""
     _with_key(monkeypatch, tmp_path)
     upstream = _FakeUpstream()
@@ -1263,3 +1261,102 @@ def test_a_hang_up_while_google_is_talking_is_not_an_error(
     ended = [r.getMessage() for r in caplog.records if "session ended | " in r.getMessage()]
     assert ended and "ended_by=client" in ended[0]
     assert not [r for r in caplog.records if "relay error" in r.getMessage()]
+
+
+# --- Resuming a session onto a new connection ---
+
+
+def test_conversation_setup_asks_for_resumption_and_compression() -> None:
+    """Every conversational session can be resumed and has no length cap."""
+    setup = gemini_live.setup_frame(system_instruction="brief")["setup"]
+    assert setup["sessionResumption"] == {}
+    assert setup["contextWindowCompression"] == {"slidingWindow": {}}
+    resumed = gemini_live.setup_frame(system_instruction="brief", resume_handle="h-7")["setup"]
+    assert resumed["sessionResumption"] == {"handle": "h-7"}
+    assert "sessionResumption" not in gemini_live.setup_frame(mode="narrate")["setup"]
+
+
+def _wait(predicate, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.02)
+    raise AssertionError("timed out")
+
+
+class _ClosingUpstream(_FakeUpstream):
+    """Like a real socket, closing it ends a read that is waiting on it."""
+
+    async def close(self) -> None:
+        self.closed = True
+        await self.incoming.put(websockets.ConnectionClosed(Close(1000, "closed"), None))
+
+
+def _resumable_app(monkeypatch, tmp_path, connections: list[_FakeUpstream]):
+    _with_key(monkeypatch, tmp_path)
+
+    async def fake_connect(url: str):
+        upstream = _ClosingUpstream()
+        upstream.loop = asyncio.get_running_loop()
+        connections.append(upstream)
+        if len(connections) > 1:
+            # A resumed connection answers its setup straight away.
+            await upstream.incoming.put('{"setupComplete":{}}')
+        return upstream
+
+    return _proxy_app(upstream_connect=fake_connect)
+
+
+def test_go_away_moves_the_session_onto_a_resumed_connection(monkeypatch, tmp_path) -> None:
+    """Google's goAway is handled by the relay; the page keeps its socket."""
+    connections: list[_FakeUpstream] = []
+    with TestClient(_resumable_app(monkeypatch, tmp_path, connections)) as tc:
+        with tc.websocket_connect("/v1/live/gemini/ws") as ws:
+            _wait(lambda: connections and connections[0].sent)
+            first = connections[0]
+            first.push_from_test_thread(
+                '{"sessionResumptionUpdate":{"newHandle":"h-1","resumable":true}}'
+            )
+            first.push_from_test_thread('{"goAway":{"timeLeft":"10s"}}')
+            _wait(lambda: len(connections) == 2 and first.closed)
+            second = connections[1]
+            setup = json.loads(second.sent[0])["setup"]
+            assert setup["sessionResumption"] == {"handle": "h-1"}
+            # The page's audio now reaches the new connection.
+            ws.send_bytes(b"\x01audio")
+            _wait(lambda: b"\x01audio" in second.sent)
+            second.push_from_test_thread('{"serverContent":{"turnComplete":true}}')
+            # Neither the handle, the goAway nor the second setupComplete reach the page.
+            assert _relayed_text(ws) == '{"serverContent":{"turnComplete":true}}'
+    assert b"\x01audio" not in first.sent
+
+
+def test_a_dropped_connection_resumes_when_a_handle_is_known(monkeypatch, tmp_path) -> None:
+    connections: list[_FakeUpstream] = []
+    with TestClient(_resumable_app(monkeypatch, tmp_path, connections)) as tc:
+        with tc.websocket_connect("/v1/live/gemini/ws") as ws:
+            _wait(lambda: connections and connections[0].sent)
+            first = connections[0]
+            first.push_from_test_thread(
+                '{"sessionResumptionUpdate":{"newHandle":"h-2","resumable":true}}'
+            )
+            first.push_from_test_thread(websockets.ConnectionClosed(Close(1011, "boom"), None))
+            _wait(lambda: len(connections) == 2)
+            connections[1].push_from_test_thread('{"serverContent":{}}')
+            assert _relayed_text(ws) == '{"serverContent":{}}'
+
+
+def test_without_a_handle_a_dropped_connection_ends_the_call(monkeypatch, tmp_path) -> None:
+    connections: list[_FakeUpstream] = []
+    with TestClient(_resumable_app(monkeypatch, tmp_path, connections)) as tc:
+        with tc.websocket_connect("/v1/live/gemini/ws") as ws:
+            _wait(lambda: connections and connections[0].sent)
+            connections[0].push_from_test_thread('{"sessionResumptionUpdate":{"resumable":false}}')
+            connections[0].push_from_test_thread(
+                websockets.ConnectionClosed(Close(1011, "boom"), None)
+            )
+            with pytest.raises(WebSocketDisconnect):
+                while True:
+                    ws.receive_text()
+    assert len(connections) == 1
