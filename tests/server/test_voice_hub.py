@@ -1,4 +1,4 @@
-"""The voice hub: one call across projects — names, live status, tools, and the relay."""
+"""The voice hub: one call across sessions — live status, tools, and the relay."""
 
 from __future__ import annotations
 
@@ -12,34 +12,19 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from omnigent.server import discussion, gemini_live, voice_hub
+from omnigent.server import hub as hub_module
 from omnigent.server.discussion import DiscussionRegistry
+from omnigent.server.hub import Hub, HubBackend, HubSession, HubState, TurnState
 from omnigent.server.routes.gemini_live import create_gemini_live_router
-from omnigent.server.voice_hub import HubBackend, HubProject, render_activity, resolve
+from omnigent.server.voice_hub import render_activity
 
-PROJECTS = [
-    HubProject(id="p1", name="Amarras", session_id="s-amarras", session_title="Chain scanner"),
-    HubProject(id="p2", name="Brasa", session_id="s-brasa", session_title="Orders SaaS"),
-    HubProject(id="p3", name="Áudio", session_id="s-audio", live_status="running"),
-    HubProject(id="p4", name="Empty", session_id=None),
+SESSIONS = [
+    HubSession(
+        id="s-amarras", title="Chain scanner", nickname="amarras", first_ask="scan the chain"
+    ),
+    HubSession(id="s-brasa", title="Orders SaaS", nickname="brasa"),
+    HubSession(id="s-audio", title="Corrigir áudio", status="running", now="Bash: pytest"),
 ]
-
-
-@pytest.mark.parametrize(
-    ("spoken", "expected"),
-    [
-        ("amarras", "Amarras"),
-        ("Amarras.", "Amarras"),
-        ("a marras", "Amarras"),
-        ("the brasa project", "Brasa"),
-        ("brassa", "Brasa"),
-        ("audio", "Áudio"),
-        ("kitchen", None),
-        ("", None),
-    ],
-)
-def test_spoken_project_names_resolve_forgivingly(spoken, expected) -> None:
-    found = resolve(PROJECTS, spoken)
-    assert (found.name if found else None) == expected
 
 
 def _item(kind: str, response_id: str, **data) -> dict:
@@ -48,11 +33,29 @@ def _item(kind: str, response_id: str, **data) -> dict:
 
 def test_live_status_reads_the_current_turn_mid_task() -> None:
     items = [  # newest first, as the store returns them
-        _item("function_call", "r2", name="Bash", arguments='{"command": "pytest -q"}', call_id="c3"),
+        _item(
+            "function_call", "r2", name="Bash", arguments='{"command": "pytest -q"}', call_id="c3"
+        ),
         _item("function_call_output", "r2", call_id="c2", output="ok"),
-        _item("function_call", "r2", name="Edit", arguments='{"file_path": "/x/scanner.py"}', call_id="c2"),
-        _item("message", "r2", role="assistant", content=[{"type": "output_text", "text": "Fixing the scan."}]),
-        _item("message", "r1u", role="user", content=[{"type": "input_text", "text": "fix the scanner"}]),
+        _item(
+            "function_call",
+            "r2",
+            name="Edit",
+            arguments='{"file_path": "/x/scanner.py"}',
+            call_id="c2",
+        ),
+        _item(
+            "message",
+            "r2",
+            role="assistant",
+            content=[{"type": "output_text", "text": "Fixing the scan."}],
+        ),
+        _item(
+            "message",
+            "r1u",
+            role="user",
+            content=[{"type": "input_text", "text": "fix the scanner"}],
+        ),
         _item("function_call", "r0", name="Bash", arguments='{"command": "old"}', call_id="c0"),
     ]
     text = render_activity(items, "running", writing="Now running the tests")
@@ -67,7 +70,12 @@ def test_live_status_reads_the_current_turn_mid_task() -> None:
 def test_live_status_of_an_idle_session_says_it_finished() -> None:
     items = [
         _item("resource_event", "s1", event_type="session.resource.deleted"),
-        _item("message", "r1", role="assistant", content=[{"type": "output_text", "text": "Done: 3 fixed."}]),
+        _item(
+            "message",
+            "r1",
+            role="assistant",
+            content=[{"type": "output_text", "text": "Done: 3 fixed."}],
+        ),
     ]
     text = render_activity(items, "idle", writing="stale")
     assert text.startswith("Claude is idle")
@@ -75,88 +83,107 @@ def test_live_status_of_an_idle_session_says_it_finished() -> None:
     assert "stale" not in text
 
 
-def test_the_briefing_names_every_project_with_its_latest_update() -> None:
-    briefing = voice_hub.hub_briefing(PROJECTS, {"p1": "Scan coverage is 92%.", "p3": None})
-    assert "Projects: Amarras, Brasa, Áudio, Empty." in briefing
-    assert "Claude's latest update: Scan coverage is 92%." in briefing
-    assert "## Áudio" in briefing and "Claude is working right now." in briefing
-    assert "## Empty\nNo session yet" in briefing
+def test_the_briefing_lists_every_session_with_its_handle() -> None:
+    sessions = [HubSession(**{**s.__dict__, "handle": s.id[2:6]}) for s in SESSIONS]
+    briefing = voice_hub.hub_briefing(sessions)
+    assert briefing.startswith(voice_hub.HUB_ROLE)
+    assert '[amar] amarras · "Chain scanner" · idle' in briefing
+    assert 'started with: "scan the chain"' in briefing
+    assert "[audi]" in briefing and "WORKING (now: Bash: pytest)" in briefing
 
 
-class _FakeBackend:
+class _Router:
+    async def perform(self, task, *, timeout_s=None):
+        return "done"
+
+    def remember(self, text):
+        pass
+
+
+class _FakeServer:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
         self.checked: list[tuple[str, str]] = []
-        self.projects_list = list(PROJECTS)
+        self.sessions = list(SESSIONS)
+        self.fail = False
 
-    def backend(self) -> HubBackend:
-        async def projects():
-            return self.projects_list
+    def hub(self, tmp_path) -> Hub:
+        async def sessions():
+            return list(self.sessions)
 
         async def activity(session_id):
             return f"status of {session_id}"
 
         async def send(session_id, text):
+            if self.fail:
+                raise RuntimeError("runner gone")
             self.sent.append((session_id, text))
 
         async def check(session_id, question):
             self.checked.append((session_id, question))
             return "18 GB free"
 
-        return HubBackend(projects=projects, activity=activity, send=send, check=check)
+        async def turn(session_id, since):
+            return TurnState(status="running")
+
+        async def router():
+            return _Router()
+
+        hub = Hub("u1", router_factory=router, state=HubState("u1", root=tmp_path), poll_s=60)
+        hub.bind(
+            HubBackend(sessions=sessions, activity=activity, send=send, check=check, turn=turn)
+        )
+        return hub
 
 
-async def test_tools_route_to_the_named_projects_session() -> None:
-    fake = _FakeBackend()
-    b = fake.backend()
-    assert await voice_hub.run_hub_tool(b, "project_status", {"project": "amarras"}) == (
-        "Amarras",
-        "Amarras: status of s-amarras",
+async def test_tools_route_to_the_named_session_and_land_in_the_hub_chat(tmp_path) -> None:
+    fake = _FakeServer()
+    hub = fake.hub(tmp_path)
+    assert await voice_hub.run_hub_tool(hub, "session_status", {"session": "amarras"}) == (
+        "amarras",
+        "amarras: status of s-amarras",
     )
-    project, out = await voice_hub.run_hub_tool(
-        b, "ask_claude", {"project": "brassa", "message": "run the order tests"}
+    name, out = await voice_hub.run_hub_tool(
+        hub, "ask_claude", {"session": "brassa", "message": "run the order tests"}
     )
-    assert project == "Brasa" and "Sent to Brasa" in out
+    assert name == "brasa" and out == "Sent to brasa. You will be told when it finishes."
     assert fake.sent == [("s-brasa", "run the order tests")]
     assert await voice_hub.run_hub_tool(
-        b, "check_machine", {"project": "amarras", "question": "disk?"}
-    ) == ("Amarras", "18 GB free")
+        hub, "check_machine", {"session": "amarras", "question": "disk?"}
+    ) == ("amarras", "18 GB free")
     assert fake.checked == [("s-amarras", "disk?")]
+    logged = [(e.kind, e.via, e.session_name) for e in hub.state.entries]
+    assert logged == [("sent", "voice", "brasa"), ("check", "voice", "amarras")]
+    assert "s-brasa" in hub._watches  # its answer will be reported back
+    await hub.close()
 
 
-async def test_unknown_or_sessionless_projects_send_nothing() -> None:
-    fake = _FakeBackend()
-    b = fake.backend()
-    _, out = await voice_hub.run_hub_tool(b, "ask_claude", {"project": "kitchen", "message": "x"})
-    assert "No project called 'kitchen'" in out and "Amarras, Brasa" in out
-    _, out = await voice_hub.run_hub_tool(b, "ask_claude", {"project": "empty", "message": "x"})
-    assert "no session yet" in out
-    assert fake.sent == []
+async def test_an_unknown_session_sends_nothing(tmp_path) -> None:
+    fake = _FakeServer()
+    hub = fake.hub(tmp_path)
+    _, out = await voice_hub.run_hub_tool(
+        hub, "ask_claude", {"session": "kitchen", "message": "x"}
+    )
+    assert "No session called 'kitchen'" in out and "amarras, brasa, Corrigir áudio" in out
+    assert fake.sent == [] and hub.state.entries == []
 
 
-async def test_a_project_added_mid_call_is_reachable() -> None:
-    fake = _FakeBackend()
-    b = fake.backend()
-    fake.projects_list.append(HubProject(id="p9", name="Garden", session_id="s-garden"))
-    assert (await voice_hub.run_hub_tool(b, "project_status", {"project": "garden"}))[0] == "Garden"
+async def test_every_session_at_once(tmp_path) -> None:
+    name, out = await voice_hub.run_hub_tool(
+        _FakeServer().hub(tmp_path), "session_status", {"session": "all"}
+    )
+    assert name == "all"
+    assert "amarras:\nstatus of s-amarras" in out and "Corrigir áudio:\nstatus of s-audio" in out
 
 
-async def test_all_projects_at_once() -> None:
-    project, out = await voice_hub.run_hub_tool(_FakeBackend().backend(), "project_status", {"project": "all"})
-    assert project == "all"
-    assert "Amarras:\nstatus of s-amarras" in out and "Empty: no session yet." in out
-
-
-async def test_a_failing_tool_still_answers_the_model() -> None:
-    fake = _FakeBackend()
-    b = fake.backend()
-
-    async def boom(session_id, text):
-        raise RuntimeError("runner gone")
-
-    b.send = boom
-    _, out = await voice_hub.run_hub_tool(b, "ask_claude", {"project": "amarras", "message": "x"})
-    assert out == "That failed (RuntimeError); nothing was done."
+async def test_a_failing_send_still_answers_the_model(tmp_path) -> None:
+    fake = _FakeServer()
+    fake.fail = True
+    hub = fake.hub(tmp_path)
+    _, out = await voice_hub.run_hub_tool(
+        hub, "ask_claude", {"session": "amarras", "message": "x"}
+    )
+    assert out == "Sending to amarras failed (RuntimeError); nothing was sent."
 
 
 # --- The relay: hub mode end to end, with fake stores and a fake Google ---
@@ -183,29 +210,47 @@ class _FakeUpstream:
 
 
 class _Stores:
-    """Projects and sessions as the real stores hand them out."""
+    """Sessions and their items as the real store hands them out."""
 
     def __init__(self) -> None:
-        self.projects = [SimpleNamespace(id="p1", name="Amarras"), SimpleNamespace(id="p2", name="Brasa")]
-        self.sessions = {
-            "Amarras": SimpleNamespace(
-                id="s-amarras", title="Scanner", workspace="/tmp", live_status="running", project_id="p1"
-            )
-        }
+        self.convs = [
+            SimpleNamespace(
+                id="s-amarras",
+                title="Scanner",
+                workspace="/tmp",
+                live_status="running",
+                updated_at=time.time(),
+                pending_elicitation_count=0,
+            ),
+            SimpleNamespace(
+                id="s-brasa",
+                title="Orders",
+                workspace="/tmp",
+                live_status="idle",
+                updated_at=time.time(),
+                pending_elicitation_count=0,
+            ),
+        ]
 
-    def list(self, *, user_id):
-        return self.projects
-
-    def list_conversations(self, *, limit, project, owned_by, sort_by, order):
-        conv = self.sessions.get(project)
-        return SimpleNamespace(data=[conv] if conv else [])
+    def list_conversations(self, **kwargs):
+        return SimpleNamespace(data=list(self.convs))
 
     def get_conversation(self, session_id):
-        return next(c for c in self.sessions.values() if c.id == session_id)
+        return next(c for c in self.convs if c.id == session_id)
 
-    def list_items(self, session_id, limit, order):
+    def list_items(self, session_id, limit=100, order="asc", type=None):
+        if type == "message":
+            return SimpleNamespace(data=[])
         return SimpleNamespace(
-            data=[_item("function_call", "r1", name="Bash", arguments='{"command": "make scan"}', call_id="c1")]
+            data=[
+                _item(
+                    "function_call",
+                    "r1",
+                    name="Bash",
+                    arguments='{"command": "make scan"}',
+                    call_id="c1",
+                )
+            ]
         )
 
 
@@ -215,6 +260,8 @@ def _hub_app(monkeypatch, tmp_path, upstream: _FakeUpstream) -> FastAPI:
     monkeypatch.setattr(gemini_live, "KEY_PATH", env)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setattr(discussion, "LEDGER_DIR", tmp_path / "ledgers")
+    monkeypatch.setattr(hub_module, "HUB_DIR", tmp_path / "hub")
+    monkeypatch.setattr(hub_module, "_HUBS", {})
 
     async def connect(url: str):
         upstream.loop = asyncio.get_running_loop()
@@ -230,7 +277,6 @@ def _hub_app(monkeypatch, tmp_path, upstream: _FakeUpstream) -> FastAPI:
             upstream_connect=connect,
             registry_provider=lambda: companions,
             conversation_store=stores,
-            project_store=stores,
         ),
         prefix="/v1",
     )
@@ -246,7 +292,9 @@ def _wait_for(predicate, timeout: float = 3.0) -> None:
     raise AssertionError("timed out")
 
 
-def test_the_hub_is_briefed_on_every_project_and_answers_its_own_tools(monkeypatch, tmp_path) -> None:
+def test_the_hub_is_briefed_on_every_session_and_answers_its_own_tools(
+    monkeypatch, tmp_path
+) -> None:
     upstream = _FakeUpstream()
     with TestClient(_hub_app(monkeypatch, tmp_path, upstream)) as tc:
         with tc.websocket_connect("/v1/live/gemini/ws?mode=hub") as ws:
@@ -255,21 +303,21 @@ def test_the_hub_is_briefed_on_every_project_and_answers_its_own_tools(monkeypat
             _wait_for(lambda: upstream.sent)
             setup = json.loads(upstream.sent[0])["setup"]
             names = [d["name"] for d in setup["tools"][0]["functionDeclarations"]]
-            assert names == ["project_status", "ask_claude", "check_machine"]
+            assert names == ["session_status", "ask_claude", "check_machine"]
             instruction = setup["systemInstruction"]["parts"][0]["text"]
-            assert "Projects: Amarras, Brasa." in instruction
-            assert "## Brasa\nNo session yet" in instruction
+            assert '"Scanner" · WORKING (now: Bash: make scan)' in instruction
+            assert '"Orders" · idle' in instruction
 
-            call = {"id": "t1", "name": "project_status", "args": {"project": "a marras"}}
+            call = {"id": "t1", "name": "session_status", "args": {"session": "scaner"}}
             upstream.push(json.dumps({"toolCall": {"functionCalls": [call]}}))
             assert "toolCall" in ws.receive_text()  # the page sees the call, to show it
             done = json.loads(ws.receive_text())["omnigentToolDone"]
-            assert done["project"] == "Amarras"
+            assert done["project"] == "Scanner"
             assert "Bash: make scan (running now)" in done["output"]
             _wait_for(lambda: any("toolResponse" in str(m) for m in upstream.sent))
     response = next(json.loads(m) for m in upstream.sent if "toolResponse" in str(m))
     reply = response["toolResponse"]["functionResponses"][0]
-    assert reply["id"] == "t1" and reply["name"] == "project_status"
+    assert reply["id"] == "t1" and reply["name"] == "session_status"
     assert reply["response"]["scheduling"] == "WHEN_IDLE"
     assert "Claude is working on it right now." in reply["response"]["output"]
 
@@ -283,16 +331,47 @@ def test_the_chat_voice_can_ask_what_claude_is_doing_now(monkeypatch, tmp_path) 
             setup = json.loads(upstream.sent[0])["setup"]
             names = [d["name"] for d in setup["tools"][0]["functionDeclarations"]]
             assert names == ["ask_claude", "check_machine", "claude_status"]
-            upstream.push(json.dumps({"toolCall": {"functionCalls": [{"id": "t2", "name": "claude_status"}]}}))
+            upstream.push(
+                json.dumps(
+                    {"toolCall": {"functionCalls": [{"id": "t2", "name": "claude_status"}]}}
+                )
+            )
             ws.receive_text()  # the call, relayed
             done = json.loads(ws.receive_text())["omnigentToolDone"]
             assert done["name"] == "claude_status" and "make scan" in done["output"]
             # ask_claude is still the page's to answer, not the relay's.
-            upstream.push(json.dumps({"toolCall": {"functionCalls": [{"id": "t3", "name": "ask_claude"}]}}))
+            upstream.push(
+                json.dumps({"toolCall": {"functionCalls": [{"id": "t3", "name": "ask_claude"}]}})
+            )
             ws.receive_text()
             time.sleep(0.1)
-    answered = [json.loads(m)["toolResponse"]["functionResponses"][0]["id"] for m in upstream.sent if "toolResponse" in str(m)]
+    answered = [
+        json.loads(m)["toolResponse"]["functionResponses"][0]["id"]
+        for m in upstream.sent
+        if "toolResponse" in str(m)
+    ]
     assert answered == ["t2"]
+
+
+def test_an_open_hub_call_is_told_when_a_session_finishes(monkeypatch, tmp_path) -> None:
+    upstream = _FakeUpstream()
+    with TestClient(_hub_app(monkeypatch, tmp_path, upstream)) as tc:
+        with tc.websocket_connect("/v1/live/gemini/ws?mode=hub") as ws:
+            ws.receive_text()  # hello
+            _wait_for(lambda: upstream.sent)
+            hub = hub_module._HUBS["local"]
+            hub.state.append(role="hub", kind="sent", text="Sent to Orders.")
+            hub.state.append(
+                role="hub",
+                kind="finished",
+                text="Orders finished: all tests pass.",
+                session_id="s-brasa",
+            )
+            _wait_for(lambda: any("clientContent" in str(m) for m in upstream.sent))
+    told = [json.loads(m)["clientContent"] for m in upstream.sent if "clientContent" in str(m)]
+    assert len(told) == 1  # the send itself is not news
+    text = told[0]["turns"][0]["parts"][0]["text"]
+    assert "Orders finished: all tests pass." in text and told[0]["turnComplete"] is True
 
 
 def test_no_stores_no_hub(monkeypatch, tmp_path) -> None:

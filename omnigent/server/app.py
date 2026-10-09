@@ -65,6 +65,7 @@ from omnigent.server import (
     session_live_state,
     shutdown_state,
 )
+from omnigent.server import hub as hub_module
 from omnigent.server.auth import AuthProvider, SharingMode
 from omnigent.server.background_session_titles import (
     BackgroundSessionTitleCoordinator,
@@ -93,6 +94,7 @@ from omnigent.server.routes.extension_assets import create_extension_assets_rout
 from omnigent.server.routes.extensions import create_extensions_router
 from omnigent.server.routes.gemini_live import create_gemini_live_router
 from omnigent.server.routes.harnesses import create_harnesses_router
+from omnigent.server.routes.hub import create_hub_router
 from omnigent.server.routes.imports import create_imports_router
 from omnigent.server.routes.live_voice import create_live_voice_router
 from omnigent.server.routes.openai_budget_proxy import create_openai_budget_proxy_router
@@ -1543,6 +1545,7 @@ def create_app(
             with suppress(asyncio.CancelledError):
                 await companion_sweep_task
             # Never leave an agy subprocess behind a server restart.
+            await hub_module.close_all()
             await discussion.registry().close_all()
             if managed_sandbox_reaper is not None:
                 await managed_sandbox_reaper.shutdown()
@@ -2703,10 +2706,15 @@ def create_app(
         create_gemini_live_router(
             auth_provider=auth_provider,
             conversation_store=conversation_store,
-            project_store=project_store,
         ),
         prefix="/v1",
         tags=["live-voice"],
+    )
+    # The hub: one chat per user that routes to their sessions.
+    app.include_router(
+        create_hub_router(auth_provider=auth_provider, conversation_store=conversation_store),
+        prefix="/v1",
+        tags=["hub"],
     )
     # A local Kyutai Unmute voice stack, served under this origin at /unmute
     # so the microphone works on the same forwarded port as the app.

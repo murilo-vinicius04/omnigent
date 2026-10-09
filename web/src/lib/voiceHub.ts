@@ -1,10 +1,11 @@
 /**
- * The voice hub: one Gemini call that reaches every project, not one chat.
+ * The voice hub: one Gemini call that reaches every session, the hub chat's voice.
  *
- * The relay (`/v1/live/gemini/ws?mode=hub`) briefs it on every project and
- * runs its tools itself — reading a project's live status, sending a message
- * into a project's session, read-only checks — so this side only plays and
- * records audio and shows what the hub is doing. Sending never ends the call.
+ * The relay (`/v1/live/gemini/ws?mode=hub`) briefs it on every recent session
+ * and runs its tools itself — reading a session's live status, sending it a
+ * message, read-only checks — so this side only plays and records audio and
+ * shows what the hub is doing. Sends and finished reports land in the hub
+ * chat (`/hub`). Sending never ends the call.
  */
 import { create } from "zustand";
 
@@ -16,6 +17,7 @@ export const HUB_ENDPOINT = "/v1/live/gemini/ws?mode=hub";
 /** What the hub is doing right now, as the status pill shows it. */
 export interface HubActivity {
   tool: string;
+  /** The session as the call named it. */
   project: string;
   state: "running" | "done";
   /** The finished tool's result, shortened; empty while running. */
@@ -37,9 +39,9 @@ const DONE_SHOWN_MS = 6_000;
 
 /** The pill's words for a running hub tool. */
 export function describeHubTool(tool: string, project: string): string {
-  const where = project || "a project";
-  if (tool === "project_status") {
-    return project === "all" ? "Looking at every project" : `Looking at ${where}`;
+  const where = project || "a session";
+  if (tool === "session_status" || tool === "project_status") {
+    return project === "all" ? "Looking at every session" : `Looking at ${where}`;
   }
   if (tool === "ask_claude") return `Sending to ${where}'s Claude`;
   if (tool === "check_machine") return `Checking on ${where} (read-only)`;
@@ -60,7 +62,8 @@ export const useVoiceHubStore = create<VoiceHubState>((set, get) => {
     if (ev.type === "toolCall") {
       const call = ev.calls[0];
       if (!call) return;
-      const project = typeof call.args?.project === "string" ? call.args.project : "";
+      const named = call.args?.session ?? call.args?.project;
+      const project = typeof named === "string" ? named : "";
       if (clearTimer) clearTimeout(clearTimer);
       set({ activity: { tool: call.name, project, state: "running", result: "" } });
     } else if (ev.type === "toolDone") {
@@ -89,7 +92,7 @@ export const useVoiceHubStore = create<VoiceHubState>((set, get) => {
           endpoint: HUB_ENDPOINT,
           onEvent,
           onStateChange: (st) => {
-            if (st.state === "ready") set({ notice: "Listening — every project" });
+            if (st.state === "ready") set({ notice: "Listening — every session" });
             else if (st.state === "waiting") set({ notice: "Still thinking…" });
             else if (st.state === "nudged") {
               set({ notice: "Gemini went quiet — asking it to answer", noticeTone: "warn" });

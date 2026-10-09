@@ -36,6 +36,7 @@ import {
   Loader2Icon,
   MailIcon,
   MessageCircleDashedIcon,
+  RadioIcon,
   Maximize2Icon,
   Minimize2Icon,
   MoreHorizontalIcon,
@@ -356,6 +357,7 @@ interface SidebarProps {
  */
 function useActiveNavItem(): {
   isNewChatPage: boolean;
+  isHubPage: boolean;
   isInboxPage: boolean;
   isTasksPage: boolean;
   isUsagePage: boolean;
@@ -367,6 +369,7 @@ function useActiveNavItem(): {
   const extensions = useExtensions();
   const leaf = location.pathname.split("/").filter(Boolean).at(-1);
   const isExtensionRoute = extensionPathParts(location.pathname) !== null;
+  const isHubPage = !isExtensionRoute && leaf === "hub";
   const isInboxPage = !isExtensionRoute && leaf === "inbox";
   const isTasksPage = !isExtensionRoute && leaf === "tasks";
   const isUsagePage = !isExtensionRoute && leaf === "usage";
@@ -374,6 +377,7 @@ function useActiveNavItem(): {
     resolveExtensionPageFromPath(extensions, location.pathname)?.page.id ?? null;
   const isNewSessionRoute =
     activeConversationId == null &&
+    !isHubPage &&
     !isInboxPage &&
     !isTasksPage &&
     !isUsagePage &&
@@ -388,6 +392,7 @@ function useActiveNavItem(): {
   const isNewChatPage = isNewSessionRoute && newSessionProjectName == null;
   return {
     isNewChatPage,
+    isHubPage,
     isInboxPage,
     isTasksPage,
     isUsagePage,
@@ -736,6 +741,7 @@ function SidebarImpl({
   // Which top-level nav button to highlight for the current route.
   const {
     isNewChatPage,
+    isHubPage,
     isInboxPage,
     isTasksPage,
     isUsagePage,
@@ -1012,6 +1018,30 @@ function SidebarImpl({
             </div>
 
             <div className="flex flex-col gap-0 px-2 pt-2 pb-0" data-testid="sidebar-primary-nav">
+              {/* The hub: one chat that routes to every session. */}
+              <Button
+                asChild
+                variant="ghost"
+                className={cn(
+                  SIDEBAR_ROW,
+                  "w-full justify-start border-0 font-normal",
+                  SIDEBAR_HOVER_HIGHLIGHT,
+                  isHubPage && SIDEBAR_ACTIVE_HIGHLIGHT,
+                )}
+                data-testid="hub-nav"
+              >
+                <Link to="/hub" onClick={onNavClick} componentId="sidebar.hub">
+                  <RadioIcon
+                    className={cn(
+                      "ui-icon",
+                      isHubPage
+                        ? "text-[var(--sidebar-active-foreground)]"
+                        : "text-muted-foreground",
+                    )}
+                  />
+                  Hub
+                </Link>
+              </Button>
               {/* "New session" routes to the home composer ("/"), which now owns
             session creation end-to-end (host/workspace/worktree chips +
             send). Rendered as a Link so cmd/middle-click opens it in a new

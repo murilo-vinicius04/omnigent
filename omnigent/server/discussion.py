@@ -65,6 +65,7 @@ import os
 import pathlib
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
@@ -434,6 +435,10 @@ class DiscussionSession:
     interleaving on the one stdin pipe.
     """
 
+    #: What a fresh process is told it is; a subclass with another job
+    #: (the hub's router) swaps it.
+    role: str = ROLE_INSTRUCTIONS
+
     def __init__(self, session_id: str, *, model: str | None = None, binary: str | None = None):
         """
         :param session_id: Omnigent session this companion belongs to.
@@ -441,7 +446,7 @@ class DiscussionSession:
         :param binary: CLI override; defaults to the configured one.
         """
         self.session_id = session_id
-        self._model = model or _model()
+        self._model = model or self._default_model()
         self._binary = binary or _binary()
         self._entries: deque[ContextEntry] = deque(maxlen=MAX_ENTRIES)
         self._next_id = 1
@@ -460,6 +465,11 @@ class DiscussionSession:
         # What a check is doing right now, for the UI: thinking about the
         # next step or running a command. None when it is doing nothing.
         self._activity: dict[str, Any] | None = None
+
+    @classmethod
+    def _default_model(cls) -> str:
+        """The model used when none is passed."""
+        return _model()
 
     # -- state the UI asks about ------------------------------------
 
@@ -665,7 +675,7 @@ class DiscussionSession:
         gets only the notes recorded since its last turn.
         """
         if not self._briefed:
-            blocks = [ROLE_INSTRUCTIONS]
+            blocks = [self.role]
             replay = self._replay_block()
             if replay:
                 blocks.append(replay)
@@ -1223,18 +1233,25 @@ class DiscussionRegistry:
         self._sessions: dict[str, DiscussionSession] = {}
         self._lock = asyncio.Lock()
 
-    async def get(self, session_id: str) -> DiscussionSession:
+    async def get(
+        self,
+        session_id: str,
+        *,
+        factory: Callable[[str], DiscussionSession] | None = None,
+    ) -> DiscussionSession:
         """Return the companion for a session, creating it if needed.
 
         Creation does not spawn a process: that waits for the first
         question, so a session nobody talks to costs nothing.
 
         :param session_id: Omnigent session id.
+        :param factory: Builds the companion when there is none yet, e.g.
+            the hub's router; defaults to a plain companion.
         """
         async with self._lock:
             existing = self._sessions.get(session_id)
             if existing is None:
-                existing = DiscussionSession(session_id)
+                existing = (factory or DiscussionSession)(session_id)
                 self._sessions[session_id] = existing
             return existing
 

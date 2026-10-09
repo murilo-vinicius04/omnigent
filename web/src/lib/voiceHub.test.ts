@@ -41,11 +41,11 @@ describe("voice hub", () => {
     expect(useVoiceHubStore.getState().active).toBe(true);
   });
 
-  it("shows which project a tool is working on, then its result for a while", async () => {
+  it("shows which session a tool is working on, then its result for a while", async () => {
     await useVoiceHubStore.getState().start();
     h.opts?.onEvent?.({
       type: "toolCall",
-      calls: [{ id: "t1", name: "ask_claude", args: { project: "amarras" } }],
+      calls: [{ id: "t1", name: "ask_claude", args: { session: "amarras" } }],
     });
     expect(useVoiceHubStore.getState().activity).toEqual({
       tool: "ask_claude",
@@ -67,7 +67,12 @@ describe("voice hub", () => {
 
   it("says when Gemini stopped answering and ends the hub", async () => {
     await useVoiceHubStore.getState().start();
-    h.opts?.onStateChange?.({ state: "closed", kind: "error", code: 4000, reason: "gemini stopped responding" });
+    h.opts?.onStateChange?.({
+      state: "closed",
+      kind: "error",
+      code: 4000,
+      reason: "gemini stopped responding",
+    });
     const state = useVoiceHubStore.getState();
     expect(state.active).toBe(false);
     expect(state.notice).toBe("Gemini stopped answering — start the hub again");
@@ -81,8 +86,9 @@ describe("voice hub", () => {
   });
 
   it("words each tool the way the pill says it", () => {
-    expect(describeHubTool("project_status", "all")).toBe("Looking at every project");
+    expect(describeHubTool("session_status", "all")).toBe("Looking at every session");
+    expect(describeHubTool("session_status", "amarras")).toBe("Looking at amarras");
     expect(describeHubTool("check_machine", "Brasa")).toBe("Checking on Brasa (read-only)");
-    expect(describeHubTool("ask_claude", "")).toBe("Sending to a project's Claude");
+    expect(describeHubTool("ask_claude", "")).toBe("Sending to a session's Claude");
   });
 });

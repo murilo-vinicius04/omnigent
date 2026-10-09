@@ -45,6 +45,10 @@ const ApprovePage = withPageView(
   "approve",
   lazy(() => import("@/pages/ApprovePage").then((m) => ({ default: m.ApprovePage }))),
 );
+const HubPage = withPageView(
+  "hub",
+  lazy(() => import("@/pages/HubPage").then((m) => ({ default: m.HubPage }))),
+);
 const InboxPage = withPageView(
   "inbox",
   lazy(() => import("@/pages/InboxPage").then((m) => ({ default: m.InboxPage }))),
@@ -153,6 +157,7 @@ function App({ basename }: AppProps = {}) {
         <Route element={<AppShell />}>
           <Route path={prefix || "/"} element={<ChatPage />} />
           <Route path={`${prefix}/c/:conversationId`} element={<ChatPage />} />
+          <Route path={`${prefix}/hub`} element={<HubPage />} />
           <Route path={`${prefix}/inbox`} element={<InboxPage />} />
           <Route path={`${prefix}/tasks`} element={<TasksPage />} />
           {isFeatureEnabled(info, "usage_page") && (

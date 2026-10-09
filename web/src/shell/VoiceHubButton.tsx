@@ -6,13 +6,19 @@ import { cn } from "@/lib/utils";
 import { describeHubTool, useVoiceHubStore } from "@/lib/voiceHub";
 
 /**
- * Turns the voice hub on and off: one call across every project, from anywhere
+ * Turns the voice hub on and off: one call across every session, from anywhere
  * in the app rather than from one chat's composer.
  */
-export function VoiceHubButton({ className, iconClassName }: { className?: string; iconClassName?: string }) {
+export function VoiceHubButton({
+  className,
+  iconClassName,
+}: {
+  className?: string;
+  iconClassName?: string;
+}) {
   const active = useVoiceHubStore((s) => s.active);
   const connecting = useVoiceHubStore((s) => s.connecting);
-  const label = active ? "Stop the voice hub" : "Voice hub: talk to every project";
+  const label = active ? "Stop the voice hub" : "Voice hub: talk to every session";
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -40,7 +46,7 @@ export function VoiceHubButton({ className, iconClassName }: { className?: strin
 }
 
 /**
- * What the hub is doing, while it is on: listening, or which project it is
+ * What the hub is doing, while it is on: listening, or which session it is
  * reading, sending to or checking. Mounted once, at the bottom of the screen.
  */
 export function VoiceHubStatus() {
@@ -52,9 +58,10 @@ export function VoiceHubStatus() {
   if (!active && !connecting && !notice) return null;
   let line: string;
   if (connecting) line = "Starting the voice hub…";
-  else if (activity?.state === "running") line = `${describeHubTool(activity.tool, activity.project)}…`;
+  else if (activity?.state === "running")
+    line = `${describeHubTool(activity.tool, activity.project)}…`;
   else if (activity) line = `${describeHubTool(activity.tool, activity.project)} — done`;
-  else line = notice ?? "Listening — every project";
+  else line = notice ?? "Listening — every session";
   return (
     <div
       role="status"
@@ -65,7 +72,12 @@ export function VoiceHubStatus() {
         tone === "warn" && !activity && "border-amber-500/60",
       )}
     >
-      <RadioIcon className={cn("size-3.5 shrink-0", active ? "text-sky-600 dark:text-sky-400" : "text-muted-foreground")} />
+      <RadioIcon
+        className={cn(
+          "size-3.5 shrink-0",
+          active ? "text-sky-600 dark:text-sky-400" : "text-muted-foreground",
+        )}
+      />
       <span className="truncate">{line}</span>
       {active ? (
         <button

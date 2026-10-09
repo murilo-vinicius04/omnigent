@@ -35,6 +35,7 @@ from fastapi import (
 from starlette import status
 
 from omnigent.server import gemini_live, voice_hub
+from omnigent.server import hub as hub_module
 from omnigent.server.auth import AuthProvider
 from omnigent.server.discussion import DiscussionRegistry, registry, voice_briefing
 
@@ -306,7 +307,6 @@ def create_gemini_live_router(
     upstream_connect: UpstreamConnect | None = None,
     registry_provider: Callable[[], DiscussionRegistry] | None = None,
     conversation_store: Any = None,
-    project_store: Any = None,
     max_session_s: float = MAX_SESSION_S,
     handshake_timeout_s: float = _HANDSHAKE_TIMEOUT_S,
     client_idle_timeout_s: float = _CLIENT_IDLE_TIMEOUT_S,
@@ -325,7 +325,6 @@ def create_gemini_live_router(
         Defaults to the process-wide registry.
     :param conversation_store: Sessions and their stored items, for the live
         status tools and the hub. ``None`` leaves both off.
-    :param project_store: Projects, for the hub. ``None`` leaves the hub off.
     :param max_session_s: Whole-session runaway cap, overridable so
         tests can use a fraction of a second.
     :param handshake_timeout_s: Upstream connect timeout, overridable
@@ -338,106 +337,30 @@ def create_gemini_live_router(
     connect = upstream_connect or _default_connect
     companions = registry_provider or registry
 
-    def _hub_backend(websocket: WebSocket) -> voice_hub.HubBackend:
-        """Reach projects, sessions and companions for one hub call."""
+    def _hub(websocket: WebSocket) -> hub_module.Hub:
+        """The caller's hub, bound to this call's credentials for sending."""
         user_id = auth_provider.get_user_id(websocket) if auth_provider is not None else None
+        hub = hub_module.hub_for(user_id)
         # Sends go through the app's own events route, as the page's do, with
         # the caller's credentials: one dispatch path, one set of checks.
-        forward = {
-            k: v
-            for k, v in websocket.headers.items()
-            if k in ("cookie", "authorization", "x-forwarded-email", "origin")
-        }
-
-        def newest_session(name: str) -> Any:
-            page = conversation_store.list_conversations(
-                limit=1,
-                project=name,
-                owned_by=user_id,
-                sort_by="updated_at",
-                order="desc",
-            )
-            return page.data[0] if page.data else None
-
-        async def projects() -> list[voice_hub.HubProject]:
-            # Read fresh on every call, so a project made mid-call is reachable.
-            listed = await asyncio.to_thread(project_store.list, user_id=user_id)
-            out = []
-            for project in sorted(listed, key=lambda p: p.name.lower()):
-                conv = await asyncio.to_thread(newest_session, project.name)
-                out.append(
-                    voice_hub.HubProject(
-                        id=project.id,
-                        name=project.name,
-                        session_id=conv.id if conv else None,
-                        session_title=getattr(conv, "title", None) if conv else None,
-                        workspace=getattr(conv, "workspace", None) if conv else None,
-                        live_status=getattr(conv, "live_status", None) if conv else None,
-                    )
-                )
-            return out
-
-        async def send(session_id: str, text: str) -> None:
-            import httpx
-
-            body = {
-                "type": "message",
-                "data": {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": text}, {"type": "force_claude"}],
+        hub.bind(
+            hub_module.store_backend(
+                conversation_store,
+                user_id=user_id,
+                app=websocket.app,
+                headers={
+                    k: v
+                    for k, v in websocket.headers.items()
+                    if k in ("cookie", "authorization", "x-forwarded-email", "origin")
                 },
-            }
-            transport = httpx.ASGITransport(app=websocket.app)
-            async with httpx.AsyncClient(
-                transport=transport, base_url="http://voice-hub", timeout=60
-            ) as client:
-                response = await client.post(
-                    f"/v1/sessions/{session_id}/events", json=body, headers=forward
-                )
-            response.raise_for_status()
-
-        async def check(session_id: str, question: str) -> str:
-            conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
-            companion = await companions().get(session_id)
-            result = await companion.check(question, cwd=getattr(conv, "workspace", None))
-            if result.answer:
-                return result.answer
-            return f"Could not find out with read-only commands: {result.needs_claude or 'no answer'}."
-
-        return voice_hub.HubBackend(
-            projects=projects, activity=_live_activity, send=send, check=check
+                companions=companions,
+            )
         )
+        return hub
 
     async def _live_activity(session_id: str) -> str:
         """What a session's Claude is doing now, from its newest stored items."""
-        conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
-        page = await asyncio.to_thread(
-            conversation_store.list_items, session_id, limit=80, order="desc"
-        )
-        status = getattr(conv, "live_status", None)
-        writing = ""
-        try:
-            from omnigent.runtime import inflight_text
-            from omnigent.server.routes._sessions.common import _session_status_cache
-
-            # Fresher than the stored status on the replica holding the runner.
-            status = _session_status_cache.get(session_id, status)
-            # Text Claude is streaming now is held in memory until the turn ends.
-            writing = " ".join(
-                str(event.get("delta", ""))
-                for event in inflight_text.snapshot_for(session_id)
-                if event.get("type") == "response.output_text.delta"
-            ).strip()
-        except Exception:  # noqa: BLE001 - the stored items still answer
-            _logger.debug("live activity extras unavailable", exc_info=True)
-        return voice_hub.render_activity(page.data, status, writing=writing)
-
-    async def _latest_summary(session_id: str) -> str | None:
-        companion = await companions().get(session_id)
-        for entry in reversed(companion.context):
-            if entry.kind == "summary":
-                return entry.text
-        return None
+        return await hub_module.live_activity(conversation_store, session_id)
 
     def _require_user(request: Request) -> None:
         if auth_provider is not None and auth_provider.get_user_id(request) is None:
@@ -470,7 +393,7 @@ def create_gemini_live_router(
         mode = (mode_param or "").strip().lower()
         narrating = mode == "narrate"
         hub = mode == "hub"
-        if hub and (conversation_store is None or project_store is None):
+        if hub and conversation_store is None:
             with contextlib.suppress(RuntimeError):
                 await websocket.close(
                     code=status.WS_1008_POLICY_VIOLATION, reason="voice hub unavailable"
@@ -479,24 +402,19 @@ def create_gemini_live_router(
 
         system_instruction: str | None = None
         briefed = False
-        backend: voice_hub.HubBackend | None = None
+        the_hub: hub_module.Hub | None = None
         if hub:
-            backend = _hub_backend(websocket)
+            the_hub = _hub(websocket)
             try:
-                hub_projects = await backend.projects()
-                summaries = {
-                    p.id: await _latest_summary(p.session_id)
-                    for p in hub_projects
-                    if p.session_id
-                }
-            except Exception:  # noqa: BLE001 - a hub with no notes still routes
+                hub_sessions = await the_hub.sessions()
+            except Exception:  # noqa: BLE001 - a hub with no list still routes
                 _logger.warning("voice hub briefing failed", exc_info=True)
-                hub_projects, summaries = [], {}
-            system_instruction = voice_hub.hub_briefing(hub_projects, summaries)
+                hub_sessions = []
+            system_instruction = voice_hub.hub_briefing(hub_sessions)
             briefed = True
             _logger.info(
-                "voice hub briefed | projects=%s",
-                [(p.name, p.session_id) for p in hub_projects],
+                "voice hub briefed | sessions=%s",
+                [(s.handle, s.name) for s in hub_sessions],
             )
         elif not narrating:
             if not session_id_clean:
@@ -703,8 +621,8 @@ def create_gemini_live_router(
                 started = time.monotonic()
                 project = ""
                 try:
-                    if hub and backend is not None:
-                        project, output = await voice_hub.run_hub_tool(backend, name, args)
+                    if hub and the_hub is not None:
+                        project, output = await voice_hub.run_hub_tool(the_hub, name, args)
                     else:
                         output = await _live_activity(session_id_clean)
                 except Exception as exc:  # noqa: BLE001 - the model must get an answer
@@ -715,7 +633,9 @@ def create_gemini_live_router(
                     response["scheduling"] = "WHEN_IDLE"
                 reply = {"id": call.get("id"), "name": name, "response": response}
                 with contextlib.suppress(Exception):
-                    await upstream.send(json.dumps({"toolResponse": {"functionResponses": [reply]}}))
+                    await upstream.send(
+                        json.dumps({"toolResponse": {"functionResponses": [reply]}})
+                    )
                     on_tool_response_received()
                 with contextlib.suppress(Exception):
                     await websocket.send_text(
@@ -887,8 +807,34 @@ def create_gemini_live_router(
                     upstream_frames += 1
                     last_activity = time.monotonic()
 
+            async def hub_updates(the: hub_module.Hub) -> None:
+                """Tell the call when a session the hub watches finishes or needs them."""
+                seen = the.state.last_id
+                while True:
+                    for entry in await the.state.wait_after(seen, 30.0):
+                        seen = max(seen, entry.id)
+                        if entry.kind not in hub_module.SPOKEN_KINDS:
+                            continue
+                        note = (
+                            f"[Update, not something they said: {entry.text}] "
+                            "Tell them this in one short sentence now, then carry on."
+                        )
+                        await upstream.send(
+                            json.dumps(
+                                {
+                                    "clientContent": {
+                                        "turns": [{"role": "user", "parts": [{"text": note}]}],
+                                        "turnComplete": True,
+                                    }
+                                }
+                            )
+                        )
+                        _logger.info("voice hub update sent | %s", entry.text[:200])
+
             client_task = asyncio.create_task(client_to_upstream())
             upstream_task = asyncio.create_task(upstream_to_client())
+            if hub and the_hub is not None:
+                server_tasks.add(asyncio.create_task(hub_updates(the_hub)))
 
             done, pending = await asyncio.wait(
                 {client_task, upstream_task, session_cap},
