@@ -14,7 +14,46 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
-## 2026-10-08 evening — READ FIRST (team-vs-plain verdict; routing research done; session d9653808)
+## 2026-10-09 afternoon — READ FIRST (voice/companion + GPT-6 Luna rerun; session d9653808)
+
+**Voice (user's current focus).** Done today, all live (server restarted 13:13; page = clean `git archive HEAD web`
+build, other session's ChatPage/chatStore/ACP edits never committed or shipped):
+- `af6be0658` companion READ-ONLY checks: voice tool `check_machine` (Gemini Live + Unmute; NOT GPT Live, NOT typed
+  composer) -> `POST /v1/discussion/{id}/check` -> `DiscussionSession.check()` (agy picks commands as JSON, max 4,
+  60 s, 20 s/turn) -> `omnigent/server/companion_commands.py` (allowlist + bwrap: / read-only, no net, private /run,
+  creds hidden, output scrubbed). Code/file changes stay Claude's (user's rule). Ledger kind `command`; `as_dict()`
+  has `activity`; status line + Companion panel show the live command. agy gives an EMPTY reply when the model tries
+  its own tools -> check() re-asks. Sends wait ~1.8 s reader silence (cap 10 s); words after a send = follow-up msg.
+- `8e2c09f5b` panel labels "Companion ran (read-only)" / "Companion answered" (user saw commands as Claude's).
+- Pre-existing failing test: `tests/server/test_live_voice.py::test_the_voice_is_told_when_to_delegate`.
+- **Gemini Live lag, measured** (`~/nexus-bench/gemini_live_conv.py` -> `gemini_live_chart.py`, chart
+  `~/deepswe/gemini_live_by_hour_1009.png`): 124 conversations since 09-21, almost all 12h-24h; reply streaming is
+  ~3.6x realtime normally; no reliable time-of-day pattern. Every call starts deaf 5-11 s (12:43 today: 23.7 s).
+  3.1 Live tool calls BLOCK (Google docs: async "not yet supported in Gemini 3.1 Flash Live"; 2.5 supports it):
+  today a check took 30 s and a hand-off 29.5 s of dead air; 13:29 one reply streamed at 0.23x (18.7 s gaps).
+- **OPEN, awaiting user pick (I proposed 1+2 first):** (1) answer tool calls instantly, push the result later as a
+  new message; (2) shorter checks (cap 2 cmds, point at plan-limits json - it read a stale 09-27 usage CSV);
+  (3) keep the call open after a hand-off (pay the deaf start once); (4) offer Unmute when replies stream <1x.
+- Spoken summaries/voice cite run results from my tool output; 13:28 numbers were right but unverified at the time.
+
+**Benchmark: the 10-06..08 "Luna" arms ran OLD `gpt-5.6-luna`** (queues said so; nexus codex-plan yaml pinned it).
+Fixed: yaml `gpt-6-luna` (c347fa269), `~/.codex/config.toml` model gpt-6-luna (bak `.bak-20261009-luna6`),
+`fresh_lanes.sh` writes `codex_models.txt` and halts on mismatch (also trips when a worker never starts).
+Plus offers gpt-6-astra (frontier) / gpt-6-sol / gpt-6-luna; Astra/Sol untested. Rerun: unit `dswe-luna6`,
+queue `~/deepswe/luna6_17.queue`, log `luna6_17.log` (+ `luna6_opa_redo.*` for 2 disk-full opa runs, done).
+Hard 5 done (10 runs/arm): solved / missed hidden tests / Claude Pro-5h % per run / min:
+plain Sonnet 4/6/14.7/10.7; plain Opus 4/6/27.2/12.4; Opus brain+5.6 Luna 7/6/14.8/13.4; **Opus brain+GPT-6 Luna
+7/5/17.0/15.9**; Sonnet brain+5.6 Luna 4/43/7.7/11.8; **Sonnet brain+GPT-6 Luna 8/2/8.0/13.9**. Codex ~0.35% wk/run.
+Real-bug classification NOT done (known: Sonnet+L6 httpx r2 NDJSON error leaves response open = small real bug;
+Opus+L6 httpx r2 = trio-only warning). 7 other tasks paused at 13:05 by Claude 5h >= 70% (reset 15:50); lanes
+resume by themselves. Then: score 17 vs 17, classify bugs, update FORENSICS.
+- Also today: uv cache cleared (6.7 GB); disk ~15-19 GB free (wandb 19G / hf 14G / openpi 12G are user data, ask).
+  Another session (d14bc749 "Project Analysis") was working on disk cleanup — don't duplicate.
+- Proposed (not started): per-task model chooser = whole-task dispatch by remaining quota + task-type table from
+  logged outcomes + execution check to escalate; research report `/home/nexus/reports/Coding agent routing and
+  orchestration.md`. User wants Opus kept for future versions; strong model best as test author, not reviewer.
+
+## 2026-10-08 evening (older; see 10-09 above first) (team-vs-plain verdict; routing research done; session d9653808)
 
 **Goal (user):** Opus-level coding for less Claude quota, to leave Max for Pro. **Verdict (data, user agreed):**
 no brain+worker team beats plain Sonnet 5.5 high. Hard 5 DeepSWE tasks x2 runs, runs-with-real-bug / Pro-5h%
