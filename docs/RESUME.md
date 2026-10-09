@@ -14,6 +14,46 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-09 evening — READ FIRST (voice 3.8 + hub step 1; session d9653808)
+
+**Pace rule (user, 16:30):** weekly Max quota hit 12% on reset day. One thing at a
+time, no background agents/test batches, ask before ANY quota spend. Benchmarks are
+stopped: never resume `dswe-luna6` without asking (7 tasks left in
+`~/deepswe/luna6_17.queue`; `ts-pattern-match-each` was killed mid-run, so `rmdir
+~/deepswe/lanes_state/luna6_17/ts-pattern-match-each` before any resume). Today:
+dateutil Opus-brain solved 67/67, Sonnet-brain 66/67; textual Opus-brain solved,
+Sonnet-brain 19/20.
+
+**Voice moved to `gemini-3.8-live` (341d9c48f).** 3.1 Flash Live is Google's legacy
+preview: deaf during tools, cancels a check when talked over. A/B, 20 interleaved
+sessions with identical audio (`~/nexus-bench/gemini_live_ab.py`, chart
+`~/deepswe/gemini_live_ab_1009.png`): "tá me ouvindo?" asked mid-check answered in
+~1.3 s vs ~12 s; result after the check 1.6 s vs 7.5-8.6 s; plain replies tie ~1.3 s.
+Page watchdog now counts from the first unanswered sentence, nudges (clientContent) at
+10 s, max 2, and hangs up at 30 s. Narration stays on 3.1 (`NARRATOR_MODEL`).
+
+**Hub step 1 live since the 16:08 restart (a9ec7a469, 614944463).** Sidebar radio
+button → `/v1/live/gemini/ws?mode=hub`; `omnigent/server/voice_hub.py`; the relay
+answers project_status / ask_claude / check_machine itself; live mid-turn status from
+stored items + `inflight_text`; the per-chat voice got `claude_status`. A dry-run
+smoke against Gemini routed all three test turns correctly
+(`scratchpad/hub_smoke.py` pattern). I created projects Audio/Amarras/Brasa for user
+`morys5` and filed the three sessions — **the user says that is NOT the design**:
+they want ONE unnamed hub chat that routes to sessions behind the scenes and reports
+back in the same chat. Asked them to confirm. Proposal: the router is the companion
+(Gemini Flash, no Claude quota); remove the three projects once confirmed.
+
+**GPT 6.1 Sol missing from the Codex picker:** VS Code's ChatGPT extension runs
+Codex 0.155 (`~/.vscode/extensions/openai.chatgpt-26.917…`), which keeps rewriting
+the shared `~/.codex/models_cache.json` without `gpt-6.1-sol`; Omnigent's catalogs
+(`~/.omnigent/cache/model-catalogs/codex-native-*.json`) read it. Codex 0.162 on PATH
+lists 6.1 Sol when it refetches (`codex_reprobed_launch_catalog()`). Offered: VS Code
+reload (newer extension has Codex 0.159, not verified), or make Omnigent's probe bypass
+the shared cache. Awaiting the user.
+
+Known failing, not ours: `test_the_voice_is_told_when_to_delegate`; 3 shell tests on
+the `prefetchAvailableAgentDetails` mock.
+
 ## 2026-10-09 afternoon — READ FIRST (voice/companion + GPT-6 Luna rerun; session d9653808)
 
 **Voice (user's current focus).** Done today, all live (server restarted 13:13; page = clean `git archive HEAD web`
