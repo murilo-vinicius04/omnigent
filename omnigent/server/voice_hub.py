@@ -25,6 +25,11 @@ from typing import Any, Final
 #: Live statuses that mean Claude is in the middle of a turn.
 WORKING_STATUSES: Final[frozenset[str]] = frozenset({"running", "waiting"})
 
+#: Stored item types that make up a turn; anything else is housekeeping.
+TURN_ITEM_TYPES: Final[frozenset[str]] = frozenset(
+    {"message", "function_call", "function_call_output"}
+)
+
 #: How many of a turn's newest steps the status names.
 STATUS_STEPS: Final[int] = 5
 
@@ -227,6 +232,9 @@ def render_activity(
     current: str | None = None
     for item in items_newest_first:
         kind, response_id, data = _item_fields(item)
+        # Housekeeping (terminal closed, compaction) is not part of any turn.
+        if kind not in TURN_ITEM_TYPES:
+            continue
         if current is None:
             current = response_id
         elif response_id != current:

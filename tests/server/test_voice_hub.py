@@ -66,6 +66,7 @@ def test_live_status_reads_the_current_turn_mid_task() -> None:
 
 def test_live_status_of_an_idle_session_says_it_finished() -> None:
     items = [
+        _item("resource_event", "s1", event_type="session.resource.deleted"),
         _item("message", "r1", role="assistant", content=[{"type": "output_text", "text": "Done: 3 fixed."}]),
     ]
     text = render_activity(items, "idle", writing="stale")
