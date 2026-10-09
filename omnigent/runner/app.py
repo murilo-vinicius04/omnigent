@@ -5524,19 +5524,32 @@ def create_runner_app(
         # session — keeping the SHAPE's stored default (a session's own pin
         # must not become the host-wide default).
         asyncio.get_running_loop().create_task(
-            _write_back_codex_catalog([dict(row) for row in rows])
+            _write_back_codex_catalog([dict(row) for row in rows], codex_client.server_version)
         )
         return marked
 
-    async def _write_back_codex_catalog(rows: list[_JsonObject]) -> None:
+    async def _write_back_codex_catalog(
+        rows: list[_JsonObject], server_version: tuple[int, int, int] | None
+    ) -> None:
         try:
             from omnigent import model_catalog_store
             from omnigent.codex_native_app_server import (
                 codex_catalog_fingerprint,
                 mark_launch_default,
                 resolve_native_codex_launch,
+                runs_installed_codex,
             )
 
+            # A session started before a Codex upgrade lists the old release's
+            # models; writing that back would hide the new ones from new chats.
+            if not await runs_installed_codex(server_version):
+                _logger.info(
+                    "codex model-catalog write-back skipped: session runs Codex %s, not the "
+                    "installed release",
+                    ".".join(map(str, server_version or ())),
+                    extra={"session_id": runner_primary_session_id()},
+                )
+                return
             launch = await asyncio.to_thread(resolve_native_codex_launch, model=None)
             fingerprint = codex_catalog_fingerprint(launch)
             stored = model_catalog_store.read_catalog("codex-native", fingerprint)

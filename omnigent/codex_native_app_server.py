@@ -562,6 +562,8 @@ class CodexAppServerClient:
         self._pending_requests: dict[int, asyncio.Future[CodexMessage]] = {}
         self._events: asyncio.Queue[CodexMessage] = asyncio.Queue()
         self._next_id = 1
+        #: The Codex release on the other end, from its initialize answer.
+        self.server_version: tuple[int, int, int] | None = None
 
     async def connect(self) -> None:
         """
@@ -586,7 +588,7 @@ class CodexAppServerClient:
             self._reader_loop(),
             name="codex-native-app-server-reader",
         )
-        await self.request(
+        response = await self.request(
             "initialize",
             {
                 "clientInfo": {
@@ -598,6 +600,7 @@ class CodexAppServerClient:
                 },
             },
         )
+        self.server_version = _user_agent_version(response.get("result"))
         await self.notify("initialized")
 
     async def close(self) -> None:
@@ -736,6 +739,42 @@ class CodexAppServerClient:
                     future.set_result(message)
                 continue
             await self._events.put(message)
+
+
+#: The release in Codex's initialize ``userAgent``, e.g. ``name/0.162.0 (Ubuntu …)``.
+_USER_AGENT_VERSION = re.compile(r"/(\d+)\.(\d+)\.(\d+)")
+
+
+def _user_agent_version(result: object) -> tuple[int, int, int] | None:
+    """Read the Codex release from an initialize result, e.g. ``(0, 162, 0)``."""
+    agent = result.get("userAgent") if isinstance(result, dict) else None
+    match = _USER_AGENT_VERSION.search(agent) if isinstance(agent, str) else None
+    if match is None:
+        return None
+    major, minor, patch = (int(part) for part in match.groups())
+    return major, minor, patch
+
+
+async def runs_installed_codex(
+    server_version: tuple[int, int, int] | None, *, codex_path: str | None = None
+) -> bool:
+    """
+    Whether a running app-server is the Codex release installed now.
+
+    A session keeps the Codex it launched with, so after an upgrade its
+    ``model/list`` is the old release's list, which lacks the models the
+    new one added. That list must not stand in for the installed CLI's.
+
+    :param server_version: The app-server's release, from
+        :attr:`CodexAppServerClient.server_version`.
+    :param codex_path: Optional Codex executable override.
+    :returns: ``False`` only when both releases are known and differ.
+    """
+    resolved = codex_path or _find_codex_cli()
+    if server_version is None or not resolved:
+        return True
+    installed = await _codex_cli_version(resolved)
+    return installed is None or installed == server_version
 
 
 async def list_codex_model_options(client: CodexAppServerClient) -> list[_JsonObject]:

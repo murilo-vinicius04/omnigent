@@ -1097,6 +1097,58 @@ def test_codex_catalog_fingerprint_changes_when_the_cli_is_upgraded(
     assert before != after
 
 
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        pytest.param(
+            {"userAgent": "omnigent-codex-native-runner/0.156.1 (Ubuntu 22.4.0; x86_64) tmux"},
+            (0, 156, 1),
+            id="release-after-the-client-name",
+        ),
+        pytest.param({"userAgent": "probe (no version)"}, None, id="no-release"),
+        pytest.param({}, None, id="no-user-agent"),
+        pytest.param(None, None, id="no-result"),
+    ],
+)
+def test_initialize_user_agent_names_the_codex_release(
+    result: object, expected: tuple[int, int, int] | None
+) -> None:
+    """The client learns which Codex release it is talking to from initialize."""
+    from omnigent.codex_native_app_server import _user_agent_version
+
+    assert _user_agent_version(result) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("server_version", "installed", "expected"),
+    [
+        pytest.param((0, 162, 0), (0, 162, 0), True, id="same-release"),
+        pytest.param((0, 156, 1), (0, 162, 0), False, id="session-predates-upgrade"),
+        pytest.param(None, (0, 162, 0), True, id="session-release-unknown"),
+        pytest.param((0, 156, 1), None, True, id="installed-release-unknown"),
+    ],
+)
+async def test_runs_installed_codex_only_rejects_a_known_older_release(
+    monkeypatch: pytest.MonkeyPatch,
+    server_version: tuple[int, int, int] | None,
+    installed: tuple[int, int, int] | None,
+    expected: bool,
+) -> None:
+    """Only a known mismatch counts: an unknown release keeps the old behaviour."""
+    from omnigent import codex_native_app_server
+
+    async def _installed(codex_path: str) -> tuple[int, int, int] | None:
+        assert codex_path == "/opt/codex"
+        return installed
+
+    monkeypatch.setattr(codex_native_app_server, "_codex_cli_version", _installed)
+    result = await codex_native_app_server.runs_installed_codex(
+        server_version, codex_path="/opt/codex"
+    )
+    assert result is expected
+
+
 def test_codex_catalog_fingerprint_is_stable_for_one_binary(tmp_path: Path) -> None:
     """An unchanged binary keeps its catalog, so no probe is repaid."""
     from omnigent import codex_native_app_server

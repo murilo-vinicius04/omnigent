@@ -80,6 +80,7 @@ class _RecordingCodexAppServerClient:
         self.closed = False
         self.requests: list[tuple[str, dict[str, Any]]] = []
         self.model_list_responses: list[dict[str, Any]] = []
+        self.server_version: tuple[int, int, int] | None = None
 
     async def connect(self) -> None:
         """
@@ -831,11 +832,20 @@ async def test_codex_native_model_options_returns_503_until_bridge_state_exists(
         pytest.param("gpt-5.4-mini", "gpt-5.4-mini", id="launch-model-wins"),
     ],
 )
+@pytest.mark.parametrize(
+    ("session_codex", "writes_back"),
+    [
+        pytest.param((0, 162, 0), True, id="installed-codex-writes-back"),
+        pytest.param((0, 156, 1), False, id="pre-upgrade-codex-keeps-the-store"),
+    ],
+)
 async def test_codex_native_model_options_query_model_list(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     config_model: str | None,
     expected_default: str,
+    session_codex: tuple[int, int, int],
+    writes_back: bool,
 ) -> None:
     """
     Runner model-options endpoint queries Codex ``model/list``.
@@ -847,9 +857,29 @@ async def test_codex_native_model_options_query_model_list(
     own ``isDefault`` is its built-in preference and says nothing about this
     session, so the model named by the session's ``config.toml`` — the one
     the pane launched on — wins when the list offers it.
+
+    The rows are written back to the shared catalog only when the session's
+    Codex is the installed release: a session started before an upgrade
+    lists the old release's models, which would hide the new ones.
     """
     from omnigent import codex_native_app_server
     from omnigent.spec.types import ExecutorSpec
+
+    version_checks: list[str] = []
+    write_backs: list[bool] = []
+
+    async def _installed_version(codex_path: str) -> tuple[int, int, int]:
+        version_checks.append(codex_path)
+        return (0, 162, 0)
+
+    def _resolve_launch(*, model: str | None) -> object:
+        del model
+        write_backs.append(True)
+        raise RuntimeError("stop the write-back here")
+
+    monkeypatch.setattr(codex_native_app_server, "_find_codex_cli", lambda: "/opt/codex")
+    monkeypatch.setattr(codex_native_app_server, "_codex_cli_version", _installed_version)
+    monkeypatch.setattr(codex_native_app_server, "resolve_native_codex_launch", _resolve_launch)
 
     conv_id = "68ba0a62ebe928d26adf37c8974ce1eb"
     monkeypatch.setattr(codex_native_bridge, "_BRIDGE_ROOT", tmp_path / "codex-bridge")
@@ -902,6 +932,7 @@ async def test_codex_native_model_options_query_model_list(
         transport="ws://127.0.0.1:43210",
         client_name="omnigent-codex-native-runner",
     )
+    fake_client.server_version = session_codex
     fake_client.model_list_responses = [
         {
             "result": {
@@ -989,7 +1020,15 @@ async def test_codex_native_model_options_query_model_list(
         assert create_resp.status_code == 201, create_resp.text
 
         resp = await client.get(f"/v1/sessions/{conv_id}/codex-model-options")
+        # The write-back runs in the background after the response.
+        for _ in range(200):
+            if write_backs or (version_checks and not writes_back):
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
 
+    assert version_checks == ["/opt/codex"]
+    assert write_backs == ([True] if writes_back else [])
     assert resp.status_code == 200, resp.text
     expected_models: list[dict[str, object]] = [
         {
