@@ -14,45 +14,50 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
-## 2026-10-09 evening — READ FIRST (voice 3.8 + hub step 1; session d9653808)
+## 2026-10-09 night — READ FIRST (the hub chat; session d9653808)
 
-**Pace rule (user, 16:30):** weekly Max quota hit 12% on reset day. One thing at a
-time, no background agents/test batches, ask before ANY quota spend. Benchmarks are
-stopped: never resume `dswe-luna6` without asking (7 tasks left in
-`~/deepswe/luna6_17.queue`; `ts-pattern-match-each` was killed mid-run, so `rmdir
-~/deepswe/lanes_state/luna6_17/ts-pattern-match-each` before any resume). Today:
-dateutil Opus-brain solved 67/67, Sonnet-brain 66/67; textual Opus-brain solved,
-Sonnet-brain 19/20.
+**User, 17:00:** go full throttle on the hub and Omnigent; benchmarks allowed but
+careful with quota (they still have to work this week). Router may use Gemini 3.7 Flash.
+Benchmarks still stopped: `dswe-luna6` has 7 tasks left in `~/deepswe/luna6_17.queue`;
+`rmdir ~/deepswe/lanes_state/luna6_17/ts-pattern-match-each` before any resume.
 
-**Voice moved to `gemini-3.8-live` (341d9c48f).** 3.1 Flash Live is Google's legacy
-preview: deaf during tools, cancels a check when talked over. A/B, 20 interleaved
-sessions with identical audio (`~/nexus-bench/gemini_live_ab.py`, chart
-`~/deepswe/gemini_live_ab_1009.png`): "tá me ouvindo?" asked mid-check answered in
-~1.3 s vs ~12 s; result after the check 1.6 s vs 7.5-8.6 s; plain replies tie ~1.3 s.
-Page watchdog now counts from the first unanswered sentence, nudges (clientContent) at
-10 s, max 2, and hangs up at 30 s. Narration stays on 3.1 (`NARRATOR_MODEL`).
+**The hub (b233241c5, live).** One chat per user, no name: sidebar "Hub" → `/hub`
+(`web/src/pages/HubPage.tsx`, store `web/src/lib/hubApi.ts`). Server
+`omnigent/server/hub.py` + `routes/hub.py` (`GET /v1/hub`, `/v1/hub/entries?after&wait`
+long-poll, `/v1/hub/sessions`, `POST /v1/hub/messages`). Log + nicknames on disk at
+`~/.omnigent/hub/<user>/{log.jsonl,names.json}`. Router = `HubRouter` (a companion with
+its own role; `gemini-3.7-flash-medium`, `OMNIGENT_HUB_MODEL`), registry key
+`hub-<user>`. Each message: recent top-level sessions (7 days, max 8; first/last ask,
+last said, companion summary, live step) → one JSON decision (answer/send/status/check/
+ask, + `names`). Sends go through `/v1/sessions/{id}/events` with `force_claude` and the
+caller's cookie; a watch polls the session and posts "finished" (router summary + full
+reply as detail), "waiting for your approval", or "hasn't started". Voice hub (sidebar
+radio / Talk button on /hub) shares the hub: tools `session_status`/`ask_claude`/
+`check_machine`, sends logged + watched, finished reports spoken into an open call.
+Projects Audio/Amarras/Brasa were deleted; their names live on as nicknames
+(audio=247c…, amarras=d14b…, brasa=ba9b…). Probe on real data: router right on 8/8,
+~3 s warm, 10 s cold (`scratchpad/hub_router_probe.py`, `hub_live_dry.py`).
+**Not yet verified by the user in the browser; no real send was made by me.**
 
-**Hub step 1 live since the 16:08 restart (a9ec7a469, 614944463).** Sidebar radio
-button → `/v1/live/gemini/ws?mode=hub`; `omnigent/server/voice_hub.py`; the relay
-answers project_status / ask_claude / check_machine itself; live mid-turn status from
-stored items + `inflight_text`; the per-chat voice got `claude_status`. A dry-run
-smoke against Gemini routed all three test turns correctly
-(`scratchpad/hub_smoke.py` pattern). I created projects Audio/Amarras/Brasa for user
-`morys5` and filed the three sessions — **the user says that is NOT the design**:
-they want ONE unnamed hub chat that routes to sessions behind the scenes and reports
-back in the same chat. Asked them to confirm. Proposal: the router is the companion
-(Gemini Flash, no Claude quota); remove the three projects once confirmed.
+**Long calls (c6d1e21ac, live).** Setup asks for `sessionResumption` +
+`contextWindowCompression.slidingWindow`; relay swaps to a resumed connection on goAway
+or a drop (page never sees it). Verified against Google: 3.8 Live gives a handle and
+resumes with it. Hub cap 8 h, chat calls 30 min. Always-on mic streams audio the whole
+time (Gemini tokens); auto-start on page load not built.
 
-**GPT 6.1 Sol missing from the Codex picker:** VS Code's ChatGPT extension runs
-Codex 0.155 (`~/.vscode/extensions/openai.chatgpt-26.917…`), which keeps rewriting
-the shared `~/.codex/models_cache.json` without `gpt-6.1-sol`; Omnigent's catalogs
-(`~/.omnigent/cache/model-catalogs/codex-native-*.json`) read it. Codex 0.162 on PATH
-lists 6.1 Sol when it refetches (`codex_reprobed_launch_catalog()`). Offered: VS Code
-reload (newer extension has Codex 0.159, not verified), or make Omnigent's probe bypass
-the shared cache. Awaiting the user.
+**GPT 6.1 Sol (f68e703dc).** Real cause: the user's Codex chat "Fix GPT 6.1 Sol selector"
+runs Codex 0.156 (started 15:12, before the 0.162 upgrade); its picker's model/list was
+written back over the shared catalog. The write-back now skips a session whose Codex
+release (initialize userAgent) differs from the installed CLI; catalog re-probed (6.1 Sol
+is the default now). The old chat itself can never offer 6.1: open a new Codex chat.
+Runner code: new runners only (old chat keeps old code).
+
+Voice 3.8 switch details (341d9c48f): A/B in `~/nexus-bench/gemini_live_ab.py`, chart
+`~/deepswe/gemini_live_ab_1009.png`; watchdog nudges at 10 s, hangs up at 30 s.
 
 Known failing, not ours: `test_the_voice_is_told_when_to_delegate`; 3 shell tests on
-the `prefetchAvailableAgentDetails` mock.
+the `prefetchAvailableAgentDetails` mock; `test_codex_native_model_options_query_model_list`
+on this machine (expects no `source` field; fails at HEAD too).
 
 ## 2026-10-09 afternoon — READ FIRST (voice/companion + GPT-6 Luna rerun; session d9653808)
 
