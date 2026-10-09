@@ -24,7 +24,14 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 import websockets
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketException
+from fastapi import (
+    APIRouter,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    WebSocketException,
+)
 from starlette import status
 
 from omnigent.server import gemini_live
@@ -189,6 +196,8 @@ class _TurnLog:
         self.turns: list[_HeardTurn] = []
         self.usage: dict[str, int] = {}
         self.recent: list[str] = []
+        self.speech_end: float | None = None
+        self.replied_at = -1.0
 
     def _open_turn(self) -> _HeardTurn | None:
         if self.turns and self.turns[-1].reply is None:
@@ -208,6 +217,9 @@ class _TurnLog:
             *(f"serverContent.{k}" for k in content),
         ]:
             self.kinds[kind] = self.kinds.get(kind, 0) + 1
+        activity = parsed.get("voiceActivity")
+        if isinstance(activity, dict) and activity.get("type") == "ACTIVITY_END":
+            self.speech_end = at
         usage = parsed.get("usageMetadata")
         if isinstance(usage, dict):
             self.usage = {k: v for k, v in usage.items() if isinstance(v, int)}
@@ -230,6 +242,10 @@ class _TurnLog:
         if reply and turn is not None:
             turn.reply = reply
             turn.after = at - turn.end
+            # Only an end of speech since the previous reply belongs to this turn.
+            if self.speech_end is not None and self.speech_end > self.replied_at:
+                turn.after_speech = at - self.speech_end
+            self.replied_at = at
         if not audio:
             body = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
             self.recent.append(f"{at:.1f}s {body[:240]}")
@@ -247,7 +263,10 @@ class _TurnLog:
             if turn.reply is None:
                 parts.append(f"{span}->NONE(waited {end - self.start - turn.end:.1f}s)")
             else:
-                parts.append(f"{span}->{turn.reply}+{turn.after:.1f}s")
+                since_end = (
+                    f"(end+{turn.after_speech:.1f}s)" if turn.after_speech is not None else ""
+                )
+                parts.append(f"{span}->{turn.reply}+{turn.after:.1f}s{since_end}")
         return "[" + ",".join(parts) + "]"
 
 
@@ -260,6 +279,9 @@ class _HeardTurn:
     chars: int = 0
     reply: str | None = None
     after: float = 0.0
+    #: From Google's own end-of-speech mark to the reply. The transcript can
+    #: land with the reply, which makes ``after`` read ~0 on a long wait.
+    after_speech: float | None = None
 
 
 def _realtime_factor(audio_bytes: int, first_at: float | None, last_at: float | None) -> str:
@@ -500,6 +522,20 @@ def create_gemini_live_router(
                 else gemini_live.setup_frame(system_instruction=system_instruction)
             )
             await upstream.send(json.dumps(frame))
+            if not narrating:
+                # The page's stall watchdog needs to know whether silence during
+                # a tool call is the model waiting or the model wedged.
+                model_name = frame["setup"]["model"]
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "omnigentSession": {
+                                "model": model_name.removeprefix("models/"),
+                                "toolsBlock": gemini_live.tools_block(model_name),
+                            }
+                        }
+                    )
+                )
 
             session_cap = asyncio.create_task(asyncio.sleep(max_session_s))
 
@@ -660,7 +696,10 @@ def create_gemini_live_router(
                 _logger.warning("gemini live session hit the %ss runaway cap", max_session_s)
             for task in pending:
                 task.cancel()
-            for task in done:
+            # The page hanging up first is the ordinary end. A relay frame sent to
+            # it in the same instant then fails, and that is not an error.
+            hung_up = client_task in done and client_task.exception() is None
+            for task in sorted(done, key=lambda t: t is not client_task):
                 if task is session_cap:
                     continue
                 try:
@@ -669,6 +708,12 @@ def create_gemini_live_router(
                         ended_by = "client"
                     elif task is upstream_task:
                         ended_by = "upstream"
+                except WebSocketDisconnect:
+                    ended_by = "client"
+                except RuntimeError as exc:
+                    if not hung_up:
+                        ended_by = "error"
+                        _logger.warning("gemini live relay error: %r", exc)
                 except _ClientTimedOut:
                     close_reason = "gemini live client keepalive timed out"
                     ended_by = "idle"
@@ -680,13 +725,13 @@ def create_gemini_live_router(
                     ended_by = "upstream"
                 except Exception as exc:  # noqa: BLE001 - relay errors end the session
                     ended_by = "error"
-                    _logger.warning("gemini live relay error: %s", exc)
+                    _logger.warning("gemini live relay error: %r", exc)
         except websockets.ConnectionClosed as exc:
             record_upstream_close(exc)
             ended_by = "upstream"
         except Exception as exc:  # noqa: BLE001
             ended_by = "error"
-            _logger.warning("gemini live relay error: %s", exc)
+            _logger.warning("gemini live relay error: %r", exc)
         finally:
             for _, watcher in pending_tool_calls:
                 watcher.cancel()

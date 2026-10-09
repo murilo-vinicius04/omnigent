@@ -158,6 +158,14 @@ def _no_key(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
 
+def _relayed_text(ws) -> str:
+    """The next text frame Google sent, past the relay's own hello."""
+    while True:
+        text = ws.receive_text()
+        if "omnigentSession" not in text:
+            return text
+
+
 def _with_key(monkeypatch, tmp_path) -> None:
     env_file = tmp_path / "gemini.env"
     env_file.write_text("GEMINI_API_KEY=test-key\n", encoding="utf-8")
@@ -220,7 +228,7 @@ def test_relay_both_directions(monkeypatch, tmp_path) -> None:
                 time.sleep(0.02)
             upstream.push_from_test_thread('{"serverContent":{}}')
             upstream.push_from_test_thread(b"\x03pcm-bytes")
-            assert ws.receive_text() == '{"serverContent":{}}'
+            assert _relayed_text(ws) == '{"serverContent":{}}'
             assert ws.receive_bytes() == b"\x03pcm-bytes"
     # Setup frame, then the relayed client text and binary.
     setup_text = upstream.sent[0]
@@ -386,7 +394,7 @@ def test_session_summary_logged_with_counts(monkeypatch, tmp_path, caplog) -> No
                     break
                 time.sleep(0.02)
             upstream.push_from_test_thread('{"serverContent":{}}')
-            assert ws.receive_text() == '{"serverContent":{}}'
+            assert _relayed_text(ws) == '{"serverContent":{}}'
 
     summary_records = [
         r.getMessage() for r in caplog.records if "gemini live session ended | " in r.getMessage()
@@ -654,7 +662,7 @@ def test_session_summary_logs_tool_calls_and_handoff(monkeypatch, tmp_path, capl
                     }
                 )
             )
-            assert ws.receive_text()
+            assert _relayed_text(ws)
             # client responds with handed_off response
             ws.send_text(
                 json.dumps(
@@ -695,7 +703,7 @@ def test_setup_frame_narrate_mode() -> None:
     """Narrate mode produces narrator systemInstruction, voice in speechConfig, and no tools."""
     frame = gemini_live.setup_frame(mode="narrate")
     setup = frame["setup"]
-    assert setup["model"] == gemini_live.MODEL
+    assert setup["model"] == gemini_live.NARRATOR_MODEL
     assert setup["generationConfig"]["responseModalities"] == ["AUDIO"]
     voice_config = setup["generationConfig"]["speechConfig"]["voiceConfig"]
     assert voice_config["prebuiltVoiceConfig"]["voiceName"] == gemini_live.DEFAULT_VOICE
@@ -1129,6 +1137,16 @@ def test_turn_log_times_each_reply_from_the_end_of_what_was_heard():
     assert not log.unanswered()
 
 
+def test_turn_log_times_the_reply_from_googles_end_of_speech_mark():
+    """A transcript that lands with the reply hides the wait; the speech-end mark does not."""
+    log = gemini_live_routes._TurnLog(100.0)
+    end = {"voiceActivity": {"type": "ACTIVITY_END"}}
+    log.frame(103.0, end, json.dumps(end))
+    log.frame(111.0, _heard("are you there?"), "{}")
+    log.frame(111.1, _audio_reply(), "{}")
+    assert log.summary(120.0) == "[heard@11.0-11.0s(14ch)->audio+0.1s(end+8.1s)]"
+
+
 def test_turn_log_flags_a_turn_google_heard_but_never_answered():
     """The 10-07 freeze: transcribed three times, no audio, no error, no close."""
     log = gemini_live_routes._TurnLog(0.0)
@@ -1171,3 +1189,73 @@ def test_unanswered_turn_logs_the_raw_frames(monkeypatch, tmp_path, caplog) -> N
     assert "turns=[heard@" in ended and "->NONE(" in ended
     assert '"serverContent.inputTranscription":1' in ended
     assert any("gemini live unanswered turn" in m and "hello?" in m for m in messages)
+
+
+def test_the_page_is_told_whether_tools_leave_the_voice_deaf(monkeypatch, tmp_path) -> None:
+    """The stall watchdog must know if silence during a tool is waiting or wedged."""
+    _with_key(monkeypatch, tmp_path)
+    upstream = _FakeUpstream()
+
+    async def fake_connect(url: str):
+        upstream.loop = asyncio.get_running_loop()
+        return upstream
+
+    with TestClient(_proxy_app(upstream_connect=fake_connect)) as tc:
+        with tc.websocket_connect("/v1/live/gemini/ws") as ws:
+            hello = json.loads(ws.receive_text())
+    model = gemini_live.MODEL.removeprefix("models/")
+    assert hello == {
+        "omnigentSession": {"model": model, "toolsBlock": gemini_live.tools_block()}
+    }
+
+
+def test_only_3_8_live_runs_tools_beside_the_conversation() -> None:
+    assert gemini_live.tools_block("models/gemini-3.1-flash-live-preview")
+    assert not gemini_live.tools_block("gemini-3.8-live")
+    old = gemini_live.setup_frame(model="gemini-3.1-flash-live-preview", system_instruction="x")
+    new = gemini_live.setup_frame(model="gemini-3.8-live", system_instruction="x")
+    old_decls = old["setup"]["tools"][0]["functionDeclarations"]
+    new_decls = new["setup"]["tools"][0]["functionDeclarations"]
+    # 3.1 has no async calling; declaring it there is not supported.
+    assert all("behavior" not in d for d in old_decls)
+    assert {d["behavior"] for d in new_decls} == {"NON_BLOCKING"}
+
+
+def test_narration_keeps_its_own_model_and_gets_no_hello(monkeypatch, tmp_path) -> None:
+    frame = gemini_live.setup_frame(mode="narrate")
+    assert frame["setup"]["model"] == gemini_live.NARRATOR_MODEL
+    _with_key(monkeypatch, tmp_path)
+    upstream = _FakeUpstream()
+
+    async def fake_connect(url: str):
+        upstream.loop = asyncio.get_running_loop()
+        return upstream
+
+    with TestClient(_proxy_app(upstream_connect=fake_connect)) as tc:
+        with tc.websocket_connect("/v1/live/gemini/ws?mode=narrate") as ws:
+            upstream.push_from_test_thread('{"serverContent":{}}')
+            assert ws.receive_text() == '{"serverContent":{}}'
+
+
+def test_a_hang_up_while_google_is_talking_is_not_an_error(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    """The page closing as a frame is relayed to it is the normal end of a call."""
+    _with_key(monkeypatch, tmp_path)
+    upstream = _FakeUpstream()
+
+    async def fake_connect(url: str):
+        upstream.loop = asyncio.get_running_loop()
+        return upstream
+
+    caplog.set_level(logging.INFO)
+    with TestClient(_proxy_app(upstream_connect=fake_connect)) as tc:
+        with tc.websocket_connect("/v1/live/gemini/ws") as ws:
+            ws.receive_text()
+        # Google keeps talking after the page is gone.
+        for _ in range(5):
+            upstream.push_from_test_thread('{"serverContent":{}}')
+        time.sleep(0.1)
+    ended = [r.getMessage() for r in caplog.records if "session ended | " in r.getMessage()]
+    assert ended and "ended_by=client" in ended[0]
+    assert not [r for r in caplog.records if "relay error" in r.getMessage()]

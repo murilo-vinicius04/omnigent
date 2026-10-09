@@ -6,6 +6,7 @@ import {
   buildAudioFrame,
   classifyClose,
   decodePcm16Base64,
+  NUDGE_TEXT,
   parseServerMessages,
   pcm16ToBase64,
   startGeminiLive,
@@ -732,5 +733,149 @@ describe("startGeminiLive (stubbed)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+  describe("a session that hears the reader but never answers", () => {
+    async function live() {
+      vi.useFakeTimers();
+      const states: { state: string; reason?: string }[] = [];
+      const p = startGeminiLive({
+        onStateChange: (st) => states.push(st as { state: string; reason?: string }),
+        onError: () => {},
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      const socket = h.sockets[h.sockets.length - 1];
+      socket.open();
+      const session = await p;
+      socket.emit("message", { data: JSON.stringify({ setupComplete: {} }) });
+      const worklet = createdWorklets[createdWorklets.length - 1];
+      const nudges = () =>
+        socket.sent.filter((f) => typeof f === "string" && f.includes(NUDGE_TEXT)).length;
+      const say = async (ms: number) => {
+        for (let t = 0; t < ms; t += 100) {
+          worklet.speak();
+          await vi.advanceTimersByTimeAsync(100);
+        }
+      };
+      return { socket, session, states, nudges, say };
+    }
+    afterEach(() => vi.useRealTimers());
+
+    it("keeps counting when they ask again, so the stall is still caught", async () => {
+      const { states, say } = await live();
+      // The 13:45 call: a question, then "are you hearing me?" twice, ~8 s apart.
+      await say(3_000);
+      await vi.advanceTimersByTimeAsync(7_000);
+      await say(1_500);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await say(1_500);
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(states).toContainEqual(
+        expect.objectContaining({ state: "closed", reason: "gemini stopped responding" }),
+      );
+    });
+
+    it("nudges a quiet model to answer, at most twice, never over the reader", async () => {
+      const { states, nudges, say } = await live();
+      await say(2_000);
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(nudges()).toBe(0);
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(nudges()).toBe(1);
+      expect(states).toContainEqual(expect.objectContaining({ state: "nudged" }));
+      // Talking again does not get talked over.
+      await say(10_000);
+      expect(nudges()).toBe(1);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(nudges()).toBe(2);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(nudges()).toBe(2);
+    });
+
+    it("does not take its own voice leaking back for a question", async () => {
+      const { socket, nudges, say } = await live();
+      socket.emit("message", {
+        data: JSON.stringify({
+          serverContent: {
+            modelTurn: {
+              parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: "AAAA" } }],
+            },
+          },
+        }),
+      });
+      socket.emit("message", { data: JSON.stringify({ serverContent: { turnComplete: true } }) });
+      // Still playing: the speakers' echo reads as speech on the mic.
+      await say(2_000);
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect(nudges()).toBe(0);
+    });
+
+    it("an answer clears what is owed", async () => {
+      const { socket, states, nudges, say } = await live();
+      await say(2_000);
+      await vi.advanceTimersByTimeAsync(3_000);
+      socket.emit("message", { data: JSON.stringify({ serverContent: { turnComplete: true } }) });
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect(nudges()).toBe(0);
+      expect(states).not.toContainEqual(expect.objectContaining({ state: "closed" }));
+    });
+
+    it("waits out a tool call on a model that is deaf until it is answered", async () => {
+      const { socket, session, states, nudges, say } = await live();
+      await say(2_000);
+      socket.emit("message", {
+        data: JSON.stringify({ toolCall: { functionCalls: [{ id: "c1", name: "check_machine" }] } }),
+      });
+      await say(1_000);
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect(nudges()).toBe(0);
+      expect(states).not.toContainEqual(expect.objectContaining({ state: "closed" }));
+      // Answered, it owes the reader the result.
+      session.sendToolResponse([{ id: "c1", name: "check_machine", response: { output: "ok" } }]);
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(nudges()).toBe(1);
+    });
+
+    it("counts again once Gemini drops a call they talked over", async () => {
+      const { socket, nudges, say } = await live();
+      socket.emit("message", {
+        data: JSON.stringify({ toolCall: { functionCalls: [{ id: "c1", name: "check_machine" }] } }),
+      });
+      socket.emit("message", { data: JSON.stringify({ toolCallCancellation: { ids: ["c1"] } }) });
+      await say(1_500);
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(nudges()).toBe(1);
+    });
+
+    it("on a model that talks during tools, watches it and schedules results", async () => {
+      const { socket, session, nudges, say } = await live();
+      socket.emit("message", {
+        data: JSON.stringify({ omnigentSession: { model: "gemini-3.8-live", toolsBlock: false } }),
+      });
+      socket.emit("message", {
+        data: JSON.stringify({ toolCall: { functionCalls: [{ id: "c1", name: "check_machine" }] } }),
+      });
+      // "Are you hearing me?" mid-check is owed an answer now, not after the check.
+      await say(1_500);
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(nudges()).toBe(1);
+      session.sendToolResponse([{ id: "c1", name: "check_machine", response: { output: "ok" } }]);
+      const sent = socket.sent.filter((f) => typeof f === "string" && f.includes("toolResponse"));
+      expect(JSON.parse(sent[sent.length - 1] as string).toolResponse.functionResponses[0]).toEqual({
+        id: "c1",
+        name: "check_machine",
+        response: { scheduling: "WHEN_IDLE", output: "ok" },
+      });
+    });
+  });
+
+  it("does not count the relay's own hello as Gemini answering", async () => {
+    const { socket, states } = await startSession();
+    socket.emit("message", {
+      data: JSON.stringify({ omnigentSession: { model: "m", toolsBlock: true } }),
+    });
+    socket.emit("close", { code: 1000, reason: "" });
+    expect(states).toContainEqual(
+      expect.objectContaining({ state: "closed", kind: "error", reason: "gemini never answered" }),
+    );
   });
 });

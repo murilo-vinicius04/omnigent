@@ -26,6 +26,17 @@ const SPEECH_RMS = 900;
 // second, which is past anything observed working.
 const REPLY_SLOW_MS = 8_000;
 const REPLY_STALL_MS = 30_000;
+// A reply owed this long, with the reader quiet, gets a nudge: a text turn
+// telling the model to answer. Google's live models sometimes keep
+// transcribing the reader and never take the turn; a client turn makes them.
+const NUDGE_MS = 10_000;
+const MAX_NUDGES = 2;
+// Quiet this long after speech, and the reader has finished a sentence.
+const QUIET_MS = 1_200;
+/** The nudge, as the model reads it. Never something to say aloud. */
+export const NUDGE_TEXT =
+  "[No reply reached them. Answer what they last said, now, in their language. " +
+  "Do not mention this note.]";
 // Speech this long with nothing transcribed means Gemini is not hearing it.
 // Input transcripts stream while the reader talks, so a healthy session sends
 // one well inside this.
@@ -118,7 +129,9 @@ export type GeminiLiveEvent =
   | { type: "interrupted" }
   | { type: "turnComplete" }
   | { type: "setupComplete" }
-  | { type: "toolCall"; calls: GeminiToolCallItem[] };
+  | { type: "toolCall"; calls: GeminiToolCallItem[] }
+  | { type: "toolCancel"; ids: string[] }
+  | { type: "session"; model: string; toolsBlock: boolean };
 
 /**
  * Parse a server frame: string OR binary JSON (Google sends binary).
@@ -143,6 +156,21 @@ export function parseServerMessages(data: string | ArrayBuffer): GeminiLiveEvent
   const content = msgRec.serverContent as Record<string, unknown> | undefined;
   const events: GeminiLiveEvent[] = [];
   if ("setupComplete" in msgRec) events.push({ type: "setupComplete" });
+  // Our relay's own frame: which model answers, and whether it is deaf while
+  // a tool runs.
+  const own = msgRec.omnigentSession as Record<string, unknown> | undefined;
+  if (own && typeof own === "object") {
+    events.push({
+      type: "session",
+      model: typeof own.model === "string" ? own.model : "",
+      toolsBlock: own.toolsBlock !== false,
+    });
+  }
+  const cancel = msgRec.toolCallCancellation as Record<string, unknown> | undefined;
+  if (cancel && typeof cancel === "object" && Array.isArray(cancel.ids)) {
+    const ids = cancel.ids.filter((id): id is string => typeof id === "string");
+    if (ids.length > 0) events.push({ type: "toolCancel", ids });
+  }
   const toolCall = msgRec.toolCall as Record<string, unknown> | undefined;
   if (toolCall && typeof toolCall === "object" && Array.isArray(toolCall.functionCalls)) {
     const calls: GeminiToolCallItem[] = [];
@@ -223,6 +251,7 @@ export type GeminiLiveState =
   | { state: "ready" }
   // Owed a reply for a while. Not fatal: the model is often just slow.
   | { state: "waiting"; sinceMs: number }
+  | { state: "nudged"; sinceMs: number }
   // The reader has been talking and nothing came back transcribed: Gemini is
   // not hearing them, so they are talking to themselves.
   | { state: "not-hearing" }
@@ -272,6 +301,16 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
   let stallInterval: ReturnType<typeof setInterval> | null = null;
   let lastSpeechAt = 0;
   let lastAnswerAt = 0;
+  // When the first unanswered sentence ended (0: nothing owed). Later speech
+  // does not move it: "are you there?" asked again into a session that stopped
+  // answering is the same unanswered turn, not a fresh one to wait on.
+  let owedSince = 0;
+  let nudges = 0;
+  let lastNudgeAt = 0;
+  // Tool calls not yet answered, and whether the model can talk meanwhile.
+  // Unknown until the relay says, so assume the older, deaf behaviour.
+  const pendingTools = new Set<string>();
+  let toolsBlock = true;
   // One "still waiting" per unanswered utterance, not one per tick.
   let slowNotified = false;
   // When the reader started talking with nothing transcribed yet (0: not).
@@ -311,7 +350,8 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
         JSON.stringify({
           omnigentStats: {
             closeReason,
-            owedMs: lastSpeechAt && lastAnswerAt < lastSpeechAt ? now - lastSpeechAt : 0,
+            owedMs: owedSince ? now - owedSince : 0,
+            nudges,
             sinceSpeechMs: lastSpeechAt ? now - lastSpeechAt : -1,
             sinceAnswerMs: lastAnswerAt ? now - lastAnswerAt : -1,
             chunks: heard.chunks,
@@ -389,8 +429,21 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
     // Only an answer clears the debt. Google keeps transcribing the reader on a
     // session that has stopped replying — counting that as life is how a wedged
     // session looks healthy.
+    if (event.type === "session") {
+      toolsBlock = event.toolsBlock;
+    }
+    if (event.type === "toolCall") {
+      for (const call of event.calls) pendingTools.add(call.id ?? call.name);
+    }
+    if (event.type === "toolCancel") {
+      // The reader talked over a running call and the model dropped it: it
+      // is listening again, so its silence counts from here.
+      for (const id of event.ids) pendingTools.delete(id);
+    }
     if (event.type === "audio" || event.type === "turnComplete" || event.type === "toolCall") {
       lastAnswerAt = Date.now();
+      owedSince = 0;
+      nudges = 0;
       // The answer came: "still thinking" is no longer true.
       if (slowNotified) onStateChange?.({ state: "clear" });
       slowNotified = false;
@@ -497,11 +550,13 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
       // ANY-FRAME idle guard: while the mic is open we must keep sending;
       // never gate frames on client-side VAD.
       if (pcm && !stopped && ws && ws.readyState === WebSocket.OPEN) {
-        if (isSpeech(pcm)) {
+        // Not while Gemini is talking: echo that leaks past cancellation is
+        // not the reader, and must not read as an unanswered question (a nudge
+        // nobody asked for) or as "not hearing you". Talking over it is
+        // Gemini's to notice; its interruption stops playback.
+        if (isSpeech(pcm) && sources.length === 0) {
           lastSpeechAt = Date.now();
-          // Not while Gemini is talking: echo that leaks past cancellation is
-          // not the reader, and must not read as "not hearing you".
-          if (!speechStartedAt && sources.length === 0) speechStartedAt = lastSpeechAt;
+          if (!speechStartedAt) speechStartedAt = lastSpeechAt;
         }
         ws.send(JSON.stringify(buildAudioFrame(pcm)));
       }
@@ -522,8 +577,10 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
     socket.binaryType = "arraybuffer";
 
     socket.addEventListener("message", (ev: MessageEvent<string | ArrayBuffer>) => {
-      receivedAnyMessage = true;
-      for (const event of parseServerMessages(ev.data)) handleEvent(event);
+      const events = parseServerMessages(ev.data);
+      // Our relay's own hello is not Gemini answering.
+      if (!(events.length === 1 && events[0].type === "session")) receivedAnyMessage = true;
+      for (const event of events) handleEvent(event);
     });
 
     socket.addEventListener("close", (ev: CloseEvent) => {
@@ -585,17 +642,48 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
         deafNotified = true;
         onStateChange?.({ state: "not-hearing" });
       }
-      if (stopped || !lastSpeechAt || lastAnswerAt > lastSpeechAt) return;
-      const owedMs = Date.now() - lastSpeechAt;
+      const now = Date.now();
+      if (!owedSince && lastSpeechAt > lastAnswerAt && now - lastSpeechAt >= QUIET_MS) {
+        owedSince = lastSpeechAt;
+      }
+      // A model that cannot talk during a tool is not stalled while it waits.
+      if (stopped || !owedSince || (toolsBlock && pendingTools.size > 0)) return;
+      const owedMs = now - owedSince;
       if (owedMs >= REPLY_SLOW_MS && !slowNotified) {
         // Tell the reader we are still waiting rather than sitting in silence
         // that is indistinguishable from a dead session.
         slowNotified = true;
         onStateChange?.({ state: "waiting", sinceMs: owedMs });
       }
+      const readerQuiet = now - lastSpeechAt >= QUIET_MS;
+      if (
+        owedMs >= NUDGE_MS &&
+        readerQuiet &&
+        nudges < MAX_NUDGES &&
+        now - lastNudgeAt >= NUDGE_MS &&
+        ws &&
+        ws.readyState === WebSocket.OPEN
+      ) {
+        nudges += 1;
+        lastNudgeAt = now;
+        try {
+          ws.send(
+            JSON.stringify({
+              clientContent: {
+                turns: [{ role: "user", parts: [{ text: NUDGE_TEXT }] }],
+                turnComplete: true,
+              },
+            }),
+          );
+          onStateChange?.({ state: "nudged", sinceMs: owedMs });
+        } catch {
+          // A failed nudge leaves the stall deadline to act.
+        }
+      }
       if (owedMs < REPLY_STALL_MS) return;
       sendStats(`no reply ${Math.round(owedMs / 1000)}s after speech`);
       lastSpeechAt = 0;
+      owedSince = 0;
       releaseAll();
       reportClosed("error", 4000, "gemini stopped responding");
       try {
@@ -633,11 +721,17 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
   return {
     sendToolResponse(responses: GeminiToolResponseItem[]) {
       if (stopped || !ws || ws.readyState !== WebSocket.OPEN) return;
+      for (const r of responses) pendingTools.delete(r.id ?? r.name ?? "");
+      // The model owes the reader whatever the tool found.
+      if (!owedSince) owedSince = Date.now();
       try {
         const frame = {
           toolResponse: {
             functionResponses: responses.map((r) => {
-              const item: Record<string, unknown> = { response: r.response };
+              // A model that keeps talking while the tool runs needs to be told
+              // when to bring the result up: once it is not mid-sentence.
+              const response = toolsBlock ? r.response : { scheduling: "WHEN_IDLE", ...r.response };
+              const item: Record<string, unknown> = { response };
               if (r.id !== undefined) item.id = r.id;
               if (r.name !== undefined) item.name = r.name;
               return item;

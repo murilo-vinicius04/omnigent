@@ -338,6 +338,10 @@ function relayedEngineAdapter(
             callbacks.onNotice?.("Still thinking…");
             return;
           }
+          if (state.state === "nudged") {
+            callbacks.onNotice?.(`${voice} went quiet — asking it to answer`, "warn");
+            return;
+          }
           if (state.state === "not-hearing") {
             callbacks.onNotice?.(notHearingNotice(voice), "warn");
             return;

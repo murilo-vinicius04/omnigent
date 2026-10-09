@@ -34,11 +34,25 @@ ENDPOINT: Final[str] = (
     "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 )
 
-#: Default conversational model, pinned to the smoke-tested one.
-#: Measured 2026-09-18 over 20 interleaved sessions with identical audio: the
-#: 12-2025 native-audio preview left 3 of 10 sessions silent — connected, still
-#: transcribing, never answering — while this one answered 13 of 13, faster.
-MODEL: Final[str] = "models/gemini-3.1-flash-live-preview"
+#: Default conversational model. Google lists 3.1 Flash Live as a legacy
+#: preview. Measured 2026-10-09 over 20 interleaved sessions with identical
+#: audio and our real briefing: asked "are you hearing me?" during a 10 s check,
+#: 3.8 answered in ~1.3 s where 3.1 sat silent ~12 s (it cancels the call), and
+#: spoke the result 1.6 s after it came vs 7.5-8.6 s. Plain replies tied (~1.3 s).
+MODEL: Final[str] = "models/gemini-3.8-live"
+
+#: Narration reads a given text aloud and calls no tools.
+NARRATOR_MODEL: Final[str] = "models/gemini-3.1-flash-live-preview"
+
+
+def tools_block(model: str | None = None) -> bool:
+    """Whether the model stays deaf and mute until a tool call is answered.
+
+    3.1 Flash Live calls functions sequentially only. 3.8 Live runs them beside
+    the conversation (``NON_BLOCKING``), so it can talk while a check runs.
+    """
+    name = (model or MODEL).removeprefix("models/")
+    return not name.startswith("gemini-3.8-live")
 
 #: Default prebuilt voice for narration and speech output.
 DEFAULT_VOICE: Final[str] = "Aoede"
@@ -118,7 +132,7 @@ def setup_frame(
     voice: str | None = None,
 ) -> dict:
     """Return the proven setup frame for the WebSocket's first message."""
-    name = model or MODEL
+    name = model or (NARRATOR_MODEL if mode == "narrate" else MODEL)
     if not name.startswith("models/"):
         name = f"models/{name}"
     if mode == "narrate":
@@ -157,11 +171,15 @@ def setup_frame(
     }
     if system_instruction and system_instruction.strip():
         setup["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+        # Spelled out although it is 3.8's default: a check that leaves the
+        # voice deaf for its 10-30 s is the dead air this exists to remove.
+        behavior = {} if tools_block(name) else {"behavior": "NON_BLOCKING"}
         setup["tools"] = [
             {
                 "functionDeclarations": [
                     {
                         "name": "ask_claude",
+                        **behavior,
                         "description": ASK_CLAUDE_DESCRIPTION,
                         "parameters": {
                             "type": "OBJECT",
@@ -176,6 +194,7 @@ def setup_frame(
                     },
                     {
                         "name": "check_machine",
+                        **behavior,
                         "description": CHECK_MACHINE_DESCRIPTION,
                         "parameters": {
                             "type": "OBJECT",
