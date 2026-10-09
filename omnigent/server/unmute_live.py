@@ -25,7 +25,12 @@ from typing import Any, Final
 
 import httpx
 
-from omnigent.server.gemini_live import ASK_CLAUDE_DESCRIPTION, ASK_CLAUDE_QUESTION
+from omnigent.server.gemini_live import (
+    ASK_CLAUDE_DESCRIPTION,
+    ASK_CLAUDE_QUESTION,
+    CHECK_MACHINE_DESCRIPTION,
+    CHECK_MACHINE_QUESTION,
+)
 from omnigent.server.tts import speakable_numbers
 
 _logger = logging.getLogger(__name__)
@@ -109,6 +114,22 @@ ASK_CLAUDE_TOOL: Final[dict[str, Any]] = {
     },
 }
 
+CHECK_MACHINE_TOOL: Final[dict[str, Any]] = {
+    "type": "function",
+    "function": {
+        "name": "check_machine",
+        "description": CHECK_MACHINE_DESCRIPTION,
+        "parameters": {
+            "type": "object",
+            "properties": {"question": {"type": "string", "description": CHECK_MACHINE_QUESTION}},
+            "required": ["question"],
+        },
+    },
+}
+
+#: Tools the page answers, by name.
+PAGE_TOOLS: Final[frozenset[str]] = frozenset({"ask_claude", "check_machine"})
+
 
 def unmute_base_url() -> str:
     """Return the Unmute stack's base URL, without a trailing slash."""
@@ -170,8 +191,8 @@ class UnmuteCall:
     tool_calls: int = 0
     closed: bool = False
 
-    async def ask_page(self, tool_call_id: str, question: str) -> str:
-        """Hand an ``ask_claude`` call to the page and wait for its answer."""
+    async def ask_page(self, tool_call_id: str, question: str, name: str = "ask_claude") -> str:
+        """Hand a tool call (``ask_claude`` or ``check_machine``) to the page and wait."""
         self.tool_calls += 1
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self.pending[tool_call_id] = future
@@ -179,7 +200,7 @@ class UnmuteCall:
             {
                 "toolCall": {
                     "functionCalls": [
-                        {"id": tool_call_id, "name": "ask_claude", "args": {"question": question}}
+                        {"id": tool_call_id, "name": name, "args": {"question": question}}
                     ]
                 }
             }
@@ -357,7 +378,7 @@ async def speak(
             "model": model,
             "messages": history,
             "stream": True,
-            "tools": [ASK_CLAUDE_TOOL],
+            "tools": [ASK_CLAUDE_TOOL, CHECK_MACHINE_TOOL],
             # The only effort OpenAI allows with function tools on chat
             # completions, and the fastest to a first word.
             "reasoning_effort": "none",
@@ -389,7 +410,7 @@ async def speak(
             }
         )
         for c in calls:
-            if c["name"] != "ask_claude":
+            if c["name"] not in PAGE_TOOLS:
                 result = f"Tool '{c['name']}' is not available."
             else:
                 try:
@@ -398,7 +419,7 @@ async def speak(
                     args = {}
                 question = str(args.get("question", "")) if isinstance(args, dict) else ""
                 try:
-                    result = await call.ask_page(c["id"], question)
+                    result = await call.ask_page(c["id"], question, c["name"])
                 except CallEnded:
                     return
             history.append({"role": "tool", "tool_call_id": c["id"], "content": result})

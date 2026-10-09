@@ -61,6 +61,20 @@ ASK_CLAUDE_DESCRIPTION: Final[str] = (
 )
 ASK_CLAUDE_QUESTION: Final[str] = "The question or task to ask Claude."
 
+#: The look-it-up tool: read-only commands run by the companion, call stays open.
+CHECK_MACHINE_DESCRIPTION: Final[str] = (
+    "Find out a fact on their machine without bothering Claude: disk or memory "
+    "use, running processes and services, whether a run or job is still going, "
+    "log tails, files and folders, git status and history. The companion runs "
+    "read-only commands and returns what it found. It can never change "
+    "anything, so call it whenever such a fact would answer them, without "
+    "asking first; the call stays open. Not for changing code, files or "
+    "settings, or starting, stopping or deleting anything: that is ask_claude."
+)
+CHECK_MACHINE_QUESTION: Final[str] = (
+    "What to find out, in plain words, with any names, paths or numbers they mentioned."
+)
+
 
 def api_key() -> str:
     """Return the Gemini API key.
@@ -159,7 +173,21 @@ def setup_frame(
                             },
                             "required": ["question"],
                         },
-                    }
+                    },
+                    {
+                        "name": "check_machine",
+                        "description": CHECK_MACHINE_DESCRIPTION,
+                        "parameters": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "question": {
+                                    "type": "STRING",
+                                    "description": CHECK_MACHINE_QUESTION,
+                                }
+                            },
+                            "required": ["question"],
+                        },
+                    },
                 ]
             }
         ]

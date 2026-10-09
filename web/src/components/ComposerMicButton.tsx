@@ -295,6 +295,7 @@ export const ComposerMicButton = ({
   const conversationError = useLiveConversationStore((s) => s.error);
   const conversationNotice = useLiveConversationStore((s) => s.notice);
   const conversationNoticeTone = useLiveConversationStore((s) => s.noticeTone);
+  const companionActivity = useLiveConversationStore((s) => s.companion);
   const inConversation = Boolean(conversationSessionId) || conversationConnecting;
   const liveVoiceChosen = currentVoiceBackend(liveSessionId) === "live";
   const active = isListening || inConversation;
@@ -551,7 +552,13 @@ export const ComposerMicButton = ({
 
   // The call's state has to be visible without hovering: "not hearing you" and
   // "audio lagging" are exactly the moments the reader is looking elsewhere.
-  const statusLine = inConversation ? conversationNotice : null;
+  // What the companion is really doing beats anything the voice says about it.
+  const companionLine = companionActivity
+    ? companionActivity.state === "running" && companionActivity.command
+      ? `Companion running (read-only): ${companionActivity.command}`
+      : `Companion looking into: ${companionActivity.question}`
+    : null;
+  const statusLine = inConversation ? (companionLine ?? conversationNotice) : null;
 
   return (
     <span className="relative inline-flex">
@@ -559,12 +566,16 @@ export const ComposerMicButton = ({
         <span
           role="status"
           aria-live="polite"
-          data-tone={conversationNoticeTone}
+          title={statusLine}
+          data-companion={companionActivity ? companionActivity.state : undefined}
+          data-tone={companionLine ? "info" : conversationNoticeTone}
           className={cn(
             "pointer-events-none absolute right-0 bottom-full mb-1.5 max-w-[min(18rem,80vw)] truncate rounded-md border px-2 py-0.5 text-xs whitespace-nowrap shadow-sm",
-            conversationNoticeTone === "warn"
-              ? "border-warning/40 bg-popover text-warning"
-              : "bg-popover text-muted-foreground",
+            companionLine
+              ? "border-sky-500/40 bg-popover font-mono text-sky-700 dark:text-sky-300"
+              : conversationNoticeTone === "warn"
+                ? "border-warning/40 bg-popover text-warning"
+                : "bg-popover text-muted-foreground",
           )}
         >
           {statusLine}

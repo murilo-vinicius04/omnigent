@@ -353,7 +353,7 @@ def create_gemini_live_router(
                     if companion is None or not getattr(companion, "context", None):
                         _logger.info("gemini live briefing skipped | reason=no-context")
                     else:
-                        system_instruction = voice_briefing(companion)
+                        system_instruction = voice_briefing(companion, can_check=True)
                         briefed = bool(system_instruction and system_instruction.strip())
                         if not briefed:
                             _logger.info("gemini live briefing skipped | reason=no-context")

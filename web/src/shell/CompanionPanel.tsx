@@ -13,6 +13,7 @@ const LABEL: Record<CompanionEntry["kind"], string> = {
   question: "You said",
   answer: "It answered",
   note: "Note",
+  command: "It ran (read-only)",
 };
 
 const ACCENT: Record<CompanionEntry["kind"], string> = {
@@ -21,10 +22,13 @@ const ACCENT: Record<CompanionEntry["kind"], string> = {
   question: "border-l-sky-500/70",
   answer: "border-l-violet-500/70",
   note: "border-l-border",
+  command: "border-l-cyan-500/70",
 };
 
 /** How often the ledger is re-read while the panel is open. */
 const POLL_MS = 4000;
+/** Faster while the companion is running something, so each step shows. */
+const BUSY_POLL_MS = 800;
 
 /**
  * What the companion knows about this session.
@@ -55,11 +59,12 @@ export function CompanionPanel({ conversationId }: CompanionPanelProps) {
   // Polled rather than pushed: the ledger changes only when a turn happens,
   // and a session event stream of its own would be a lot of machinery for a
   // panel most readers keep closed.
+  const busy = Boolean(state?.activity);
   useEffect(() => {
     void refresh();
-    const timer = setInterval(() => void refresh(), POLL_MS);
+    const timer = setInterval(() => void refresh(), busy ? BUSY_POLL_MS : POLL_MS);
     return () => clearInterval(timer);
-  }, [refresh]);
+  }, [refresh, busy]);
 
   // Follow the tail, but only while the reader is already there — yanking
   // the view back down while they read older context is worse than stale.
@@ -79,6 +84,26 @@ export function CompanionPanel({ conversationId }: CompanionPanelProps) {
           {state?.warmSince ? "warm" : state?.running ? "starting" : "cold"}
         </span>
       </div>
+      {state?.activity ? (
+        <div
+          className="border-b bg-sky-500/10 px-3 py-1.5 text-xs"
+          role="status"
+          aria-live="polite"
+          data-testid="companion-activity"
+        >
+          {state.activity.state === "running" && state.activity.command ? (
+            <>
+              <span className="font-medium">Running now (read-only): </span>
+              <code className="font-mono">{state.activity.command}</code>
+            </>
+          ) : (
+            <>
+              <span className="font-medium">Looking into: </span>
+              {state.activity.question}
+            </>
+          )}
+        </div>
+      ) : null}
 
       <div
         ref={listRef}
@@ -94,8 +119,8 @@ export function CompanionPanel({ conversationId }: CompanionPanelProps) {
           </p>
         ) : entries.length === 0 ? (
           <p className="py-6 text-center text-sm text-muted-foreground">
-            Nothing yet. It learns what you send and the spoken summaries of what Claude
-            answers — never the transcript or the code.
+            Nothing yet. It learns what you send and the spoken summaries of what Claude answers —
+            never the transcript or the code.
           </p>
         ) : (
           <ul className="flex flex-col gap-1.5">
@@ -111,7 +136,14 @@ export function CompanionPanel({ conversationId }: CompanionPanelProps) {
                 <span className="mr-1.5 text-[11px] font-medium text-muted-foreground">
                   {LABEL[entry.kind]}
                 </span>
-                <span className="text-sm whitespace-pre-wrap">{entry.text}</span>
+                <span
+                  className={cn(
+                    "text-sm whitespace-pre-wrap",
+                    entry.kind === "command" && "font-mono text-xs break-all",
+                  )}
+                >
+                  {entry.text}
+                </span>
               </li>
             ))}
           </ul>

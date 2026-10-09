@@ -14,6 +14,15 @@ export const USD_PER_MINUTE = 0.05;
 /** How much of the reader's own speech a Gemini delegation carries to Claude. */
 const MAX_DELEGATED_CHARS = 4000;
 
+/**
+ * Quiet the reader must leave before a send goes out. The voice decides to send
+ * the moment it hears "send it to Claude", usually mid-sentence, and the words
+ * after it were being dropped; the send now waits until they stop talking.
+ */
+export const SEND_SETTLE_MS = 1800;
+/** Longest a send waits for the reader to stop, so a noisy room cannot hold it. */
+export const SEND_SETTLE_MAX_MS = 10_000;
+
 /** Returned to the voice the first time it reaches for Claude, instead of sending. */
 const CONFIRM_BEFORE_SENDING =
   "Not sent yet. Sending ends the call, so ask them first, in one short " +
@@ -47,6 +56,12 @@ export interface LiveEngineCallbacks {
   onUtterance: (utterance: { who: "reader" | "voice"; text: string }) => void;
   /** Emitted when the voice model delegates a question. */
   onDelegation: (id: string, question: string) => void;
+  /**
+   * Emitted when the voice asks the companion to look something up on the
+   * machine (read-only). Answer it with `speakBack`; the call stays open.
+   * Engines without the tool never emit it.
+   */
+  onCheck?: (id: string, question: string) => void;
   /** Emitted whenever either side is heard: the reader's words, or the voice's. */
   onSpeech?: (who: "reader" | "voice") => void;
   /** Emitted on a fatal or unexpected session error. */
@@ -141,6 +156,16 @@ function relayedEngineAdapter(
       // Whether the reader has been asked about a handoff yet this call.
       let handoffOffered = false;
       let waitForTurnCompleteResolve: (() => void) | null = null;
+      // Which tool each pending call id belongs to, so its answer goes back
+      // under the right name.
+      const toolNames = new Map<string, string>();
+      // A send the reader agreed to, waiting for them to finish talking.
+      let pendingSend: {
+        id: string;
+        asked: string;
+        deadline: number;
+        timer: ReturnType<typeof setTimeout> | null;
+      } | null = null;
       let closed = false;
       let settleClosed: () => void = () => {};
       const closedPromise = new Promise<void>((resolve) => {
@@ -182,9 +207,32 @@ function relayedEngineAdapter(
 
       let started: GeminiLiveSession;
 
+      // Send now: everything they said since the last send, including what
+      // they kept saying after asking for it.
+      const fireSend = (): void => {
+        const pending = pendingSend;
+        if (!pending) return;
+        pendingSend = null;
+        if (pending.timer) clearTimeout(pending.timer);
+        flushReader();
+        const spoken = readerSinceDelegation.trim();
+        readerSinceDelegation = "";
+        callbacks.onDelegation(pending.id, spoken || pending.asked || lastReader);
+      };
+
+      // (Re)start the quiet timer; every new word from the reader pushes it back.
+      const settleSend = (): void => {
+        if (!pendingSend) return;
+        if (pendingSend.timer) clearTimeout(pendingSend.timer);
+        const wait = Math.max(0, Math.min(SEND_SETTLE_MS, pendingSend.deadline - Date.now()));
+        pendingSend.timer = setTimeout(fireSend, wait);
+      };
+
       const closeSession = (errorReason?: string | null): void => {
         if (closed) return;
         closed = true;
+        if (pendingSend?.timer) clearTimeout(pendingSend.timer);
+        pendingSend = null;
         flushVoice();
         flushReader();
         if (waitForTurnCompleteResolve) {
@@ -205,6 +253,7 @@ function relayedEngineAdapter(
           readerSinceAsk += ev.text;
           lastReader = readerBuf.trim();
           readerSinceDelegation = (readerSinceDelegation + ev.text).slice(-MAX_DELEGATED_CHARS);
+          if (pendingSend && ev.text.trim()) settleSend();
         } else if (ev.type === "outputTranscript") {
           if (ev.text.trim()) callbacks.onSpeech?.("voice");
           if (readerBuf) {
@@ -221,6 +270,13 @@ function relayedEngineAdapter(
           }
         } else if (ev.type === "toolCall") {
           for (const call of ev.calls) {
+            if (call.id) toolNames.set(call.id, call.name);
+            if (call.name === "check_machine" && callbacks.onCheck) {
+              const asked =
+                typeof call.args?.question === "string" ? call.args.question.trim() : "";
+              callbacks.onCheck(call.id ?? "", asked || lastReader);
+              continue;
+            }
             if (call.name !== "ask_claude") {
               started.sendToolResponse([
                 {
@@ -249,11 +305,18 @@ function relayedEngineAdapter(
               handoffOffered = true;
               // Claude gets the reader's own words, as GPT Live sends them. The
               // model's `question` is its paraphrase, used only with no transcript.
-              const spoken = readerSinceDelegation.trim();
-              readerSinceDelegation = "";
+              // The send waits until they stop talking: the voice calls the tool
+              // on "send it to Claude", and what they say next belongs in it.
               const asked =
                 typeof call.args?.question === "string" ? call.args.question.trim() : "";
-              callbacks.onDelegation(call.id ?? "", spoken || asked || lastReader);
+              if (pendingSend) fireSend();
+              pendingSend = {
+                id: call.id ?? "",
+                asked,
+                deadline: Date.now() + SEND_SETTLE_MAX_MS,
+                timer: null,
+              };
+              settleSend();
             }
           }
         }
@@ -337,10 +400,11 @@ function relayedEngineAdapter(
           started.sendToolResponse([
             {
               id: id || undefined,
-              name: "ask_claude",
+              name: toolNames.get(id) ?? "ask_claude",
               response: { output: text },
             },
           ]);
+          toolNames.delete(id);
         },
         untilQuiet: (capMs = 10_000) =>
           new Promise<void>((resolve) => {

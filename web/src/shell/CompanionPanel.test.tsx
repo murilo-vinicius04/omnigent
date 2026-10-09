@@ -49,6 +49,20 @@ describe("CompanionPanel", () => {
     expect(screen.getByText("Claude said")).toBeInTheDocument();
   });
 
+  it("shows the command running right now, and what it ran before", async () => {
+    mocks.getCompanionState.mockResolvedValue(
+      state({
+        activity: { state: "running", question: "disk use", command: "df -h /", since: 1 },
+        context: [{ id: 1, kind: "command", text: "$ du -sh ~/.cache [exit 0] 15G", at: 1 }],
+      }),
+    );
+    render(<CompanionPanel conversationId="conv_abc" />);
+    const banner = await screen.findByTestId("companion-activity");
+    expect(banner.textContent).toBe("Running now (read-only): df -h /");
+    expect(screen.getByText("It ran (read-only)")).toBeInTheDocument();
+    expect(screen.getByText("$ du -sh ~/.cache [exit 0] 15G")).toBeInTheDocument();
+  });
+
   it("says plainly that it knows nothing yet", async () => {
     render(<CompanionPanel conversationId="conv_abc" />);
     expect(await screen.findByText(/Nothing yet/)).toBeInTheDocument();

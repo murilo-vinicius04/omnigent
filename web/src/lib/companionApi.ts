@@ -4,9 +4,17 @@ import { ApiError } from "./sessionsApi";
 /** One thing the companion knows, as the server stores it. */
 interface CompanionEntryWire {
   id: number;
-  kind: "activity" | "summary" | "question" | "answer" | "note";
+  kind: "activity" | "summary" | "question" | "answer" | "note" | "command";
   text: string;
   at: number;
+}
+
+/** What a check is doing right now, as the server reports it. */
+interface CompanionActivityWire {
+  state: "thinking" | "running";
+  question: string;
+  command: string | null;
+  since: number;
 }
 
 interface CompanionStateWire {
@@ -16,6 +24,7 @@ interface CompanionStateWire {
   idle_s: number;
   warm_since: number | null;
   pending_notes: number;
+  activity?: CompanionActivityWire | null;
   context: CompanionEntryWire[];
 }
 
@@ -32,6 +41,21 @@ export interface CompanionEntry {
   text: string;
   /** Unix seconds when the companion learned it. */
   at: number;
+}
+
+/**
+ * What the companion is doing this moment: deciding its next step, or running
+ * a read-only command. Shown so the reader sees what is really running rather
+ * than taking the voice's word for it.
+ */
+export interface CompanionActivity {
+  state: "thinking" | "running";
+  /** What it is trying to find out. */
+  question: string;
+  /** The command running now, when `state` is `"running"`. */
+  command: string | null;
+  /** Unix seconds when this step began. */
+  since: number;
 }
 
 /**
@@ -52,6 +76,8 @@ export interface CompanionState {
   warmSince: number | null;
   /** Ledger entries not yet delivered to the model; they ride the next ask. */
   pendingNotes: number;
+  /** The step in progress, or `null` when it is doing nothing. */
+  activity: CompanionActivity | null;
   context: CompanionEntry[];
 }
 
@@ -63,6 +89,7 @@ function fromWire(wire: CompanionStateWire): CompanionState {
     idleS: wire.idle_s,
     warmSince: wire.warm_since,
     pendingNotes: wire.pending_notes,
+    activity: wire.activity ?? null,
     context: wire.context,
   };
 }
@@ -179,5 +206,66 @@ export async function delegateSpoken(sessionId: string, text: string): Promise<S
     return (await res.json()) as SpokenRouting;
   } catch {
     return forward;
+  }
+}
+
+/** One read-only command a check ran. */
+export interface CheckedCommand {
+  command: string;
+  /** `null` when it timed out. */
+  exitCode: number | null;
+  seconds: number;
+  output: string;
+}
+
+/** How a check ended: an answer, or why Claude is needed instead. */
+export interface CompanionCheck {
+  answer: string | null;
+  needsClaude: string | null;
+  commands: CheckedCommand[];
+}
+
+interface CompanionCheckWire {
+  answer: string | null;
+  needs_claude: string | null;
+  commands: { command: string; exit_code: number | null; seconds: number; output: string }[];
+}
+
+/**
+ * Have the companion find something out on the machine with read-only commands.
+ *
+ * It can look -- disk, processes, logs, runs, git history -- but never change
+ * anything; the server refuses and sandboxes anything that writes. Any failure
+ * comes back as "needs Claude", which the voice turns into an offer to send it.
+ *
+ * @param sessionId The session the reader is talking about.
+ * @param text What they want to know.
+ */
+export async function checkSpoken(sessionId: string, text: string): Promise<CompanionCheck> {
+  const unreachable: CompanionCheck = {
+    answer: null,
+    needsClaude: "the companion could not be reached",
+    commands: [],
+  };
+  try {
+    const res = await authenticatedFetch(`${base(sessionId)}/check`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) return unreachable;
+    const body = (await res.json()) as CompanionCheckWire;
+    return {
+      answer: body.answer,
+      needsClaude: body.needs_claude,
+      commands: body.commands.map((c) => ({
+        command: c.command,
+        exitCode: c.exit_code,
+        seconds: c.seconds,
+        output: c.output,
+      })),
+    };
+  } catch {
+    return unreachable;
   }
 }

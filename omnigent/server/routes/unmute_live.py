@@ -209,7 +209,9 @@ def create_unmute_live_router(
             with contextlib.suppress(Exception):
                 companion = companions().peek(session_id) if session_id else None
             briefed = bool(companion is not None and getattr(companion, "context", None))
-            instructions = f"{voice_briefing(companion)}\n\n{unmute_live.SPOKEN_RULES}"
+            instructions = (
+                f"{voice_briefing(companion, can_check=True)}\n\n{unmute_live.SPOKEN_RULES}"
+            )
         call = unmute_live.open_call(session_id, instructions, websocket.query_params.get("voice"))
 
         base = unmute_live.unmute_base_url()

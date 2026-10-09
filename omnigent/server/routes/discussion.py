@@ -4,6 +4,8 @@
 - ``POST /v1/discussion/{session_id}/note`` — record context. Cheap: it
   never reaches the model until the next question.
 - ``POST /v1/discussion/{session_id}/ask`` — one question, one answer.
+- ``POST /v1/discussion/{session_id}/check`` — find something out with
+  read-only commands, for the live voice. Never changes anything.
 - ``POST /v1/discussion/{session_id}/prewarm`` — pay the cold start now.
 - ``POST /v1/discussion/{session_id}/close`` — drop the process. The
   ledger survives, so this is safe to call from a ``pagehide`` beacon.
@@ -76,6 +78,33 @@ class RouteResponse(BaseModel):
     english: str | None = None
     #: What the companion would say back, when it is not forwarding.
     answer: str | None = None
+
+
+class CheckRequest(BaseModel):
+    """Something the voice wants found out on the machine."""
+
+    text: str = Field(min_length=1)
+    timeout_s: float | None = Field(default=None, gt=0, le=120)
+
+
+class CheckedCommand(BaseModel):
+    """One command a check ran."""
+
+    command: str
+    exit_code: int | None
+    seconds: float
+    output: str
+
+
+class CheckResponse(BaseModel):
+    """How a check ended, and every command it ran.
+
+    Exactly one of ``answer`` and ``needs_claude`` is set.
+    """
+
+    answer: str | None = None
+    needs_claude: str | None = None
+    commands: list[CheckedCommand] = Field(default_factory=list)
 
 
 def create_discussion_router(
@@ -224,6 +253,52 @@ def create_discussion_router(
         )
         return RouteResponse(
             forward=decision.forward, english=decision.english, answer=decision.answer
+        )
+
+    @router.post("/discussion/{session_id}/check", response_model=CheckResponse)
+    async def discussion_check(
+        request: Request, session_id: str, body: CheckRequest
+    ) -> CheckResponse:
+        """Let the companion look something up with read-only commands.
+
+        The live voice calls this for a fact it could see by looking -- disk
+        use, a run's progress, recent commits -- instead of waking Claude.
+        Commands run in the session's workspace, read-only and sandboxed;
+        anything that would change the machine is refused, and the answer
+        says Claude is needed instead.
+        """
+        _require_user(request)
+        import asyncio
+
+        cwd: str | None = None
+        if conversation_store is not None:
+            try:
+                conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+                cwd = getattr(conv, "workspace", None) or None
+            except Exception:  # noqa: BLE001 - the home directory is a fine default
+                _logger.debug("no workspace for %s", session_id, exc_info=True)
+        companion = await companions().get(session_id)
+        result = await companion.check(body.text, cwd=cwd, timeout_s=body.timeout_s)
+        _logger.info(
+            "companion check session=%s asked=%r ran=%r answer=%r needs_claude=%r",
+            session_id,
+            body.text,
+            [c.command for c in result.commands],
+            result.answer,
+            result.needs_claude,
+        )
+        return CheckResponse(
+            answer=result.answer,
+            needs_claude=result.needs_claude,
+            commands=[
+                CheckedCommand(
+                    command=c.command,
+                    exit_code=c.exit_code,
+                    seconds=round(c.seconds, 2),
+                    output=c.output[:2000],
+                )
+                for c in result.commands
+            ],
         )
 
     @router.post("/discussion/{session_id}/prewarm")

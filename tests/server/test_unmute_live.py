@@ -36,7 +36,7 @@ def _text(text: str) -> dict[str, Any]:
     return {"choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]}
 
 
-def _tool_call(call_id: str, question: str) -> dict[str, Any]:
+def _tool_call(call_id: str, question: str, name: str = "ask_claude") -> dict[str, Any]:
     arguments = json.dumps({"question": question})
     return {
         "choices": [
@@ -47,7 +47,7 @@ def _tool_call(call_id: str, question: str) -> dict[str, Any]:
                         {
                             "index": 0,
                             "id": call_id,
-                            "function": {"name": "ask_claude", "arguments": arguments},
+                            "function": {"name": name, "arguments": arguments},
                         }
                     ]
                 },
@@ -353,3 +353,30 @@ def test_the_input_trace_shows_whether_the_page_sent_speech_or_silence() -> None
     summary = trace.summary()
     assert summary.startswith("mic_dbfs_per_s=[-15,-90]")
     assert "words_at=[0.4]" in summary and "replies_at=[2.0]" in summary
+
+
+async def test_a_lookup_goes_to_the_page_under_its_own_name() -> None:
+    call = unmute_live.open_call("s1", "BRIEFING")
+    model = _Model(
+        _sse(_tool_call("call_7", "how full is the disk", name="check_machine")),
+        _sse(_text("About 97 percent.")),
+    )
+
+    async def page() -> None:
+        frame = await call.outbox.get()
+        [asked] = frame["toolCall"]["functionCalls"]
+        assert asked == {
+            "id": "call_7",
+            "name": "check_machine",
+            "args": {"question": "how full is the disk"},
+        }
+        call.resolve("call_7", "Looked it up: 97% used.")
+
+    heard = {"role": "user", "content": "how full is the disk?"}
+    try:
+        said, _ = await asyncio.gather(_speak(call, model, [heard]), page())
+    finally:
+        unmute_live.close_call(call)
+    assert said == "About 97 percent."
+    first = model.requests[0]
+    assert [t["function"]["name"] for t in first["tools"]] == ["ask_claude", "check_machine"]

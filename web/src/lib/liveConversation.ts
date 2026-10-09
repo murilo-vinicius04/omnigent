@@ -6,7 +6,15 @@
 // out, and nothing reopens it on their behalf.
 
 import { create } from "zustand";
-import { delegateSpoken, noteCompanion, prewarmCompanion } from "./companionApi";
+import {
+  checkSpoken,
+  delegateSpoken,
+  getCompanionState,
+  noteCompanion,
+  prewarmCompanion,
+  type CheckedCommand,
+  type CompanionActivity,
+} from "./companionApi";
 import { claimSpeechChannel, isNarrating, setConversationSpeaking } from "./speechPlayback";
 import type { LiveVoiceEngine } from "./liveVoiceEngine";
 import { conversationVolume } from "./sessionNarrationVolume";
@@ -34,6 +42,56 @@ const WORKING_ON_IT = "Working on what you asked…";
 /** Shown when that routing ran out of time, so the silence is not a mystery. */
 const NOTICE_NOT_READY = "That took too long to route — ask again or type it in the chat.";
 
+/** How often the companion's live state is read while it is looking something up. */
+const CHECK_POLL_MS = 700;
+
+/** Reader silence the call waits for before hanging up after a send. */
+const HANGUP_QUIET_MS = 1500;
+/** Longest the call stays open after a send waiting for that silence. */
+const HANGUP_QUIET_CAP_MS = 12_000;
+
+/** Prefix for what the reader said after the send, forwarded as a second message. */
+const FOLLOW_UP_PREFIX = "Also, said right after that on the same call:";
+
+/** Short sign-offs that are not worth a second message to Claude. */
+const SIGN_OFF =
+  /^\W*(ok|okay|ok then|thanks|thank you|thx|bye|goodbye|cool|great|right|yes|yeah|no|sim|não|valeu|obrigad[oa]|beleza|tchau|falou|show|isso|tá|ta|blz)\W*$/i;
+
+/** Whether what was said after a send carries anything for Claude. */
+export function worthFollowUp(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || SIGN_OFF.test(trimmed)) return false;
+  return trimmed.split(/\s+/).length >= 3;
+}
+
+/** What the voice is told after a check, so it can say the result itself. */
+export function checkReply(result: {
+  answer: string | null;
+  needsClaude: string | null;
+  commands: CheckedCommand[];
+}): string {
+  const ran = result.commands.map((c) => c.command);
+  const how = ran.length
+    ? `Looked it up by running (read-only): ${ran.join("; ")}.`
+    : "Nothing was run.";
+  if (result.answer) {
+    return `${how} Result to tell them, in your own words: ${result.answer}`;
+  }
+  return (
+    `${how} It could not be found out by looking (${result.needsClaude ?? "unknown"}). ` +
+    "Nothing on the machine was changed. Tell them plainly, and offer once to send it to Claude."
+  );
+}
+
+/** The last thing the companion looked up during the call, for the UI. */
+export interface LastCheck {
+  question: string;
+  commands: string[];
+  answer: string | null;
+  needsClaude: string | null;
+  at: number;
+}
+
 interface ConversationStoreState {
   /** Session whose conversation is open, or null when none is. */
   sessionId: string | null;
@@ -51,6 +109,10 @@ interface ConversationStoreState {
   notice: string | null;
   /** "warn" for a notice that means the call is not working as expected. */
   noticeTone: "info" | "warn";
+  /** What the companion is doing right now during a check, or null. */
+  companion: CompanionActivity | null;
+  /** The last check of this call, so the reader can see what really ran. */
+  lastCheck: LastCheck | null;
   start: (sessionId: string, agentId?: string | null) => Promise<void>;
   stop: () => void;
 }
@@ -80,7 +142,7 @@ function teardown(set: (partial: Partial<ConversationStoreState>) => void): void
   const handle = activeHandle;
   activeHandle = null;
   handle?.stop();
-  set({ sessionId: null, engine: null, connecting: false, elapsedS: 0 });
+  set({ sessionId: null, engine: null, connecting: false, elapsedS: 0, companion: null });
 }
 
 /**
@@ -146,11 +208,21 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
   error: null,
   notice: null,
   noticeTone: "info",
+  companion: null,
+  lastCheck: null,
 
   start: async (sessionId: string, agentId: string | null = null) => {
     // Opening a second would be two voices and two meters.
     if (get().sessionId || get().connecting) return;
-    set({ connecting: true, error: null, notice: null, noticeTone: "info", handedOff: null });
+    set({
+      connecting: true,
+      error: null,
+      notice: null,
+      noticeTone: "info",
+      handedOff: null,
+      companion: null,
+      lastCheck: null,
+    });
     // A delegation waits on the companion, and a cold one can spend most of
     // the time the voice is holding the conversation. Warming it is free.
     void prewarmCompanion(sessionId).catch(() => {
@@ -170,6 +242,78 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
     let lastReader = "";
     // Both sides of the call, oldest first: the context a handoff carries.
     const transcript: { who: "reader" | "voice"; text: string }[] = [];
+    // When the reader was last heard, so the call never hangs up on them.
+    let readerHeardAt = 0;
+
+    /** Resolve once the reader has been quiet for `quietMs`, or after `capMs`. */
+    const readerQuiet = (quietMs: number, capMs: number): Promise<void> =>
+      new Promise<void>((resolve) => {
+        const giveUp = Date.now() + capMs;
+        const tick = () => {
+          const now = Date.now();
+          if (now - readerHeardAt >= quietMs || now >= giveUp || !activeHandle) {
+            resolve();
+            return;
+          }
+          setTimeout(tick, 200);
+        };
+        tick();
+      });
+
+    /**
+     * The voice asked the companion to look something up. It runs read-only
+     * commands on the server; while it does, its live state is shown, so the
+     * reader sees what is actually running. The call stays open.
+     */
+    const answerCheck = async (callId: string, asked: string): Promise<void> => {
+      const question = asked || lastReader;
+      const current = activeHandle;
+      if (!current) return;
+      if (!question) {
+        current.speakBack(
+          callId,
+          "Nothing was asked, so nothing was run. Ask what they want to know.",
+        );
+        return;
+      }
+      set({ companion: { state: "thinking", question, command: null, since: Date.now() / 1000 } });
+      let polling = true;
+      const poll = (): void => {
+        if (!polling) return;
+        void getCompanionState(sessionId)
+          .then((state) => {
+            if (polling && state.activity) set({ companion: state.activity });
+          })
+          .catch(() => {
+            // The status line is a courtesy; the check carries on.
+          })
+          .finally(() => {
+            if (polling) setTimeout(poll, CHECK_POLL_MS);
+          });
+      };
+      poll();
+      let result: Awaited<ReturnType<typeof checkSpoken>>;
+      try {
+        result = await checkSpoken(sessionId, question);
+      } finally {
+        polling = false;
+        set({ companion: null });
+      }
+      const ranList = result.commands.map((c) => c.command).join("; ");
+      set({
+        notice: ranList ? `Companion ran (read-only): ${ranList}` : "Companion ran nothing",
+        noticeTone: "info",
+        lastCheck: {
+          question,
+          commands: result.commands.map((c) => c.command),
+          answer: result.answer,
+          needsClaude: result.needsClaude,
+          at: Date.now(),
+        },
+      });
+      if (activeHandle !== current) return;
+      current.speakBack(callId, checkReply(result));
+    };
 
     /**
      * The voice model could not answer and delegated. The delegation names no
@@ -222,10 +366,25 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
         return;
       }
       set({ handedOff: text, notice: null });
+      const sentAt = transcript.length;
       current.speakBack(delegationId, HANDED_OFF);
       // Long enough for the whole goodbye: hanging up early clips it mid-word.
       await current.untilQuiet(20_000);
+      // And never while they are still talking: hanging up mid-sentence lost
+      // whatever they added after asking for the send.
+      await readerQuiet(HANGUP_QUIET_MS, HANGUP_QUIET_CAP_MS);
       get().stop();
+      // Stopping flushes the last words. Anything they said after the send
+      // still reaches Claude, as a second message.
+      const after = transcript
+        .slice(sentAt)
+        .filter((line) => line.who === "reader")
+        .map((line) => line.text.trim())
+        .filter(Boolean)
+        .join(" ");
+      if (worthFollowUp(after)) {
+        void handToClaude(`${FOLLOW_UP_PREFIX} ${after}`, agentId);
+      }
     };
 
     const adapter = getLiveEngineAdapter();
@@ -241,7 +400,9 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
           if (who === "reader") lastReader = text;
         },
         onDelegation: (delegationId, asked) => void answerDelegation(delegationId, asked),
-        onSpeech: () => {
+        onCheck: (callId, asked) => void answerCheck(callId, asked),
+        onSpeech: (who) => {
+          if (who === "reader") readerHeardAt = Date.now();
           heard = true;
           const claim = takeOver;
           takeOver = null;

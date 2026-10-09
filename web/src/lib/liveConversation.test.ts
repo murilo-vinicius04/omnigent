@@ -402,3 +402,33 @@ describe("composeHandoff", () => {
     expect(out).not.toContain("line 0 ");
   });
 });
+
+describe("what reaches Claude around a send, and what the voice is told after a check", () => {
+  it("a follow-up is sent only when it says something", async () => {
+    const { worthFollowUp } = await import("./liveConversation");
+    expect(worthFollowUp("valeu")).toBe(false);
+    expect(worthFollowUp("ok!")).toBe(false);
+    expect(worthFollowUp("Obrigado")).toBe(false);
+    expect(worthFollowUp("")).toBe(false);
+    expect(worthFollowUp("and also check the opa runs")).toBe(true);
+  });
+
+  it("the voice hears what ran, and is told to offer Claude when looking was not enough", async () => {
+    const { checkReply } = await import("./liveConversation");
+    const found = checkReply({
+      answer: "The disk is 97% full.",
+      needsClaude: null,
+      commands: [{ command: "df -h /", exitCode: 0, seconds: 0.1, output: "" }],
+    });
+    expect(found).toContain("df -h /");
+    expect(found).toContain("The disk is 97% full.");
+    const stuck = checkReply({
+      answer: null,
+      needsClaude: "that needs a code change",
+      commands: [],
+    });
+    expect(stuck).toContain("Nothing was run.");
+    expect(stuck).toContain("Nothing on the machine was changed");
+    expect(stuck).toContain("send it to Claude");
+  });
+});

@@ -78,12 +78,13 @@ def test_setup_frame_with_briefing():
     assert "tools" in setup
     assert len(setup["tools"]) == 1
     funcs = setup["tools"][0]["functionDeclarations"]
-    assert len(funcs) == 1
-    assert funcs[0]["name"] == "ask_claude"
-    assert funcs[0]["parameters"]["type"] == "OBJECT"
-    assert "question" in funcs[0]["parameters"]["properties"]
-    assert funcs[0]["parameters"]["properties"]["question"]["type"] == "STRING"
-    assert funcs[0]["parameters"]["required"] == ["question"]
+    # Send to Claude (ends the call) and look it up read-only (keeps it open).
+    assert [f["name"] for f in funcs] == ["ask_claude", "check_machine"]
+    for func in funcs:
+        assert func["parameters"]["type"] == "OBJECT"
+        assert func["parameters"]["properties"]["question"]["type"] == "STRING"
+        assert func["parameters"]["required"] == ["question"]
+    assert "read-only" in funcs[1]["description"]
 
 
 def test_setup_frame_model_prefix_once():
@@ -444,7 +445,7 @@ def test_route_with_session_context_sends_briefed_setup_frame(
     reg.note("conv_a", "summary", "Claude finished the migration")
     companion = reg.peek("conv_a")
     assert companion is not None
-    expected_briefing = voice_briefing(companion)
+    expected_briefing = voice_briefing(companion, can_check=True)
 
     caplog.set_level(logging.INFO)
     app = _proxy_app(upstream_connect=fake_connect, registry_provider=lambda: reg)
@@ -613,9 +614,8 @@ def test_route_briefed_frame_declares_ask_claude_tool_and_unbriefed_has_no_tools
     assert "tools" in briefed_frame["setup"]
     assert len(briefed_frame["setup"]["tools"]) == 1
     decls = briefed_frame["setup"]["tools"][0]["functionDeclarations"]
-    assert len(decls) == 1
-    assert decls[0]["name"] == "ask_claude"
-    assert decls[0]["parameters"]["required"] == ["question"]
+    assert [d["name"] for d in decls] == ["ask_claude", "check_machine"]
+    assert all(d["parameters"]["required"] == ["question"] for d in decls)
 
     # Unbriefed frame has no tools key
     unbriefed = gemini_live.setup_frame()

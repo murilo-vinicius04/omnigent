@@ -26,6 +26,8 @@ vi.mock("@/lib/companionApi", () => ({
   noteCompanion: vi.fn(async () => {}),
   delegateSpoken: vi.fn(async () => ({ forward: false, english: null, answer: null })),
   prewarmCompanion: vi.fn(async () => {}),
+  checkSpoken: vi.fn(async () => ({ answer: null, needsClaude: "not mocked", commands: [] })),
+  getCompanionState: vi.fn(async () => ({ activity: null })),
 }));
 const send = vi.fn(async (_text: string, _agentId: string) => {});
 vi.mock("@/store/chatStore", () => ({
@@ -36,6 +38,7 @@ vi.mock("@/lib/speechPlayback", () => ({ claimSpeechChannel: vi.fn() }));
 
 import type { GeminiLiveEvent } from "@/lib/geminiLive";
 import { useLiveConversationStore } from "@/lib/liveConversation";
+import { SEND_SETTLE_MS } from "@/lib/liveEngineAdapters";
 import { ComposerLiveMeter } from "./ComposerLiveMeter";
 
 if (typeof globalThis.MediaStream === "undefined") {
@@ -317,6 +320,7 @@ describe("ComposerMicButton live engine routing", () => {
       geminiCallbacks.onEvent?.({ type: "toolCall", calls: [{ id: "prime", name: "ask_claude" }] });
     });
 
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await act(async () => {
       geminiCallbacks.onEvent?.({
         type: "toolCall",
@@ -328,6 +332,13 @@ describe("ComposerMicButton live engine routing", () => {
           },
         ],
       });
+
+      // The send waits for the reader to stop talking before it goes.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS);
+      });
+      vi.useRealTimers();
+      await act(async () => {});
     });
 
     expect(delegateSpoken).toHaveBeenCalledWith("conv_a", "did we identify which link is which?");
@@ -360,6 +371,7 @@ describe("ComposerMicButton live engine routing", () => {
       geminiCallbacks.onEvent?.({ type: "toolCall", calls: [{ id: "prime", name: "ask_claude" }] });
     });
 
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await act(async () => {
       geminiCallbacks.onEvent?.({
         type: "toolCall",
@@ -371,6 +383,13 @@ describe("ComposerMicButton live engine routing", () => {
           },
         ],
       });
+
+      // The send waits for the reader to stop talking before it goes.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS);
+      });
+      vi.useRealTimers();
+      await act(async () => {});
     });
 
     expect(send).toHaveBeenCalledWith(
@@ -445,6 +464,10 @@ describe("ComposerMicButton live engine routing", () => {
             },
           ],
         });
+        // The send waits for the reader to stop talking before it goes.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS);
+        });
       });
 
       expect(session.sendToolResponse).toHaveBeenCalled();
@@ -487,6 +510,7 @@ describe("ComposerMicButton live engine routing", () => {
       geminiCallbacks.onEvent?.({ type: "toolCall", calls: [{ id: "prime", name: "ask_claude" }] });
     });
 
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await act(async () => {
       geminiCallbacks.onEvent?.({
         type: "toolCall",
@@ -498,6 +522,13 @@ describe("ComposerMicButton live engine routing", () => {
           },
         ],
       });
+
+      // The send waits for the reader to stop talking before it goes.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS);
+      });
+      vi.useRealTimers();
+      await act(async () => {});
     });
 
     expect(session.sendToolResponse).toHaveBeenCalledWith([
@@ -512,6 +543,111 @@ describe("ComposerMicButton live engine routing", () => {
     ]);
     expect(session.stop).not.toHaveBeenCalled();
     expect(useLiveConversationStore.getState().sessionId).toBe("conv_a");
+  });
+
+  it("check_machine: the status line shows the command really running, and the call stays open", async () => {
+    const { checkSpoken, getCompanionState } = await import("@/lib/companionApi");
+    let finish: (v: Awaited<ReturnType<typeof checkSpoken>>) => void = () => {};
+    vi.mocked(checkSpoken).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    vi.mocked(getCompanionState).mockResolvedValue({
+      activity: { state: "running", question: "disk use", command: "df -h /", since: 0 },
+    } as unknown as Awaited<ReturnType<typeof getCompanionState>>);
+    window.localStorage.setItem("omnigent:live-voice-engine", "gemini");
+    renderLiveMic();
+    await clickMic();
+    const session = await startGeminiLive.mock.results[0]?.value;
+
+    await act(async () => {
+      geminiCallbacks.onEvent?.({
+        type: "toolCall",
+        calls: [{ id: "k1", name: "check_machine", args: { question: "disk use" } }],
+      });
+    });
+    await act(async () => {
+      await new Promise((r) => {
+        setTimeout(r, 50);
+      });
+    });
+    expect(checkSpoken).toHaveBeenCalledWith("conv_a", "disk use");
+    expect(screen.getByRole("status").textContent).toBe("Companion running (read-only): df -h /");
+
+    await act(async () => {
+      finish({
+        answer: "About 97 percent full.",
+        needsClaude: null,
+        commands: [{ command: "df -h /", exitCode: 0, seconds: 0.1, output: "97%" }],
+      });
+      await Promise.resolve();
+    });
+    expect(session.sendToolResponse).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: "k1",
+        name: "check_machine",
+        response: { output: expect.stringContaining("About 97 percent full.") },
+      }),
+    ]);
+    expect(screen.getByRole("status").textContent).toBe("Companion ran (read-only): df -h /");
+    expect(send).not.toHaveBeenCalled();
+    expect(session.stop).not.toHaveBeenCalled();
+  });
+
+  it("words said after the send are not lost: the call waits, then forwards them", async () => {
+    const { delegateSpoken } = await import("@/lib/companionApi");
+    vi.mocked(delegateSpoken).mockResolvedValueOnce({
+      forward: true,
+      english: "Clear the uv cache.",
+      answer: null,
+    });
+    window.localStorage.setItem("omnigent:live-voice-engine", "gemini");
+    renderLiveMic();
+    await clickMic();
+    const session = await startGeminiLive.mock.results[0]?.value;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      await act(async () => {
+        geminiCallbacks.onEvent?.({
+          type: "inputTranscript",
+          text: "Clear that cache, send it to Claude.",
+        });
+        geminiCallbacks.onEvent?.({ type: "toolCall", calls: [{ id: "c1", name: "ask_claude" }] });
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS);
+      });
+      expect(send).toHaveBeenCalledTimes(1);
+      // The goodbye plays; meanwhile they keep talking.
+      await act(async () => {
+        geminiCallbacks.onEvent?.({ type: "outputTranscript", text: "Sent to Claude." });
+        geminiCallbacks.onEvent?.({ type: "turnComplete" });
+        geminiCallbacks.onEvent?.({
+          type: "inputTranscript",
+          text: "And tell it the voice lies about commands.",
+        });
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+      // Not hung up on them mid-sentence.
+      expect(session.stop).not.toHaveBeenCalled();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      expect(session.stop).toHaveBeenCalled();
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(send).toHaveBeenLastCalledWith(
+        "Also, said right after that on the same call: And tell it the voice lies about commands.",
+        "agent_1",
+        undefined,
+        { forceClaude: true },
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("unknown tool name: response sent saying not available and nothing throws", async () => {

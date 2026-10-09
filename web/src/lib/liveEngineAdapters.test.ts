@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const openLiveConversation = vi.fn();
 const startGeminiLive = vi.fn();
@@ -14,6 +14,8 @@ vi.mock("./geminiLive", () => ({
 
 import type { GeminiLiveEvent } from "./geminiLive";
 import {
+  SEND_SETTLE_MAX_MS,
+  SEND_SETTLE_MS,
   gptEngineAdapter,
   geminiEngineAdapter,
   getLiveEngineAdapter,
@@ -69,6 +71,7 @@ describe("liveEngineAdapters", () => {
 
   describe("unmuteEngineAdapter", () => {
     it("runs the Gemini call flow through the Unmute relay, under its own name", async () => {
+      vi.useFakeTimers();
       let opts: {
         endpoint?: string;
         onEvent?: (ev: GeminiLiveEvent) => void;
@@ -93,6 +96,7 @@ describe("liveEngineAdapters", () => {
       opts.onEvent?.({ type: "toolCall", calls: [{ id: "c1", name: "ask_claude" }] });
       expect(onDelegation).not.toHaveBeenCalled();
       opts.onEvent?.({ type: "toolCall", calls: [{ id: "c2", name: "ask_claude" }] });
+      await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS);
       expect(onDelegation).toHaveBeenCalledTimes(1);
       opts.onStateChange?.({ state: "not-hearing" });
       expect(onNotice).toHaveBeenLastCalledWith(
@@ -105,6 +109,7 @@ describe("liveEngineAdapters", () => {
       await unmuteEngineAdapter.open("session_u", { onUtterance: vi.fn(), onDelegation: vi.fn() });
       window.localStorage.removeItem("omnigent:unmute-voice");
       expect(opts.endpoint).toBe("/v1/live/unmute/ws?voice=ex03-happy");
+      vi.useRealTimers();
     });
   });
 
@@ -171,6 +176,7 @@ describe("liveEngineAdapters", () => {
     });
 
     it("asks before the first handoff, and sends on the second call", async () => {
+      vi.useFakeTimers();
       const onUtterance = vi.fn();
       const onDelegation = vi.fn();
       await geminiEngineAdapter.open("session_2", { onUtterance, onDelegation });
@@ -194,11 +200,15 @@ describe("liveEngineAdapters", () => {
       // They say yes, the model asks again: now it goes, with the words that
       // prompted it still attached.
       capturedOpts.onEvent?.({ type: "toolCall", calls: [{ id: "c2", name: "ask_claude" }] });
+      await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS);
       expect(onDelegation).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS);
       expect(onDelegation).toHaveBeenCalledWith("c2", "Can you check the docs?");
+      vi.useRealTimers();
     });
 
     it("sends at once when the voice already asked and the reader said yes", async () => {
+      vi.useFakeTimers();
       const onDelegation = vi.fn();
       await geminiEngineAdapter.open("session_2", { onUtterance: vi.fn(), onDelegation });
       const say = (text: string) => {
@@ -213,11 +223,15 @@ describe("liveEngineAdapters", () => {
       say("Okay, sending it now.");
       capturedOpts.onEvent?.({ type: "toolCall", calls: [{ id: "c1", name: "ask_claude" }] });
 
+      await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS);
+
       expect(onDelegation).toHaveBeenCalledTimes(1);
       expect(currentSession.sendToolResponse).not.toHaveBeenCalled();
+      vi.useRealTimers();
     });
 
     it("sends at once when the reader asked for it themselves", async () => {
+      vi.useFakeTimers();
       // 10-07: "can you ask Claude about that?" drew "do you want me to send
       // that to Claude?", and the page then made it ask a second time.
       const onDelegation = vi.fn();
@@ -229,11 +243,15 @@ describe("liveEngineAdapters", () => {
       });
       capturedOpts.onEvent?.({ type: "toolCall", calls: [{ id: "c1", name: "ask_claude" }] });
 
+      await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS);
+
       expect(onDelegation).toHaveBeenCalledTimes(1);
       expect(currentSession.sendToolResponse).not.toHaveBeenCalled();
+      vi.useRealTimers();
     });
 
     it("takes a yes to an offer to send that was cut off mid-question", async () => {
+      vi.useFakeTimers();
       const onDelegation = vi.fn();
       await geminiEngineAdapter.open("session_2", { onUtterance: vi.fn(), onDelegation });
 
@@ -246,8 +264,11 @@ describe("liveEngineAdapters", () => {
       capturedOpts.onEvent?.({ type: "inputTranscript", text: "Yes." });
       capturedOpts.onEvent?.({ type: "toolCall", calls: [{ id: "c1", name: "ask_claude" }] });
 
+      await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS);
+
       expect(onDelegation).toHaveBeenCalledTimes(1);
       expect(currentSession.sendToolResponse).not.toHaveBeenCalled();
+      vi.useRealTimers();
     });
 
     it("still asks when the reader turned the question down or it moved on", async () => {
@@ -474,6 +495,7 @@ describe("liveEngineAdapters", () => {
     });
 
     it("handles toolCall ask_claude by invoking onDelegation", async () => {
+      vi.useFakeTimers();
       const onDelegation = vi.fn();
       await geminiEngineAdapter.open("session_2", {
         onUtterance: vi.fn(),
@@ -494,10 +516,14 @@ describe("liveEngineAdapters", () => {
         ],
       });
 
+      await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS);
+
       expect(onDelegation).toHaveBeenCalledWith("call_a", "how does this work?");
+      vi.useRealTimers();
     });
 
     it("delegates the reader's own words, not the model's paraphrase", async () => {
+      vi.useFakeTimers();
       const onDelegation = vi.fn();
       await geminiEngineAdapter.open("session_2", {
         onUtterance: vi.fn(),
@@ -515,6 +541,8 @@ describe("liveEngineAdapters", () => {
         calls: [{ id: "call_v", name: "ask_claude", args: { question: "Build a UI feature" } }],
       });
 
+      await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS);
+
       expect(onDelegation).toHaveBeenCalledWith(
         "call_v",
         "I want the Grok pill, with the history. Can you ask Claude?",
@@ -526,10 +554,13 @@ describe("liveEngineAdapters", () => {
         type: "toolCall",
         calls: [{ id: "call_w", name: "ask_claude", args: { question: "Codex" } }],
       });
+      await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS);
       expect(onDelegation).toHaveBeenLastCalledWith("call_w", "And the Codex one.");
+      vi.useRealTimers();
     });
 
     it("uses readerBuf fallback when args.question is empty", async () => {
+      vi.useFakeTimers();
       const onDelegation = vi.fn();
       await geminiEngineAdapter.open("session_2", {
         onUtterance: vi.fn(),
@@ -551,7 +582,10 @@ describe("liveEngineAdapters", () => {
         ],
       });
 
+      await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS);
+
       expect(onDelegation).toHaveBeenCalledWith("call_c", "what is the status?");
+      vi.useRealTimers();
     });
 
     it("rejects unknown tool calls directly without onDelegation", async () => {
@@ -580,6 +614,92 @@ describe("liveEngineAdapters", () => {
           name: "unknown_tool",
           response: { output: "Tool 'unknown_tool' is not available." },
         },
+      ]);
+    });
+  });
+
+  describe("waiting for the reader before a send, and looking things up", () => {
+    let opts: { onEvent?: (ev: GeminiLiveEvent) => void } = {};
+    let session: ReturnType<typeof fakeGeminiSession>;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      session = fakeGeminiSession();
+      startGeminiLive.mockImplementation((o: typeof opts) => {
+        opts = o;
+        return Promise.resolve(session);
+      });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("keeps the words said after asking for the send", async () => {
+      const onDelegation = vi.fn();
+      await geminiEngineAdapter.open("s_trail", { onUtterance: vi.fn(), onDelegation });
+      // 10-09: "send this to Claude, and also tell him ..." lost the second half.
+      opts.onEvent?.({ type: "inputTranscript", text: "Send this to Claude" });
+      opts.onEvent?.({ type: "toolCall", calls: [{ id: "c1", name: "ask_claude" }] });
+      await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS - 500);
+      opts.onEvent?.({ type: "inputTranscript", text: ", and also tell him the voice" });
+      await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS - 500);
+      opts.onEvent?.({ type: "inputTranscript", text: " claims commands it never ran." });
+      // Still talking, so nothing has gone yet.
+      await vi.advanceTimersByTimeAsync(SEND_SETTLE_MS - 500);
+      expect(onDelegation).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(600);
+      expect(onDelegation).toHaveBeenCalledWith(
+        "c1",
+        "Send this to Claude, and also tell him the voice claims commands it never ran.",
+      );
+    });
+
+    it("does not wait forever on a reader who never stops", async () => {
+      const onDelegation = vi.fn();
+      await geminiEngineAdapter.open("s_noisy", { onUtterance: vi.fn(), onDelegation });
+      opts.onEvent?.({ type: "inputTranscript", text: "Send it to Claude" });
+      opts.onEvent?.({ type: "toolCall", calls: [{ id: "c1", name: "ask_claude" }] });
+      // A word every second, for longer than the cap.
+      const timer = setInterval(() => {
+        opts.onEvent?.({ type: "inputTranscript", text: " and" });
+      }, 1000);
+      await vi.advanceTimersByTimeAsync(SEND_SETTLE_MAX_MS);
+      clearInterval(timer);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(onDelegation).toHaveBeenCalledTimes(1);
+    });
+
+    it("hands check_machine to the companion and answers under its own name", async () => {
+      const onCheck = vi.fn();
+      const onDelegation = vi.fn();
+      const handle = await geminiEngineAdapter.open("s_check", {
+        onUtterance: vi.fn(),
+        onDelegation,
+        onCheck,
+      });
+      opts.onEvent?.({ type: "inputTranscript", text: "how full is the disk?" });
+      opts.onEvent?.({
+        type: "toolCall",
+        calls: [{ id: "k1", name: "check_machine", args: { question: "disk usage" } }],
+      });
+      // No confirmation question and no send: looking does not end the call.
+      expect(onCheck).toHaveBeenCalledWith("k1", "disk usage");
+      expect(session.sendToolResponse).not.toHaveBeenCalled();
+      handle.speakBack("k1", "Looked it up: 97% used.");
+      expect(session.sendToolResponse).toHaveBeenCalledWith([
+        { id: "k1", name: "check_machine", response: { output: "Looked it up: 97% used." } },
+      ]);
+      await vi.advanceTimersByTimeAsync(SEND_SETTLE_MAX_MS);
+      expect(onDelegation).not.toHaveBeenCalled();
+      expect(session.stop).not.toHaveBeenCalled();
+    });
+
+    it("refuses check_machine on a page that cannot answer it", async () => {
+      await geminiEngineAdapter.open("s_nocheck", { onUtterance: vi.fn(), onDelegation: vi.fn() });
+      opts.onEvent?.({ type: "toolCall", calls: [{ id: "k2", name: "check_machine" }] });
+      expect(session.sendToolResponse).toHaveBeenCalledWith([
+        expect.objectContaining({ id: "k2", name: "check_machine" }),
       ]);
     });
   });

@@ -305,3 +305,15 @@ def test_narration_decisions_are_bounded(client):
     """A page bug must not be able to write arbitrarily long log lines."""
     response = client.post("/v1/narration/decision", json={"path": "p", "decision": "x" * 500})
     assert response.status_code == 422
+
+
+def test_a_voice_with_check_machine_is_told_it_can_run_nothing_itself():
+    """09 Oct: the voice said "I'm running that cache cleanup now" with no tool call."""
+    from omnigent.server.discussion import voice_briefing
+
+    with_check = voice_briefing(None, can_check=True)
+    assert "check_machine" in with_check
+    assert "cannot run" in with_check
+    assert "unless you called check_machine or ask_claude" in with_check
+    # A voice without the tool (GPT Live) is not told about it.
+    assert "check_machine" not in voice_briefing(None)
