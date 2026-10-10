@@ -39,6 +39,19 @@ inherited OMNIGENT_* vars otherwise leak into it). Not yet tried by the user.
 Routing/watch details unchanged from b233241c5: recent top-level sessions (7 d, max 8),
 nicknames audio/amarras/brasa, watch reports finished / approval / never started.
 
+**All three engines are the hub's voice (2fdc8985e + ~/unmute 02201b4, live 10-10 ~13:20).**
+GPT Live: offer route sees the hub conversation → `voice_hub.DELEGATING_HUB_ROLE` briefing,
+`hub=true`; page sends each delegation to `POST /v1/hub/voice` (`Hub.ask`, call transcript as
+context; the 🎙 request + answer land in the chat), speaks the answer, keeps the call open, and
+long-polls `GET /v1/hub/updates` → `session.commentary.append` with `delegation_id: null`
+(**unverified live**: docs don't promise null-delegation commentary is spoken; fallback would be
+`session.instructions.append`). Unmute: relay recognizes the hub conversation or `mode=hub`,
+briefs + `voice_hub.openai_tools(HUB_TOOLS)` run server-side (`unmute_live.run_hub_tool`), news
+folded into the next reply and triggered with `unmute.response.create` (local fork patch,
+verified directly: no reply in 4 s of silence, reply 0.2 s after the request). Sidebar voice hub
+follows the chosen engine (GPT rides the hub conversation's call). Not verified end to end with a
+real call on GPT or Unmute (WS/offer need the user's cookie).
+
 **Long calls (c6d1e21ac, live).** Setup asks for `sessionResumption` +
 `contextWindowCompression.slidingWindow`; relay swaps to a resumed connection on goAway
 or a drop (page never sees it). Verified against Google: 3.8 Live gives a handle and
