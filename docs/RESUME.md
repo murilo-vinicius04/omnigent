@@ -16,6 +16,26 @@ Keep it current before going idle. If something here is stale, fix it here.
 
 ## 2026-10-10 — READ FIRST (the hub conversation; session d9653808)
 
+**Where we are (13:30).** The hub = ONE pinned conversation "Hub" that runs every session
+(typed or voice, any engine). All shipped and live; **nothing tried by the user yet** —
+the next step is their feedback. Open items: (1) GPT Live news uses null-delegation
+`session.commentary.append` — if the voice stays silent when a session finishes, switch to
+`session.instructions.append` in `web/src/lib/liveVoice.ts::announce`; (2) the hub prewarms
+an agy companion for its own conversation on every call start (small Gemini waste,
+`liveConversation.start` → `prewarmCompanion`); (3) right rail shows "No files in workspace"
+for the hub (cosmetic); (4) Unmute speaks English only. Commits today: f68e703dc, b233241c5,
+c6d1e21ac, baf20924b, 2fdc8985e (+ `~/unmute` 02201b4).
+
+**Rules in force.** Answer in English; no Claude co-author trailers. Ask before spending
+worker quota (name the model); never resume benchmarks unasked. Server restart is fine
+(`XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+systemctl --user restart omnigent-server.service`), not mid-benchmark; host restart needs a
+yes. Build the page only from a clean `git archive HEAD web` copy (scratchpad dir, symlink
+`web/node_modules`, `npx vite build`, rsync `static/web-ui/` excluding `voice-ab/`): the other
+session's uncommitted files (acp_*, runner/app.py, routes_core.py, schemas.py, openapi.json,
+ChatPage.tsx, chatStore.ts, acpPermissionMode.ts) must never be committed or shipped; commit
+only your own hunks (`git update-index --cacheinfo` trick for runner/app.py).
+
 **User, 17:00:** go full throttle on the hub and Omnigent; benchmarks allowed but
 careful with quota (they still have to work this week). Router may use Gemini 3.7 Flash.
 Benchmarks still stopped: `dswe-luna6` has 7 tasks left in `~/deepswe/luna6_17.queue`;
