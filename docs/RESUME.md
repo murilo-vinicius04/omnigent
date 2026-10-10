@@ -26,6 +26,17 @@ an agy companion for its own conversation on every call start (small Gemini wast
 for the hub (cosmetic); (4) Unmute speaks English only. Commits today: f68e703dc, b233241c5,
 c6d1e21ac, baf20924b, 2fdc8985e (+ `~/unmute` 02201b4).
 
+**13:30 → model control (2b1f686c2, live).** User: "the Hub needs to give full control to
+the user and display everything clearly in the UI." Done: the hub reads each session's own
+snapshot (`omnigent/server/hub_models.py`: provider, reported model, requested model,
+effort, the session's own model/effort lists); router action `{"model": h, "to", "effort"}`,
+voice tool `set_model`, `POST /v1/hub/model`; a **Sessions** tab is the hub's whole right
+rail (status, step, approvals, provider + Switch agent dialog, model/effort pickers; every
+pick is checked and logged in the hub chat). Real router 3/3 on a scratch server. Next,
+not started: the user wants **auto-compact when changing models/provider** (and can't
+switch provider in a normal chat: `SwitchAgentDialog` exists but is unmounted); compact =
+`{"type":"compact"}` event, native harnesses only. Item (3) above is fixed.
+
 **Rules in force.** Answer in English; no Claude co-author trailers. Ask before spending
 worker quota (name the model); never resume benchmarks unasked. Server restart is fine
 (`XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
