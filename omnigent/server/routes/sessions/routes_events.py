@@ -38,7 +38,7 @@ from omnigent.runtime import (
 )
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.runtime.policies.approval import _ELICITATION_MODE
-from omnigent.server import presence
+from omnigent.server import hub_chat, presence
 from omnigent.server._elicitation_registry import (
     _harness_elicitation_owners,
     _harness_elicitation_registry,
@@ -629,6 +629,19 @@ def register_events_routes(
                 conversation_store=conversation_store,
                 runner_router=runner_router,
             )
+        # The hub has no runner: the server answers what is typed into it.
+        if hub_chat.is_hub(conv):
+            if body.type == "message":
+                return await hub_chat.accept_message(
+                    conv=conv,
+                    body=body,
+                    conversation_store=conversation_store,
+                    user_id=user_id,
+                    created_by=created_by,
+                    app=request.app,
+                    headers=request.headers,
+                )
+            return {"queued": False}
         # ── Policy evaluation (path-agnostic) ────────────────
         # Evaluate policies BEFORE persistence/runner forwarding so
         # enforcement fires on both paths. On DENY, persist the

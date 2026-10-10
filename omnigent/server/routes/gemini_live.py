@@ -34,7 +34,7 @@ from fastapi import (
 )
 from starlette import status
 
-from omnigent.server import gemini_live, voice_hub
+from omnigent.server import gemini_live, hub_chat, voice_hub
 from omnigent.server import hub as hub_module
 from omnigent.server.auth import AuthProvider
 from omnigent.server.discussion import DiscussionRegistry, registry, voice_briefing
@@ -357,24 +357,20 @@ def create_gemini_live_router(
     connect = upstream_connect or _default_connect
     companions = registry_provider or registry
 
-    def _hub(websocket: WebSocket) -> hub_module.Hub:
-        """The caller's hub, bound to this call's credentials for sending."""
+    def _hub(websocket: WebSocket, chat_id: str | None) -> hub_module.Hub:
+        """The caller's hub, writing into its conversation, sending as the caller."""
         user_id = auth_provider.get_user_id(websocket) if auth_provider is not None else None
         hub = hub_module.hub_for(user_id)
+        hub_chat.attach(hub, conversation_store, chat_id or hub_chat.known_hub_id(user_id))
         # Sends go through the app's own events route, as the page's do, with
         # the caller's credentials: one dispatch path, one set of checks.
-        hub.bind(
-            hub_module.store_backend(
-                conversation_store,
-                user_id=user_id,
-                app=websocket.app,
-                headers={
-                    k: v
-                    for k, v in websocket.headers.items()
-                    if k in ("cookie", "authorization", "x-forwarded-email", "origin")
-                },
-                companions=companions,
-            )
+        hub_chat.bind_request(
+            hub,
+            conversation_store=conversation_store,
+            user_id=user_id,
+            app=websocket.app,
+            headers=websocket.headers,
+            companions=companions,
         )
         return hub
 
@@ -413,6 +409,15 @@ def create_gemini_live_router(
         mode = (mode_param or "").strip().lower()
         narrating = mode == "narrate"
         hub = mode == "hub"
+        # The voice button inside the hub conversation is the hub's voice.
+        hub_conv_id: str | None = None
+        if not hub and session_id_clean and conversation_store is not None:
+            with contextlib.suppress(Exception):
+                conv = await asyncio.to_thread(
+                    conversation_store.get_conversation, session_id_clean
+                )
+                if conv is not None and hub_chat.is_hub(conv):
+                    hub, hub_conv_id = True, session_id_clean
         if hub and conversation_store is None:
             with contextlib.suppress(RuntimeError):
                 await websocket.close(
@@ -424,7 +429,7 @@ def create_gemini_live_router(
         briefed = False
         the_hub: hub_module.Hub | None = None
         if hub:
-            the_hub = _hub(websocket)
+            the_hub = _hub(websocket, hub_conv_id)
             try:
                 hub_sessions = await the_hub.sessions()
             except Exception:  # noqa: BLE001 - a hub with no list still routes

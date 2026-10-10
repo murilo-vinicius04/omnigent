@@ -701,6 +701,26 @@ describe("liveEngineAdapters", () => {
       expect(session.sendToolResponse).not.toHaveBeenCalled();
     });
 
+    it("in the hub conversation, leaves every tool to the relay and keeps the call", async () => {
+      const onDelegation = vi.fn();
+      const onCheck = vi.fn();
+      await geminiEngineAdapter.open("s_hub", { onUtterance: vi.fn(), onDelegation, onCheck });
+      opts.onEvent?.({ type: "session", model: "gemini-3.8-live", toolsBlock: false, hub: true });
+      opts.onEvent?.({ type: "inputTranscript", text: "manda a brasa rodar os testes" });
+      opts.onEvent?.({
+        type: "toolCall",
+        calls: [
+          { id: "h1", name: "ask_claude", args: { session: "brasa", message: "run the tests" } },
+          { id: "h2", name: "check_machine", args: { session: "brasa", question: "disk" } },
+        ],
+      });
+      await vi.advanceTimersByTimeAsync(SEND_SETTLE_MAX_MS);
+      expect(session.sendToolResponse).not.toHaveBeenCalled();
+      expect(onCheck).not.toHaveBeenCalled();
+      expect(onDelegation).not.toHaveBeenCalled();
+      expect(session.stop).not.toHaveBeenCalled();
+    });
+
     it("refuses check_machine on a page that cannot answer it", async () => {
       await geminiEngineAdapter.open("s_nocheck", { onUtterance: vi.fn(), onDelegation: vi.fn() });
       opts.onEvent?.({ type: "toolCall", calls: [{ id: "k2", name: "check_machine" }] });

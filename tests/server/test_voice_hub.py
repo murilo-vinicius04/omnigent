@@ -387,3 +387,33 @@ def test_no_stores_no_hub(monkeypatch, tmp_path) -> None:
             with pytest.raises(WebSocketDisconnect) as closed:
                 ws.receive_text()
     assert closed.value.code == 1008
+
+
+def test_the_voice_button_inside_the_hub_chat_is_the_hub(monkeypatch, tmp_path) -> None:
+    upstream = _FakeUpstream()
+    app = _hub_app(monkeypatch, tmp_path, upstream)
+    hub_conv = SimpleNamespace(
+        id="s-hubchat",
+        title="Hub",
+        workspace=None,
+        live_status="idle",
+        updated_at=time.time(),
+        pending_elicitation_count=0,
+        labels={"omnigent.hub": "1"},
+    )
+    original = _Stores.get_conversation
+
+    def get_conversation(self, session_id):
+        return hub_conv if session_id == "s-hubchat" else original(self, session_id)
+
+    monkeypatch.setattr(_Stores, "get_conversation", get_conversation)
+    with TestClient(app) as tc:
+        with tc.websocket_connect("/v1/live/gemini/ws?session_id=s-hubchat") as ws:
+            hello = json.loads(ws.receive_text())
+            assert hello["omnigentSession"]["hub"] is True
+            _wait_for(lambda: upstream.sent)
+    setup = json.loads(upstream.sent[0])["setup"]
+    names = [d["name"] for d in setup["tools"][0]["functionDeclarations"]]
+    assert names == ["session_status", "ask_claude", "check_machine"]
+    # What the hub says on this call is written into the hub conversation.
+    assert hub_module._HUBS["local"].chat.session_id == "s-hubchat"

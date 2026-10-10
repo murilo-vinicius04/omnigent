@@ -26,13 +26,15 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Final, Literal
 
+from omnigent.process_logging import data_dir
 from omnigent.server import voice_hub
 from omnigent.server.discussion import DiscussionSession, DiscussionUnavailable
 
 _logger = logging.getLogger(__name__)
 
-#: Where each user's hub log and session nicknames are kept.
-HUB_DIR: Final[pathlib.Path] = pathlib.Path.home() / ".omnigent" / "hub"
+#: Where each user's hub log, nicknames and conversation id are kept: beside
+#: the server's database, since the conversation id belongs to that database.
+HUB_DIR: Final[pathlib.Path] = data_dir() / "hub"
 
 #: The router's model when ``OMNIGENT_HUB_MODEL`` is unset.
 DEFAULT_HUB_MODEL: Final[str] = "gemini-3.7-flash-medium"
@@ -528,6 +530,9 @@ class Hub:
         self._watches: dict[str, asyncio.Task[None]] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._poll_s = poll_s
+        #: The hub's conversation, when it has one: what the hub says is
+        #: written there too (:class:`omnigent.server.hub_chat.HubConversation`).
+        self.chat: Any = None
 
     def bind(self, backend: HubBackend) -> None:
         """Use this backend from now on; the newest request's wins."""
@@ -559,16 +564,25 @@ class Hub:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    def _say(self, text: str, **fields: Any) -> HubEntry:
-        return self.state.append(role="hub", text=text, **{"kind": "message", **fields})
+    def say(self, text: str, **fields: Any) -> HubEntry:
+        """Log a line from the hub and write it into its conversation."""
+        entry = self.state.append(role="hub", text=text, **{"kind": "message", **fields})
+        if self.chat is not None:
+            self.chat.post(entry)
+        return entry
 
     async def _handle(self, text: str, via: str) -> None:
         async with self._busy:
+            if self.chat is not None:
+                self.chat.busy(True)
             try:
                 await self._answer(text, via)
             except Exception:  # noqa: BLE001 - the chat must always get a reply
                 _logger.warning("hub message failed", exc_info=True)
-                self._say("Something went wrong on my side; nothing was sent.", kind="error")
+                self.say("Something went wrong on my side; nothing was sent.", kind="error")
+            finally:
+                if self.chat is not None:
+                    self.chat.busy(False)
 
     async def _answer(self, text: str, via: str) -> None:
         sessions = await self.sessions()
@@ -579,7 +593,7 @@ class Hub:
             reply = await router.decide(prompt, said=text, timeout_s=ROUTE_TIMEOUT_S)
         except DiscussionUnavailable as exc:
             _logger.warning("hub router unavailable: %s", exc)
-            self._say(
+            self.say(
                 "I can't think right now (the Gemini router is not answering), so "
                 "nothing was sent. Try again in a moment, or type it in the session.",
                 kind="error",
@@ -607,7 +621,7 @@ class Hub:
         if decision.action in ("send", "status", "check") and target is None:
             names = ", ".join(s.name for s in sessions) or "none"
             said = f"I couldn't tell which session you mean. Your sessions: {names}."
-            self._say(said)
+            self.say(said)
             router.remember(said)
             return
         if decision.action == "send" and target is not None:
@@ -623,24 +637,24 @@ class Hub:
                 answer = parse_decision(follow).text or follow.strip()
             except DiscussionUnavailable:
                 answer = activity
-            self._say(answer, kind="status", session_id=target.id, session_name=target.name)
+            self.say(answer, kind="status", session_id=target.id, session_name=target.name)
             router.remember(f"{target.name}: {answer}")
             return
         if decision.action == "check" and target is not None:
-            self._say(
+            self.say(
                 f"Checking on {target.name}…",
                 kind="check",
                 session_id=target.id,
                 session_name=target.name,
             )
             found = await self.require_backend().check(target.id, decision.message or text)
-            self._say(found, kind="check", session_id=target.id, session_name=target.name)
+            self.say(found, kind="check", session_id=target.id, session_name=target.name)
             router.remember(f"checked {target.name}: {found}")
             return
         said = decision.text or (
             "I didn't understand that well enough to act on it; nothing was sent."
         )
-        self._say(said)
+        self.say(said)
         router.remember(said)
 
     async def send_to(
@@ -652,13 +666,13 @@ class Hub:
             await self.require_backend().send(session.id, message)
         except Exception as exc:  # noqa: BLE001 - say it failed, never pretend
             _logger.warning("hub send to %s failed", session.id, exc_info=True)
-            return self._say(
+            return self.say(
                 f"Sending to {session.name} failed ({type(exc).__name__}); nothing was sent.",
                 kind="error",
                 session_id=session.id,
                 session_name=session.name,
             )
-        entry = self._say(
+        entry = self.say(
             say or f"Sent to {session.name}.",
             kind="sent",
             via=via,
@@ -691,7 +705,7 @@ class Hub:
                 state = await self.require_backend().turn(session.id, sent_at)
                 if state.pending_approvals and not told_approval:
                     told_approval = True
-                    self._say(
+                    self.say(
                         f"{session.name} is waiting for your approval.",
                         kind="attention",
                         session_id=session.id,
@@ -708,7 +722,7 @@ class Hub:
                     await self._report(session, state.reply)
                     return
                 if seen_working and idle_polls >= 6:
-                    self._say(
+                    self.say(
                         f"{session.name} finished without writing a reply.",
                         kind="finished",
                         session_id=session.id,
@@ -716,7 +730,7 @@ class Hub:
                     )
                     return
                 if not seen_working and time.monotonic() - started > NOT_STARTED_S:
-                    self._say(
+                    self.say(
                         f"{session.name} hasn't started on it yet. It may need you to open it.",
                         kind="attention",
                         session_id=session.id,
@@ -741,7 +755,7 @@ class Hub:
             ).strip()
         except DiscussionUnavailable:
             told = _short(reply, 300)
-        self._say(
+        self.say(
             f"{session.name} finished: {told}",
             kind="finished",
             session_id=session.id,
@@ -880,6 +894,7 @@ def store_backend(
     app: Any,
     headers: dict[str, str],
     companions: Callable[[], Any],
+    exclude: set[str] | frozenset[str] = frozenset(),
 ) -> HubBackend:
     """The hub's backend over the server's own stores and routes.
 
@@ -888,6 +903,7 @@ def store_backend(
     :param app: The ASGI app, for sending through its own events route.
     :param headers: The caller's credentials, forwarded on sends.
     :param companions: The companion registry, for summaries and checks.
+    :param exclude: Sessions never offered, such as the hub's own conversation.
     """
     details: dict[str, tuple[float, dict[str, Any]]] = {}
 
@@ -918,7 +934,7 @@ def store_backend(
     async def sessions() -> list[HubSession]:
         page = await asyncio.to_thread(
             conversation_store.list_conversations,
-            limit=MAX_SESSIONS,
+            limit=MAX_SESSIONS + len(exclude),
             owned_by=user_id,
             sort_by="updated_at",
             order="desc",
@@ -926,9 +942,14 @@ def store_backend(
         cutoff = time.time() - RECENT_S
         out: list[HubSession] = []
         for conv in page.data:
+            labels = getattr(conv, "labels", None) or {}
+            if conv.id in exclude or labels.get("omnigent.hub") == "1":
+                continue
             updated = float(getattr(conv, "updated_at", 0) or 0)
             if updated and updated < cutoff:
                 continue
+            if len(out) >= MAX_SESSIONS:
+                break
             found = await asyncio.to_thread(_details, conv.id, updated)
             status = live_status(conv.id, getattr(conv, "live_status", None))
             now = ""

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from types import SimpleNamespace
 
@@ -451,36 +450,36 @@ async def test_a_turn_reply_is_the_newest_assistant_message_since_the_send() -> 
     assert (await backend.turn(AMARRAS, 100.0)).reply == ""
 
 
-# -- the routes ------------------------------------------------------------------
-
-
-def test_the_page_posts_a_message_and_polls_the_answer(tmp_path, monkeypatch) -> None:
-    router = _Router('{"answer": "Oi! Tudo certo."}')
-    monkeypatch.setattr(hub_module, "_HUBS", {})
-
-    async def factory():
-        return router
-
-    hub_module._HUBS["local"] = Hub(
-        "local", router_factory=factory, state=HubState("local", root=tmp_path), poll_s=0.01
+async def test_the_hub_never_offers_itself_or_an_excluded_session() -> None:
+    store = _ConvStore()
+    now = time.time()
+    store.convs.insert(
+        0,
+        SimpleNamespace(
+            id="hubconv",
+            title="Hub",
+            updated_at=now,
+            live_status="idle",
+            workspace=None,
+            pending_elicitation_count=0,
+            labels={"omnigent.hub": "1"},
+        ),
     )
-    app = FastAPI()
-    app.include_router(create_hub_router(conversation_store=_ConvStore()), prefix="/v1")
-    with TestClient(app) as tc:
-        first = tc.get("/v1/hub").json()
-        assert first["entries"] == [] and first["last_id"] == 0
-        assert [s["name"] for s in first["sessions"]] == ["Project Analysis"]
-        assert first["sessions"][0]["working"] is True
+    sessions = await _store_backend(store).sessions()
+    assert [s.id for s in sessions] == [AMARRAS]
+    registry = DiscussionRegistry()
+    backend = hub_module.store_backend(
+        store,
+        user_id="morys5",
+        app=None,
+        headers={},
+        companions=lambda: registry,
+        exclude={AMARRAS},
+    )
+    assert [s.id for s in await backend.sessions()] == []
 
-        posted = tc.post("/v1/hub/messages", json={"text": "oi"})
-        assert posted.status_code == 202
-        assert posted.json()["role"] == "you" and posted.json()["id"] == 1
 
-        got = tc.get("/v1/hub/entries", params={"after": 1, "wait": 5}).json()
-        assert [(e["role"], e["text"]) for e in got["entries"]] == [("hub", "Oi! Tudo certo.")]
-        assert tc.post("/v1/hub/messages", json={"text": "   "}).status_code == 422
-    persisted = (tmp_path / "local" / "log.jsonl").read_text().splitlines()
-    assert [json.loads(line)["text"] for line in persisted] == ["oi", "Oi! Tudo certo."]
+# -- the routes ------------------------------------------------------------------
 
 
 def test_the_hub_needs_a_signed_in_user(tmp_path) -> None:
@@ -490,8 +489,10 @@ def test_the_hub_needs_a_signed_in_user(tmp_path) -> None:
 
     app = FastAPI()
     app.include_router(
-        create_hub_router(auth_provider=_NoUser(), conversation_store=_ConvStore()), prefix="/v1"
+        create_hub_router(
+            auth_provider=_NoUser(), conversation_store=_ConvStore(), artifact_store=object()
+        ),
+        prefix="/v1",
     )
     with TestClient(app) as tc:
         assert tc.get("/v1/hub").status_code == 401
-        assert tc.post("/v1/hub/messages", json={"text": "oi"}).status_code == 401

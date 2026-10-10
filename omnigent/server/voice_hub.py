@@ -308,8 +308,7 @@ async def run_hub_tool(hub: Hub, name: str, args: dict[str, Any]) -> tuple[str, 
         if name == "check_machine":
             question = str(args.get("question", "")).strip()
             found = await backend.check(session.id, question)
-            hub.state.append(
-                role="hub",
+            hub.say(
                 kind="check",
                 text=found,
                 via="voice",

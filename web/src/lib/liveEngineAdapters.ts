@@ -249,6 +249,7 @@ function relayedEngineAdapter(
         settleClosed();
       };
 
+      let relayAnswersTools = false;
       const handleEvent = (ev: GeminiLiveEvent): void => {
         if (ev.type === "inputTranscript") {
           if (ev.text.trim()) callbacks.onSpeech?.("reader");
@@ -271,10 +272,13 @@ function relayedEngineAdapter(
             waitForTurnCompleteResolve();
             waitForTurnCompleteResolve = null;
           }
+        } else if (ev.type === "session") {
+          // In the hub conversation the relay runs every tool itself.
+          relayAnswersTools = ev.hub;
         } else if (ev.type === "toolCall") {
           for (const call of ev.calls) {
             // The relay answers these itself; a reply from here would be a second one.
-            if (SERVER_TOOLS.has(call.name)) continue;
+            if (relayAnswersTools || SERVER_TOOLS.has(call.name)) continue;
             if (call.id) toolNames.set(call.id, call.name);
             if (call.name === "check_machine" && callbacks.onCheck) {
               const asked =

@@ -2712,7 +2712,12 @@ def create_app(
     )
     # The hub: one chat per user that routes to their sessions.
     app.include_router(
-        create_hub_router(auth_provider=auth_provider, conversation_store=conversation_store),
+        create_hub_router(
+            auth_provider=auth_provider,
+            conversation_store=conversation_store,
+            artifact_store=artifact_store,
+            permission_store=permission_store,
+        ),
         prefix="/v1",
         tags=["hub"],
     )
