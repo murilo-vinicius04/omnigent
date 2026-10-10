@@ -149,3 +149,37 @@ def test_a_long_reply_is_cut_and_points_at_its_session() -> None:
 )
 def test_links_use_the_address_the_reader_opened(headers, expected) -> None:
     assert hub_chat.base_url(headers) == expected
+
+
+async def test_a_voice_hands_the_hub_what_was_said_and_gets_what_to_say(client, _hub_home) -> None:
+    session_id = (await client.get("/v1/hub")).json()["session_id"]
+    res = await client.post(
+        "/v1/hub/voice",
+        json={"text": "tudo certo por aí?", "context": "Me: oi\nVoice: Oi!"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["say"] == "Oi! Nenhuma sessão por aqui ainda."
+    # What was said on the call, and the hub's answer, show in the hub too.
+    items = await _items(client, session_id)
+    said = [(i["role"], i["content"][0]["text"]) for i in items if i["type"] == "message"]
+    assert said == [
+        ("user", "🎙 tudo certo por aí?"),
+        ("assistant", "Oi! Nenhuma sessão por aqui ainda."),
+    ]
+    assert _hub_home == ["tudo certo por aí?"]
+
+
+async def test_the_call_hears_only_news_from_after_it_opened(client, _hub_home) -> None:
+    await client.get("/v1/hub")
+    hub = hub_module._HUBS["local"]
+    hub.say("brasa finished: old news.", kind="finished", session_id="s1", session_name="brasa")
+    opened_at = (await client.get("/v1/hub")).json()["last_id"]
+    hub.say("Sent to amarras.", kind="sent", session_id="s2", session_name="amarras")
+    hub.say("amarras finished: green.", kind="finished", session_id="s2", session_name="amarras")
+    res = await client.get("/v1/hub/updates", params={"after": opened_at, "wait": 0})
+    body = res.json()
+    assert [u["text"] for u in body["updates"]] == ["amarras finished: green."]
+    assert body["last_id"] == opened_at + 2
+    # Nothing new: the long-poll returns empty when its wait runs out.
+    quiet = await client.get("/v1/hub/updates", params={"after": body["last_id"], "wait": 0.05})
+    assert quiet.json() == {"updates": [], "last_id": body["last_id"]}

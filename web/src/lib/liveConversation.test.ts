@@ -29,18 +29,35 @@ vi.mock("./companionApi", () => ({
   prewarmCompanion: (sessionId: string) => prewarmCompanion(sessionId),
 }));
 
+const askHubByVoice = vi.fn(async (_text: string, _context: string) => "Mandei pra brasa.");
+const hubLastId = vi.fn(async () => 7);
+const hubUpdates = vi.fn(
+  async (_after: number, _waitS: number): Promise<{ updates: unknown[]; lastId: number }> =>
+    new Promise(() => {}),
+);
+vi.mock("./hubApi", () => ({
+  askHubByVoice: (text: string, context: string) => askHubByVoice(text, context),
+  hubLastId: () => hubLastId(),
+  hubUpdates: (after: number, waitS: number) => hubUpdates(after, waitS),
+}));
+
 const send = vi.fn(async (_text: string, _agentId: string) => {});
 vi.mock("@/store/chatStore", () => ({
   useChatStore: { getState: () => ({ send }) },
 }));
 
-import { useLiveConversationStore, conversationCostUsd, composeHandoff } from "./liveConversation";
+import {
+  useLiveConversationStore,
+  conversationCostUsd,
+  composeHandoff,
+  hubNews,
+} from "./liveConversation";
 
 if (typeof globalThis.MediaStream === "undefined") {
   (globalThis as unknown as { MediaStream: unknown }).MediaStream = function MediaStream() {};
 }
 
-function fakeConversation() {
+function fakeConversation({ hub = false }: { hub?: boolean } = {}) {
   let settle: () => void = () => {};
   const closed = new Promise<void>((resolve) => {
     settle = resolve;
@@ -56,6 +73,8 @@ function fakeConversation() {
     untilQuiet: vi.fn(async (_expectSpeech?: boolean) => {}),
     commentary: vi.fn((_delegationId: string, _content: string) => {}),
     thinking: vi.fn((_content: string) => {}),
+    announce: vi.fn((_content: string) => {}),
+    hub,
     end: () => settle(),
   };
 }
@@ -362,6 +381,86 @@ describe("answering what the voice delegates", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("the hub's voice on GPT Live", () => {
+  async function openHub() {
+    const live = fakeConversation({ hub: true });
+    let opts: ConversationOptions = {};
+    openLiveConversation.mockImplementation((_id: string, given: ConversationOptions) => {
+      opts = given;
+      return Promise.resolve(live);
+    });
+    await useLiveConversationStore.getState().start("conv_hub", null);
+    const { onUtterance, onDelegation } = opts;
+    if (!onUtterance || !onDelegation) throw new Error("start() never opened a conversation");
+    return { live, say: onUtterance, delegate: onDelegation };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useLiveConversationStore.setState({
+      sessionId: null,
+      handedOff: null,
+      connecting: false,
+      elapsedS: 0,
+      error: null,
+    });
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+  });
+
+  it("hands a delegation to the hub, says its answer, and keeps the call open", async () => {
+    const { live, say, delegate } = await openHub();
+    say({ who: "reader", text: "a brasa quebrou os testes" });
+    say({ who: "voice", text: "Quer que eu peça pra ela rodar de novo?" });
+    delegate("d1", "sim, manda");
+
+    await vi.waitFor(() => {
+      expect(live.commentary).toHaveBeenCalledWith("d1", "Mandei pra brasa.");
+    });
+    const [question, context] = askHubByVoice.mock.calls[0] ?? [];
+    expect(question).toBe("sim, manda");
+    expect(context).toContain("Me: a brasa quebrou os testes");
+    expect(context).toContain("Voice: Quer que eu peça");
+    // The hub sent it; the companion and this chat's Claude are not involved.
+    expect(delegateSpoken).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    await settleCallbacks();
+    expect(live.stop).not.toHaveBeenCalled();
+    useLiveConversationStore.getState().stop();
+  });
+
+  it("tells them when a session finishes, news from after the call opened only", async () => {
+    hubUpdates.mockResolvedValueOnce({
+      updates: [{ id: 8, kind: "finished", text: "brasa finished: green.", session_name: "brasa" }],
+      lastId: 8,
+    });
+    const { live } = await openHub();
+    await vi.waitFor(() => {
+      expect(live.announce).toHaveBeenCalledWith(hubNews("brasa finished: green."));
+    });
+    expect(hubUpdates.mock.calls[0]).toEqual([7, 25]);
+    await vi.waitFor(() => expect(hubUpdates.mock.calls[1]?.[0]).toBe(8));
+    useLiveConversationStore.getState().stop();
+  });
+
+  it("says plainly when the hub cannot be reached", async () => {
+    askHubByVoice.mockRejectedValueOnce(new Error("503"));
+    const { live, delegate } = await openHub();
+    delegate("d2", "o que a amarras tá fazendo?");
+    await vi.waitFor(() => expect(live.commentary).toHaveBeenCalled());
+    expect(live.commentary.mock.calls[0]?.[1]).toContain("could not be reached");
+    useLiveConversationStore.getState().stop();
+  });
+
+  it("an ordinary call neither asks the hub nor listens for its news", async () => {
+    openLiveConversation.mockResolvedValue(fakeConversation());
+    await useLiveConversationStore.getState().start("conv_a", "agent_1");
+    await settleCallbacks();
+    expect(hubLastId).not.toHaveBeenCalled();
+    useLiveConversationStore.getState().stop();
   });
 });
 

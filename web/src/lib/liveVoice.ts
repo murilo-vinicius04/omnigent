@@ -74,6 +74,8 @@ interface OfferResponse {
   session_id: string;
   sdp: string;
   speak: string | null;
+  /** The call is the hub's voice: delegations go to the hub. */
+  hub?: boolean;
 }
 
 /**
@@ -298,6 +300,10 @@ export interface LiveConversation {
   readonly commentary: (delegationId: string, content: string) => void;
   /** Give the voice something to know without saying it (`session.thinking.append`). */
   readonly thinking: (content: string) => void;
+  /** Have the voice tell them something unprompted, e.g. that a session finished. */
+  readonly announce: (content: string) => void;
+  /** Whether the server opened this call as the hub's voice. */
+  readonly hub: boolean;
 }
 
 /** The pause in the voice's words that marks a sentence as finished. */
@@ -491,6 +497,7 @@ export async function openLiveConversation(
   touch();
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
+  let hub: boolean;
 
   try {
     const response = await authenticatedFetch(OFFER_URL, {
@@ -506,6 +513,7 @@ export async function openLiveConversation(
       throw new LiveVoiceUnavailable(`live session refused: ${response.status}`);
     }
     const answer = (await response.json()) as OfferResponse;
+    hub = answer.hub === true;
     await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp });
   } catch (error) {
     stop();
@@ -558,5 +566,8 @@ export async function openLiveConversation(
     commentary: (delegationId, content) =>
       append("session.commentary.append", delegationId, content),
     thinking: (content) => append("session.thinking.append", null, content),
+    // Commentary with no delegation is general news the voice says aloud.
+    announce: (content) => append("session.commentary.append", null, content),
+    hub,
   };
 }

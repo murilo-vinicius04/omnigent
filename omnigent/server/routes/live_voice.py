@@ -14,15 +14,18 @@ disappears on the next frontend build is worse than useless.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
+from omnigent.server import hub as hub_module
+from omnigent.server import hub_chat, voice_hub
 from omnigent.server.auth import AuthProvider
 from omnigent.server.discussion import DiscussionRegistry, registry, voice_briefing
 from omnigent.server.live_voice import (
@@ -78,6 +81,9 @@ class LiveOfferResponse(BaseModel):
     #: Composed here so the read-aloud framing stays next to the rest of the
     #: summary logic rather than being reinvented in the client.
     speak: str | None = None
+    #: The call is the hub's voice: delegations go to the hub, not the
+    #: companion, and the call stays open after a send.
+    hub: bool = False
 
 
 class NarrationDecision(BaseModel):
@@ -101,6 +107,7 @@ def create_live_voice_router(
     *,
     auth_provider: AuthProvider | None = None,
     registry_provider: Callable[[], DiscussionRegistry] | None = None,
+    conversation_store: Any = None,
 ) -> APIRouter:
     """Build the router carrying the live voice routes.
 
@@ -108,6 +115,8 @@ def create_live_voice_router(
         ``None`` preserves single-user/dev behavior (open).
     :param registry_provider: Companion registry factory override for tests.
         Defaults to the process-wide registry.
+    :param conversation_store: Sessions, to recognize the hub conversation
+        and brief its voice on every session. ``None`` leaves the hub out.
     :returns: An :class:`APIRouter` carrying the handshake and test page.
     """
     router = APIRouter()
@@ -116,6 +125,36 @@ def create_live_voice_router(
     def _require_user(request: Request) -> None:
         if auth_provider is not None and auth_provider.get_user_id(request) is None:
             raise HTTPException(status_code=401, detail="authentication required")
+
+    async def _is_hub(session_id: str | None) -> bool:
+        if conversation_store is None or not session_id:
+            return False
+        try:
+            conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+        except Exception:  # noqa: BLE001 - an unreadable session is not the hub
+            return False
+        return conv is not None and hub_chat.is_hub(conv)
+
+    async def _hub_briefing(request: Request, session_id: str | None) -> str:
+        """Brief the hub's voice on every session, as the caller sees them."""
+        user_id = auth_provider.get_user_id(request) if auth_provider is not None else None
+        hub = hub_module.hub_for(user_id)
+        hub_chat.attach(hub, conversation_store, session_id)
+        hub_chat.bind_request(
+            hub,
+            conversation_store=conversation_store,
+            user_id=user_id,
+            app=request.app,
+            headers=request.headers,
+            companions=companions,
+        )
+        try:
+            sessions = await hub.sessions()
+        except Exception:  # noqa: BLE001 - a voice with no list still delegates
+            _logger.warning("hub voice briefing failed", exc_info=True)
+            sessions = []
+        _logger.info("gpt live hub briefed | sessions=%s", [(s.handle, s.name) for s in sessions])
+        return voice_hub.hub_briefing(sessions, role=voice_hub.DELEGATING_HUB_ROLE)
 
     @router.post("/live/offer", response_model=LiveOfferResponse)
     async def live_offer(request: Request, body: LiveOfferRequest) -> LiveOfferResponse:
@@ -128,7 +167,10 @@ def create_live_voice_router(
         # text pushed in from outside. Conversing leaves the live model to
         # answer natively, which costs no backend tokens at all.
         backend = reader_model() if narrating else None
-        if body.instructions:
+        hub = not narrating and await _is_hub(body.session_id)
+        if hub:
+            instructions = await _hub_briefing(request, body.session_id)
+        elif body.instructions:
             instructions = body.instructions
         elif narrating:
             instructions = NARRATOR_INSTRUCTIONS
@@ -158,6 +200,7 @@ def create_live_voice_router(
             session_id=session_id,
             sdp=answer,
             speak=frame_for_reading(body.text or "") if narrating else None,
+            hub=hub,
         )
 
     @router.post("/narration/decision")

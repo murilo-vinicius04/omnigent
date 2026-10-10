@@ -8,6 +8,14 @@ const h = vi.hoisted(() => ({
   },
   stop: vi.fn(),
   chatStop: vi.fn(),
+  chatStart: vi.fn(),
+  engine: "gemini" as "gpt" | "gemini" | "unmute",
+  live: {
+    sessionId: null as string | null,
+    error: null as string | null,
+    notice: null as string | null,
+  },
+  listeners: [] as ((state: unknown) => void)[],
 }));
 
 vi.mock("@/lib/geminiLive", () => ({
@@ -17,10 +25,23 @@ vi.mock("@/lib/geminiLive", () => ({
   }),
 }));
 vi.mock("@/lib/liveConversation", () => ({
-  useLiveConversationStore: { getState: () => ({ stop: h.chatStop }) },
+  useLiveConversationStore: {
+    getState: () => ({ ...h.live, noticeTone: "info", stop: h.chatStop, start: h.chatStart }),
+    subscribe: (listener: (state: unknown) => void) => {
+      h.listeners.push(listener);
+      return () => {
+        h.listeners = h.listeners.filter((l) => l !== listener);
+      };
+    },
+  },
 }));
+vi.mock("@/lib/liveVoiceEngine", () => ({
+  getLiveVoiceEngine: () => h.engine,
+  unmuteEndpoint: () => "/v1/live/unmute/ws?voice=ex02",
+}));
+vi.mock("@/lib/hubApi", () => ({ openHub: vi.fn(async () => "conv_hub") }));
 
-import { describeHubTool, HUB_ENDPOINT, useVoiceHubStore } from "@/lib/voiceHub";
+import { describeHubTool, HUB_ENDPOINT, hubEndpoint, useVoiceHubStore } from "@/lib/voiceHub";
 
 describe("voice hub", () => {
   beforeEach(() => {
@@ -28,6 +49,10 @@ describe("voice hub", () => {
     useVoiceHubStore.setState({ active: false, connecting: false, notice: null, activity: null });
     h.stop.mockClear();
     h.chatStop.mockClear();
+    h.chatStart.mockReset();
+    h.engine = "gemini";
+    h.live = { sessionId: null, error: null, notice: null };
+    h.listeners = [];
   });
   afterEach(() => {
     useVoiceHubStore.getState().stop();
@@ -90,5 +115,56 @@ describe("voice hub", () => {
     expect(describeHubTool("session_status", "amarras")).toBe("Looking at amarras");
     expect(describeHubTool("check_machine", "Brasa")).toBe("Checking on Brasa (read-only)");
     expect(describeHubTool("ask_claude", "")).toBe("Sending to a session's Claude");
+  });
+
+  it("on Unmute, opens the Unmute relay as the hub", async () => {
+    h.engine = "unmute";
+    expect(hubEndpoint("unmute")).toBe("/v1/live/unmute/ws?voice=ex02&mode=hub");
+    await useVoiceHubStore.getState().start();
+    expect(h.opts?.endpoint).toBe("/v1/live/unmute/ws?voice=ex02&mode=hub");
+    expect(useVoiceHubStore.getState().active).toBe(true);
+  });
+
+  it("on GPT Live, rides the hub conversation's own call and ends with it", async () => {
+    h.engine = "gpt";
+    h.opts = null;
+    h.chatStart.mockImplementation(async () => {
+      h.live = { sessionId: "conv_hub", error: null, notice: null };
+    });
+    await useVoiceHubStore.getState().start();
+    expect(h.chatStart).toHaveBeenCalledWith("conv_hub", null, { fromVoiceHub: true });
+    expect(h.opts).toBeNull(); // no relay socket: GPT-Live talks to OpenAI itself
+    expect(useVoiceHubStore.getState().active).toBe(true);
+    // The call's notices show on the hub's pill.
+    h.live = { sessionId: "conv_hub", error: null, notice: "Working on what you asked…" };
+    h.listeners.forEach((l) => l({ ...h.live, noticeTone: "info" }));
+    expect(useVoiceHubStore.getState().notice).toBe("Working on what you asked…");
+    // Hanging up the call ends the hub.
+    h.live = { sessionId: null, error: null, notice: null };
+    h.listeners.forEach((l) => l({ ...h.live, noticeTone: "info" }));
+    expect(useVoiceHubStore.getState().active).toBe(false);
+  });
+
+  it("on GPT Live, stopping the hub hangs up its call", async () => {
+    h.engine = "gpt";
+    h.chatStart.mockImplementation(async () => {
+      h.live = { sessionId: "conv_hub", error: null, notice: null };
+    });
+    await useVoiceHubStore.getState().start();
+    h.chatStop.mockClear();
+    useVoiceHubStore.getState().stop();
+    expect(h.chatStop).toHaveBeenCalled();
+    expect(useVoiceHubStore.getState().active).toBe(false);
+  });
+
+  it("on GPT Live, says so when the call could not open", async () => {
+    h.engine = "gpt";
+    h.chatStart.mockImplementation(async () => {
+      h.live = { sessionId: null, error: "microphone unavailable", notice: null };
+    });
+    await useVoiceHubStore.getState().start();
+    const state = useVoiceHubStore.getState();
+    expect(state.active).toBe(false);
+    expect(state.notice).toBe("Hub could not start: microphone unavailable");
   });
 });

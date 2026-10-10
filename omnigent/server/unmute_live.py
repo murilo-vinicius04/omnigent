@@ -25,6 +25,7 @@ from typing import Any, Final
 
 import httpx
 
+from omnigent.server import voice_hub
 from omnigent.server.gemini_live import (
     ASK_CLAUDE_DESCRIPTION,
     ASK_CLAUDE_QUESTION,
@@ -131,6 +132,39 @@ CHECK_MACHINE_TOOL: Final[dict[str, Any]] = {
 PAGE_TOOLS: Final[frozenset[str]] = frozenset({"ask_claude", "check_machine"})
 
 
+async def run_hub_tool(call: UnmuteCall, tool_call: dict[str, str]) -> str:
+    """Run one of the hub's tools on the server, showing it on the page meanwhile."""
+    try:
+        args = json.loads(tool_call["arguments"] or "{}")
+    except ValueError:
+        args = {}
+    if not isinstance(args, dict):
+        args = {}
+    call.tool_calls += 1
+    name = tool_call["name"]
+    shown = {"id": tool_call["id"], "name": name, "args": args}
+    await call.outbox.put({"toolCall": {"functionCalls": [shown]}})
+    session, output = await voice_hub.run_hub_tool(call.hub, name, args)
+    await call.outbox.put(
+        {
+            "omnigentToolDone": {
+                "id": tool_call["id"],
+                "name": name,
+                "project": session,
+                "output": output[:600],
+            }
+        }
+    )
+    _logger.info(
+        "unmute hub tool | %s session=%r args=%r output=%r",
+        name,
+        session,
+        {k: str(v)[:200] for k, v in args.items()},
+        output[:300],
+    )
+    return output
+
+
 def unmute_base_url() -> str:
     """Return the Unmute stack's base URL, without a trailing slash."""
     return os.environ.get(UPSTREAM_ENV, DEFAULT_UPSTREAM).rstrip("/")
@@ -190,6 +224,10 @@ class UnmuteCall:
     late_results: list[str] = field(default_factory=list)
     tool_calls: int = 0
     closed: bool = False
+    #: The hub this call is the voice of; its tools then run on the server.
+    hub: Any = None
+    #: News for the reader (a session finished), told in the next reply.
+    updates: list[str] = field(default_factory=list)
 
     async def ask_page(self, tool_call_id: str, question: str, name: str = "ask_claude") -> str:
         """Hand a tool call (``ask_claude`` or ``check_machine``) to the page and wait."""
@@ -302,6 +340,21 @@ def conversation_messages(
     """
     dialogue = [m for m in messages if m.get("role") != "system"]
     out: list[dict[str, Any]] = [{"role": "system", "content": call.instructions or ""}]
+    if call.updates:
+        # A reply the relay asked for arrives as Unmute's silence marker.
+        if (
+            dialogue
+            and dialogue[-1].get("role") == "user"
+            and dialogue[-1].get("content") == "..."
+        ):
+            dialogue = [*dialogue[:-1], {"role": "user", "content": "(listening)"}]
+        note = (
+            "[News that arrived during the call, not something they said. Tell them "
+            "in one short sentence first, then answer them if they said anything.]\n"
+            + "\n".join(call.updates)
+        )
+        call.updates.clear()
+        dialogue = [*dialogue[:-1], {"role": "system", "content": note}, *dialogue[-1:]]
     if call.late_results:
         note = (
             "[Results of your earlier ask_claude call, which arrived after they "
@@ -378,7 +431,11 @@ async def speak(
             "model": model,
             "messages": history,
             "stream": True,
-            "tools": [ASK_CLAUDE_TOOL, CHECK_MACHINE_TOOL],
+            "tools": (
+                voice_hub.openai_tools(voice_hub.HUB_TOOLS)
+                if call.hub is not None
+                else [ASK_CLAUDE_TOOL, CHECK_MACHINE_TOOL]
+            ),
             # The only effort OpenAI allows with function tools on chat
             # completions, and the fastest to a first word.
             "reasoning_effort": "none",
@@ -410,7 +467,9 @@ async def speak(
             }
         )
         for c in calls:
-            if c["name"] not in PAGE_TOOLS:
+            if call.hub is not None:
+                result = await run_hub_tool(call, c)
+            elif c["name"] not in PAGE_TOOLS:
                 result = f"Tool '{c['name']}' is not available."
             else:
                 try:

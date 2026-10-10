@@ -78,7 +78,7 @@ HUB_ROUTER_ROLE: Final[str] = (
 _DECIDE_PROMPT: Final[str] = """\
 [Their sessions right now, newest first. Each starts with its handle in brackets.]
 {sessions}
-
+{context}
 [They {how}]
 {message}
 
@@ -559,6 +559,22 @@ class Hub:
         self._spawn(self._handle(text.strip(), via))
         return entry
 
+    async def ask(self, text: str, *, via: str = "voice", context: str = "") -> list[HubEntry]:
+        """Answer what a voice handed over, and return what the hub said.
+
+        For a voice that cannot call tools itself (GPT-Live delegates): the
+        request shows in the hub conversation, the hub acts on it as on a
+        typed one, and the caller speaks the returned entries.
+
+        :param context: The call so far, so a request can refer back to it.
+        """
+        said = text.strip()
+        entry = self.state.append(role="you", kind="message", text=said, via=via)
+        if self.chat is not None:
+            self.chat.post_user(said)
+        await self._handle(said, via, context=context)
+        return [e for e in self.state.after(entry.id) if e.role == "hub"]
+
     def _spawn(self, coro: Awaitable[None]) -> None:
         task = asyncio.ensure_future(coro)
         self._tasks.add(task)
@@ -571,12 +587,12 @@ class Hub:
             self.chat.post(entry)
         return entry
 
-    async def _handle(self, text: str, via: str) -> None:
+    async def _handle(self, text: str, via: str, *, context: str = "") -> None:
         async with self._busy:
             if self.chat is not None:
                 self.chat.busy(True)
             try:
-                await self._answer(text, via)
+                await self._answer(text, via, context=context)
             except Exception:  # noqa: BLE001 - the chat must always get a reply
                 _logger.warning("hub message failed", exc_info=True)
                 self.say("Something went wrong on my side; nothing was sent.", kind="error")
@@ -584,11 +600,20 @@ class Hub:
                 if self.chat is not None:
                     self.chat.busy(False)
 
-    async def _answer(self, text: str, via: str) -> None:
+    async def _answer(self, text: str, via: str, *, context: str = "") -> None:
         sessions = await self.sessions()
         router = await self._router_factory()
-        how = "said, aloud" if via == "voice" else "wrote"
-        prompt = _DECIDE_PROMPT.format(sessions=sessions_block(sessions), how=how, message=text)
+        how = "said, aloud, on a voice call" if via == "voice" else "wrote"
+        prompt = _DECIDE_PROMPT.format(
+            sessions=sessions_block(sessions),
+            context=(
+                f"\n[The voice call so far, oldest first]\n{context.strip()}\n"
+                if context.strip()
+                else ""
+            ),
+            how=how,
+            message=text,
+        )
         try:
             reply = await router.decide(prompt, said=text, timeout_s=ROUTE_TIMEOUT_S)
         except DiscussionUnavailable as exc:

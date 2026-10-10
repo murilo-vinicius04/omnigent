@@ -380,3 +380,206 @@ async def test_a_lookup_goes_to_the_page_under_its_own_name() -> None:
     assert said == "About 97 percent."
     first = model.requests[0]
     assert [t["function"]["name"] for t in first["tools"]] == ["ask_claude", "check_machine"]
+
+
+# -- the hub's voice on Unmute -----------------------------------------------------
+
+
+class _HubRouter:
+    async def perform(self, task, *, timeout_s=None):
+        return "done"
+
+    def remember(self, text):
+        pass
+
+
+def _hub(tmp_path, sent: list[tuple[str, str]]):
+    from omnigent.server.hub import Hub, HubBackend, HubSession, HubState, TurnState
+
+    sessions = [HubSession(id="s-brasa", title="Orders", nickname="brasa")]
+
+    async def listed():
+        return list(sessions)
+
+    async def activity(session_id):
+        return f"status of {session_id}"
+
+    async def send(session_id, text):
+        sent.append((session_id, text))
+
+    async def check(session_id, question):
+        return "18 GB free"
+
+    async def turn(session_id, since):
+        return TurnState(status="running")
+
+    async def router():
+        return _HubRouter()
+
+    hub = Hub("u1", router_factory=router, state=HubState("u1", root=tmp_path), poll_s=3600)
+    hub.bind(HubBackend(sessions=listed, activity=activity, send=send, check=check, turn=turn))
+    return hub
+
+
+def _hub_tool_call(call_id: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "choices": [
+            {
+                "index": 0,
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": call_id,
+                            "function": {"name": name, "arguments": json.dumps(args)},
+                        }
+                    ]
+                },
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
+
+
+async def test_the_hubs_voice_runs_the_hubs_tools_on_the_server(tmp_path) -> None:
+    sent: list[tuple[str, str]] = []
+    hub = _hub(tmp_path, sent)
+    call = unmute_live.open_call("hubconv", "HUB BRIEFING")
+    call.hub = hub
+    model = _Model(
+        _sse(_hub_tool_call("c1", "ask_claude", {"session": "brasa", "message": "run tests"})),
+        _sse(_text("Sent it to brasa.")),
+    )
+    try:
+        said = await _speak(call, model, [{"role": "user", "content": "send brasa the tests"}])
+        shown = [call.outbox.get_nowait(), call.outbox.get_nowait()]
+    finally:
+        unmute_live.close_call(call)
+        await hub.close()
+
+    assert said == "Sent it to brasa."
+    assert sent == [("s-brasa", "run tests")]
+    first, second = model.requests
+    names = [t["function"]["name"] for t in first["tools"]]
+    assert names == ["session_status", "ask_claude", "check_machine"]
+    assert first["tools"][1]["function"]["parameters"]["type"] == "object"
+    # The model hears the hub's own result; the page only shows the call.
+    assert second["messages"][-1]["content"] == (
+        "Sent to brasa. You will be told when it finishes."
+    )
+    assert shown[0]["toolCall"]["functionCalls"][0]["name"] == "ask_claude"
+    assert shown[1]["omnigentToolDone"]["project"] == "brasa"
+    # Sent from the call, it lands in the hub conversation like a typed send.
+    assert [(e.kind, e.via) for e in hub.state.entries] == [("sent", "voice")]
+
+
+def test_news_during_the_call_is_told_in_the_next_reply() -> None:
+    call = unmute_live.open_call("hubconv", "HUB BRIEFING")
+    call.updates.append("brasa finished: all tests pass.")
+    try:
+        # A reply the relay asked for arrives as Unmute's silence marker.
+        messages = unmute_live.conversation_messages(call, [{"role": "user", "content": "..."}])
+        again = unmute_live.conversation_messages(call, [{"role": "user", "content": "ok"}])
+    finally:
+        unmute_live.close_call(call)
+    assert "brasa finished: all tests pass." in messages[1]["content"]
+    assert messages[-1] == {"role": "user", "content": "(listening)"}
+    assert len(again) == 2  # told once
+
+
+class _HubStore:
+    def __init__(self) -> None:
+        import time
+        from types import SimpleNamespace
+
+        self.convs = {
+            "hubconv": SimpleNamespace(
+                id="hubconv",
+                title="Hub",
+                labels={"omnigent.hub": "1"},
+                updated_at=time.time(),
+                live_status="idle",
+                pending_elicitation_count=0,
+                workspace=None,
+            ),
+            "s-brasa": SimpleNamespace(
+                id="s-brasa",
+                title="Orders",
+                labels={},
+                updated_at=time.time(),
+                live_status="idle",
+                pending_elicitation_count=0,
+                workspace="/tmp",
+            ),
+        }
+
+    def get_conversation(self, session_id):
+        return self.convs.get(session_id)
+
+    def list_conversations(self, **kwargs):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(data=list(self.convs.values()))
+
+    def list_items(self, session_id, limit=100, order="asc", type=None):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(data=[])
+
+
+def test_a_call_from_the_hub_conversation_is_the_hubs_voice(monkeypatch, tmp_path) -> None:
+    from omnigent.server import hub as hub_module
+
+    monkeypatch.setattr(hub_module, "HUB_DIR", tmp_path / "hub")
+    monkeypatch.setattr(hub_module, "_HUBS", {})
+    opened: list[unmute_live.UnmuteCall] = []
+    original = unmute_live.open_call
+
+    def capture(*args, **kwargs):
+        call = original(*args, **kwargs)
+        opened.append(call)
+        return call
+
+    monkeypatch.setattr(unmute_live, "open_call", capture)
+    unmute = _FakeUnmute()
+
+    async def connect(url: str, subprotocols: list[str]) -> _FakeUnmute:
+        return unmute
+
+    client = _app(upstream_connect=connect, conversation_store=_HubStore())
+    with client.websocket_connect("/v1/live/unmute/ws?session_id=hubconv") as ws:
+        hello = json.loads(ws.receive_text())
+        assert hello == {"omnigentSession": {"model": "unmute", "toolsBlock": True, "hub": True}}
+        assert json.loads(ws.receive_text()) == {"setupComplete": {}}
+        hub = hub_module._HUBS["local"]
+        hub.state.append(role="hub", kind="sent", text="Sent to Orders.")
+        hub.state.append(role="hub", kind="finished", text="Orders finished: green.")
+        for _ in range(100):
+            if any(e["type"] == "unmute.response.create" for e in unmute.sent):
+                break
+            import time
+
+            time.sleep(0.02)
+    [call] = opened
+    assert call.hub is hub
+    assert '"Orders" · idle' in (call.instructions or "")  # briefed on every session
+    assert "hubconv" not in (call.instructions or "")  # never offers itself
+    asked = [e for e in unmute.sent if e["type"] == "unmute.response.create"]
+    assert len(asked) == 1  # the send is not news; the finish is
+    assert call.updates == ["Orders finished: green."]
+    assert hub.chat.session_id == "hubconv"
+
+
+def test_an_ordinary_call_is_not_the_hub(monkeypatch, tmp_path) -> None:
+    from omnigent.server import hub as hub_module
+
+    monkeypatch.setattr(hub_module, "_HUBS", {})
+    unmute = _FakeUnmute()
+
+    async def connect(url: str, subprotocols: list[str]) -> _FakeUnmute:
+        return unmute
+
+    client = _app(upstream_connect=connect, conversation_store=_HubStore())
+    with client.websocket_connect("/v1/live/unmute/ws?session_id=s-brasa") as ws:
+        assert json.loads(ws.receive_text()) == {"setupComplete": {}}
+    assert hub_module._HUBS == {}

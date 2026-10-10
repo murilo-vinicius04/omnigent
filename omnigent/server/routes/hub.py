@@ -12,11 +12,32 @@ from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from omnigent.server import hub as hub_module
 from omnigent.server import hub_chat
 from omnigent.server.auth import AuthProvider
 from omnigent.server.discussion import DiscussionRegistry, registry
+
+#: Longest an updates long-poll may hold the request.
+MAX_WAIT_S = 25.0
+
+#: Longest a voice waits for the hub to act on what it handed over.
+VOICE_TIMEOUT_S = 60.0
+
+#: Said by the voice when the hub took too long.
+VOICE_TOO_SLOW = (
+    "The hub is still working on that. Tell them it is taking a while and that the "
+    "result will show in the hub chat."
+)
+
+
+class HubVoiceIn(BaseModel):
+    """What a voice call handed to the hub."""
+
+    text: str = Field(min_length=1, max_length=20_000)
+    #: The call so far, oldest first, so the request can refer back to it.
+    context: str = Field(default="", max_length=8_000)
 
 
 def create_hub_router(
@@ -72,6 +93,7 @@ def create_hub_router(
             "session_id": session_id,
             "sessions": [s.as_dict() for s in await hub.sessions()],
             "model": hub_module.hub_model(),
+            "last_id": hub.state.last_id,
         }
 
     @router.get("/hub/sessions")
@@ -79,5 +101,36 @@ def create_hub_router(
         """The sessions the hub can reach, with their live status."""
         hub, _ = await _bound(request)
         return {"sessions": [s.as_dict() for s in await hub.sessions()]}
+
+    @router.post("/hub/voice")
+    async def hub_voice(request: Request, body: HubVoiceIn) -> dict[str, Any]:
+        """Act on what a voice handed over and return what the voice should say.
+
+        For a voice that cannot run the hub's tools itself (GPT-Live): the
+        request and the hub's answer land in the hub conversation as for a
+        typed message, and the call stays open.
+        """
+        hub, _ = await _bound(request)
+        # Shielded: a slow answer must still land in the chat after the voice
+        # stops waiting for it.
+        work = asyncio.ensure_future(hub.ask(body.text, via="voice", context=body.context))
+        try:
+            said = await asyncio.wait_for(asyncio.shield(work), VOICE_TIMEOUT_S)
+        except TimeoutError:
+            return {"say": VOICE_TOO_SLOW, "last_id": hub.state.last_id}
+        return {
+            "say": "\n".join(e.text for e in said) or "Nothing came back from the hub.",
+            "last_id": hub.state.last_id,
+        }
+
+    @router.get("/hub/updates")
+    async def hub_updates(request: Request, after: int = 0, wait: float = 0.0) -> dict[str, Any]:
+        """News an open call should tell: a session finished or needs them."""
+        hub, _ = await _bound(request)
+        entries = await hub.state.wait_after(after, max(0.0, min(wait, MAX_WAIT_S)))
+        return {
+            "updates": [e.as_dict() for e in entries if e.kind in hub_module.SPOKEN_KINDS],
+            "last_id": max([after, *(e.id for e in entries)]),
+        }
 
     return router

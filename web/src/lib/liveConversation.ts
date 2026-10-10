@@ -15,6 +15,7 @@ import {
   type CheckedCommand,
   type CompanionActivity,
 } from "./companionApi";
+import { askHubByVoice, hubLastId, hubUpdates } from "./hubApi";
 import { claimSpeechChannel, isNarrating, setConversationSpeaking } from "./speechPlayback";
 import type { LiveVoiceEngine } from "./liveVoiceEngine";
 import { conversationVolume } from "./sessionNarrationVolume";
@@ -41,6 +42,20 @@ const WORKING_ON_IT = "Working on what you asked…";
 
 /** Shown when that routing ran out of time, so the silence is not a mystery. */
 const NOTICE_NOT_READY = "That took too long to route — ask again or type it in the chat.";
+
+/** Said when the hub could not be reached, so the voice does not invent an answer. */
+const HUB_UNREACHABLE =
+  "The hub could not be reached, so nothing was sent or checked. Tell them briefly.";
+
+/** How long one wait for hub news holds the request, in seconds. */
+const HUB_NEWS_WAIT_S = 25;
+/** Pause after a failed wait for hub news before trying again. */
+const HUB_NEWS_RETRY_MS = 3_000;
+
+/** What the voice is told when the hub has news, so it says it unprompted. */
+export function hubNews(text: string): string {
+  return `News for them, not something they said: ${text} Tell them in one short sentence.`;
+}
 
 /** How often the companion's live state is read while it is looking something up. */
 const CHECK_POLL_MS = 700;
@@ -113,7 +128,11 @@ interface ConversationStoreState {
   companion: CompanionActivity | null;
   /** The last check of this call, so the reader can see what really ran. */
   lastCheck: LastCheck | null;
-  start: (sessionId: string, agentId?: string | null) => Promise<void>;
+  start: (
+    sessionId: string,
+    agentId?: string | null,
+    options?: { fromVoiceHub?: boolean },
+  ) => Promise<void>;
   stop: () => void;
 }
 
@@ -211,9 +230,12 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
   companion: null,
   lastCheck: null,
 
-  start: async (sessionId: string, agentId: string | null = null) => {
-    // The hub is a second open mic; this call takes over from it.
-    void import("@/lib/voiceHub").then((m) => m.useVoiceHubStore.getState().stop());
+  start: async (sessionId: string, agentId: string | null = null, options = {}) => {
+    // The hub is a second open mic; this call takes over from it, unless the
+    // hub is what opened it.
+    if (!options.fromVoiceHub) {
+      void import("@/lib/voiceHub").then((m) => m.useVoiceHubStore.getState().stop());
+    }
     // Opening a second would be two voices and two meters.
     if (get().sessionId || get().connecting) return;
     set({
@@ -323,9 +345,62 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
      * it and the voice says that back; or Claude gets it, the voice says so,
      * and the call ends so the meter does not run through Claude's turn.
      */
+    /** The call so far, for a hub request that refers back to it. */
+    const callSoFar = (): string =>
+      transcript
+        .map(({ who, text }) => `${who === "reader" ? "Me" : "Voice"}: ${text.trim()}`)
+        .join("\n");
+
+    /**
+     * In the hub conversation a delegation goes to the hub, which reads,
+     * sends to or checks the session it is about and says what it did. The
+     * call stays open: the hub tells it when a session finishes.
+     */
+    const answerInHub = async (delegationId: string, question: string): Promise<void> => {
+      set({ notice: WORKING_ON_IT, noticeTone: "info" });
+      let say: string;
+      try {
+        say = (await askHubByVoice(question, callSoFar())) || HUB_UNREACHABLE;
+      } catch {
+        say = HUB_UNREACHABLE;
+      }
+      const current = activeHandle;
+      if (!current) return;
+      set({ notice: null, noticeTone: "info" });
+      current.speakBack(delegationId, say);
+    };
+
+    /** Tell the hub's voice each time a session finishes or needs them. */
+    const followHubNews = (handle: LiveEngineHandle): void => {
+      let after: number | null = null;
+      const step = async (): Promise<void> => {
+        if (activeHandle !== handle) return;
+        let retryMs = 0;
+        try {
+          if (after === null) {
+            // Only news from after the call opened.
+            after = await hubLastId();
+          } else {
+            const { updates, lastId } = await hubUpdates(after, HUB_NEWS_WAIT_S);
+            after = lastId;
+            if (activeHandle !== handle) return;
+            for (const update of updates) handle.announce?.(hubNews(update.text));
+          }
+        } catch {
+          retryMs = HUB_NEWS_RETRY_MS;
+        }
+        if (activeHandle === handle) setTimeout(() => void step(), retryMs);
+      };
+      void step();
+    };
+
     const answerDelegation = async (delegationId: string, asked: string): Promise<void> => {
       const question = asked || lastReader;
       if (!question || handedOff) return;
+      if (activeHandle?.isHub()) {
+        await answerInHub(delegationId, question);
+        return;
+      }
 
       // The wait that follows is silent on the call, so say so on screen: a
       // quiet voice for several seconds otherwise reads as a dead connection.
@@ -462,6 +537,8 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
 
     ticker = setInterval(() => set({ elapsedS: handle.elapsedS() }), 1000);
     set({ sessionId, engine: handle.engine, connecting: false, elapsedS: 0 });
+    // A relayed hub call hears its news from the server; GPT-Live's from here.
+    if (handle.isHub() && handle.announce) followHubNews(handle);
 
     void handle.closed.then(() => {
       if (activeHandle === handle) teardown(set);

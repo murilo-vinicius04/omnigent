@@ -496,3 +496,15 @@ def test_the_hub_needs_a_signed_in_user(tmp_path) -> None:
     )
     with TestClient(app) as tc:
         assert tc.get("/v1/hub").status_code == 401
+
+
+async def test_a_voice_ask_returns_what_the_hub_said_with_the_call_in_the_prompt(tmp_path) -> None:
+    router = _Router('{"send": "ba9b", "message": "Run the tests.", "say": "Mandei pra brasa."}')
+    server = _Server()
+    hub = _hub(tmp_path, router, server)
+    said = await hub.ask("manda ela rodar", via="voice", context="Me: a brasa quebrou\nVoice: Ok.")
+    await hub.close()
+    assert [(e.kind, e.text) for e in said] == [("sent", "Mandei pra brasa.")]
+    assert "[The voice call so far, oldest first]\nMe: a brasa quebrou" in router.prompts[0]
+    assert "[They said, aloud, on a voice call]" in router.prompts[0]
+    assert server.sent == [(BRASA, "Run the tests.")]

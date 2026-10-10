@@ -90,6 +90,13 @@ export interface LiveEngineHandle {
   readonly costPerMinuteUsd: number | null;
   /** Resolves when the conversation has closed. */
   readonly closed: Promise<void>;
+  /** Whether this call is the hub's voice, reaching every session. */
+  readonly isHub: () => boolean;
+  /**
+   * Have the voice tell them news unprompted (a session finished). Only for an
+   * engine whose news the page relays itself; the relays tell theirs directly.
+   */
+  readonly announce?: (text: string) => void;
 }
 
 export interface LiveEngineAdapter {
@@ -131,6 +138,8 @@ export const gptEngineAdapter: LiveEngineAdapter = {
       audioElement: audio,
       costPerMinuteUsd: USD_PER_MINUTE,
       closed: live.closed,
+      isHub: () => live.hub,
+      announce: (text: string) => live.announce(text),
     };
   },
 };
@@ -454,6 +463,7 @@ function relayedEngineAdapter(
         audioElement: null,
         costPerMinuteUsd: null,
         closed: closedPromise,
+        isHub: () => relayAnswersTools,
       };
     },
   };

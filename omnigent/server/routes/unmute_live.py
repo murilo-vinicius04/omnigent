@@ -33,7 +33,8 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from websockets.typing import Subprotocol
 
 from omnigent import openai_token_budget as budget
-from omnigent.server import unmute_live
+from omnigent.server import hub as hub_module
+from omnigent.server import hub_chat, unmute_live, voice_hub
 from omnigent.server.auth import AuthProvider
 from omnigent.server.discussion import DiscussionRegistry, registry, voice_briefing
 from omnigent.server.routes.gemini_live import _realtime_factor, _ReplyMeter
@@ -43,6 +44,8 @@ _logger = logging.getLogger(__name__)
 
 #: Runaway guard, as for Gemini: the reader ends calls by hand.
 MAX_SESSION_S: Final[float] = 30 * 60
+#: The hub is meant to stay on while they work, as on Gemini.
+MAX_HUB_SESSION_S: Final[float] = 8 * 3600
 _HANDSHAKE_TIMEOUT_S: Final[float] = 15.0
 #: Any-frame keepalive, as for Gemini: the page pings every 20s.
 _CLIENT_IDLE_TIMEOUT_S: Final[float] = 60.0
@@ -151,7 +154,9 @@ def create_unmute_live_router(
     upstream_connect: UpstreamConnect | None = None,
     registry_provider: Callable[[], DiscussionRegistry] | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    conversation_store: Any = None,
     max_session_s: float = MAX_SESSION_S,
+    max_hub_session_s: float = MAX_HUB_SESSION_S,
     client_idle_timeout_s: float = _CLIENT_IDLE_TIMEOUT_S,
 ) -> APIRouter:
     """Build the router for Omnigent calls on Unmute, mounted under ``/v1``.
@@ -162,7 +167,10 @@ def create_unmute_live_router(
     :param registry_provider: Companion registry override, for tests.
     :param transport: HTTP transport override for the brain's model calls
         and the health check, for tests.
+    :param conversation_store: Sessions, for the hub's voice (``mode=hub``, or
+        a call opened from the hub conversation). ``None`` leaves the hub out.
     :param max_session_s: Whole-call runaway cap.
+    :param max_hub_session_s: The same for the hub, which stays on while they work.
     :param client_idle_timeout_s: Page keepalive window.
     :returns: The router.
     """
@@ -191,6 +199,33 @@ def create_unmute_live_router(
             "default": unmute_live.DEFAULT_VOICE_ID,
         }
 
+    async def _hub_for_call(
+        websocket: WebSocket, session_id: str, *, wanted: bool
+    ) -> hub_module.Hub | None:
+        """The caller's hub when this call is its voice, bound to their credentials."""
+        if conversation_store is None:
+            return None
+        chat_id: str | None = None
+        if session_id:
+            with contextlib.suppress(Exception):
+                conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+                if conv is not None and hub_chat.is_hub(conv):
+                    chat_id = session_id
+        if not wanted and chat_id is None:
+            return None
+        user_id = auth_provider.get_user_id(websocket) if auth_provider is not None else None
+        hub = hub_module.hub_for(user_id)
+        hub_chat.attach(hub, conversation_store, chat_id or hub_chat.known_hub_id(user_id))
+        hub_chat.bind_request(
+            hub,
+            conversation_store=conversation_store,
+            user_id=user_id,
+            app=websocket.app,
+            headers=websocket.headers,
+            companions=companions,
+        )
+        return hub
+
     @router.websocket("/live/unmute/ws")
     async def unmute_live_ws(websocket: WebSocket) -> None:
         """Relay one call between the page (Gemini frames) and Unmute."""
@@ -200,11 +235,28 @@ def create_unmute_live_router(
             )
         await websocket.accept()
         session_id = (websocket.query_params.get("session_id") or "").strip()
-        narrating = (websocket.query_params.get("mode") or "").strip().lower() == "narrate"
+        mode = (websocket.query_params.get("mode") or "").strip().lower()
+        narrating = mode == "narrate"
+        the_hub = (
+            await _hub_for_call(websocket, session_id, wanted=mode == "hub")
+            if not narrating
+            else None
+        )
 
         instructions: str | None = None
         briefed = False
-        if not narrating:
+        if the_hub is not None:
+            try:
+                hub_sessions = await the_hub.sessions()
+            except Exception:  # noqa: BLE001 - a hub with no list still routes
+                _logger.warning("unmute hub briefing failed", exc_info=True)
+                hub_sessions = []
+            instructions = f"{voice_hub.hub_briefing(hub_sessions)}\n\n{unmute_live.SPOKEN_RULES}"
+            briefed = True
+            _logger.info(
+                "unmute hub briefed | sessions=%s", [(s.handle, s.name) for s in hub_sessions]
+            )
+        elif not narrating:
             companion = None
             with contextlib.suppress(Exception):
                 companion = companions().peek(session_id) if session_id else None
@@ -213,6 +265,7 @@ def create_unmute_live_router(
                 f"{voice_briefing(companion, can_check=True)}\n\n{unmute_live.SPOKEN_RULES}"
             )
         call = unmute_live.open_call(session_id, instructions, websocket.query_params.get("voice"))
+        call.hub = the_hub
 
         base = unmute_live.unmute_base_url()
         ws_base = base.replace("http://", "ws://", 1).replace("https://", "wss://", 1)
@@ -359,6 +412,21 @@ def create_unmute_live_router(
                 frame = await call.outbox.get()
                 await websocket.send_text(json.dumps(frame))
 
+        async def hub_updates(hub: hub_module.Hub) -> None:
+            """Tell the call when a session the hub watches finishes or needs them."""
+            seen = hub.state.last_id
+            while True:
+                for entry in await hub.state.wait_after(seen, 30.0):
+                    seen = max(seen, entry.id)
+                    if entry.kind not in hub_module.SPOKEN_KINDS:
+                        continue
+                    call.updates.append(entry.text)
+                    # Unmute only replies to speech; this asks it to reply now.
+                    # An older Unmute ignores it, and the news waits for the
+                    # next reply instead.
+                    await upstream.send(json.dumps({"type": "unmute.response.create"}))
+                    _logger.info("unmute hub update queued | %s", entry.text[:200])
+
         async def feed_silence() -> None:
             # Unmute only speaks in step with incoming audio; a narration has no
             # mic, so it gets silence, starting once there is something to read.
@@ -373,12 +441,23 @@ def create_unmute_live_router(
         tasks: dict[asyncio.Task[None], str] = {}
         try:
             await upstream.send(json.dumps(unmute_live.session_update(call)))
+            if the_hub is not None:
+                # The page leaves the hub's tools to this relay, as on Gemini.
+                await websocket.send_text(
+                    json.dumps(
+                        {"omnigentSession": {"model": "unmute", "toolsBlock": True, "hub": True}}
+                    )
+                )
             tasks = {
                 asyncio.create_task(client_to_upstream()): "client",
                 asyncio.create_task(upstream_to_client()): "upstream",
                 asyncio.create_task(brain_to_client()): "brain",
-                asyncio.create_task(asyncio.sleep(max_session_s)): "cap",
+                asyncio.create_task(
+                    asyncio.sleep(max_hub_session_s if the_hub is not None else max_session_s)
+                ): "cap",
             }
+            if the_hub is not None:
+                tasks[asyncio.create_task(hub_updates(the_hub))] = "hub"
             if narrating:
                 tasks[asyncio.create_task(feed_silence())] = "silence"
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

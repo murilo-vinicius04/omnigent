@@ -82,7 +82,12 @@ def test_offer_returns_the_answer_sdp(client, monkeypatch):
     monkeypatch.setattr("omnigent.server.routes.live_voice.open_session", accept)
     response = client.post("/v1/live/offer", json={"sdp": "v=0 offer"})
     assert response.status_code == 200
-    assert response.json() == {"session_id": "live_abc", "sdp": "v=0 answer", "speak": None}
+    assert response.json() == {
+        "session_id": "live_abc",
+        "sdp": "v=0 answer",
+        "speak": None,
+        "hub": False,
+    }
 
 
 def test_test_page_bakes_in_the_rate_and_cap(client):
@@ -317,3 +322,73 @@ def test_a_voice_with_check_machine_is_told_it_can_run_nothing_itself():
     assert "unless you called check_machine or ask_claude" in with_check
     # A voice without the tool (GPT Live) is not told about it.
     assert "check_machine" not in voice_briefing(None)
+
+
+class _HubStore:
+    """The hub conversation and one session, as the store hands them out."""
+
+    def __init__(self) -> None:
+        import time
+        from types import SimpleNamespace
+
+        now = time.time()
+        self.convs = {
+            "hubconv": SimpleNamespace(
+                id="hubconv",
+                title="Hub",
+                labels={"omnigent.hub": "1"},
+                updated_at=now,
+                live_status="idle",
+                pending_elicitation_count=0,
+            ),
+            "s-brasa": SimpleNamespace(
+                id="s-brasa",
+                title="Orders",
+                labels={},
+                updated_at=now,
+                live_status="running",
+                pending_elicitation_count=0,
+            ),
+        }
+
+    def get_conversation(self, session_id):
+        return self.convs.get(session_id)
+
+    def list_conversations(self, **kwargs):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(data=list(self.convs.values()))
+
+    def list_items(self, session_id, limit=100, order="asc", type=None):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(data=[])
+
+
+def test_a_call_in_the_hub_conversation_is_the_hubs_voice(monkeypatch, tmp_path):
+    """GPT-Live cannot call the hub's tools, so it delegates and the hub acts."""
+    from omnigent.server import hub as hub_module
+    from omnigent.server import voice_hub
+
+    monkeypatch.setattr(hub_module, "HUB_DIR", tmp_path / "hub")
+    monkeypatch.setattr(hub_module, "_HUBS", {})
+    seen: dict[str, object] = {}
+
+    async def accept(*, sdp_offer, instructions, model=None, voice=None, backend=None):
+        seen.update(instructions=instructions, backend=backend)
+        return "live_h", "v=0 answer"
+
+    monkeypatch.setattr("omnigent.server.routes.live_voice.open_session", accept)
+    app = FastAPI()
+    app.include_router(create_live_voice_router(conversation_store=_HubStore()), prefix="/v1")
+    with TestClient(app) as tc:
+        hub_call = tc.post("/v1/live/offer", json={"sdp": "v=0", "session_id": "hubconv"})
+        prompt = str(seen["instructions"])
+        plain = tc.post("/v1/live/offer", json={"sdp": "v=0", "session_id": "s-brasa"})
+    assert hub_call.json()["hub"] is True
+    assert prompt.startswith(voice_hub.DELEGATING_HUB_ROLE)
+    assert '"Orders" · WORKING' in prompt and '"Hub"' not in prompt
+    # Client delegation: the hub answers what is delegated, not a backend model.
+    assert seen["backend"] is None
+    assert plain.json()["hub"] is False
+    assert hub_module._HUBS["local"].chat.session_id == "hubconv"

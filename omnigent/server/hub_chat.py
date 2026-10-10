@@ -206,6 +206,35 @@ class HubConversation:
                 ).model_dump(),
             )
 
+    def post_user(self, text: str) -> None:
+        """Store what they said on a voice call as their message, and publish it."""
+        from omnigent.db.utils import generate_task_id
+        from omnigent.entities import NewConversationItem
+        from omnigent.entities.conversation import parse_item_data
+        from omnigent.server.routes._sessions.helpers import _publish_input_consumed
+
+        if not text.strip():
+            return
+        try:
+            item = NewConversationItem(
+                type="message",
+                response_id=generate_task_id(),
+                data=parse_item_data(
+                    "message",
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": f"🎙 {text.strip()}"}],
+                    },
+                ),
+            )
+            persisted = self.conversation_store.append(self.session_id, [item])
+        except Exception:  # noqa: BLE001 - the hub's own log still has it
+            _logger.warning("hub voice line not stored in %s", self.session_id, exc_info=True)
+            return
+        if persisted:
+            _publish_input_consumed(self.session_id, persisted[0])
+
     def busy(self, working: bool) -> None:
         """Show the chat as thinking while the hub works on a message."""
         from omnigent.server.routes._sessions.helpers import _publish_status

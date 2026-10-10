@@ -27,7 +27,7 @@ if (typeof globalThis.MediaStream === "undefined") {
   (globalThis as unknown as { MediaStream: unknown }).MediaStream = function MediaStream() {};
 }
 
-function fakeGptConversation() {
+function fakeGptConversation({ hub = false }: { hub?: boolean } = {}) {
   let settle: () => void = () => {};
   const closed = new Promise<void>((resolve) => {
     settle = resolve;
@@ -40,6 +40,8 @@ function fakeGptConversation() {
     untilQuiet: vi.fn(async (_expectSpeech?: boolean) => {}),
     commentary: vi.fn((_id: string, _content: string) => {}),
     thinking: vi.fn(),
+    announce: vi.fn((_content: string) => {}),
+    hub,
   };
 }
 
@@ -139,6 +141,20 @@ describe("liveEngineAdapters", () => {
       // stop cleans up audio and calls stop on underlying
       handle.stop();
       expect(gptLive.stop).toHaveBeenCalled();
+      expect(handle.isHub()).toBe(false);
+    });
+
+    it("in the hub conversation, says so and relays the hub's news to the voice", async () => {
+      const gptLive = fakeGptConversation({ hub: true });
+      openLiveConversation.mockResolvedValue(gptLive);
+      const handle = await gptEngineAdapter.open("conv_hub", {
+        onUtterance: vi.fn(),
+        onDelegation: vi.fn(),
+      });
+      expect(handle.isHub()).toBe(true);
+      handle.announce?.("brasa finished");
+      expect(gptLive.announce).toHaveBeenCalledWith("brasa finished");
+      handle.stop();
     });
   });
 
@@ -704,8 +720,16 @@ describe("liveEngineAdapters", () => {
     it("in the hub conversation, leaves every tool to the relay and keeps the call", async () => {
       const onDelegation = vi.fn();
       const onCheck = vi.fn();
-      await geminiEngineAdapter.open("s_hub", { onUtterance: vi.fn(), onDelegation, onCheck });
+      const handle = await geminiEngineAdapter.open("s_hub", {
+        onUtterance: vi.fn(),
+        onDelegation,
+        onCheck,
+      });
+      expect(handle.isHub()).toBe(false);
       opts.onEvent?.({ type: "session", model: "gemini-3.8-live", toolsBlock: false, hub: true });
+      expect(handle.isHub()).toBe(true);
+      // The relay tells a hub call its news itself; the page relays none.
+      expect(handle.announce).toBeUndefined();
       opts.onEvent?.({ type: "inputTranscript", text: "manda a brasa rodar os testes" });
       opts.onEvent?.({
         type: "toolCall",

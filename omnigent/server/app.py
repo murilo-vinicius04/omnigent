@@ -2696,7 +2696,9 @@ def create_app(
     # Live voice: the WebRTC handshake broker plus its probe page. Keyless
     # servers register it anyway; the routes report 503 rather than 404.
     app.include_router(
-        create_live_voice_router(auth_provider=auth_provider),
+        create_live_voice_router(
+            auth_provider=auth_provider, conversation_store=conversation_store
+        ),
         prefix="/v1",
         tags=["live-voice"],
     )
@@ -2724,7 +2726,12 @@ def create_app(
     # A local Kyutai Unmute voice stack, served under this origin at /unmute
     # so the microphone works on the same forwarded port as the app.
     app.include_router(create_unmute_proxy_router(auth_provider=auth_provider))
-    app.include_router(create_unmute_live_router(auth_provider=auth_provider), prefix="/v1")
+    app.include_router(
+        create_unmute_live_router(
+            auth_provider=auth_provider, conversation_store=conversation_store
+        ),
+        prefix="/v1",
+    )
     # The warm companion: one agy process per session, plus its probe
     # page. Registered unconditionally; a missing CLI reports 503.
     app.include_router(
