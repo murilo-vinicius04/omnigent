@@ -14,30 +14,30 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
-## 2026-10-09 night — READ FIRST (the hub chat; session d9653808)
+## 2026-10-10 — READ FIRST (the hub conversation; session d9653808)
 
 **User, 17:00:** go full throttle on the hub and Omnigent; benchmarks allowed but
 careful with quota (they still have to work this week). Router may use Gemini 3.7 Flash.
 Benchmarks still stopped: `dswe-luna6` has 7 tasks left in `~/deepswe/luna6_17.queue`;
 `rmdir ~/deepswe/lanes_state/luna6_17/ts-pattern-match-each` before any resume.
 
-**The hub (b233241c5, live).** One chat per user, no name: sidebar "Hub" → `/hub`
-(`web/src/pages/HubPage.tsx`, store `web/src/lib/hubApi.ts`). Server
-`omnigent/server/hub.py` + `routes/hub.py` (`GET /v1/hub`, `/v1/hub/entries?after&wait`
-long-poll, `/v1/hub/sessions`, `POST /v1/hub/messages`). Log + nicknames on disk at
-`~/.omnigent/hub/<user>/{log.jsonl,names.json}`. Router = `HubRouter` (a companion with
-its own role; `gemini-3.7-flash-medium`, `OMNIGENT_HUB_MODEL`), registry key
-`hub-<user>`. Each message: recent top-level sessions (7 days, max 8; first/last ask,
-last said, companion summary, live step) → one JSON decision (answer/send/status/check/
-ask, + `names`). Sends go through `/v1/sessions/{id}/events` with `force_claude` and the
-caller's cookie; a watch polls the session and posts "finished" (router summary + full
-reply as detail), "waiting for your approval", or "hasn't started". Voice hub (sidebar
-radio / Talk button on /hub) shares the hub: tools `session_status`/`ask_claude`/
-`check_machine`, sends logged + watched, finished reports spoken into an open call.
-Projects Audio/Amarras/Brasa were deleted; their names live on as nicknames
-(audio=247c…, amarras=d14b…, brasa=ba9b…). Probe on real data: router right on 8/8,
-~3 s warm, 10 s cold (`scratchpad/hub_router_probe.py`, `hub_live_dry.py`).
-**Not yet verified by the user in the browser; no real send was made by me.**
+**The hub is a regular conversation (baf20924b, live 10-10 ~01:35).** User: "it should
+work just like a regular chat conversation, but managing all sessions at once". One
+conversation per user, title "Hub", label `omnigent.hub=1`, pinned, small session-scoped
+agent "hub" (spec harness agy / gemini-3.7-flash-medium, never launched). Made by
+`omnigent/server/hub_chat.py::ensure_hub_conversation` (GET `/v1/hub`, or `/hub` which
+redirects); morys5's is `2b183f7b…` (id in `~/.omnigent/hub/morys5/conversation.json`;
+hub files follow OMNIGENT_DATA_DIR). `routes_events.py` hands `message` events on it to
+`hub_chat.accept_message` before any runner logic; the hub (`hub.py`, router =
+`HubRouter`, Gemini 3.7 Flash) answers via `Hub.say` → `HubConversation.post` (assistant
+message, agent "hub", markdown: sent quotes the English sent, finished quotes the
+reply + "Open <session> ↗" absolute link from the caller's Origin/Host). Status
+running/idle while it thinks. The chat's own voice button in the hub conversation =
+hub voice (relay detects the label; page skips tools when hello says hub). Verified in
+headless Chrome on a scratch server (`scratchpad/hubsrv/run.sh`, port 6791, clean env —
+inherited OMNIGENT_* vars otherwise leak into it). Not yet tried by the user.
+Routing/watch details unchanged from b233241c5: recent top-level sessions (7 d, max 8),
+nicknames audio/amarras/brasa, watch reports finished / approval / never started.
 
 **Long calls (c6d1e21ac, live).** Setup asks for `sessionResumption` +
 `contextWindowCompression.slidingWindow`; relay swaps to a resumed connection on goAway
@@ -57,7 +57,8 @@ Voice 3.8 switch details (341d9c48f): A/B in `~/nexus-bench/gemini_live_ab.py`, 
 
 Known failing, not ours: `test_the_voice_is_told_when_to_delegate`; 3 shell tests on
 the `prefetchAvailableAgentDetails` mock; `test_codex_native_model_options_query_model_list`
-on this machine (expects no `source` field; fails at HEAD too).
+on this machine (expects no `source` field; fails at HEAD too);
+`test_kiro_native_dispatch_forwards_without_persisting` (fails at HEAD too).
 
 ## 2026-10-09 afternoon — READ FIRST (voice/companion + GPT-6 Luna rerun; session d9653808)
 
