@@ -57,8 +57,10 @@ HUB_ROLE: Final[str] = (
     "send it or ask Claude; when it is your own idea, ask once and send on their "
     "yes. The call stays open after sending: say which session it went to and "
     "carry on. When a session finishes you will be told, and you tell them. "
-    "Never say you sent, checked, found or did anything unless a tool result in "
-    "this reply says so."
+    "To put a session on another model or reasoning effort, call set_model with "
+    "what they asked for; each session's line says what it runs and offers. "
+    "Never say you sent, checked, found, changed or did anything unless a tool "
+    "result in this reply says so."
 )
 
 #: The hub's voice when it cannot call tools and delegates instead (GPT-Live).
@@ -73,14 +75,16 @@ DELEGATING_HUB_ROLE: Final[str] = (
     "about, the way they call it. "
     "Something needs the backend when: they ask what a session is doing now or "
     "whether it finished; they want a session's Claude to do or answer something; "
-    "or they want a fact checked on their machine. The backend reads the sessions "
-    "live, sends messages and runs read-only checks, and tells you the result; say "
-    "it in your own words. It does not when: greetings, small talk, or what the "
-    "list below already answers. When they tell you to send it or ask Claude, "
-    "that is their yes: hand it over at once. When sending is your own idea, ask "
-    "once and hand it over on their yes. The call stays open after a send; when a "
-    "session finishes you are told, and you tell them. Never say you sent, "
-    "checked, found or did anything unless the backend told you so in this call."
+    "they want a fact checked on their machine; or they want a session on another "
+    "model or reasoning effort. The backend reads the sessions live, sends "
+    "messages, runs read-only checks and changes models, and tells you the "
+    "result; say it in your own words. It does not when: greetings, small talk, "
+    "or what the list below already answers, such as what each session runs. "
+    "When they tell you to send it or ask Claude, that is their yes: hand it over "
+    "at once. When sending is your own idea, ask once and hand it over on their "
+    "yes. The call stays open after a send; when a session finishes you are told, "
+    "and you tell them. Never say you sent, checked, found, changed or did "
+    "anything unless the backend told you so in this call."
 )
 
 _SESSION_PARAM: Final[dict[str, str]] = {
@@ -146,6 +150,36 @@ HUB_TOOLS: Final[list[dict[str, Any]]] = [
                 },
             },
             "required": ["session", "question"],
+        },
+    },
+    {
+        "name": "set_model",
+        "behavior": "NON_BLOCKING",
+        "description": (
+            "Put a session on another model and/or reasoning effort, from what "
+            "that session offers (its line in the list says). Give only what they "
+            "asked to change. Nothing changes if it is not on offer; the result "
+            "then says what is."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "session": _SESSION_PARAM,
+                "model": {
+                    "type": "STRING",
+                    "description": (
+                        "The model as they said it, e.g. 'opus' or 'sol', or 'default'. "
+                        "Leave out to keep the model."
+                    ),
+                },
+                "effort": {
+                    "type": "STRING",
+                    "description": (
+                        "The effort, e.g. 'high' or 'max', or 'default'. Leave out to keep it."
+                    ),
+                },
+            },
+            "required": ["session"],
         },
     },
 ]
@@ -355,6 +389,14 @@ async def run_hub_tool(hub: Hub, name: str, args: dict[str, Any]) -> tuple[str, 
             if entry.kind != "sent":
                 return session.name, entry.text
             return session.name, f"Sent to {session.name}. You will be told when it finishes."
+        if name == "set_model":
+            entry = await hub.set_model(
+                session,
+                str(args.get("model") or "").strip(),
+                str(args.get("effort") or "").strip(),
+                via="voice",
+            )
+            return session.name, entry.text
         if name == "check_machine":
             question = str(args.get("question", "")).strip()
             found = await backend.check(session.id, question)

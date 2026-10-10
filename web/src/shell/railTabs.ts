@@ -12,7 +12,9 @@ export type RightRailTab =
   | "subagents"
   | "browser"
   | "companion"
-  | "todos";
+  | "todos"
+  /** The hub's own tab: every session it runs and what each runs on. */
+  | "sessions";
 
 /**
  * Count/status badge geometry. Fixed height with min-width == height keeps a

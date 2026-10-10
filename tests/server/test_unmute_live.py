@@ -461,7 +461,7 @@ async def test_the_hubs_voice_runs_the_hubs_tools_on_the_server(tmp_path) -> Non
     assert sent == [("s-brasa", "run tests")]
     first, second = model.requests
     names = [t["function"]["name"] for t in first["tools"]]
-    assert names == ["session_status", "ask_claude", "check_machine"]
+    assert names == ["session_status", "ask_claude", "check_machine", "set_model"]
     assert first["tools"][1]["function"]["parameters"]["type"] == "object"
     # The model hears the hub's own result; the page only shows the call.
     assert second["messages"][-1]["content"] == (

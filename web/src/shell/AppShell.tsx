@@ -754,37 +754,41 @@ export function AppShell() {
   // Per-tab availability for the right workspace rail — the single source
   // of truth shared by the tab-fallback effect below, the rail's mount
   // gate, and the header's collapse toggle, so they can never disagree.
+  // The hub runs other sessions and has no workspace of its own: its rail is
+  // the Sessions tab alone.
+  const isHubConversation = activeSession?.labels?.["omnigent.hub"] === "1";
   const railTabsAvailable = useMemo(
     () =>
       ({
-        files: showFilesPanel,
+        files: showFilesPanel && !isHubConversation,
         // Changes tab shares the Files gate — same on-disk workspace, just the
         // changed-files scope.
-        changes: showFilesPanel,
+        changes: showFilesPanel && !isHubConversation,
         // GitHub tab: workspace gate plus the resolved GitHub info — a
         // non-git workspace hides the tab instead of opening a dead-end
         // panel. The panel still renders the "gh not installed" /
         // "not signed in" / "update your host" states for a real checkout.
-        github: showGithubTab,
+        github: showGithubTab && !isHubConversation,
         // Browser tab: shown only when the desktop shell hosts the embedded
         // WebContentsView. A plain web build has no embedded browser, and an
         // older desktop build predates the `browser*` bridge — both hide the
         // tab entirely (supportsBrowser() is constant per load) so we never
         // surface a dead tab whose calls no-op.
-        browser: supportsBrowser(),
+        browser: supportsBrowser() && !isHubConversation,
         // Agents tab is unconditional: the panel always lists at least
         // the main agent (its "main" row), so there's never a dead end.
-        subagents: true,
+        subagents: !isHubConversation,
         // Companion tab is unconditional too: it shows what the companion
         // knows, and "nothing yet" is a real answer worth being able to see.
-        companion: true,
+        companion: !isHubConversation,
         // To-do tab is unconditional: mirrors the session's active task list.
-        todos: true,
+        todos: !isHubConversation,
+        sessions: isHubConversation,
         // Shells have no nav tab — they open as closable soft tabs in the
         // rail's tab strip (see WorkspacePanel's TerminalTabsStrip / "+"
         // menu). Mobile keeps a shells drawer (see ``showShellsTab`` below).
       }) as const,
-    [showFilesPanel, showGithubTab],
+    [showFilesPanel, showGithubTab, isHubConversation],
   );
   // Whether the rail has anything at all to show. When false the workspace
   // card doesn't mount and the header hides its collapse toggle — a
@@ -799,10 +803,17 @@ export function AppShell() {
   useEffect(() => {
     if (railTabsAvailable[rightRailTab]) return;
     const next = (
-      ["files", "changes", "github", "subagents", "browser", "companion", "todos"] as const
-    ).find(
-      (t) => railTabsAvailable[t],
-    );
+      [
+        "sessions",
+        "files",
+        "changes",
+        "github",
+        "subagents",
+        "browser",
+        "companion",
+        "todos",
+      ] as const
+    ).find((t) => railTabsAvailable[t]);
     if (next) setRightRailTab(next);
   }, [railTabsAvailable, rightRailTab]);
 
@@ -1045,6 +1056,10 @@ export function AppShell() {
     if (nextSelected && nextTab !== "files" && nextTab !== "changes") {
       nextTab = "files";
     }
+    // A remembered tab this session no longer has (GitHub on a non-git
+    // workspace, Files on the hub) would undo the fallback effect's pick,
+    // which runs first in this same commit; leave the choice to it.
+    if (nextTab !== null && !railTabsAvailable[nextTab]) nextTab = null;
     if (nextTab !== null) setRightRailTab(nextTab);
 
     // Restore the rail open-state for this session. A deep link / reload that
@@ -2063,7 +2078,8 @@ export function AppShell() {
                     handleProps={inlinePanelHandleProps}
                     rightRailTab={rightRailTab}
                     onRightRailTabChange={handleRightRailTabChange}
-                    showFilesPanel={showFilesPanel}
+                    showFilesPanel={railTabsAvailable.files}
+                    showHubSessions={railTabsAvailable.sessions}
                     showGithubTab={railTabsAvailable.github}
                     showBrowserTab={railTabsAvailable.browser}
                     changedCount={changedCount}
@@ -2243,7 +2259,7 @@ export function AppShell() {
               there even though the ⌘K hotkey is disabled (it belongs to the
               host page). */}
           <VoiceHubStatus />
-      <CommandPalette
+          <CommandPalette
             open={commandPaletteOpen}
             onOpenChange={setCommandPaletteOpen}
             onToggleLeftSidebar={toggleLeftSidebar}

@@ -40,6 +40,16 @@ class HubVoiceIn(BaseModel):
     context: str = Field(default="", max_length=8_000)
 
 
+class HubModelIn(BaseModel):
+    """A model or effort picked for a session in the hub's Sessions panel."""
+
+    session_id: str = Field(min_length=1, max_length=200)
+    #: A model id it offers, ``"default"``, or empty to keep the model.
+    model: str = Field(default="", max_length=256)
+    #: An effort it offers, ``"default"``, or empty to keep the effort.
+    effort: str = Field(default="", max_length=32)
+
+
 def create_hub_router(
     *,
     auth_provider: AuthProvider | None = None,
@@ -101,6 +111,20 @@ def create_hub_router(
         """The sessions the hub can reach, with their live status."""
         hub, _ = await _bound(request)
         return {"sessions": [s.as_dict() for s in await hub.sessions()]}
+
+    @router.post("/hub/model")
+    async def hub_model(request: Request, body: HubModelIn) -> dict[str, Any]:
+        """Change a session's model or effort, by the same rules as asking for it.
+
+        The change is checked against what that session offers and written
+        into the hub chat, so a pick made here reads like one asked for.
+        """
+        hub, _ = await _bound(request)
+        session = next((s for s in await hub.sessions() if s.id == body.session_id), None)
+        if session is None:
+            raise HTTPException(status_code=404, detail="not one of the hub's sessions")
+        entry = await hub.set_model(session, body.model, body.effort, via="panel")
+        return {"changed": entry.kind == "model", "text": entry.text}
 
     @router.post("/hub/voice")
     async def hub_voice(request: Request, body: HubVoiceIn) -> dict[str, Any]:

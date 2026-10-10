@@ -154,7 +154,7 @@ def render(entry: hub_module.HubEntry, base_url: str = "") -> str:
                 reply[:_REPLY_QUOTE_CHARS].rstrip() + f" … (the rest is in {entry.session_name})"
             )
         return f"{entry.text}\n\n> {_quote(reply)}\n\n{link}".rstrip()
-    if entry.kind in ("attention", "finished", "status", "check") and link:
+    if entry.kind in ("attention", "finished", "status", "check", "model") and link:
         return f"{entry.text}\n\n{link}"
     return entry.text
 

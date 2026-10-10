@@ -16,6 +16,7 @@ const RAIL_TABS: readonly RightRailTab[] = [
   "browser",
   "companion",
   "todos",
+  "sessions",
 ];
 
 export interface SessionWorkspaceState {

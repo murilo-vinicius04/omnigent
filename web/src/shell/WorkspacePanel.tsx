@@ -4,6 +4,7 @@ import {
   FolderTreeIcon,
   FileDiffIcon,
   GlobeIcon,
+  LayersIcon,
   ListTodoIcon,
   Loader2Icon,
   MaximizeIcon,
@@ -40,6 +41,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { BrowserPane } from "@/components/BrowserPane/BrowserPane";
 import { CompanionPanel } from "./CompanionPanel";
+import { HubSessionsPanel } from "./HubSessionsPanel";
 import { TodoPanel } from "./TodoPanel";
 import { useChatStore } from "@/store/chatStore";
 import { useSessionAgent } from "@/hooks/useAgents";
@@ -578,6 +580,8 @@ interface WorkspacePanelProps {
   onRightRailTabChange: (next: RightRailTab) => void;
   /** Whether the Files/Changes tabs are available (agent spec exposes an os_env). */
   showFilesPanel: boolean;
+  /** Whether this is the hub, whose rail is its Sessions tab alone. */
+  showHubSessions?: boolean;
   /** Whether the GitHub tab is available (same on-disk-workspace gate as Files). */
   showGithubTab: boolean;
   /** Whether the Browser tab is available — Electron shell only (hidden in a
@@ -678,6 +682,7 @@ function WorkspacePanelImpl({
   rightRailTab,
   onRightRailTabChange,
   showFilesPanel,
+  showHubSessions = false,
   showGithubTab,
   showBrowserTab,
   changedCount,
@@ -805,6 +810,18 @@ function WorkspacePanelImpl({
           componentId="chat.right_rail.tabs"
         >
           <TabsList variant="pill" className="gap-1">
+            {showHubSessions && (
+              <WorkspaceTabTooltip label="Sessions">
+                <TabsTrigger
+                  value="sessions"
+                  aria-label="Sessions"
+                  className="size-6 shrink-0 p-0 hover:border-1 hover:border-muted rounded-md!"
+                >
+                  <LayersIcon />
+                  <span className="sr-only">Sessions</span>
+                </TabsTrigger>
+              </WorkspaceTabTooltip>
+            )}
             {showFilesPanel && (
               <WorkspaceTabTooltip label="Files">
                 <TabsTrigger
@@ -842,56 +859,60 @@ function WorkspacePanelImpl({
                 </TabsTrigger>
               </WorkspaceTabTooltip>
             )}
-            <WorkspaceTabTooltip label="Agents">
-              <TabsTrigger
-                value="subagents"
-                aria-label={
-                  subagentsWorking > 0
-                    ? `Agents ${subagentsWorking}/${agentCount}`
-                    : `Agents ${agentCount}`
-                }
-                className="size-6 shrink-0 p-0 hover:border-1 hover:border-muted rounded-md!"
-              >
-                <BotIcon />
-                <span className="sr-only">Agents</span>
-                <span
-                  className={cn(
-                    TAB_BADGE_BASE,
-                    "sr-only",
-                    subagentsWorking > 0 ? "text-success" : "text-muted-foreground",
-                  )}
+            {!showHubSessions && (
+              <WorkspaceTabTooltip label="Agents">
+                <TabsTrigger
+                  value="subagents"
+                  aria-label={
+                    subagentsWorking > 0
+                      ? `Agents ${subagentsWorking}/${agentCount}`
+                      : `Agents ${agentCount}`
+                  }
+                  className="size-6 shrink-0 p-0 hover:border-1 hover:border-muted rounded-md!"
                 >
-                  {subagentsWorking > 0 ? `${subagentsWorking}/${agentCount}` : agentCount}
-                </span>
-              </TabsTrigger>
-            </WorkspaceTabTooltip>
-            <WorkspaceTabTooltip label="Companion">
-              <TabsTrigger
-                value="companion"
-                aria-label="Companion"
-                className="size-6 shrink-0 p-0 hover:border-1 hover:border-muted rounded-md!"
+                  <BotIcon />
+                  <span className="sr-only">Agents</span>
+                  <span
+                    className={cn(
+                      TAB_BADGE_BASE,
+                      "sr-only",
+                      subagentsWorking > 0 ? "text-success" : "text-muted-foreground",
+                    )}
+                  >
+                    {subagentsWorking > 0 ? `${subagentsWorking}/${agentCount}` : agentCount}
+                  </span>
+                </TabsTrigger>
+              </WorkspaceTabTooltip>
+            )}
+            {!showHubSessions && (
+              <WorkspaceTabTooltip label="Companion">
+                <TabsTrigger
+                  value="companion"
+                  aria-label="Companion"
+                  className="size-6 shrink-0 p-0 hover:border-1 hover:border-muted rounded-md!"
+                >
+                  <MessagesSquareIcon />
+                  <span className="sr-only">Companion</span>
+                </TabsTrigger>
+              </WorkspaceTabTooltip>
+            )}
+            {!showHubSessions && (
+              <WorkspaceTabTooltip
+                label={pendingTodosCount > 0 ? `To-do (${pendingTodosCount})` : "To-do"}
               >
-                <MessagesSquareIcon />
-                <span className="sr-only">Companion</span>
-              </TabsTrigger>
-            </WorkspaceTabTooltip>
-            <WorkspaceTabTooltip
-              label={pendingTodosCount > 0 ? `To-do (${pendingTodosCount})` : "To-do"}
-            >
-              <TabsTrigger
-                value="todos"
-                aria-label={
-                  pendingTodosCount > 0 ? `To-do ${pendingTodosCount} pending` : "To-do"
-                }
-                className="size-6 shrink-0 p-0 hover:border-1 hover:border-muted rounded-md!"
-              >
-                <ListTodoIcon />
-                <span className="sr-only">To-do</span>
-                {pendingTodosCount > 0 && (
-                  <span className="sr-only">{pendingTodosCount}</span>
-                )}
-              </TabsTrigger>
-            </WorkspaceTabTooltip>
+                <TabsTrigger
+                  value="todos"
+                  aria-label={
+                    pendingTodosCount > 0 ? `To-do ${pendingTodosCount} pending` : "To-do"
+                  }
+                  className="size-6 shrink-0 p-0 hover:border-1 hover:border-muted rounded-md!"
+                >
+                  <ListTodoIcon />
+                  <span className="sr-only">To-do</span>
+                  {pendingTodosCount > 0 && <span className="sr-only">{pendingTodosCount}</span>}
+                </TabsTrigger>
+              </WorkspaceTabTooltip>
+            )}
             {showBrowserTab && (
               <WorkspaceTabTooltip label="Browser">
                 <TabsTrigger
@@ -1018,6 +1039,8 @@ function WorkspacePanelImpl({
           <BrowserPane conversationId={conversationId} className="min-h-0 flex-1" />
         ) : rightRailTab === "github" && showGithubTab ? (
           <GithubPanel conversationId={conversationId} />
+        ) : rightRailTab === "sessions" && showHubSessions ? (
+          <HubSessionsPanel />
         ) : rightRailTab === "companion" ? (
           <CompanionPanel conversationId={conversationId} />
         ) : rightRailTab === "todos" ? (

@@ -303,7 +303,7 @@ def test_the_hub_is_briefed_on_every_session_and_answers_its_own_tools(
             _wait_for(lambda: upstream.sent)
             setup = json.loads(upstream.sent[0])["setup"]
             names = [d["name"] for d in setup["tools"][0]["functionDeclarations"]]
-            assert names == ["session_status", "ask_claude", "check_machine"]
+            assert names == ["session_status", "ask_claude", "check_machine", "set_model"]
             instruction = setup["systemInstruction"]["parts"][0]["text"]
             assert '"Scanner" · WORKING (now: Bash: make scan)' in instruction
             assert '"Orders" · idle' in instruction
@@ -414,6 +414,6 @@ def test_the_voice_button_inside_the_hub_chat_is_the_hub(monkeypatch, tmp_path) 
             _wait_for(lambda: upstream.sent)
     setup = json.loads(upstream.sent[0])["setup"]
     names = [d["name"] for d in setup["tools"][0]["functionDeclarations"]]
-    assert names == ["session_status", "ask_claude", "check_machine"]
+    assert names == ["session_status", "ask_claude", "check_machine", "set_model"]
     # What the hub says on this call is written into the hub conversation.
     assert hub_module._HUBS["local"].chat.session_id == "s-hubchat"

@@ -27,8 +27,9 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Final, Literal
 
 from omnigent.process_logging import data_dir
-from omnigent.server import voice_hub
+from omnigent.server import hub_models, voice_hub
 from omnigent.server.discussion import DiscussionSession, DiscussionUnavailable
+from omnigent.server.hub_models import SessionRun
 
 _logger = logging.getLogger(__name__)
 
@@ -95,6 +96,13 @@ finished, and its line above does not say enough.
 {{"check": "<handle>", "question": "..."}} -- a fact on their machine (disk, \
 processes, services, logs, files, git) that read-only commands in that session's \
 folder can show. Nothing is changed by a check.
+{{"model": "<handle>", "to": "<model>", "effort": "<effort>"}} -- they want a \
+session to run on another model or reasoning effort. Give only what they asked \
+to change: "to" is one of the models that session offers (its id) or \
+"default"; "effort" is one of its efforts or "default". If what they want is \
+not in its list, use "ask" and name what it offers. A session never changes \
+provider here (Claude Code stays Claude Code): that is the Switch button in the \
+Sessions panel.
 {{"ask": "..."}} -- you cannot tell which session they mean: one short question \
 that names the likely ones.
 
@@ -125,7 +133,9 @@ code, no lists.
 {reply}\
 """
 
-EntryKind = Literal["message", "sent", "finished", "status", "check", "attention", "error"]
+EntryKind = Literal[
+    "message", "sent", "finished", "status", "check", "model", "attention", "error"
+]
 
 #: Entries an open voice hub call is told about as they happen.
 SPOKEN_KINDS: Final[frozenset[str]] = frozenset({"finished", "attention"})
@@ -146,6 +156,7 @@ class HubSession:
     :param summary: The companion's latest spoken summary of it.
     :param now: Its current step while working, e.g. ``"Bash: pytest"``.
     :param pending_approvals: Approvals it is waiting on.
+    :param run: Its provider, model and effort, and what it could switch to.
     """
 
     id: str
@@ -160,6 +171,7 @@ class HubSession:
     summary: str | None = None
     now: str = ""
     pending_approvals: int = 0
+    run: SessionRun = field(default_factory=SessionRun)
 
     @property
     def name(self) -> str:
@@ -184,6 +196,7 @@ class HubSession:
             "now": self.now,
             "updated_at": self.updated_at,
             "pending_approvals": self.pending_approvals,
+            "run": self.run.as_dict(),
         }
 
 
@@ -230,11 +243,14 @@ class TurnState:
 class HubDecision:
     """What the router decided about one message."""
 
-    action: Literal["answer", "send", "status", "check", "ask", "none"]
+    action: Literal["answer", "send", "status", "check", "model", "ask", "none"]
     text: str = ""
     handle: str | None = None
     message: str = ""
     names: dict[str, str] = field(default_factory=dict)
+    #: For ``model``: the model and effort asked for; empty leaves it as is.
+    model: str = ""
+    effort: str = ""
 
 
 def hub_model() -> str:
@@ -269,6 +285,15 @@ def session_line(session: HubSession) -> str:
     if session.pending_approvals:
         state += f", waiting for {session.pending_approvals} approval(s)"
     parts = [f'[{session.handle}] {name}"{session.title or "untitled"}" · {state}']
+    if session.run.provider:
+        parts.append(f"runs {session.run.summary()}")
+    if session.run.models:
+        offered = ", ".join(
+            m.id if m.label == m.id else f"{m.id} ({m.label})" for m in session.run.models
+        )
+        parts.append(f"models it offers: {offered}")
+    if session.run.efforts:
+        parts.append(f"efforts: {', '.join(session.run.efforts)}")
     if session.first_ask:
         parts.append(f'started with: "{_short(session.first_ask, _QUOTE_CHARS)}"')
     if session.last_ask and session.last_ask != session.first_ask:
@@ -323,6 +348,14 @@ def parse_decision(reply: str) -> HubDecision:
         )
     if text("status"):
         return HubDecision(action="status", handle=text("status"), names=names)
+    if text("model"):
+        return HubDecision(
+            action="model",
+            handle=text("model"),
+            model=text("to"),
+            effort=text("effort"),
+            names=names,
+        )
     if text("ask"):
         return HubDecision(action="ask", text=text("ask"), names=names)
     if text("answer"):
@@ -502,6 +535,8 @@ class HubBackend:
     :param send: Post a message into a session, as if typed there.
     :param check: Answer a question with read-only commands in its folder.
     :param turn: Where a session is with work sent at a given time.
+    :param configure: Set a session's model and effort, as its own picker
+        does: ``None`` leaves one as is, ``"default"`` clears it.
     """
 
     sessions: Callable[[], Awaitable[list[HubSession]]]
@@ -509,6 +544,7 @@ class HubBackend:
     send: Callable[[str, str], Awaitable[None]]
     check: Callable[[str, str], Awaitable[str]]
     turn: Callable[[str, float], Awaitable[TurnState]]
+    configure: Callable[[str, str | None, str | None], Awaitable[None]] | None = None
 
 
 class Hub:
@@ -643,7 +679,7 @@ class Hub:
             if decision.handle
             else None
         )
-        if decision.action in ("send", "status", "check") and target is None:
+        if decision.action in ("send", "status", "check", "model") and target is None:
             names = ", ".join(s.name for s in sessions) or "none"
             said = f"I couldn't tell which session you mean. Your sessions: {names}."
             self.say(said)
@@ -676,11 +712,93 @@ class Hub:
             self.say(found, kind="check", session_id=target.id, session_name=target.name)
             router.remember(f"checked {target.name}: {found}")
             return
+        if decision.action == "model" and target is not None:
+            entry = await self.set_model(target, decision.model, decision.effort, via=via)
+            router.remember(entry.text)
+            return
         said = decision.text or (
             "I didn't understand that well enough to act on it; nothing was sent."
         )
         self.say(said)
         router.remember(said)
+
+    async def set_model(
+        self, session: HubSession, model: str, effort: str, *, via: str
+    ) -> HubEntry:
+        """Put a session on another model and/or effort, from its own lists.
+
+        Nothing is changed unless every part asked for is one the session
+        offers; otherwise the reply says what it does offer.
+
+        :param model: A model id, label or partial name; ``"default"``
+            clears the pick; empty leaves the model as is.
+        :param effort: An effort, ``"default"``, or empty for as is.
+        """
+        run = session.run
+        fields: dict[str, Any] = {"session_id": session.id, "session_name": session.name}
+        new_model: str | None = None
+        efforts = run.efforts
+        if model:
+            if not run.models:
+                return self.say(
+                    f"{session.name} runs {run.provider or 'an agent'} and offers no model "
+                    "choice here; nothing was changed.",
+                    **fields,
+                )
+            if hub_models.normalize_default(model):
+                new_model = "default"
+                default = next((m for m in run.models if m.is_default), None)
+                efforts = default.efforts if default and run.kind == "codex" else efforts
+            else:
+                found = hub_models.match_model(run.models, model)
+                if len(found) != 1:
+                    offered = ", ".join(m.label for m in (found or run.models))
+                    lead = "Which one" if found else f"{session.name} has no model like '{model}'"
+                    return self.say(
+                        f"{lead}? {session.name} offers: {offered}. Nothing was changed.",
+                        **fields,
+                    )
+                new_model = found[0].id
+                if run.kind == "codex":
+                    efforts = found[0].efforts
+        new_effort: str | None = None
+        if effort:
+            if hub_models.normalize_default(effort):
+                new_effort = "default"
+            else:
+                new_effort = hub_models.match_effort(efforts, effort)
+                if new_effort is None:
+                    offered = ", ".join(efforts) or "no effort setting"
+                    return self.say(
+                        f"{session.name} can't take '{effort}' effort; it offers {offered}. "
+                        "Nothing was changed.",
+                        **fields,
+                    )
+        if new_model is None and new_effort is None:
+            return self.say(f"{session.name} runs {run.summary()}. Nothing was changed.", **fields)
+        backend = self.require_backend()
+        if backend.configure is None:
+            return self.say("I can't change models from here yet.", kind="error", **fields)
+        try:
+            await backend.configure(session.id, new_model, new_effort)
+        except Exception as exc:  # noqa: BLE001 - say it failed, never pretend
+            _logger.warning("hub model change on %s failed", session.id, exc_info=True)
+            return self.say(
+                f"Changing {session.name} failed ({type(exc).__name__}); its model is as it was.",
+                kind="error",
+                **fields,
+            )
+        parts = []
+        if new_model is not None:
+            parts.append("its default model" if new_model == "default" else run.label(new_model))
+        if new_effort is not None:
+            parts.append("default effort" if new_effort == "default" else f"{new_effort} effort")
+        return self.say(
+            f"Switched {session.name} to {' at '.join(parts)}; it applies from its next message.",
+            kind="model",
+            via=via,
+            **fields,
+        )
 
     async def send_to(
         self, session: HubSession, message: str, *, via: str, say: str = ""
@@ -931,6 +1049,54 @@ def store_backend(
     :param exclude: Sessions never offered, such as the hub's own conversation.
     """
     details: dict[str, tuple[float, dict[str, Any]]] = {}
+    runs: dict[str, tuple[tuple[Any, ...], SessionRun]] = {}
+
+    def _client() -> Any:
+        import httpx
+
+        return httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://hub", timeout=60
+        )
+
+    async def _run(conv: Any) -> SessionRun:
+        """What it runs on, from its own snapshot; re-read only when it changed."""
+        key = (
+            getattr(conv, "updated_at", None),
+            getattr(conv, "model_override", None),
+            getattr(conv, "reasoning_effort", None),
+            getattr(conv, "reported_model", None),
+            getattr(conv, "agent_id", None),
+        )
+        cached = runs.get(conv.id)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        run = await read_run(conv.id)
+        runs[conv.id] = (key, run)
+        return run
+
+    async def read_run(session_id: str) -> SessionRun:
+        try:
+            async with _client() as client:
+                response = await client.get(
+                    f"/v1/sessions/{session_id}",
+                    params={"include_items": "false", "include_liveness": "false"},
+                    headers=headers,
+                )
+                response.raise_for_status()
+                snapshot = response.json()
+                fallback: list[Any] = []
+                harness = hub_models.HOST_CATALOG_HARNESS.get(hub_models.picker_kind(snapshot))
+                if harness and not snapshot.get("model_options") and snapshot.get("host_id"):
+                    hosted = await client.get(
+                        f"/v1/hosts/{snapshot['host_id']}/harnesses/{harness}/model-options",
+                        headers=headers,
+                    )
+                    if hosted.status_code == 200:
+                        fallback = list(hosted.json().get("models") or [])
+        except Exception:  # noqa: BLE001 - a session without its run info still routes
+            _logger.debug("hub could not read %s's model settings", session_id, exc_info=True)
+            return SessionRun()
+        return hub_models.run_from_snapshot(snapshot, fallback)
 
     def _details(session_id: str, updated_at: float) -> dict[str, Any]:
         cached = details.get(session_id)
@@ -965,7 +1131,7 @@ def store_backend(
             order="desc",
         )
         cutoff = time.time() - RECENT_S
-        out: list[HubSession] = []
+        picked = []
         for conv in page.data:
             labels = getattr(conv, "labels", None) or {}
             if conv.id in exclude or labels.get("omnigent.hub") == "1":
@@ -973,8 +1139,13 @@ def store_backend(
             updated = float(getattr(conv, "updated_at", 0) or 0)
             if updated and updated < cutoff:
                 continue
-            if len(out) >= MAX_SESSIONS:
+            if len(picked) >= MAX_SESSIONS:
                 break
+            picked.append(conv)
+        run_of = await asyncio.gather(*(_run(conv) for conv in picked))
+        out: list[HubSession] = []
+        for conv, run in zip(picked, run_of, strict=True):
+            updated = float(getattr(conv, "updated_at", 0) or 0)
             found = await asyncio.to_thread(_details, conv.id, updated)
             status = live_status(conv.id, getattr(conv, "live_status", None))
             now = ""
@@ -1002,13 +1173,12 @@ def store_backend(
                     summary=summary,
                     now=now,
                     pending_approvals=int(getattr(conv, "pending_elicitation_count", 0) or 0),
+                    run=run,
                 )
             )
         return out
 
     async def send(session_id: str, text: str) -> None:
-        import httpx
-
         body = {
             "type": "message",
             "data": {
@@ -1016,14 +1186,24 @@ def store_backend(
                 "content": [{"type": "input_text", "text": text}, {"type": "force_claude"}],
             },
         }
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://hub", timeout=60
-        ) as client:
+        async with _client() as client:
             response = await client.post(
                 f"/v1/sessions/{session_id}/events", json=body, headers=headers
             )
         response.raise_for_status()
+
+    async def configure(session_id: str, model: str | None, effort: str | None) -> None:
+        # One change per request, model first: a Claude Code session types
+        # each into its terminal, and two at once would interleave.
+        async with _client() as client:
+            for field_name, value in (("model_override", model), ("reasoning_effort", effort)):
+                if value is None:
+                    continue
+                response = await client.patch(
+                    f"/v1/sessions/{session_id}", json={field_name: value}, headers=headers
+                )
+                response.raise_for_status()
+        runs.pop(session_id, None)
 
     async def check(session_id: str, question: str) -> str:
         conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
@@ -1060,4 +1240,5 @@ def store_backend(
         send=send,
         check=check,
         turn=turn,
+        configure=configure,
     )

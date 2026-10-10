@@ -183,3 +183,62 @@ async def test_the_call_hears_only_news_from_after_it_opened(client, _hub_home) 
     # Nothing new: the long-poll returns empty when its wait runs out.
     quiet = await client.get("/v1/hub/updates", params={"after": body["last_id"], "wait": 0.05})
     assert quiet.json() == {"updates": [], "last_id": body["last_id"]}
+
+
+async def test_the_hub_reads_and_changes_a_session_model_through_its_own_routes(
+    client, _hub_home
+) -> None:
+    from tests.server.helpers import create_test_session
+
+    session = await create_test_session(
+        client,
+        title="Amarras",
+        labels={"omnigent.wrapper": "claude-code-native-ui", "omnigent.ui": "terminal"},
+    )
+    listed = (await client.get("/v1/hub/sessions")).json()["sessions"]
+    run = next(s["run"] for s in listed if s["id"] == session["id"])
+    assert run["provider"] == "Claude Code"
+    assert run["efforts"] == ["low", "medium", "high", "xhigh", "max"]
+
+    backend = hub_module.hub_for(None).require_backend()
+    await backend.configure(session["id"], "sonnet", "high")
+
+    stored = (await client.get(f"/v1/sessions/{session['id']}")).json()
+    assert (stored["model_override"], stored["reasoning_effort"]) == ("sonnet", "high")
+    listed = (await client.get("/v1/hub/sessions")).json()["sessions"]
+    run = next(s["run"] for s in listed if s["id"] == session["id"])
+    # What it reports running stays the truth until it reports the switch.
+    assert (run["model"], run["requested"], run["effort"]) == ("test-agent", "sonnet", "high")
+
+
+async def test_a_pick_in_the_sessions_panel_is_checked_and_logged_in_the_hub(
+    client, _hub_home
+) -> None:
+    from tests.server.helpers import create_test_session
+
+    session = await create_test_session(
+        client, title="Amarras", labels={"omnigent.wrapper": "claude-code-native-ui"}
+    )
+    hub_id = (await client.get("/v1/hub")).json()["session_id"]
+
+    refused = await client.post(
+        "/v1/hub/model", json={"session_id": session["id"], "effort": "ultra"}
+    )
+    assert refused.status_code == 200, refused.text
+    assert refused.json()["changed"] is False
+    assert "can't take 'ultra' effort" in refused.json()["text"]
+
+    done = await client.post("/v1/hub/model", json={"session_id": session["id"], "effort": "max"})
+    assert done.json() == {
+        "changed": True,
+        "text": "Switched Amarras to max effort; it applies from its next message.",
+    }
+    stored = (await client.get(f"/v1/sessions/{session['id']}")).json()
+    assert stored["reasoning_effort"] == "max"
+    said = [
+        i["content"][0]["text"] for i in await _items(client, hub_id) if i["type"] == "message"
+    ]
+    assert said[-1].startswith("Switched Amarras to max effort;")
+
+    missing = await client.post("/v1/hub/model", json={"session_id": "nope", "effort": "max"})
+    assert missing.status_code == 404
