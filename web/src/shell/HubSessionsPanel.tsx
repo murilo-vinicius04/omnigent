@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowUpRightIcon,
@@ -185,21 +185,23 @@ function AddSessionBar({ count }: { count: number }) {
 /** The name field that replaces a card's title while renaming it. */
 function RenameForm({
   row,
+  input,
   onDone,
 }: {
   row: HubSessionRow;
+  /** The name field, so the card can focus it once its menu has closed. */
+  input: RefObject<HTMLInputElement | null>;
   /** Called with what the hub said, or `null` when nothing changed. */
   onDone: (said: string | null) => void;
 }) {
   const [value, setValue] = useState(row.name);
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
-  const input = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     input.current?.focus();
     input.current?.select();
-  }, []);
+  }, [input]);
 
   async function save(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -295,8 +297,10 @@ function HubSessionCard({ row }: { row: HubSessionRow }) {
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
   const [switchOpen, setSwitchOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
-  // The menu hands focus back to its button on close; not when the name field wants it.
+  // The menu traps focus until it has closed, then hands it back to its
+  // button; after Rename it goes to the name field instead.
   const keepFocus = useRef(false);
+  const renameInput = useRef<HTMLInputElement>(null);
   const { run } = row;
 
   async function remove(): Promise<void> {
@@ -347,6 +351,7 @@ function HubSessionCard({ row }: { row: HubSessionRow }) {
           {renaming ? (
             <RenameForm
               row={row}
+              input={renameInput}
               onDone={(said) => {
                 setRenaming(false);
                 if (said) {
@@ -398,8 +403,11 @@ function HubSessionCard({ row }: { row: HubSessionRow }) {
             <DropdownMenuContent
               align="end"
               onCloseAutoFocus={(event) => {
-                if (keepFocus.current) event.preventDefault();
+                if (!keepFocus.current) return;
                 keepFocus.current = false;
+                event.preventDefault();
+                renameInput.current?.focus();
+                renameInput.current?.select();
               }}
             >
               <DropdownMenuItem
