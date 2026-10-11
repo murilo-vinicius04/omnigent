@@ -37,6 +37,16 @@ not started: the user wants **auto-compact when changing models/provider** (and 
 switch provider in a normal chat: `SwitchAgentDialog` exists but is unmounted); compact =
 `{"type":"compact"}` event, native harnesses only. Item (3) above is fixed.
 
+**23:19 → the hub's own session list (9c987e82e + 233197557, live).** User saw Greeting and
+GPT-6.1 Sol in the hub ("I thought it was just the 3 projects"): it ran every session touched
+in 7 days. Now `~/.omnigent/hub/<user>/members.json` is the list, seeded on first open from
+`names.json` (morys5: amarras, brasa, audio), else from this week's sessions; new sessions stay
+out until added. Sessions panel: "Add session" (searchable list, `GET /v1/hub/candidates`,
+`POST /v1/hub/members`), card menu Rename (`PATCH /v1/hub/members/{id}`, = the nickname chat
+and voice use; clash → 409) and Remove from Hub (`DELETE`, session untouched). Each change
+is a line in the hub chat. Checked in headless Chrome on the scratch server; not yet seen
+with the user's login.
+
 **Rules in force.** Answer in English; no Claude co-author trailers. Ask before spending
 worker quota (name the model); never resume benchmarks unasked. Server restart is fine
 (`XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
