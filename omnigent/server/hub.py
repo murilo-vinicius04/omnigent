@@ -40,11 +40,17 @@ HUB_DIR: Final[pathlib.Path] = data_dir() / "hub"
 #: The router's model when ``OMNIGENT_HUB_MODEL`` is unset.
 DEFAULT_HUB_MODEL: Final[str] = "gemini-3.7-flash-medium"
 
-#: Sessions the hub offers: top-level, not archived, touched this recently.
+#: A new hub with no nicknames yet starts with the sessions touched this recently.
 RECENT_S: Final[float] = 7 * 24 * 3600.0
 
-#: At most this many sessions, newest first.
+#: At most this many of them, newest first.
 MAX_SESSIONS: Final[int] = 8
+
+#: Sessions offered for adding to the hub, newest first.
+LISTING_LIMIT: Final[int] = 100
+
+#: Longest nickname the Sessions panel takes.
+MAX_NICKNAME_CHARS: Final[int] = 60
 
 #: Log entries kept on disk and served to the page.
 MAX_LOG: Final[int] = 400
@@ -105,6 +111,8 @@ provider here (Claude Code stays Claude Code): that is the Switch button in the 
 Sessions panel.
 {{"ask": "..."}} -- you cannot tell which session they mean: one short question \
 that names the likely ones.
+Sessions are added to or taken out of this list only with the Add and Remove \
+buttons in the Sessions panel: say so when they ask, and never claim it was done.
 
 Add "names": {{"<handle>": "<what they call it>"}} to any reply when they tell \
 you, or make plain, what they call a session.
@@ -134,7 +142,7 @@ code, no lists.
 """
 
 EntryKind = Literal[
-    "message", "sent", "finished", "status", "check", "model", "attention", "error"
+    "message", "sent", "finished", "status", "check", "model", "members", "attention", "error"
 ]
 
 #: Entries an open voice hub call is told about as they happen.
@@ -198,6 +206,22 @@ class HubSession:
             "pending_approvals": self.pending_approvals,
             "run": self.run.as_dict(),
         }
+
+
+@dataclass(frozen=True)
+class HubCandidate:
+    """A session of theirs, as listed for adding to the hub.
+
+    :param provider: Its harness as the chat names it, e.g. ``"Codex"``.
+    """
+
+    id: str
+    title: str
+    updated_at: float = 0.0
+    provider: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -450,6 +474,8 @@ class HubState:
         self._dir = (root or HUB_DIR) / key
         self._entries: list[HubEntry] = []
         self.names: dict[str, str] = {}
+        #: The sessions in the hub, in the order added; ``None`` until first set.
+        self.members: list[str] | None = None
         self._waiters: set[asyncio.Future[None]] = set()
         self._load()
 
@@ -471,6 +497,10 @@ class HubState:
             raw = json.loads((self._dir / "names.json").read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 self.names = {str(k): str(v) for k, v in raw.items()}
+        with contextlib.suppress(OSError, ValueError):
+            raw = json.loads((self._dir / "members.json").read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                self.members = [str(m) for m in raw]
 
     def append(self, **fields: Any) -> HubEntry:
         """Add a line, write it out, and wake everyone waiting for one."""
@@ -500,15 +530,26 @@ class HubState:
         return entry
 
     def name(self, session_id: str, nickname: str) -> None:
-        """Remember what they call a session."""
-        self.names[session_id] = nickname
+        """Remember what they call a session; an empty name forgets it."""
+        if nickname:
+            self.names[session_id] = nickname
+        else:
+            self.names.pop(session_id, None)
+        self._write("names.json", self.names)
+
+    def set_members(self, session_ids: Sequence[str]) -> None:
+        """Keep exactly these sessions in the hub."""
+        self.members = list(dict.fromkeys(session_ids))
+        self._write("members.json", self.members)
+
+    def _write(self, filename: str, data: Any) -> None:
         try:
             self._dir.mkdir(parents=True, exist_ok=True)
-            tmp = self._dir / "names.json.tmp"
-            tmp.write_text(json.dumps(self.names), encoding="utf-8")
-            tmp.replace(self._dir / "names.json")
+            tmp = self._dir / f"{filename}.tmp"
+            tmp.write_text(json.dumps(data), encoding="utf-8")
+            tmp.replace(self._dir / filename)
         except OSError:
-            _logger.warning("hub names not written", exc_info=True)
+            _logger.warning("hub %s not written", filename, exc_info=True)
 
     def after(self, entry_id: int) -> list[HubEntry]:
         return [e for e in self._entries if e.id > entry_id]
@@ -530,7 +571,9 @@ class HubState:
 class HubBackend:
     """What the hub needs from the server, injected so tests can fake it.
 
-    :param sessions: The recent sessions, nicknames not yet applied.
+    :param sessions: The sessions with these ids, in that order, nicknames
+        not yet applied; gone and archived ones are left out.
+    :param listing: Their sessions, newest first, to pick one to add from.
     :param activity: A session's live status, in full.
     :param send: Post a message into a session, as if typed there.
     :param check: Answer a question with read-only commands in its folder.
@@ -539,7 +582,8 @@ class HubBackend:
         does: ``None`` leaves one as is, ``"default"`` clears it.
     """
 
-    sessions: Callable[[], Awaitable[list[HubSession]]]
+    sessions: Callable[[Sequence[str]], Awaitable[list[HubSession]]]
+    listing: Callable[[], Awaitable[list[HubCandidate]]]
     activity: Callable[[str], Awaitable[str]]
     send: Callable[[str, str], Awaitable[None]]
     check: Callable[[str, str], Awaitable[str]]
@@ -580,14 +624,73 @@ class Hub:
             raise RuntimeError("hub has no backend bound")
         return self._backend
 
+    async def members(self) -> list[str]:
+        """The ids of the sessions in the hub.
+
+        A new hub starts with the sessions they have nicknamed, else with
+        the ones they touched this week.
+        """
+        if self.state.members is None:
+            seed = list(self.state.names)
+            if not seed:
+                cutoff = time.time() - RECENT_S
+                listed = await self.require_backend().listing()
+                seed = [c.id for c in listed if not c.updated_at or c.updated_at >= cutoff]
+            self.state.set_members(seed[:MAX_SESSIONS])
+        return list(self.state.members or [])
+
     async def sessions(self) -> list[HubSession]:
-        """The recent sessions, with handles and nicknames applied."""
-        raw = await self.require_backend().sessions()
+        """The hub's sessions, newest first, with handles and nicknames applied."""
+        raw = await self.require_backend().sessions(await self.members())
+        raw.sort(key=lambda s: s.updated_at, reverse=True)
         handles = assign_handles([s.id for s in raw])
         return [
             replace(s, handle=handles[s.id], nickname=self.state.names.get(s.id) or s.nickname)
             for s in raw
         ]
+
+    async def candidates(self) -> list[HubCandidate]:
+        """Their sessions not in the hub, newest first."""
+        members = set(await self.members())
+        return [c for c in await self.require_backend().listing() if c.id not in members]
+
+    async def add(self, session_id: str) -> HubEntry | None:
+        """Put one of their sessions in the hub; ``None`` when it is not theirs."""
+        found = next((c for c in await self.candidates() if c.id == session_id), None)
+        if found is None:
+            return None
+        self.state.set_members([*await self.members(), session_id])
+        name = self.state.names.get(session_id) or found.title or session_id[:4]
+        return self.say(
+            f"Added {name} to the hub.", kind="members", session_id=session_id, session_name=name
+        )
+
+    async def remove(self, session: HubSession) -> HubEntry:
+        """Take a session out of the hub; the session itself is untouched."""
+        self.state.set_members([m for m in await self.members() if m != session.id])
+        return self.say(
+            f"Took {session.name} out of the hub; the session itself is untouched.",
+            kind="members",
+        )
+
+    async def rename(self, session: HubSession, nickname: str) -> HubEntry:
+        """Call a session something else; an empty name goes back to its title.
+
+        :raises ValueError: Another of the hub's sessions is already called that.
+        """
+        nickname = " ".join(nickname.split())[:MAX_NICKNAME_CHARS]
+        if nickname:
+            for other in await self.sessions():
+                if other.id != session.id and other.name.casefold() == nickname.casefold():
+                    raise ValueError(f"{other.name} is already called that")
+        self.state.name(session.id, nickname)
+        new_name = nickname or session.title or session.handle
+        return self.say(
+            f"Renamed {session.name} to {new_name}.",
+            kind="members",
+            session_id=session.id,
+            session_name=new_name,
+        )
 
     def submit(self, text: str, *, via: str = "typed") -> HubEntry:
         """Record what they said and answer it in the background."""
@@ -1122,26 +1225,37 @@ def store_backend(
         details[session_id] = (updated_at, found)
         return found
 
-    async def sessions() -> list[HubSession]:
+    def _offered(conv: Any) -> bool:
+        labels = getattr(conv, "labels", None) or {}
+        return conv.id not in exclude and labels.get("omnigent.hub") != "1"
+
+    async def listing() -> list[HubCandidate]:
         page = await asyncio.to_thread(
             conversation_store.list_conversations,
-            limit=MAX_SESSIONS + len(exclude),
+            limit=LISTING_LIMIT + len(exclude) + 1,
             owned_by=user_id,
             sort_by="updated_at",
             order="desc",
         )
-        cutoff = time.time() - RECENT_S
+        return [
+            HubCandidate(
+                id=conv.id,
+                title=getattr(conv, "title", None) or "",
+                updated_at=float(getattr(conv, "updated_at", 0) or 0),
+                provider=hub_models.PROVIDERS.get(
+                    str((getattr(conv, "labels", None) or {}).get("omnigent.wrapper") or ""), ""
+                ),
+            )
+            for conv in page.data
+            if _offered(conv)
+        ][:LISTING_LIMIT]
+
+    async def sessions(session_ids: Sequence[str]) -> list[HubSession]:
         picked = []
-        for conv in page.data:
-            labels = getattr(conv, "labels", None) or {}
-            if conv.id in exclude or labels.get("omnigent.hub") == "1":
-                continue
-            updated = float(getattr(conv, "updated_at", 0) or 0)
-            if updated and updated < cutoff:
-                continue
-            if len(picked) >= MAX_SESSIONS:
-                break
-            picked.append(conv)
+        for session_id in session_ids:
+            conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+            if conv is not None and _offered(conv) and not getattr(conv, "archived", False):
+                picked.append(conv)
         run_of = await asyncio.gather(*(_run(conv) for conv in picked))
         out: list[HubSession] = []
         for conv, run in zip(picked, run_of, strict=True):
@@ -1236,6 +1350,7 @@ def store_backend(
 
     return HubBackend(
         sessions=sessions,
+        listing=listing,
         activity=lambda sid: live_activity(conversation_store, sid),
         send=send,
         check=check,

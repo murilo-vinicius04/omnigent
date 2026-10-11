@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,7 @@ from omnigent.server.discussion import DiscussionRegistry, DiscussionUnavailable
 from omnigent.server.hub import (
     Hub,
     HubBackend,
+    HubCandidate,
     HubSession,
     HubState,
     TurnState,
@@ -196,8 +198,14 @@ class _Server:
         self.fail_send = False
 
     def backend(self) -> HubBackend:
-        async def sessions():
-            return list(self.sessions)
+        async def sessions(ids):
+            return [s for s in self.sessions if s.id in ids]
+
+        async def listing():
+            return [
+                HubCandidate(id=s.id, title=s.title, updated_at=s.updated_at)
+                for s in self.sessions
+            ]
 
         async def activity(session_id):
             return f"Claude is idle: the last task finished. ({session_id[:4]})"
@@ -214,7 +222,14 @@ class _Server:
         async def turn(session_id, since):
             return self.turns.pop(0) if len(self.turns) > 1 else self.turns[0]
 
-        return HubBackend(sessions=sessions, activity=activity, send=send, check=check, turn=turn)
+        return HubBackend(
+            sessions=sessions,
+            listing=listing,
+            activity=activity,
+            send=send,
+            check=check,
+            turn=turn,
+        )
 
 
 def _hub(tmp_path, router: _Router, server: _Server) -> Hub:
@@ -358,6 +373,55 @@ async def test_a_session_that_never_starts_is_flagged(tmp_path, monkeypatch) -> 
     assert "hasn't started on it yet" in hub.state.entries[-1].text
 
 
+# -- which sessions the hub runs ----------------------------------------------
+
+
+async def test_a_new_hub_starts_with_the_sessions_they_named(tmp_path) -> None:
+    HubState("u1", root=tmp_path).name(BRASA, "brasa")
+    hub = _hub(tmp_path, _Router(), _Server())
+    assert [s.name for s in await hub.sessions()] == ["brasa"]
+    assert HubState("u1", root=tmp_path).members == [BRASA]
+
+
+async def test_without_names_a_new_hub_starts_with_this_weeks_sessions(tmp_path) -> None:
+    server = _Server()
+    server.sessions[1] = replace(server.sessions[1], updated_at=time.time() - 30 * 24 * 3600)
+    hub = _hub(tmp_path, _Router(), server)
+    assert [s.id for s in await hub.sessions()] == [AMARRAS]
+    # A session started later stays out until they add it.
+    server.sessions.append(HubSession(id="new0", title="Greeting"))
+    assert [s.id for s in await hub.sessions()] == [AMARRAS]
+    assert [c.id for c in await hub.candidates()] == [BRASA, "new0"]
+
+
+async def test_sessions_are_added_renamed_and_removed(tmp_path) -> None:
+    HubState("u1", root=tmp_path).set_members([AMARRAS])
+    hub = _hub(tmp_path, _Router(), _Server())
+    assert await hub.add("not-theirs") is None
+    added = await hub.add(BRASA)
+    assert added is not None
+    assert (added.kind, added.text) == ("members", "Added Cloned project review to the hub.")
+    assert await hub.add(BRASA) is None  # already in
+    by_id = {s.id: s for s in await hub.sessions()}
+    assert set(by_id) == {AMARRAS, BRASA}
+
+    renamed = await hub.rename(by_id[BRASA], "  brasa ")
+    assert renamed.text == "Renamed Cloned project review to brasa."
+    by_id = {s.id: s for s in await hub.sessions()}
+    with pytest.raises(ValueError, match="brasa is already called that"):
+        await hub.rename(by_id[AMARRAS], "Brasa")
+    assert (await hub.rename(by_id[BRASA], "")).text == "Renamed brasa to Cloned project review."
+    assert BRASA not in HubState("u1", root=tmp_path).names
+
+    by_id = {s.id: s for s in await hub.sessions()}
+    removed = await hub.remove(by_id[BRASA])
+    assert removed.text == (
+        "Took Cloned project review out of the hub; the session itself is untouched."
+    )
+    assert [s.id for s in await hub.sessions()] == [AMARRAS]
+    assert HubState("u1", root=tmp_path).members == [AMARRAS]
+
+
 # -- reading sessions from the stores -----------------------------------------
 
 
@@ -414,7 +478,7 @@ class _ConvStore:
         return SimpleNamespace(data=list(self.convs))
 
     def get_conversation(self, session_id):
-        return next(c for c in self.convs if c.id == session_id)
+        return next((c for c in self.convs if c.id == session_id), None)
 
     def list_items(self, session_id, limit=100, order="asc", type=None):
         items = [i for i in self.items.get(session_id, []) if type is None or i.type == type]
@@ -430,17 +494,33 @@ def _store_backend(store: _ConvStore) -> HubBackend:
     )
 
 
-async def test_store_sessions_are_recent_and_say_what_each_is_about() -> None:
+async def test_store_sessions_say_what_each_is_about() -> None:
     store = _ConvStore()
-    sessions = await _store_backend(store).sessions()
-    assert [s.id for s in sessions] == [AMARRAS]  # a month-old session is left out
+    sessions = await _store_backend(store).sessions([AMARRAS, "gone"])
+    assert [s.id for s in sessions] == [AMARRAS]  # a deleted session is left out
     amarras = sessions[0]
     assert amarras.first_ask == "look at the petrobras-chains folder"
     assert amarras.last_ask == "what is the mean error?"  # notifications are not asks
     assert amarras.said == "Mean error is 3 mm."
     assert amarras.now == "Bash: pytest -q"
+
+
+async def test_the_listing_is_theirs_newest_first() -> None:
+    store = _ConvStore()
+    store.convs[1].labels = {"omnigent.wrapper": "codex-native-ui"}
+    listed = await _store_backend(store).listing()
+    assert [(c.id, c.title, c.provider) for c in listed] == [
+        (AMARRAS, "Project Analysis", ""),
+        (BRASA, "Old one", "Codex"),
+    ]
     assert store.listed[0]["owned_by"] == "morys5"
     assert store.listed[0]["sort_by"] == "updated_at"
+
+
+async def test_an_archived_session_drops_out_of_the_hub() -> None:
+    store = _ConvStore()
+    store.convs[0].archived = True
+    assert [s.id for s in await _store_backend(store).sessions([AMARRAS, BRASA])] == [BRASA]
 
 
 async def test_a_turn_reply_is_the_newest_assistant_message_since_the_send() -> None:
@@ -465,8 +545,9 @@ async def test_the_hub_never_offers_itself_or_an_excluded_session() -> None:
             labels={"omnigent.hub": "1"},
         ),
     )
-    sessions = await _store_backend(store).sessions()
-    assert [s.id for s in sessions] == [AMARRAS]
+    backend = _store_backend(store)
+    assert [c.id for c in await backend.listing()] == [AMARRAS, BRASA]
+    assert [s.id for s in await backend.sessions(["hubconv", AMARRAS])] == [AMARRAS]
     registry = DiscussionRegistry()
     backend = hub_module.store_backend(
         store,
@@ -476,7 +557,8 @@ async def test_the_hub_never_offers_itself_or_an_excluded_session() -> None:
         companions=lambda: registry,
         exclude={AMARRAS},
     )
-    assert [s.id for s in await backend.sessions()] == []
+    assert [c.id for c in await backend.listing()] == [BRASA]
+    assert await backend.sessions([AMARRAS]) == []
 
 
 # -- the routes ------------------------------------------------------------------

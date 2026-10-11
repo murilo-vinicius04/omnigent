@@ -242,3 +242,46 @@ async def test_a_pick_in_the_sessions_panel_is_checked_and_logged_in_the_hub(
 
     missing = await client.post("/v1/hub/model", json={"session_id": "nope", "effort": "max"})
     assert missing.status_code == 404
+
+
+async def test_sessions_are_added_removed_and_renamed_from_the_panel(client, _hub_home) -> None:
+    from tests.server.helpers import create_test_session
+
+    amarras = await create_test_session(client, title="Project Analysis")
+    greeting = await create_test_session(client, title="Greeting")
+    hub_id = (await client.get("/v1/hub")).json()["session_id"]
+
+    async def in_hub() -> list[tuple[str, str]]:
+        listed = (await client.get("/v1/hub/sessions")).json()["sessions"]
+        return sorted((s["id"], s["name"]) for s in listed)
+
+    assert await in_hub() == sorted(
+        [(amarras["id"], "Project Analysis"), (greeting["id"], "Greeting")]
+    )
+
+    removed = await client.delete(f"/v1/hub/members/{greeting['id']}")
+    assert removed.status_code == 200, removed.text
+    assert await in_hub() == [(amarras["id"], "Project Analysis")]
+    later = await create_test_session(client, title="Started later")
+    assert await in_hub() == [(amarras["id"], "Project Analysis")]
+    offered = [c["id"] for c in (await client.get("/v1/hub/candidates")).json()["sessions"]]
+    assert offered == [later["id"], greeting["id"]]  # never the hub itself
+
+    added = await client.post("/v1/hub/members", json={"session_id": greeting["id"]})
+    assert added.json() == {"text": "Added Greeting to the hub."}
+    assert (await client.post("/v1/hub/members", json={"session_id": hub_id})).status_code == 404
+
+    renamed = await client.patch(f"/v1/hub/members/{amarras['id']}", json={"name": "amarras"})
+    assert renamed.json() == {"text": "Renamed Project Analysis to amarras."}
+    clash = await client.patch(f"/v1/hub/members/{greeting['id']}", json={"name": "Amarras"})
+    assert clash.status_code == 409
+    assert clash.json()["detail"] == "amarras is already called that"
+    assert await in_hub() == sorted([(amarras["id"], "amarras"), (greeting["id"], "Greeting")])
+    gone = await client.patch(f"/v1/hub/members/{later['id']}", json={"name": "x"})
+    assert gone.status_code == 404
+
+    said = [
+        i["content"][0]["text"] for i in await _items(client, hub_id) if i["type"] == "message"
+    ]
+    assert said[-3].startswith("Took Greeting out of the hub;")
+    assert said[-1].startswith("Renamed Project Analysis to amarras.")

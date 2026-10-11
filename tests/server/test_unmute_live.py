@@ -394,12 +394,22 @@ class _HubRouter:
 
 
 def _hub(tmp_path, sent: list[tuple[str, str]]):
-    from omnigent.server.hub import Hub, HubBackend, HubSession, HubState, TurnState
+    from omnigent.server.hub import (
+        Hub,
+        HubBackend,
+        HubCandidate,
+        HubSession,
+        HubState,
+        TurnState,
+    )
 
     sessions = [HubSession(id="s-brasa", title="Orders", nickname="brasa")]
 
-    async def listed():
-        return list(sessions)
+    async def listed(ids):
+        return [s for s in sessions if s.id in ids]
+
+    async def listing():
+        return [HubCandidate(id=s.id, title=s.title) for s in sessions]
 
     async def activity(session_id):
         return f"status of {session_id}"
@@ -417,7 +427,16 @@ def _hub(tmp_path, sent: list[tuple[str, str]]):
         return _HubRouter()
 
     hub = Hub("u1", router_factory=router, state=HubState("u1", root=tmp_path), poll_s=3600)
-    hub.bind(HubBackend(sessions=listed, activity=activity, send=send, check=check, turn=turn))
+    hub.bind(
+        HubBackend(
+            sessions=listed,
+            listing=listing,
+            activity=activity,
+            send=send,
+            check=check,
+            turn=turn,
+        )
+    )
     return hub
 
 

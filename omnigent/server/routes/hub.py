@@ -2,7 +2,7 @@
 
 The hub is a regular conversation, one per user: its messages travel the
 normal session routes (the events route hands them to the hub). This router
-only finds or makes that conversation and lists the sessions it reaches.
+finds or makes that conversation and keeps the list of sessions it reaches.
 """
 
 from __future__ import annotations
@@ -48,6 +48,19 @@ class HubModelIn(BaseModel):
     model: str = Field(default="", max_length=256)
     #: An effort it offers, ``"default"``, or empty to keep the effort.
     effort: str = Field(default="", max_length=32)
+
+
+class HubMemberIn(BaseModel):
+    """A session to put in the hub."""
+
+    session_id: str = Field(min_length=1, max_length=200)
+
+
+class HubNameIn(BaseModel):
+    """What to call a session in the hub."""
+
+    #: Its new name; empty goes back to its title.
+    name: str = Field(default="", max_length=200)
 
 
 def create_hub_router(
@@ -112,6 +125,45 @@ def create_hub_router(
         hub, _ = await _bound(request)
         return {"sessions": [s.as_dict() for s in await hub.sessions()]}
 
+    async def _member(hub: hub_module.Hub, session_id: str) -> hub_module.HubSession:
+        session = next((s for s in await hub.sessions() if s.id == session_id), None)
+        if session is None:
+            raise HTTPException(status_code=404, detail="not one of the hub's sessions")
+        return session
+
+    @router.get("/hub/candidates")
+    async def hub_candidates(request: Request) -> dict[str, Any]:
+        """Their sessions not in the hub, newest first, to add one."""
+        hub, _ = await _bound(request)
+        return {"sessions": [c.as_dict() for c in await hub.candidates()]}
+
+    @router.post("/hub/members")
+    async def hub_add(request: Request, body: HubMemberIn) -> dict[str, Any]:
+        """Put one of their sessions in the hub."""
+        hub, _ = await _bound(request)
+        entry = await hub.add(body.session_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="not one of your sessions outside the hub")
+        return {"text": entry.text}
+
+    @router.delete("/hub/members/{session_id}")
+    async def hub_remove(request: Request, session_id: str) -> dict[str, Any]:
+        """Take a session out of the hub; the session itself is untouched."""
+        hub, _ = await _bound(request)
+        entry = await hub.remove(await _member(hub, session_id))
+        return {"text": entry.text}
+
+    @router.patch("/hub/members/{session_id}")
+    async def hub_rename(request: Request, session_id: str, body: HubNameIn) -> dict[str, Any]:
+        """Call a session something else in the hub, by chat and voice too."""
+        hub, _ = await _bound(request)
+        session = await _member(hub, session_id)
+        try:
+            entry = await hub.rename(session, body.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"text": entry.text}
+
     @router.post("/hub/model")
     async def hub_model(request: Request, body: HubModelIn) -> dict[str, Any]:
         """Change a session's model or effort, by the same rules as asking for it.
@@ -120,9 +172,7 @@ def create_hub_router(
         into the hub chat, so a pick made here reads like one asked for.
         """
         hub, _ = await _bound(request)
-        session = next((s for s in await hub.sessions() if s.id == body.session_id), None)
-        if session is None:
-            raise HTTPException(status_code=404, detail="not one of the hub's sessions")
+        session = await _member(hub, body.session_id)
         entry = await hub.set_model(session, body.model, body.effort, via="panel")
         return {"changed": entry.kind == "model", "text": entry.text}
 

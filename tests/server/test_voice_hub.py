@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from omnigent.server import discussion, gemini_live, voice_hub
 from omnigent.server import hub as hub_module
 from omnigent.server.discussion import DiscussionRegistry
-from omnigent.server.hub import Hub, HubBackend, HubSession, HubState, TurnState
+from omnigent.server.hub import Hub, HubBackend, HubCandidate, HubSession, HubState, TurnState
 from omnigent.server.routes.gemini_live import create_gemini_live_router
 from omnigent.server.voice_hub import render_activity
 
@@ -108,8 +108,11 @@ class _FakeServer:
         self.fail = False
 
     def hub(self, tmp_path) -> Hub:
-        async def sessions():
-            return list(self.sessions)
+        async def sessions(ids):
+            return [s for s in self.sessions if s.id in ids]
+
+        async def listing():
+            return [HubCandidate(id=s.id, title=s.title) for s in self.sessions]
 
         async def activity(session_id):
             return f"status of {session_id}"
@@ -131,7 +134,14 @@ class _FakeServer:
 
         hub = Hub("u1", router_factory=router, state=HubState("u1", root=tmp_path), poll_s=60)
         hub.bind(
-            HubBackend(sessions=sessions, activity=activity, send=send, check=check, turn=turn)
+            HubBackend(
+                sessions=sessions,
+                listing=listing,
+                activity=activity,
+                send=send,
+                check=check,
+                turn=turn,
+            )
         )
         return hub
 

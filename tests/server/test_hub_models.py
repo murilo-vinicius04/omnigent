@@ -11,6 +11,7 @@ from omnigent.server import voice_hub
 from omnigent.server.hub import (
     Hub,
     HubBackend,
+    HubCandidate,
     HubSession,
     HubState,
     TurnState,
@@ -198,8 +199,11 @@ class _Server:
         self.fail = False
 
     def backend(self) -> HubBackend:
-        async def sessions():
-            return list(self.sessions)
+        async def sessions(ids):
+            return [s for s in self.sessions if s.id in ids]
+
+        async def listing():
+            return [HubCandidate(id=s.id, title=s.title) for s in self.sessions]
 
         async def nothing(*_args):
             return ""
@@ -214,6 +218,7 @@ class _Server:
 
         return HubBackend(
             sessions=sessions,
+            listing=listing,
             activity=nothing,
             send=nothing,
             check=nothing,

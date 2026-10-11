@@ -35,7 +35,16 @@ export interface HubUpdate {
 }
 
 async function readJson<T>(res: Response): Promise<T> {
-  if (!res.ok) throw new Error(`${res.status}`);
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = (await res.json()) as { detail?: unknown };
+      if (typeof body.detail === "string") detail = body.detail;
+    } catch {
+      // The status code alone says enough.
+    }
+    throw new Error(detail);
+  }
   return (await res.json()) as T;
 }
 
@@ -99,8 +108,10 @@ export interface HubSessionRun {
 /** One session as the hub sees it. */
 export interface HubSessionRow {
   id: string;
+  /** What the hub calls it: its nickname, else its title. */
   name: string;
   title: string;
+  nickname: string | null;
   status: string | null;
   working: boolean;
   /** Its current step while working, e.g. "Bash: pytest". */
@@ -139,4 +150,59 @@ export async function setHubSessionModel(
       }),
     }),
   );
+}
+
+/** One of their sessions outside the hub, offered for adding. */
+export interface HubCandidate {
+  id: string;
+  title: string;
+  /** Seconds since the epoch. */
+  updated_at: number;
+  /** Its harness as the chat names it, e.g. "Codex"; "" when unknown. */
+  provider: string;
+}
+
+/** Their sessions not in the hub, newest first. */
+export async function listHubCandidates(): Promise<HubCandidate[]> {
+  const body = await readJson<{ sessions?: HubCandidate[] }>(
+    await authenticatedFetch("/v1/hub/candidates"),
+  );
+  return body.sessions ?? [];
+}
+
+/** Put one of their sessions in the hub. Returns what the hub chat says about it. */
+export async function addHubSession(sessionId: string): Promise<string> {
+  const body = await readJson<{ text: string }>(
+    await authenticatedFetch("/v1/hub/members", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId }),
+    }),
+  );
+  return body.text;
+}
+
+/** Take a session out of the hub; the session itself is untouched. */
+export async function removeHubSession(sessionId: string): Promise<string> {
+  const body = await readJson<{ text: string }>(
+    await authenticatedFetch(`/v1/hub/members/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    }),
+  );
+  return body.text;
+}
+
+/**
+ * Call a session something else in the hub (chat and voice use it too).
+ * `""` goes back to its title. Rejects when another session has that name.
+ */
+export async function renameHubSession(sessionId: string, name: string): Promise<string> {
+  const body = await readJson<{ text: string }>(
+    await authenticatedFetch(`/v1/hub/members/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+  );
+  return body.text;
 }

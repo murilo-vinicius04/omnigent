@@ -4,9 +4,24 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HubSessionsPanel } from "./HubSessionsPanel";
-import { listHubSessions, setHubSessionModel, type HubSessionRow } from "@/lib/hubApi";
+import {
+  addHubSession,
+  listHubCandidates,
+  listHubSessions,
+  removeHubSession,
+  renameHubSession,
+  setHubSessionModel,
+  type HubSessionRow,
+} from "@/lib/hubApi";
 
-vi.mock("@/lib/hubApi", () => ({ listHubSessions: vi.fn(), setHubSessionModel: vi.fn() }));
+vi.mock("@/lib/hubApi", () => ({
+  addHubSession: vi.fn(),
+  listHubCandidates: vi.fn(),
+  listHubSessions: vi.fn(),
+  removeHubSession: vi.fn(),
+  renameHubSession: vi.fn(),
+  setHubSessionModel: vi.fn(),
+}));
 vi.mock("./SwitchAgentDialog", () => ({
   SwitchAgentDialog: ({ open, sessionId }: { open: boolean; sessionId: string }) =>
     open ? <div data-testid={`switch-dialog-${sessionId}`} /> : null,
@@ -14,11 +29,16 @@ vi.mock("./SwitchAgentDialog", () => ({
 
 const listMock = vi.mocked(listHubSessions);
 const setMock = vi.mocked(setHubSessionModel);
+const addMock = vi.mocked(addHubSession);
+const candidatesMock = vi.mocked(listHubCandidates);
+const removeMock = vi.mocked(removeHubSession);
+const renameMock = vi.mocked(renameHubSession);
 
 const CLAUDE: HubSessionRow = {
   id: "s_claude",
   name: "amarras",
   title: "Project Analysis",
+  nickname: "amarras",
   status: "running",
   working: true,
   now: "Bash: pytest -q",
@@ -44,6 +64,8 @@ const AGENT: HubSessionRow = {
   ...CLAUDE,
   id: "s_agent",
   name: "nessie",
+  title: "nessie",
+  nickname: null,
   status: "idle",
   working: false,
   now: "",
@@ -78,9 +100,15 @@ function openSelect(testId: string): void {
   fireEvent.click(trigger);
 }
 
+function openMenu(sessionId: string): void {
+  const trigger = screen.getByTestId(`hub-session-menu-${sessionId}`);
+  fireEvent.pointerDown(trigger, new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+}
+
 beforeEach(() => {
-  listMock.mockReset();
-  setMock.mockReset();
+  for (const mock of [listMock, setMock, addMock, candidatesMock, removeMock, renameMock]) {
+    mock.mockReset();
+  }
   listMock.mockResolvedValue([CLAUDE, AGENT]);
 });
 
@@ -148,6 +176,66 @@ describe("HubSessionsPanel", () => {
   it("says so when there are no sessions", async () => {
     listMock.mockResolvedValue([]);
     renderPanel();
-    expect(await screen.findByText(/No sessions in the last week/)).toBeTruthy();
+    expect(await screen.findByText(/No sessions in the Hub/)).toBeTruthy();
+    expect(screen.getByText("0 sessions in the Hub")).toBeTruthy();
+  });
+
+  it("shows a nicknamed session's own title under its name", async () => {
+    renderPanel();
+    await screen.findByTestId("hub-session-s_claude");
+    expect(screen.getByTestId("hub-session-title-s_claude").textContent).toBe("Project Analysis");
+    expect(screen.queryByTestId("hub-session-title-s_agent")).toBeNull();
+  });
+
+  it("adds one of their other sessions", async () => {
+    candidatesMock.mockResolvedValue([
+      { id: "s_sol", title: "GPT-6.1 Sol Missing", updated_at: 0, provider: "Codex" },
+    ]);
+    addMock.mockResolvedValue("Added GPT-6.1 Sol Missing to the hub.");
+    renderPanel();
+    fireEvent.click(await screen.findByTestId("hub-add-session"));
+    fireEvent.click(await screen.findByTestId("hub-candidate-s_sol"));
+    await waitFor(() => expect(addMock).toHaveBeenCalledWith("s_sol"));
+    await waitFor(() => expect(listMock.mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it("takes a session out of the hub", async () => {
+    removeMock.mockResolvedValue("Took nessie out of the hub; the session itself is untouched.");
+    renderPanel();
+    await screen.findByTestId("hub-session-s_agent");
+    listMock.mockResolvedValue([CLAUDE]);
+    openMenu("s_agent");
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Remove from Hub" }));
+    await waitFor(() => expect(removeMock).toHaveBeenCalledWith("s_agent"));
+    await waitFor(() => expect(screen.queryByTestId("hub-session-s_agent")).toBeNull());
+  });
+
+  it("renames a session and says what the hub said", async () => {
+    renameMock.mockResolvedValue("Renamed nessie to agente.");
+    renderPanel();
+    await screen.findByTestId("hub-session-s_agent");
+    openMenu("s_agent");
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
+    const field = await screen.findByTestId("hub-session-rename-s_agent");
+    fireEvent.change(field, { target: { value: "  agente " } });
+    fireEvent.submit(field.closest("form")!);
+    await waitFor(() => expect(renameMock).toHaveBeenCalledWith("s_agent", "agente"));
+    expect(await screen.findByText("Renamed nessie to agente.")).toBeTruthy();
+    expect(screen.queryByTestId("hub-session-rename-s_agent")).toBeNull();
+  });
+
+  it("keeps the name field open when the name is taken", async () => {
+    renameMock.mockRejectedValue(new Error("amarras is already called that"));
+    renderPanel();
+    await screen.findByTestId("hub-session-s_agent");
+    openMenu("s_agent");
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
+    const field = await screen.findByTestId("hub-session-rename-s_agent");
+    fireEvent.change(field, { target: { value: "Amarras" } });
+    fireEvent.submit(field.closest("form")!);
+    expect(
+      await screen.findByText("Couldn't rename it: amarras is already called that"),
+    ).toBeTruthy();
+    expect(screen.getByTestId("hub-session-rename-s_agent")).toBeTruthy();
   });
 });
