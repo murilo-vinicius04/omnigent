@@ -47,6 +47,17 @@ and voice use; clash → 409) and Remove from Hub (`DELETE`, session untouched).
 is a line in the hub chat. Checked in headless Chrome on the scratch server; not yet seen
 with the user's login.
 
+**10-11 12:45 → the router no longer gives up on an unclear message (06bfbabc3, live).**
+User's first real test: two turns worked (brasa status; "próximos passos / tá tudo no git?"
+sent to brasa, its report came back), the third ("no audio … benchmarks … gpt 6 luna")
+got "the Gemini router is not answering". Cause, from the agy transcript
+(`~/.gemini/antigravity-cli/conversations/82dd6b39-….db`): the prompt had two rules for
+"ask" that disagreed, Gemini went `git grep`-ing the repo it was started in for its own
+prompt, the CLI refused, the turn came back empty. Now: "ask" covers which session and
+whether to send; the role says it has no tools; an empty reply gets one nudge in the same
+process (at least 20 s) before giving up; the router starts in `~/.omnigent/hub/.router`.
+Server-only, no page build. Not yet retried by the user.
+
 **Rules in force.** Answer in English; no Claude co-author trailers. Ask before spending
 worker quota (name the model); never resume benchmarks unasked. Server restart is fine
 (`XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
