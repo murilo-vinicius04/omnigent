@@ -471,6 +471,10 @@ class DiscussionSession:
         """The model used when none is passed."""
         return _model()
 
+    def _workdir(self) -> str | None:
+        """Folder the process starts in; ``None`` inherits the server's."""
+        return None
+
     # -- state the UI asks about ------------------------------------
 
     @property
@@ -634,6 +638,7 @@ class DiscussionSession:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=self._workdir(),
             )
         except FileNotFoundError as exc:
             raise DiscussionUnavailable(f"{self._binary!r} not found on PATH") from exc

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import stat
+import sys
+import textwrap
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -14,9 +18,11 @@ from fastapi.testclient import TestClient
 from omnigent.server import hub as hub_module
 from omnigent.server.discussion import DiscussionRegistry, DiscussionUnavailable
 from omnigent.server.hub import (
+    EMPTY_REPLY_NUDGE,
     Hub,
     HubBackend,
     HubCandidate,
+    HubRouter,
     HubSession,
     HubState,
     TurnState,
@@ -590,3 +596,57 @@ async def test_a_voice_ask_returns_what_the_hub_said_with_the_call_in_the_prompt
     assert "[The voice call so far, oldest first]\nMe: a brasa quebrou" in router.prompts[0]
     assert "[They said, aloud, on a voice call]" in router.prompts[0]
     assert server.sent == [(BRASA, "Run the tests.")]
+
+
+# -- the router process ----------------------------------------------------------
+
+#: A stand-in for the CLI: answers with the folder it runs in and what it was
+#: told, and replies empty (a tool call the CLI refused) when asked to.
+_FAKE_ROUTER = """\
+import json, os, sys
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    content = json.loads(line)["message"]["content"]
+    empty = "REACH_FOR_A_TOOL" in content or (
+        "Your reply was empty" in content and os.environ.get("FAKE_ROUTER_STUBBORN")
+    )
+    response = "" if empty else json.dumps({"answer": os.getcwd(), "told": content[-300:]})
+    sys.stdout.write(json.dumps({"event": "result", "result": {"response": response}}) + "\\n")
+    sys.stdout.flush()
+"""
+
+
+@pytest.fixture
+def router(tmp_path, monkeypatch):
+    monkeypatch.setattr(hub_module, "HUB_DIR", tmp_path / "hub")
+    script = tmp_path / "fake_agy"
+    script.write_text(f"#!{sys.executable}\n{textwrap.dedent(_FAKE_ROUTER)}", encoding="utf-8")
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    return HubRouter("hub-test", binary=str(script), model="test-model")
+
+
+async def test_the_router_starts_in_an_empty_folder_not_the_repo(router, tmp_path) -> None:
+    reply = json.loads(await router.decide("which one?", said="which one?", timeout_s=10))
+    await router.close()
+    folder = tmp_path / "hub" / ".router"
+    assert reply["answer"] == str(folder)
+    assert list(folder.iterdir()) == []
+
+
+async def test_an_empty_reply_is_asked_again_in_the_same_process(router) -> None:
+    await router.decide("hello", said="hello", timeout_s=10)
+    pid = router._process.pid
+    reply = json.loads(
+        await router.decide("REACH_FOR_A_TOOL", said="was it the audio?", timeout_s=10)
+    )
+    assert reply["told"] == EMPTY_REPLY_NUDGE
+    assert router.running and router._process.pid == pid
+    await router.close()
+
+
+async def test_a_router_that_stays_empty_is_unavailable(router, monkeypatch) -> None:
+    monkeypatch.setenv("FAKE_ROUTER_STUBBORN", "1")
+    with pytest.raises(DiscussionUnavailable, match="empty answer"):
+        await router.decide("REACH_FOR_A_TOOL", said="was it the audio?", timeout_s=10)
+    assert not router.running

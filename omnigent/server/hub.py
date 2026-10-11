@@ -67,6 +67,16 @@ NOT_STARTED_S: Final[float] = 120.0
 #: Budget for one routing turn, a cold start included.
 ROUTE_TIMEOUT_S: Final[float] = 45.0
 
+#: The least a second try gets after an empty reply, however late it is.
+EMPTY_RETRY_MIN_S: Final[float] = 20.0
+
+#: What the router is told after a reply that came back empty.
+EMPTY_REPLY_NUDGE: Final[str] = (
+    "[Your reply was empty: you have no tools here and nothing to look up. "
+    'Decide from what you were given; if you are unsure, use "ask".] Reply '
+    "with ONE line of JSON as before."
+)
+
 #: Longest text quoted per session in the router's list.
 _QUOTE_CHARS: Final[int] = 180
 
@@ -77,8 +87,9 @@ HUB_ROUTER_ROLE: Final[str] = (
     "every message you get the list of their sessions, what each was started "
     "with, what it was last asked and what it is doing now. Your job is to work "
     "out which session a message is for and pass it on, to say what the "
-    "sessions are doing, and to answer small things yourself. Be brief: one or "
-    "two plain sentences, no lists unless asked."
+    "sessions are doing, and to answer small things yourself. You have no tools: "
+    "never search files or run commands; everything you need is in the message. "
+    "Be brief: one or two plain sentences, no lists unless asked."
 )
 
 #: The routing turn. One JSON line keeps parsing trivial and every failure loud.
@@ -109,8 +120,9 @@ to change: "to" is one of the models that session offers (its id) or \
 not in its list, use "ask" and name what it offers. A session never changes \
 provider here (Claude Code stays Claude Code): that is the Switch button in the \
 Sessions panel.
-{{"ask": "..."}} -- you cannot tell which session they mean: one short question \
-that names the likely ones.
+{{"ask": "..."}} -- you cannot tell which session they mean, or whether they \
+want anything sent at all: one short question that names the likely sessions \
+or what you would send.
 Sessions are added to or taken out of this list only with the Add and Remove \
 buttons in the Sessions panel: say so when they ask, and never claim it was done.
 
@@ -118,7 +130,8 @@ Add "names": {{"<handle>": "<what they call it>"}} to any reply when they tell \
 you, or make plain, what they call a session.
 Reply to them in the language they wrote in; "message" for Claude is always \
 English. Never say a session did, found or finished anything the list or this \
-chat does not show. When it is unclear whether they want something sent, ask.\
+chat does not show. When it is unclear whether they want something sent, use \
+"ask".\
 """
 
 #: After a ``status`` decision: the live reading, then the answer.
@@ -418,6 +431,29 @@ class HubRouter(DiscussionSession):
     def _default_model(cls) -> str:
         return hub_model()
 
+    def _workdir(self) -> str:
+        """An empty folder: started in the repo, it went searching the code."""
+        folder = HUB_DIR / ".router"
+        folder.mkdir(parents=True, exist_ok=True)
+        return str(folder)
+
+    async def _routing_turn(self, message: str, *, timeout_s: float) -> str:
+        """One turn, asked again once if the reply comes back empty.
+
+        An empty reply is the model reaching for a tool of its own, which
+        the CLI refuses here. That turn did end, so the process is still in
+        step and the same exchange can go on.
+        """
+        deadline = time.monotonic() + timeout_s
+        try:
+            return await self._turn(message, timeout_s=timeout_s)
+        except DiscussionUnavailable as exc:
+            if not str(exc).startswith("empty answer"):
+                raise
+            _logger.info("hub router replied empty; asking again")
+        left_s = max(deadline - time.monotonic(), EMPTY_RETRY_MIN_S)
+        return await self._turn(EMPTY_REPLY_NUDGE, timeout_s=left_s)
+
     async def decide(self, prompt: str, *, said: str, timeout_s: float) -> str:
         """Run one routing turn; record what they said, not the session list.
 
@@ -432,7 +468,7 @@ class HubRouter(DiscussionSession):
             try:
                 await self._ensure_process()
                 blocks = self._preamble()
-                reply = await self._turn(
+                reply = await self._routing_turn(
                     "\n\n".join([*blocks, prompt]) if blocks else prompt, timeout_s=timeout_s
                 )
             except DiscussionUnavailable:
@@ -450,7 +486,7 @@ class HubRouter(DiscussionSession):
         async with self._lock:
             self._last_used = time.time()
             try:
-                reply = await self._turn(prompt, timeout_s=timeout_s)
+                reply = await self._routing_turn(prompt, timeout_s=timeout_s)
             except DiscussionUnavailable:
                 await self._kill()
                 raise
