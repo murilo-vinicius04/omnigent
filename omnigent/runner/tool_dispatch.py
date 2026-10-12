@@ -167,6 +167,9 @@ def _string_mapping(value: object) -> dict[str, str] | None:
 _INBOX_OUTPUT_MAX_CHARS = 12000
 _OS_ENV_SHELL_DEFAULT_TIMEOUT_S = 120.0
 _RUNNER_EXECUTION_TIMEOUT_S = 7200.0
+# Handing a locally run tool's result back to the harness: tries, and the first back-off.
+_TOOL_RESULT_POST_ATTEMPTS = 4
+_TOOL_RESULT_RETRY_BASE_S = 0.25
 _SUBAGENT_POLICY_STATUSES = frozenset({"completed", "failed"})
 _SUBAGENT_INBOX_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _SUBAGENT_POLICY_FAILURE_OUTPUT = "[Result suppressed by policy: policy evaluation failed]"
@@ -6568,21 +6571,34 @@ async def dispatch_tool_locally(
             "dispatch_tool_locally requires conversation_id to POST the "
             "harness session-keyed URL; got None/empty"
         )
-    try:
-        resp = await harness_client.post(
-            f"/v1/sessions/{conversation_id}/events",
-            json={"type": "tool_result", "call_id": call_id, "output": output},
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-    except Exception as exc:  # noqa: BLE001
-        _logger.warning(
-            "Runner local dispatch tool_result event failed for %s (call_id=%s): %s",
-            tool_name,
-            call_id,
-            exc,
-            extra={"session_id": conversation_id},
-        )
+    # A lost result leaves the turn parked forever, so a dropped connection or a
+    # 5xx is retried; the harness ignores a result for a call it already resolved.
+    for attempt in range(1, _TOOL_RESULT_POST_ATTEMPTS + 1):
+        try:
+            resp = await harness_client.post(
+                f"/v1/sessions/{conversation_id}/events",
+                json={"type": "tool_result", "call_id": call_id, "output": output},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            break
+        except Exception as exc:  # noqa: BLE001
+            retryable = isinstance(exc, httpx.TransportError) or (
+                isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500
+            )
+            if retryable and attempt < _TOOL_RESULT_POST_ATTEMPTS:
+                await asyncio.sleep(_TOOL_RESULT_RETRY_BASE_S * attempt)
+                continue
+            _logger.warning(
+                "Runner local dispatch tool_result event failed for %s (call_id=%s) "
+                "after %d attempt(s): %s",
+                tool_name,
+                call_id,
+                attempt,
+                exc,
+                extra={"session_id": conversation_id},
+            )
+            break
 
     return output
 
