@@ -14,6 +14,40 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-12 03:10 — READ FIRST (benchmarks + a published PR; session d9653808, conversation 247c77f5)
+
+**Waiting on the user (asked, no answer yet):**
+1. Close PUBLIC PR drizzle-team/drizzle-orm#6479 and delete fork murilo-vinicius04/drizzle-orm, both made 10-11
+   23:35 by a bench worker (GPT-6 Luna high, run `drizzle-orm-window-function-builders--team-sonhigh-paths-codexplus-luna6-high-r2`).
+   Outward action on their account: only with a yes (fork deletion may need gh `delete_repo` scope).
+2. Block GitHub for bench workers BEFORE any round: team workers run on the host with the user's gh/git login and
+   `examples/nexus/agents/codex-plan/config.yaml` never forbids publishing. Proposal: hide gh/git credentials from
+   bench worker processes + a "never push, fork or open PRs" rule (also protects real nexus use).
+3. Then (proposed): make the Sonnet brain check every behaviour the task states, rerun the same 17.
+
+**Benchmark (user goal: Opus-level for less Claude at similar speed, or at least Sonnet-level cheaper).** 12 DeepSWE
+tasks, hard 5 twice + 7 once = 17 runs/arm. Per run: solved / real-bug runs / Pro-5h % / min:
+plain Sonnet 5.5 high 11 / 0 / 12.4 / 9.0 · plain Opus 5.5 high (hard 5 only) 4 of 10 / 0 / 27.2 / 12.4 ·
+Opus brain + GPT-6 Luna medium 13 / 1 (+1 minor) / 14.1 / 13.9 · Sonnet brain + Luna medium 12 / 3 (+2) / 7.3 / 12.6 ·
+**Sonnet brain + Luna high 12 / 2 / 6.0 / 14.5**. Codex ~0.3% of the Plus week per run. Every team bug = a behaviour the
+task text states that the brain never checked. Details per miss: `~/deepswe/FORENSICS.md` "10-11" and "10-12".
+- Tools in `~/deepswe`: `luna6_report.py` (table), `failing_tests.py` (failed hidden tests per run),
+  `luna6_bugs.json` (my real/minor/trap reading), `luna6_chart.py` -> `luna6_chart.png`, `attach_luna6_chart.py
+  <conv> <resp_id> <png> <caption>` (attach a chart to a turn; SendUserFile is not offered here).
+- Launch: `systemd-run --user --unit <u> --setenv=HOME=/home/nexus --setenv=PATH="$PATH" bash -c
+  '/home/nexus/deepswe/fresh_lanes.sh <queue> 1 50 35 2>>/home/nexus/deepswe/<log>'` (1 lane, pause at 5h 50%, halt at
+  week 35%). Monitor filters must flush every stage (`grep --line-buffered ... | stdbuf -oL cut`).
+- Not in git: `~/deepswe/team.py` kills agy only for gemini workers and ends the run's own Codex app-servers
+  (backup `team.py.bak-20261011`).
+- Quota 03:05: Claude 5h 6% (resets 06:30), week 29% (resets Fri 10-16 09:00); Codex week 6% (resets 10-18 20:44).
+
+**Done 10-11/12:** hub router fix 06bfbabc3 (asks when unsure, retries an empty reply, starts in an empty folder;
+the user has not retried it); runner fix 767fdfb0f (a lost tool_result POST is retried; it hung an Opus brain 27 min).
+Pre-existing failures, not ours: 19 runner tests (codex-native interrupt/stop, uc_function) and
+`test_live_voice.py::test_the_voice_is_told_when_to_delegate`.
+**Still open from before:** auto-compact on model/provider switch; provider switch in normal chats
+(`SwitchAgentDialog` unmounted); GPT Live news may be silent; hub prewarms an unneeded companion; Unmute English only.
+
 ## 2026-10-10 — READ FIRST (the hub conversation; session d9653808)
 
 **Where we are (13:30).** The hub = ONE pinned conversation "Hub" that runs every session
