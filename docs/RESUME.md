@@ -47,6 +47,19 @@ and voice use; clash → 409) and Remove from Hub (`DELETE`, session untouched).
 is a line in the hub chat. Checked in headless Chrome on the scratch server; not yet seen
 with the user's login.
 
+**10-11 21:55 → GPT-6 Luna 17 vs 17 done (user asked: "continue the team's benchmarks using GPT 6 Luna,
+without burning my entire quota", goal Opus-level cheaper at similar speed, or at least Sonnet-level cheaper).**
+Last 3 tasks run 20:46-21:55 (1 lane, pause 5h>=50%, halt week>=30%; Claude 5h 2->23%, week 24->26% incl. this
+session; Codex 5h 0->6%, week 0->1%). Results + per-miss reading: `~/deepswe/FORENSICS.md` "10-11", chart
+`~/deepswe/luna6_chart.png` (attached in session 247c77f5). Per run, 17 runs: plain Sonnet 11 solved / 0 real bugs /
+12.4% Pro 5h / 9.0 min; Opus brain+L6 13 / 1 real+1 minor / 14.1% / 13.9; Sonnet brain+L6 12 / 3 real+2 minor / 7.3%
+/ 12.6. Hard 5 vs plain Opus (4/10, 0, 27.2%, 12.4): Opus+L6 7/10, 1, 17.0%, 15.9. All Sonnet-brain bugs = stated
+behaviour the brain never checked. Proposed next (awaiting go): Sonnet brain + GPT-6 Luna HIGH on the same 17 runs.
+Bench harness changes (not in git): team.py kills agy only for gemini workers and stops a run's own Codex
+app-servers (CODEX_HOME inside the run). Omnigent bug found: runner `tool_dispatch` lost a tool_result ("Server
+disconnected without sending a response") and the Claude turn hung forever (1 of 454 runner logs) - fix = retry
+the POST; not done.
+
 **10-11 12:45 → the router no longer gives up on an unclear message (06bfbabc3, live).**
 User's first real test: two turns worked (brasa status; "próximos passos / tá tudo no git?"
 sent to brasa, its report came back), the third ("no audio … benchmarks … gpt 6 luna")
@@ -70,8 +83,7 @@ only your own hunks (`git update-index --cacheinfo` trick for runner/app.py).
 
 **User, 17:00:** go full throttle on the hub and Omnigent; benchmarks allowed but
 careful with quota (they still have to work this week). Router may use Gemini 3.7 Flash.
-Benchmarks still stopped: `dswe-luna6` has 7 tasks left in `~/deepswe/luna6_17.queue`;
-`rmdir ~/deepswe/lanes_state/luna6_17/ts-pattern-match-each` before any resume.
+Benchmarks: `dswe-luna6` finished 10-11 21:55 (see the 10-11 21:55 block above); nothing queued.
 
 **The hub is a regular conversation (baf20924b, live 10-10 ~01:35).** User: "it should
 work just like a regular chat conversation, but managing all sessions at once". One
