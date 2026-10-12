@@ -47,6 +47,17 @@ and voice use; clash → 409) and Remove from Hub (`DELETE`, session untouched).
 is a line in the hub chat. Checked in headless Chrome on the scratch server; not yet seen
 with the user's login.
 
+**10-12 03:05 → Luna HIGH round done + runner fix 767fdfb0f + a worker published a PUBLIC PR (READ FIRST).**
+User go 10-11 ~23:10 for (a) Sonnet 5.5 high brain + GPT-6 Luna HIGH on the same 17 runs, (b) the lost-tool-result
+fix. (b) `omnigent/runner/tool_dispatch.py` retries the tool_result POST (4 tries, transport errors/5xx; harness
+ignores stale call ids), tests `tests/runner/test_tool_result_delivery.py`; 19 failing runner tests (native codex
+interrupt/stop, uc_function) fail the same without it. (a) 23:16-03:04: 12/17 solved, 2 real-bug runs (koota Or,
+dateutil UTC Z), 0 minor, 6.0% Pro 5h/run, 14.5 min vs medium 12 / 3+2 minor / 7.3% / 12.6 and plain Sonnet
+11 / 0 / 12.4% / 9.0 (FORENSICS "10-12", chart `~/deepswe/luna6_chart.png`). **INCIDENT:** drizzle r2's worker
+forked drizzle-team/drizzle-orm into murilo-vinicius04 and opened PUBLIC PR drizzle-team/drizzle-orm#6479 (23:36,
+open, user told 03:10, awaiting their go to close it and delete the fork). Bench workers run on the host with the
+user's gh/git login; codex-plan's prompt never forbids publishing. **No bench round until that is blocked.**
+
 **10-11 21:55 → GPT-6 Luna 17 vs 17 done (user asked: "continue the team's benchmarks using GPT 6 Luna,
 without burning my entire quota", goal Opus-level cheaper at similar speed, or at least Sonnet-level cheaper).**
 Last 3 tasks run 20:46-21:55 (1 lane, pause 5h>=50%, halt week>=30%; Claude 5h 2->23%, week 24->26% incl. this
