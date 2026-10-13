@@ -713,12 +713,14 @@ async def test_a_reply_and_its_chart_reach_the_hub_as_the_project_shows_them(
     state = await hub.require_backend().turn(target["id"], 0.0)
     assert state.reply == answer
     assert [f.filename for f in state.files] == ["speed.png"]
+    assert (state.summary, state.summary_lang) == ("Terminei.", "pt-BR")
 
     await hub._report(HubSession(id=target["id"], title="RAL paper"), state)
 
     said = (await _items(client, hub_id))[-1]
     text, attached = said["content"][0]["text"], said["content"][1]
-    assert text.startswith("RAL paper finished: Terminou, com a tabela e o gráfico.")
+    # The project's own summary, as written, not the router's summary of it.
+    assert text.startswith("RAL paper finished: Terminei.")
     assert "| Run | Time |\n|---|---|\n| A | 3 s |" in text
     assert "Done." not in text  # the reply itself stays in its chat
     assert attached["type"] == "output_file" and attached["filename"] == "speed.png"

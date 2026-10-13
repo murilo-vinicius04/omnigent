@@ -213,6 +213,16 @@ code, no lists. The hub puts "{name} finished:" in front itself: do not repeat i
 {reply}\
 """
 
+#: A project's own summary in another language than the hub's. Translated
+#: whole: shortening it again is what lost the reader the details.
+_TRANSLATE_TASK: Final[str] = """\
+Translate {name}'s summary below into {language}. Keep every sentence, \
+number, name and question; do not shorten, summarize or add anything. Reply \
+with the translation only.
+
+{summary}\
+"""
+
 EntryKind = Literal[
     "message",
     "sent",
@@ -449,6 +459,10 @@ class TurnState:
     workspace: str | None = None
     #: The ``show`` list of the project's spoken summary of the reply.
     show: tuple[dict[str, Any], ...] = ()
+    #: That summary's words, and the language tag it was written in. The hub
+    #: reports them as they are, instead of summarizing the reply again.
+    summary: str = ""
+    summary_lang: str = ""
     #: The project writes spoken summaries and this reply's has not landed yet.
     summary_due: bool = False
 
@@ -527,6 +541,11 @@ def language_phrase(tag: str) -> str:
         return "the language they wrote in"
     name = _LANGUAGE_NAMES.get(tag.lower()) or _LANGUAGE_NAMES.get(tag.split("-")[0].lower())
     return f"{name} ({tag})" if name else tag
+
+
+def _same_language(a: str, b: str) -> bool:
+    """Whether two language tags name one language: ``pt-BR``, ``pt-br`` and ``pt`` do."""
+    return a.strip().lower().split("-")[0] == b.strip().lower().split("-")[0]
 
 
 def _without_label(text: str, label: str) -> str:
@@ -1614,15 +1633,19 @@ class Hub:
     async def _report(self, session: HubSession, state: TurnState) -> None:
         reply = state.reply
         router = await self._router_factory()
-        try:
-            told = (
-                await router.perform(
-                    _REPORT_TASK.format(name=session.name, reply=_short(reply, 6000)),
-                    timeout_s=ROUTE_TIMEOUT_S,
-                )
-            ).strip()
-        except DiscussionUnavailable:
-            told = _short(reply, 300)
+        # The project's own summary is the report: it is what its chat shows,
+        # and a summary of it lost the details the reader came for.
+        told = await self._in_hub_language(router, session, state) if state.summary else ""
+        if not told:
+            try:
+                told = (
+                    await router.perform(
+                        _REPORT_TASK.format(name=session.name, reply=_short(reply, 6000)),
+                        timeout_s=ROUTE_TIMEOUT_S,
+                    )
+                ).strip()
+            except DiscussionUnavailable:
+                told = _short(reply, 300)
         told = _without_label(told, f"{session.name} finished:")
         self.say(
             f"{session.name} finished: {told}",
@@ -1635,6 +1658,28 @@ class Hub:
             show=[b for b in state.show if b.get("kind") not in ("file", None)] or None,
         )
         router.remember(f"{session.name} finished: {told}")
+
+    async def _in_hub_language(
+        self, router: HubRouter, session: HubSession, state: TurnState
+    ) -> str:
+        """The project's summary in the hub's language: as written, or translated whole."""
+        summary = state.summary.strip()
+        hub_lang = await self.language()
+        if not hub_lang or not state.summary_lang or _same_language(hub_lang, state.summary_lang):
+            return summary
+        try:
+            translated = (
+                await router.perform(
+                    _TRANSLATE_TASK.format(
+                        name=session.name, language=language_phrase(hub_lang), summary=summary
+                    ),
+                    timeout_s=ROUTE_TIMEOUT_S,
+                )
+            ).strip()
+        except DiscussionUnavailable:
+            translated = ""
+        # Untranslated beats lost.
+        return translated or summary
 
     async def _import_files(
         self, session: HubSession, files: Sequence[ReplyFile]
@@ -2198,6 +2243,8 @@ def store_backend(
             files=tuple(files),
             workspace=getattr(conv, "workspace", None),
             show=show,
+            summary=str((chosen or {}).get("text") or "").strip(),
+            summary_lang=str((chosen or {}).get("lang") or ""),
             summary_due=bool(reply) and chosen is None and await _summaries_on(session_id),
         )
 

@@ -508,6 +508,57 @@ async def test_a_reply_waiting_on_its_summary_is_never_called_missing(
     await hub.close()
 
 
+SUMMARY = (
+    "Rodei os 40 trastes e o erro médio caiu para 3 mm.\n\n"
+    "O traste 12 ainda erra 9 mm. Quer que eu recalibre só ele?"
+)
+
+
+async def _report_of(tmp_path, turn: TurnState, language: str) -> tuple[str, _Router]:
+    router = _Router('{"send": "aaaa", "message": "Run it.", "say": "Mandei."}')
+    server = _Server()
+    server.turns = [TurnState(status="running"), turn]
+    hub = _hub(tmp_path, router, server)
+    hub.chat = _Chat(language)
+    hub.submit("roda")
+    await _settle(hub, until=lambda: any(e.kind == "finished" for e in hub.state.entries))
+    finished = next(e for e in hub.state.entries if e.kind == "finished")
+    await hub.close()
+    return finished.text, router
+
+
+@pytest.mark.parametrize("language", ["pt-BR", "pt-br", "pt", ""])
+async def test_a_report_is_the_projects_own_summary_word_for_word(tmp_path, language) -> None:
+    turn = TurnState(
+        status="idle", reply="Ran all 40 frets.", summary=SUMMARY, summary_lang="pt-BR"
+    )
+    text, router = await _report_of(tmp_path, turn, language)
+    # A summary of the summary lost the details: the reader gets the first one.
+    assert text == f"amarras finished: {SUMMARY}"
+    assert router.performed == []
+    assert router.remembered[-1] == text
+
+
+async def test_a_summary_in_another_language_is_translated_whole(tmp_path) -> None:
+    turn = TurnState(
+        status="idle", reply="Ran all 40 frets.", summary=SUMMARY, summary_lang="en-US"
+    )
+    text, router = await _report_of(tmp_path, turn, "pt-BR")
+    [task] = router.performed
+    assert "Translate" in task and "Brazilian Portuguese (pt-BR)" in task
+    assert "do not shorten" in task and SUMMARY in task
+    assert "Ran all 40 frets." not in task
+    assert text == "amarras finished: It fixed the scanner and all tests pass."
+
+
+async def test_without_its_summary_the_reply_is_summarized_once(tmp_path) -> None:
+    turn = TurnState(status="idle", reply="Ran all 40 frets.")
+    text, router = await _report_of(tmp_path, turn, "pt-BR")
+    [task] = router.performed
+    assert "Ran all 40 frets." in task
+    assert text == "amarras finished: It fixed the scanner and all tests pass."
+
+
 async def test_a_report_never_repeats_the_finished_label(tmp_path) -> None:
     router = _Router('{"send": "aaaa", "message": "Run it.", "say": "Mandei."}')
     router.report = "AMARRAS finished: It ran."
