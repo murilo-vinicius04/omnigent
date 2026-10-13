@@ -51,6 +51,7 @@ import { SuppressBrowserView } from "@/hooks/useSuppressBrowserView";
 import GithubMono from "@lobehub/icons/es/Github/components/Mono";
 import { readPreferredShell, resolveDefaultShell, writePreferredShell } from "./preferredShell";
 import { FilesPanel } from "./FilesPanel";
+import { chatFileRef, parseChatFileRef } from "./chatFileRef";
 import { FileViewer } from "./FileViewer";
 import { GithubPanel } from "./GithubPanel";
 import type { ChangedSort } from "./FlatFileList";
@@ -344,7 +345,7 @@ function FileTabsStrip({
             role="button"
             tabIndex={0}
             aria-current={active}
-            title={path}
+            title={parseChatFileRef(path)?.path ?? path}
             onClick={() => onFileSelect(path)}
             onAuxClick={(e) => {
               // Middle click (button 1) closes the tab, matching browser /
@@ -718,6 +719,15 @@ function WorkspacePanelImpl({
   const handleCloseTab = useCallback(() => {
     if (selectedFilePath !== null) onCloseFile(selectedFilePath);
   }, [onCloseFile, selectedFilePath]);
+  // The hub's file tabs name a project's chat as well as the path, and the
+  // viewer reads that chat's workspace; a link inside the file stays in it.
+  const hubFile =
+    showHubSessions && selectedFilePath !== null ? parseChatFileRef(selectedFilePath) : null;
+  const hubFileChat = hubFile?.chatId ?? null;
+  const navigateFileViewer = useCallback(
+    (path: string) => openFileViewer(hubFileChat ? chatFileRef(hubFileChat, path) : path),
+    [openFileViewer, hubFileChat],
+  );
   // Resolve shell tab keys to display labels. The terminals list is already
   // fetched elsewhere for the session, so this shares the same query cache.
   const { terminals } = useTerminals(conversationId);
@@ -1024,11 +1034,11 @@ function WorkspacePanelImpl({
           <FileViewer
             frameless
             open
-            conversationId={conversationId}
-            path={selectedFilePath}
+            conversationId={hubFile?.chatId ?? conversationId}
+            path={hubFile?.path ?? selectedFilePath}
             onClose={onShowScopeView}
             onCloseTab={handleCloseTab}
-            onNavigateTo={openFileViewer}
+            onNavigateTo={navigateFileViewer}
             permissionLevel={permissionLevel}
             onCommentsOpenChange={onCommentsOpenChange}
             sort={filesPanelSort}

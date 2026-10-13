@@ -7,7 +7,7 @@ import type * as UseConversationsModule from "@/hooks/useConversations";
 import type * as UseGithubModule from "@/hooks/useGithub";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -34,6 +34,8 @@ vi.mock("@/hooks/useWorkspaceChangedFiles", () => ({
     isSuccess: true,
     isLoading: false,
   })),
+  useWorkspaceFileExists: vi.fn(() => false),
+  toWorkspaceRelativePath: vi.fn(() => null),
 }));
 vi.mock("@/hooks/useGithub", async (importOriginal) => ({
   // Keep the real module (types, the panel's sibling hooks) — only the
@@ -67,7 +69,9 @@ vi.mock("./FilesPanel", () => ({
   FilesPanel: () => <div data-testid="files-panel" />,
 }));
 vi.mock("./FileViewer", () => ({
-  FileViewer: () => <div data-testid="file-viewer" />,
+  FileViewer: ({ conversationId, path }: { conversationId: string; path: string }) => (
+    <div data-testid="file-viewer" data-chat={conversationId} data-path={path} />
+  ),
 }));
 vi.mock("./InlineTerminalsSection", () => ({
   InlineTerminalsSection: () => <div data-testid="inline-terminals-section" />,
@@ -79,6 +83,7 @@ vi.mock("./TerminalsPanel", () => ({
   TerminalsPanel: () => <div data-testid="terminals-panel" />,
 }));
 
+import { FilePathAwareMessageResponse } from "@/components/blocks/ChatMarkdown";
 import { AppShell } from "./AppShell";
 import { useGithubInfo } from "@/hooks/useGithub";
 import { useConversations } from "@/hooks/useConversations";
@@ -124,7 +129,7 @@ beforeEach(() => {
   } as never);
 });
 
-function renderShell() {
+function renderShell(chat: React.ReactNode = <div>chat</div>) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
@@ -132,7 +137,7 @@ function renderShell() {
         <MemoryRouter initialEntries={["/c/conv_ws"]}>
           <Routes>
             <Route element={<AppShell />}>
-              <Route path="c/:conversationId" element={<div>chat</div>} />
+              <Route path="c/:conversationId" element={chat} />
             </Route>
           </Routes>
         </MemoryRouter>
@@ -158,5 +163,24 @@ describe("the hub's rail", () => {
     for (const name of [/^Files$/, /^Changes/, "GitHub", /^Agents/, "Companion", /^To-do/]) {
       expect(screen.queryByRole("tab", { name })).toBeNull();
     }
+  });
+
+  it("opens a project's file from a hub link in its own rail", async () => {
+    const chat = "4a1867870bb74b44b3fb98f1ddd42887";
+    const href = `http://localhost:6767/c/${chat}?file=RA-L/reviews/REVISION_PLAN.md`;
+    renderShell(
+      <FilePathAwareMessageResponse>{`[REVISION_PLAN.md](${href})`}</FilePathAwareMessageResponse>,
+    );
+
+    const link = await screen.findByRole("link", { name: "REVISION_PLAN.md" });
+    expect(fireEvent.click(link)).toBe(false); // no new tab
+
+    // The viewer reads the project's workspace, not the hub's.
+    const viewers = await screen.findAllByTestId("file-viewer");
+    for (const viewer of viewers) {
+      expect(viewer).toHaveAttribute("data-chat", chat);
+      expect(viewer).toHaveAttribute("data-path", "RA-L/reviews/REVISION_PLAN.md");
+    }
+    expect(screen.getByTitle("RA-L/reviews/REVISION_PLAN.md")).toBeInTheDocument();
   });
 });

@@ -32,6 +32,11 @@ interface FileViewerContextType {
    * against {@link workspaceRoot}. Null when unknown.
    */
   workspaceHome: string | null;
+  /**
+   * Opens the file an app link (`/c/<chat>?file=<path>`) names in this rail,
+   * returning false when the rail can't show it, so the link navigates instead.
+   */
+  openAppFileLink?: (href: string) => boolean;
 }
 
 export const FileViewerContext = createContext<FileViewerContextType | null>(null);
@@ -42,6 +47,14 @@ export const FileViewerContext = createContext<FileViewerContextType | null>(nul
  */
 export function useFileViewer(): ((path: string) => void) | null {
   return useContext(FileViewerContext)?.openFile ?? null;
+}
+
+/**
+ * Returns the app-file-link opener when rendered inside AppShell, or `null`
+ * outside it (tests, Storybook).
+ */
+export function useOpenAppFileLink(): ((href: string) => boolean) | null {
+  return useContext(FileViewerContext)?.openAppFileLink ?? null;
 }
 
 /**

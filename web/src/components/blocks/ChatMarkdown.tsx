@@ -24,6 +24,7 @@ import {
   useFileViewer,
   useFileViewerConversationId,
   useIsChangedPath,
+  useOpenAppFileLink,
   useWorkspacePaths,
 } from "@/shell/FileViewerContext";
 import { toWorkspaceRelativePath, useWorkspaceFileExists } from "@/hooks/useWorkspaceChangedFiles";
@@ -179,6 +180,7 @@ function WorkspaceFileLink({
   const marked = (props as Record<string, unknown>)[WORKSPACE_FILE_LINK_ATTR];
   const path = typeof marked === "string" ? marked : "";
   const openWorkspaceFile = useWorkspaceFileOpener(path);
+  const openAppFileLink = useOpenAppFileLink();
 
   if (!path) {
     return (
@@ -188,6 +190,13 @@ function WorkspaceFileLink({
         title={title}
         data-streamdown="link"
         {...props}
+        // A link to a chat's file (`/c/<chat>?file=…`) opens in the rail like a
+        // file path does; a modified or middle click still opens a new tab.
+        onClick={(e) => {
+          if (!openAppFileLink || typeof href !== "string") return;
+          if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+          if (openAppFileLink(href)) e.preventDefault();
+        }}
       >
         {children}
       </a>

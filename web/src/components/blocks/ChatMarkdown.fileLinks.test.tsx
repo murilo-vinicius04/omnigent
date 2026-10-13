@@ -167,3 +167,48 @@ describe("cited positions", () => {
     expect(screen.queryByRole("button", { name: "docs/notes.md:abc" })).toBeNull();
   });
 });
+
+// The hub links a project's file as `/c/<chat>?file=<path>`; a plain click must
+// open it in the rail, not a new tab.
+const openAppFileLink = vi.fn((_href: string) => false);
+const FILE_VIEWER_WITH_APP_LINKS = { ...FILE_VIEWER, openAppFileLink };
+
+describe("app links to a chat's file", () => {
+  const HREF = "http://localhost:6767/c/4a1867870bb74b44b3fb98f1ddd42887?file=RA-L/plan.md";
+
+  function renderWithOpener(handled: boolean) {
+    openAppFileLink.mockReset();
+    openAppFileLink.mockReturnValue(handled);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    render(
+      <QueryClientProvider client={client}>
+        <FileViewerContext.Provider value={FILE_VIEWER_WITH_APP_LINKS}>
+          <FilePathAwareMessageResponse>{`[plan.md](${HREF})`}</FilePathAwareMessageResponse>
+        </FileViewerContext.Provider>
+      </QueryClientProvider>,
+    );
+    return { link: screen.getByRole("link", { name: "plan.md" }) };
+  }
+
+  it("opens in the rail on a plain click", () => {
+    const { link } = renderWithOpener(true);
+
+    expect(fireEvent.click(link)).toBe(false); // default prevented: no new tab
+    expect(openAppFileLink).toHaveBeenCalledWith(HREF);
+  });
+
+  it("follows the link when the rail can't show it", () => {
+    const { link } = renderWithOpener(false);
+
+    expect(fireEvent.click(link)).toBe(true);
+    expect(openAppFileLink).toHaveBeenCalledWith(HREF);
+  });
+
+  it("leaves a modified click to the browser", () => {
+    const { link } = renderWithOpener(true);
+
+    expect(fireEvent.click(link, { metaKey: true })).toBe(true);
+    expect(fireEvent.click(link, { ctrlKey: true })).toBe(true);
+    expect(openAppFileLink).not.toHaveBeenCalled();
+  });
+});

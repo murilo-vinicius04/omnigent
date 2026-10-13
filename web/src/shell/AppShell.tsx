@@ -92,6 +92,7 @@ import { useResizableInlinePanel } from "@/hooks/useResizableInlinePanel";
 import { useResizableSidebar } from "@/hooks/useResizableSidebar";
 import { ChatHeader } from "./ChatHeader";
 import { ExecutionLogsPanel } from "./ExecutionLogsPanel";
+import { appFileLink, chatFileRef, parseChatFileRef } from "./chatFileRef";
 import { FileViewer } from "./FileViewer";
 import { FileViewerContext } from "./FileViewerContext";
 import { FilesPanelDrawer } from "./FilesPanelDrawer";
@@ -757,6 +758,9 @@ export function AppShell() {
   // The hub runs other sessions and has no workspace of its own: its rail is
   // the Sessions tab alone.
   const isHubConversation = activeSession?.labels?.["omnigent.hub"] === "1";
+  // The hub's file tabs name a project's chat as well as the path.
+  const hubFile =
+    isHubConversation && selectedFilePath !== null ? parseChatFileRef(selectedFilePath) : null;
   const railTabsAvailable = useMemo(
     () =>
       ({
@@ -1678,6 +1682,22 @@ export function AppShell() {
   // Sourced from the same environment query that gates the files panel.
   const workspaceRoot = environmentQuery.data?.root ?? null;
   const workspaceHome = environmentQuery.data?.home ?? null;
+  // An app link to a chat's file opens in this rail: any chat's file in the
+  // hub (its tabs name the chat, see chatFileRef), only this chat's elsewhere.
+  const openAppFileLink = useCallback(
+    (href: string) => {
+      const link = appFileLink(href, window.location.href);
+      if (!link) return false;
+      if (isHubConversation) {
+        openFileViewer(chatFileRef(link.chatId, link.path));
+        return true;
+      }
+      if (link.chatId !== conversationId || link.origin !== window.location.origin) return false;
+      openFileViewer(link.path);
+      return true;
+    },
+    [isHubConversation, openFileViewer, conversationId],
+  );
   const fileViewerContextValue = useMemo(
     () => ({
       openFile: openFileViewer,
@@ -1686,8 +1706,17 @@ export function AppShell() {
       conversationId,
       workspaceRoot,
       workspaceHome,
+      openAppFileLink,
     }),
-    [openFileViewer, openGithubTab, isChangedPath, conversationId, workspaceRoot, workspaceHome],
+    [
+      openFileViewer,
+      openGithubTab,
+      isChangedPath,
+      conversationId,
+      workspaceRoot,
+      workspaceHome,
+      openAppFileLink,
+    ],
   );
 
   // Context for descendants — ChatPage's ConnectionIndicator reads
@@ -2187,10 +2216,14 @@ export function AppShell() {
                 <div className="md:hidden">
                   <FileViewer
                     open
-                    conversationId={conversationId}
-                    path={selectedFilePath}
+                    conversationId={hubFile?.chatId ?? conversationId}
+                    path={hubFile?.path ?? selectedFilePath}
                     onClose={closeFileViewer}
-                    onNavigateTo={openFileViewer}
+                    onNavigateTo={
+                      hubFile
+                        ? (path: string) => openFileViewer(chatFileRef(hubFile.chatId, path))
+                        : openFileViewer
+                    }
                     permissionLevel={permissionLevel}
                     sort={filesPanelSort}
                   />
