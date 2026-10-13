@@ -28,7 +28,10 @@ project kept separate." Shipped 5f9bbf27f, live (server restarted ~11:55, page =
 - **agy dropped gemini-3.7-flash-medium**, so the router had been failing every turn. It now runs the newest
   `gemini-*-flash-medium` that `agy models` lists (`hub.resolve_hub_model`), else the model_fallbacks default.
 - Not built: rename/delete by chat or voice (panel only); project folder for a project made empty (picked on its
-  first chat page). The user has not tried it yet.
+  first chat page).
+- **Attachments (006ff3eab, live ~12:25):** the hub forwarded only text, so 3 RA-L review .txt files sent at 12:09
+  never reached RAL (still stored in the hub conversation 2b183f7b). Now held 30 min, named to the router, and COPIED
+  into the target chat on the next send (file ids are chat-scoped). Re-sending them to RAL awaits the user.
 
 ## 2026-10-12 03:10 — READ FIRST (benchmarks + a published PR; session d9653808, conversation 247c77f5)
 
