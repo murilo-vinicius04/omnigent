@@ -53,7 +53,7 @@ _FENCE: Final[re.Pattern[str]] = re.compile(r"^\s*(```|~~~)", re.MULTILINE)
 
 #: In the hub's own words, a file name or path a project's reply named.
 _NAMED_FILE: Final[re.Pattern[str]] = re.compile(
-    r"\[[^\]\n]*\]\([^)\n]*\)"  # a link already: left alone
+    r"\[([^\]\n]*)\]\(([^)\n]*)\)"  # a link already: only a host path is relinked
     r"|`([^`\n]+)`"  # inline code
     r"|(?<![\w/.~-])(~?/?[\w.-]+(?:/[\w.-]+)*\.[A-Za-z][A-Za-z0-9]{0,7})(?![\w/-])"  # a bare name
 )
@@ -228,7 +228,12 @@ def link_known_files(text: str, files: dict[str, tuple[str, str]], base_url: str
     """The hub's words with each file a project named linked to it in that project's chat."""
 
     def linked(match: re.Match[str]) -> str:
-        code, bare = match.group(1), match.group(2)
+        label, target, code, bare = match.groups()
+        if target is not None:
+            # A link to a host path opens nothing in the hub, which has no folder.
+            on_host = target if target.startswith(("/", "~/")) else ""
+            found = _known_host_path(on_host, files) if on_host else None
+            return f"[{label}]({file_url(base_url, *found)})" if found else match.group(0)
         named = code if code is not None else bare
         if named is None:
             return match.group(0)
@@ -244,6 +249,13 @@ def link_known_files(text: str, files: dict[str, tuple[str, str]], base_url: str
             fenced = not fenced
         lines.append(line if fenced or _FENCE.match(line) else _NAMED_FILE.sub(linked, line))
     return "".join(lines)
+
+
+def _known_host_path(path: str, files: dict[str, tuple[str, str]]) -> tuple[str, str] | None:
+    """The known file a host path ends in, matched on its longest known relative path."""
+    path = _POSITION_SUFFIX.sub("", path)
+    ends = [key for key in files if "/" in key and path.endswith("/" + key.lstrip("/"))]
+    return files[max(ends, key=len)] if ends else None
 
 
 def known_files(
@@ -598,6 +610,17 @@ def attach(hub: hub_module.Hub, conversation_store: Any, session_id: str | None)
         hub.chat = HubConversation(conversation_store, session_id, hub.state)
 
 
+def adopt_address(chat: HubConversation, headers: Any) -> None:
+    """Link to the app at this caller's address, if it is a page the reader opened.
+
+    A script calling the API has no Origin, and its Host (``127.0.0.1``) is not
+    the address the reader's browser uses, so it only fills an address not yet known.
+    """
+    base = base_url(headers)
+    if base and (headers.get("origin") or not chat.base_url):
+        chat.base_url = base
+
+
 def bind_request(
     hub: hub_module.Hub,
     *,
@@ -609,9 +632,7 @@ def bind_request(
 ) -> None:
     """Bind the hub to this caller: sends act as them, through the app's routes."""
     if hub.chat is not None:
-        base = base_url(headers)
-        if base:
-            hub.chat.base_url = base
+        adopt_address(hub.chat, headers)
     hub.bind(
         hub_module.store_backend(
             conversation_store,

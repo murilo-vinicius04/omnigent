@@ -353,6 +353,28 @@ def test_links_use_the_address_the_reader_opened(headers, expected) -> None:
     assert hub_chat.base_url(headers) == expected
 
 
+def test_a_script_does_not_move_the_links_off_the_readers_address() -> None:
+    chat = hub_chat.HubConversation(None, "hub0")
+    hub_chat.adopt_address(chat, {"host": "127.0.0.1:6767"})
+    assert chat.base_url == "http://127.0.0.1:6767"  # better than no links at all
+    hub_chat.adopt_address(chat, {"origin": "http://localhost:6767", "host": "localhost:6767"})
+    assert chat.base_url == "http://localhost:6767"
+    hub_chat.adopt_address(chat, {"host": "127.0.0.1:6767"})  # a script, after the page
+    assert chat.base_url == "http://localhost:6767"
+
+
+def test_a_host_path_link_to_a_known_file_opens_in_its_project(tmp_path) -> None:
+    files = {"RA-L/reviews/REVISION_PLAN.md": ("s1", "RA-L/reviews/REVISION_PLAN.md")}
+    text = (
+        "Plano em [REVISION_PLAN.md](/home/u/RA-L/reviews/REVISION_PLAN.md); "
+        "[outro](/etc/hosts) e [site](https://example.com) ficam como estão."
+    )
+    assert hub_chat.link_known_files(text, files, "http://h:6767") == (
+        "Plano em [REVISION_PLAN.md](http://h:6767/c/s1?file=RA-L/reviews/REVISION_PLAN.md); "
+        "[outro](/etc/hosts) e [site](https://example.com) ficam como estão."
+    )
+
+
 async def test_a_voice_hands_the_hub_what_was_said_and_gets_what_to_say(client, _hub_home) -> None:
     session_id = (await client.get("/v1/hub")).json()["session_id"]
     res = await client.post(
