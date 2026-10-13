@@ -14,6 +14,24 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-13 16:40 — two more Hub fixes, live (server restarted 16:33:25; page = clean `git archive HEAD web`)
+
+- **File links open in the Hub's own right rail (54336639c).** The Hub has no workspace, so its file tabs are
+  `<chat id>/<path>` (`web/src/shell/chatFileRef.ts`) and the viewer reads that chat's workspace
+  (WorkspacePanel / AppShell phone viewer). `FileViewerContext.openAppFileLink` turns a plain click on an app link
+  `…/c/<chat>?file=<path>` into that; cmd/ctrl/middle click still opens a new tab. Verified live (headless Chrome,
+  1400 px and 390 px): REVISION_PLAN.md opens in the rail, 0 new tabs. `scratchpad/hubreply/rail.py`.
+- **Hub messages are read aloud (f0f6b6e18).** Narration only speaks a message's spoken summary and Hub messages
+  had none (log: always `waiting-for-summary` / `no-summary-yet`). `HubConversation.post` now appends a
+  `spoken_summary` for the same response: the entry's own words (`speech_text`, never the quote/tables/links),
+  `speak_only: true` so BlockRenderer keeps the message as written (no friendly view), recorded by the local TTS
+  unless the chat reads through the live voice. The Hub's label is `voice_backend: live` → the page reads it via
+  Gemini Live. A hub narration that lands during a voice call is dropped, not queued (`dropDuringCall`).
+  Verified live 16:35: the user's own browser (Windows) handed "ok, estou ouvindo" to playback and Gemini Live
+  spoke 1.9 s. `scratchpad/hubreply/narr.py "<text>"` (posts a test message into the real Hub).
+- Not handled: a project whose own narration is on can be heard twice (its summary via cross-session narration,
+  then the Hub's report). Offer: leave a reported project's summary to the Hub while the Hub is open.
+
 ## 2026-10-13 16:10 — READ FIRST (Hub afternoon; session d9653808, conversation 247c77f5)
 
 **State:** all Hub work below is committed and live (server restarted 16:00:32, branch feat/friendly-layer, last
