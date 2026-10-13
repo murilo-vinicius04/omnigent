@@ -14,65 +14,53 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
-## 2026-10-13 18:05 — READ FIRST (Hub evening; session d9653808, conversation 247c77f5 = project "omnigent")
+## 2026-10-13 20:10 — READ FIRST (Hub evening; session d9653808, conversation 247c77f5 = project "omnigent")
 
-**State:** everything below is committed and live (server restarted 18:03:38, page = clean `git archive HEAD web`
-build, last code commit e53b54f99). Nothing running, no benchmark. The user drives this chat FROM THE HUB (voice
-or typed, pt-BR); the Hub forwards here and reports our final reply back (summary + links, read aloud), so keep
-final replies short. Answer in English.
-**Done today 16:10→18:05 (details in the block below):** Hub file links open in the Hub's own right rail; Hub
-messages narrated (speak_only spoken summaries); watch no longer reports "finished without a reply" while waiting
-for a summary; router retries Google 503s; Hub voice calls hang up after a send (GPT path 3975f8f28, Gemini/Unmute
-relay path 59abca6b9) and show the running tool; link address only from browser Origins; companion read-only checks
-survive cold starts (40 s first turn + fresh-process retry).
-**18:35 fix 9c4254ef5 (page only, deployed, no restart):** the 18:18 Gemini Hub call was hung up by the page's
-"no reply 30s after speech" watchdog 99 ms after the user last spoke; Gemini had sent ACTIVITY_START with no
-ACTIVITY_END (still listening). The owed-reply clock now holds while the reader talks (voiceActivity frames, or
-mic level), and the not-hearing notice is skipped while Gemini's detector is open (3.8 transcribes only at turn
-end). Hang-up stats carry floorMs. Not yet seen on a real call.
-**18:58 99e0ed153 (server restarted 18:58:23):** Hub "finished" reports are now the project's own spoken summary
-word for word (user: "resumo do resumo" lost information). The router only translates a summary in another language
-(whole) or summarizes the reply when no summary arrived. Dry run on the live DB (scratchpad hubreply/dryreport.py
-<chat> <name> <since>): RAL's disk reply → its 923-char summary + table + file links, router not called.
-**19:20 5162de080 (page only, deployed):** Gemini/Unmute Hub calls sent each request twice (RAL 19:07, 19:12): the
-relay's ask_claude ran, then 3.8's late transcript of the asking turn was filed after the send and forwarded as
-"Also, said right after that…". The adapter now files reader words on toolCall and before onRelaySent.
-**19:37 8484e015f (server restarted 19:36:50, page deployed):** narration drifted into pt-PT/Spanish because no
-voice prompt named a language (Google native-audio voices take no languageCode; docs: restrict via system
-instructions). Every live voice (Gemini narrate/call/hub call, GPT call/narrate) now gets
-live_voice.speech_language_rule(<chat's language selector>): label spoken_summary_language → project → server
-default OMNIGENT_SPOKEN_SUMMARY_LANGUAGE=pt-BR; narration passes language_of=<chat> + lang=<summary lang>. Log line
-"gemini live language | mode=… language=…". Kyutai/Unmute TTS is not covered (own voice).
-**20:05 20e95f320 + 696236ce9 (page only, deployed):** Hub "finished" reports were not narrated: the page merges
-consecutive assistant messages (the hub's, each its own turn) into ONE bubble with the newest turn's id; the
-narration hook took the bubble's last summary (re-read the previous "sent" msg at 19:27, filed RAL's report as
-history at 19:32) and stopped a reading when its id left the bubble (omnigent report cut 2.6 s in at 19:37:58).
-Fix: text items carry turnId; hook reads only the newest turn's own summary; stop only if the turn is gone;
-speak_only messages queue (waitTurn) instead of replacing. Also: ReadAloudButton under each hub message; plan-limit
-rings in the Hub Projects panel header (ChatPage's status row hides with no host/branch/ring, and ChatPage.tsx
-has the other session's uncommitted edits, so not touched). Verified headless: 4 rings, 40 read-aloud buttons.
-**20:08 9d82aea91 (server restarted 20:07:53, page deployed):** user disliked hearing/seeing "RAL finished:". Hub
-messages about a project now open with a chip (markdown link titled "omnigent-project" → ChatMarkdown ProjectChip,
-folder icon, opens /c/<id> in-app); "Open X ↗" footer gone; narration reads hub_chat.own_words (no label). Stored
-entry.text keeps the label (router memory, voice-call news). Old messages keep the old look.
-**Waiting on the user / not tried live:** a real Gemini voice call in the Hub ("send to RAL …" should hang up;
-"check on RAL …" should show "Checking on RAL (read-only)…" and answer).
-**Offered, not built:** retry a timed-out spoken summary once; backup router off Google for >90 s outages;
-double narration (project's own summary + Hub report) when a project isn't muted; Hub chat shows nothing of what
-was SAID on a Gemini call (server tools post only results). Older: close PR #6479 + delete fork, block bench
-GitHub (needs explicit yes); rotate the OpenAI key.
-**Measured, costly to redo:** agy cold start can spend 15 s in Google sign-in (loadCodeAssist) before reading
-stdin; Google "Eligibility check failed: UNAVAILABLE (code 503)" outages lasted ~1 min (16:38, 17:13); a check is
-20 s per model turn / 60 s total; Flash Low router turns 2–13 s; the Hub's label `voice_backend: live` (Gemini Live
-reads its messages, no TTS recording).
+**State:** all committed and live. Server restarted 20:07:53; page = clean `git archive HEAD web` build of
+00e82b60c (last code commit 9d82aea91). Nothing running, no benchmark. The user drives this chat FROM THE HUB
+(voice or typed, pt-BR); the Hub reports our final reply back (the project's own spoken summary, read aloud), so
+keep final replies short. Answer in English. The user's browser tab must be RELOADED to get page fixes (19:37
+narrations still ran the old page: log `gemini live language | mode=narrate language=free`).
+**Fixed this evening (commit → what):**
+- 9c4254ef5 Gemini call hung up mid-speech: page watchdog clock now holds while the reader talks (voiceActivity
+  ACTIVITY_START/END frames, or mic level). Odd `voiceActivity` count in "session ended" kinds = a turn still open.
+- 99e0ed153 Hub "finished" = project's own spoken summary verbatim (router only translates other languages whole,
+  or summarizes when no summary came). User: "resumo do resumo" lost info.
+- 5162de080 Gemini/Unmute Hub calls sent requests twice (late 3.8 transcript filed after the relay's send, then
+  forwarded as "Also, said right after that…"); adapter now flushes reader words on toolCall/before onRelaySent.
+- 8484e015f Voices follow the chat's LANGUAGE SELECTOR (user: not hardcoded pt-BR): live_voice.speech_language_rule
+  in systemInstruction (Google native audio takes no languageCode); label spoken_summary_language → project →
+  OMNIGENT_SPOKEN_SUMMARY_LANGUAGE=pt-BR. Narrate WS: `language_of=<chat>&lang=<summary lang>` (never session_id).
+- 20e95f320 Finished reports not narrated / cut: page merges consecutive assistant messages into ONE bubble with
+  the newest turn's id. Text items now carry `turnId`; narration hook uses the newest turn's own summary, stops a
+  reading only if its turn is gone, speak_only messages queue (`waitTurn`) instead of replacing.
+- 696236ce9 ReadAloudButton under each Hub message; plan-limit rings in the Hub Projects panel header.
+- 9d82aea91 No "RAL finished:" read or shown: project chip at top (markdown link titled "omnigent-project" →
+  ChatMarkdown ProjectChip, opens /c/<id>), "Open X ↗" footer gone, narration = hub_chat.own_words. Stored
+  entry.text keeps the label (router memory, voice-call news).
+**Not yet seen live:** the chip; full narration of a finished report; language rule after reload; a real Gemini
+Hub call ("send to RAL" hangs up once, no duplicate; "check on RAL" shows "Checking on RAL (read-only)…").
+**Offered, not built:** retry a timed-out spoken summary; backup router off Google for >90 s outages; double
+narration (project's own + Hub report) when a project isn't muted; Hub chat shows nothing SAID on a Gemini call;
+usage rings under the Hub composer (needs ChatPage.tsx — the other session's file). Older, need explicit yes:
+close PR #6479 + delete fork, block bench GitHub; remind: rotate the OpenAI key.
+**Measured:** agy cold start up to 15 s in Google sign-in; Google 503 outages ~1 min; check = 20 s/turn, 60 s
+total; Flash Low router 2–13 s; Hub narration = Gemini 3.1 Flash Live narrator (prompt ~541 tokens for a short
+message, so a 5 s narration of a long report means the wrong text was read).
+**Known failing before today (not ours):** tests/server/test_live_voice.py::test_the_voice_is_told_when_to_delegate;
+web NewChatLandingScreen.mobileChrome (2 tests); oxlint jsx-no-useless-fragment in ChatMarkdown WorkspaceFileChip.
 **Tools (scratchpad d9653808…/):** `hubapi.py GET|POST <path> [json]`, `hubtype.py "<text>"` (types into the real
-Hub — moves nothing now that only Origin callers set link addresses), `hubreply/rail.py [width]` (file link → rail),
-`hubreply/narr.py "<text>"`, `turnat.py CHAT SINCE AT` (replay the watch lookup). Live check:
-`hubapi.py POST /v1/discussion/<chat>/check '{"text": "..."}'`. Logs: `~/.omnigent/logs/server/` (narration
-decisions, `voice server tool |`, `companion check`), agy `~/.gemini/antigravity-cli/log/cli-*.log`.
-**Rules:** format/commit files BY NAME (a dir-wide ruff format touched the other session's routes_core.py at 17:55,
-layout only, left as is); SKIP=pyrefly,no-hardcoded-models,web-oxlint,web-tsc after running pyrefly on own files;
-never co-author trailers; restart `XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart omnigent-server.service`.
+Hub), `hubreply/dryreport.py <chat> <name> <since-epoch>` (what a report would say, posts nothing; run with
+OMNIGENT_SPOKEN_SUMMARY_LANGUAGE=pt-BR), headless Chrome: `hubreply/composer.py`, `hubreply/hubcheck.py
+omnigent:voice-backend:<hub id>` (rings + read-aloud count), `hubreply/pills.py`. Hub log `~/.omnigent/hub/morys5/
+log.jsonl`; Hub ledger `~/.omnigent/companion/<hub id>.json`; chat.db ids are 16-byte blobs (bytes.fromhex), message
+items type=1. Logs: `~/.omnigent/logs/server/` (`narration_decision`, `gemini live session ended`, `page playback`
+closeReason/owedMs/floorMs, `voice server tool |`, `gemini live language`).
+**Rules:** never touch the other session's uncommitted files (ChatPage.tsx, chatStore.ts, routes_core.py, … see
+`git status`); format/commit files BY NAME; SKIP=pyrefly,no-hardcoded-models,web-oxlint,web-tsc after running
+pyrefly on own files; never co-author trailers; keep code comments short (CLAUDE.md); restart
+`XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart omnigent-server.service` (check no live call is open:
+count `WebSocket /v1/live` accepted vs `live session ended`).
 
 ## 2026-10-13 16:40 — two more Hub fixes, live (details for the block above)
 
