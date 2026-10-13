@@ -14,6 +14,18 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-13 16:05 — file links in everything the hub says (417bc9897, 4ca15d1f9) + stall retry (292c44196)
+
+User: "ainda nao vejo o link do revision plan aqui no hub". Only NEW finished reports linked files; the hub's own
+answers ("O plano está em `REVISION_PLAN.md`") never did, and RAL's reports predate the links. Now
+`HubConversation.known_files()` gathers files the latest 40 reports' replies named (by path, as written, by bare
+name; old reports look up their chat's folder) and `render()` links each mention, in backticks or bare. Verified
+live 16:03: the hub's answer stored as [`REVISION_PLAN.md`](…/c/4a18…?file=RA-L/reviews/REVISION_PLAN.md).
+Stalls: 15:56–16:02 every router agy process hung on a different Google call (model stream, loadCodeAssist, before
+send) while a manual agy worked; 16:03 fine (6.5 s). Router now gives the first try 40 s and retries once in a
+fresh process (`ROUTE_FIRST_TRY_S`); a bad window of several minutes still ends in "took over 90 s". Idea, not
+built: a fallback router off Google (e.g. a small OpenAI model) for those windows.
+
 ## 2026-10-13 15:25 — CORRECTION: the hub must NOT show the whole reply (b66b58ee4, live 15:22)
 
 a6f3b39bd put the project's full English reply under the hub's summary; the user: "a resposta do claude vazou
