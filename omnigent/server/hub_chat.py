@@ -193,11 +193,11 @@ def render(
             else "\n\n".join(reply_tables(entry.detail or ""))
         )
         shown = link_workspace_files(shown, workspace, url_for)
-        files = " · ".join(
+        file_links = " · ".join(
             f"[`{label}`]({url_for(rel)})" if "/" in label else f"[{label}]({url_for(rel)})"
             for label, rel in named_files(entry.detail or "", workspace)
         )
-        parts = [entry.text, shown, files, link]
+        parts = [entry.text, shown, file_links, link]
         return "\n\n".join(part for part in parts if part)
     if entry.kind in ("attention", "finished", "status", "check", "model", "project") and link:
         return f"{entry.text}\n\n{link}"
