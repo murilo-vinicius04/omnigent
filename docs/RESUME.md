@@ -32,6 +32,10 @@ project kept separate." Shipped 5f9bbf27f, live (server restarted ~11:55, page =
 - **Attachments (006ff3eab, live ~12:25):** the hub forwarded only text, so 3 RA-L review .txt files sent at 12:09
   never reached RAL (still stored in the hub conversation 2b183f7b). Now held 30 min, named to the router, and COPIED
   into the target chat on the next send (file ids are chat-scoped). Re-sending them to RAL awaits the user.
+- **Restarts (84b847cb6, live 12:31):** report-back watches and held files were memory-only, so a restart lost
+  them. Now in `~/.omnigent/hub/<user>/watches.json` + `files.json`; startup resumes watches (log line "hub resumed
+  N report-back watch(es)"). The lost 12:12 omnigent watch was re-seeded by hand and resumed. Still memory-only:
+  a hub message being routed at the instant of a restart (no reply comes for it).
 
 ## 2026-10-12 03:10 — READ FIRST (benchmarks + a published PR; session d9653808, conversation 247c77f5)
 
