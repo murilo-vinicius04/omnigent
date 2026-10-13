@@ -29,6 +29,11 @@ Keep it current before going idle. If something here is stale, fix it here.
   Gemini Live. A hub narration that lands during a voice call is dropped, not queued (`dropDuringCall`).
   Verified live 16:35: the user's own browser (Windows) handed "ok, estou ouvindo" to playback and Gemini Live
   spoke 1.9 s. `scratchpad/hubreply/narr.py "<text>"` (posts a test message into the real Hub).
+- **"finished without writing a reply" with a reply there (6c79ae57d, live 16:49).** The watch waits ≤8 polls (30 s)
+  for the summary but called the turn empty after 6 idle polls without checking for a reply; a summary slower than
+  24 s lost the report (16:38:22). The slow summary itself: this chat's companion agy started cold after the 16:33
+  restart and sat in sign-in until Google answered 503 at 16:39:01; the 45 s budget ended at 16:38:43. Offered,
+  not built: retry a timed-out summary once.
 - Not handled: a project whose own narration is on can be heard twice (its summary via cross-session narration,
   then the Hub's report). Offer: leave a reported project's summary to the Hub while the Hub is open.
 
