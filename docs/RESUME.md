@@ -25,6 +25,11 @@ messages narrated (speak_only spoken summaries); watch no longer reports "finish
 for a summary; router retries Google 503s; Hub voice calls hang up after a send (GPT path 3975f8f28, Gemini/Unmute
 relay path 59abca6b9) and show the running tool; link address only from browser Origins; companion read-only checks
 survive cold starts (40 s first turn + fresh-process retry).
+**18:35 fix 9c4254ef5 (page only, deployed, no restart):** the 18:18 Gemini Hub call was hung up by the page's
+"no reply 30s after speech" watchdog 99 ms after the user last spoke; Gemini had sent ACTIVITY_START with no
+ACTIVITY_END (still listening). The owed-reply clock now holds while the reader talks (voiceActivity frames, or
+mic level), and the not-hearing notice is skipped while Gemini's detector is open (3.8 transcribes only at turn
+end). Hang-up stats carry floorMs. Not yet seen on a real call.
 **Waiting on the user / not tried live:** a real Gemini voice call in the Hub ("send to RAL …" should hang up;
 "check on RAL …" should show "Checking on RAL (read-only)…" and answer).
 **Offered, not built:** retry a timed-out spoken summary once; backup router off Google for >90 s outages;
