@@ -73,10 +73,17 @@ export function useSpokenSummaryPlayback(
     // sessions mid-sentence must not cut them off.
     const { speakingItemId: currentSpeakingId, speakingSessionId } =
       useSpeechPlaybackStore.getState();
+    // One bubble can hold several turns, and it takes the newest one's id: the
+    // hub's next message joins the report being read, which is not gone.
     if (
       currentSpeakingId &&
       speakingSessionId === sessionId &&
-      !bubbles.some((b) => b.kind === "assistant" && b.responseId === currentSpeakingId)
+      !bubbles.some(
+        (b) =>
+          b.kind === "assistant" &&
+          (b.responseId === currentSpeakingId ||
+            b.items.some((it) => it.kind === "text" && it.turnId === currentSpeakingId)),
+      )
     ) {
       stop();
     }
@@ -156,9 +163,16 @@ export function useSpokenSummaryPlayback(
         );
 
         // Select the text item that actually carries the spoken summary (the LAST/final one), not the first.
-        const textItems = bubble.items.filter(
+        // Only this turn's own texts, when the bubble says which those are: the
+        // hub posts each message as its own turn with nothing between them, so
+        // the newest one shares a bubble with the last, whose summary was
+        // already read. Taking that one re-read the old message under the new
+        // id (19:27) or filed the new one as history (19:32).
+        const allTexts = bubble.items.filter(
           (it): it is Extract<RenderItem, { kind: "text" }> => it.kind === "text",
         );
+        const ownTexts = allTexts.filter((it) => it.turnId === responseId);
+        const textItems = ownTexts.length > 0 ? ownTexts : allTexts;
         const summaryItem = textItems
           .slice()
           .reverse()
@@ -249,6 +263,9 @@ export function useSpokenSummaryPlayback(
             });
             speakLiveSummary(responseId, summary!.text, summary!.lang, audioUrl, sessionId, {
               dropDuringCall: summary!.speakOnly,
+              // A hub message is news of its own, not a newer take on the one
+              // being read: it waits its turn instead of cutting that off.
+              waitTurn: summary!.speakOnly,
             });
           } else if (
             isFinal &&

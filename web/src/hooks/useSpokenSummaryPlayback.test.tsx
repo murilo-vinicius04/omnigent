@@ -1472,6 +1472,86 @@ describe("useSpokenSummaryPlayback — server audio", () => {
     speak.mockRestore();
   });
 
+  /**
+   * The hub's chat as the page builds it: each hub message is its own turn,
+   * with no user message between them, so one bubble holds them all and
+   * takes the newest one's id.
+   */
+  function hubBubble(
+    turns: { id: string; atS: number; summary?: string }[],
+  ): Bubble {
+    const newest = turns[turns.length - 1]!;
+    return {
+      kind: "assistant",
+      responseId: newest.id,
+      stableId: turns[0]!.id,
+      lifecycle: "completed",
+      error: null,
+      items: turns.map((t) => ({
+        kind: "text",
+        itemId: `item_${t.id}`,
+        text: `mensagem ${t.id}`,
+        final: true,
+        createdAtS: t.atS,
+        turnId: t.id,
+        ...(t.summary
+          ? { spokenSummary: { text: t.summary, lang: "pt-BR", speakOnly: true } }
+          : {}),
+      })),
+    } as Bubble;
+  }
+
+  it("reads the hub's newest report itself, not the message before it", () => {
+    // 19:27 and 19:32: "sent" was read, then RAL's report joined its bubble.
+    // The report's own summary lands a moment after its text.
+    const speak = vi.spyOn(useSpeechPlaybackStore.getState(), "speakLiveSummary");
+    const nowS = Date.now() / 1000;
+    markMessageSpoken("resp_sent");
+    const sent = { id: "resp_sent", atS: nowS - 70, summary: "Pedi ao RAL para compilar." };
+    const { rerender } = renderHook(
+      ({ bubbles }: { bubbles: Bubble[] }) => useSpokenSummaryPlayback(bubbles, null),
+      { initialProps: { bubbles: [hubBubble([sent, { id: "resp_report", atS: nowS - 1 }])] } },
+    );
+    // Not the old message again, and not filed as history while its summary is on the way.
+    expect(speak).not.toHaveBeenCalled();
+    expect(isMessageSpoken("resp_report")).toBe(false);
+
+    rerender({
+      bubbles: [
+        hubBubble([sent, { id: "resp_report", atS: nowS - 1, summary: "RAL terminou a compilação." }]),
+      ],
+    });
+    expect(speak).toHaveBeenCalledTimes(1);
+    expect(speak.mock.calls[0]?.[0]).toBe("resp_report");
+    expect(speak.mock.calls[0]?.[1]).toBe("RAL terminou a compilação.");
+    expect(speak.mock.calls[0]?.[5]).toEqual({ dropDuringCall: true, waitTurn: true });
+    speak.mockRestore();
+  });
+
+  it("keeps reading a hub report when the next hub message joins its bubble", () => {
+    // 19:37:58: the hub's answer to a new message arrived while omnigent's
+    // report was being read, and the report was cut off 2.6 s in.
+    const nowS = Date.now() / 1000;
+    const report = { id: "resp_report", atS: nowS - 3, summary: "Achei o problema." };
+    useSpeechPlaybackStore.setState({
+      isSpeaking: true,
+      speakingItemId: "resp_report",
+      speakingSessionId: "conv_1",
+    });
+    const stop = vi.spyOn(useSpeechPlaybackStore.getState(), "stop");
+    stop.mockClear(); // earlier tests leave calls on the store's own function
+    renderHook(() =>
+      useSpokenSummaryPlayback([hubBubble([report, { id: "resp_ack", atS: nowS }])], null),
+    );
+    expect(stop).not.toHaveBeenCalled();
+    stop.mockRestore();
+    useSpeechPlaybackStore.setState({
+      isSpeaking: false,
+      speakingItemId: null,
+      speakingSessionId: null,
+    });
+  });
+
   it("still indexes an old reply as history before any summary shows up", () => {
     const speak = vi.spyOn(useSpeechPlaybackStore.getState(), "speakLiveSummary");
     renderHook(() =>

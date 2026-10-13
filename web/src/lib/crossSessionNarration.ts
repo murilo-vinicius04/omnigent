@@ -143,6 +143,7 @@ async function speakIfSummaryReady(sessionId: string, now: () => number): Promis
         .getState()
         .speakLiveSummary(responseId, summary.text, summary.lang, audioUrl, sessionId, {
           dropDuringCall: summary.speakOnly,
+          waitTurn: summary.speakOnly,
         });
       reportNarration({
         path: "cross-session",

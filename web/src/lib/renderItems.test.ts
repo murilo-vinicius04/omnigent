@@ -1672,6 +1672,7 @@ describe("buildBubbles — lifecycle from activeResponse", () => {
         itemId: "msg_interrupted",
         text: "partial answer",
         final: true,
+        turnId: "codex_turn_123",
       },
     ]);
   });

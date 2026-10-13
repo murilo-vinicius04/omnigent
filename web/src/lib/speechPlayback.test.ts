@@ -235,6 +235,30 @@ describe("speechPlayback call coordination and queueing", () => {
     expect(narrateViaLive).not.toHaveBeenCalled();
   });
 
+  it("lets a hub message wait for the hub report being read, instead of cutting it off", () => {
+    // 19:37:58: the hub's answer to a new message arrived 3 s into omnigent's
+    // report, and a newer summary from the same chat replaces the one playing.
+    setLiveVoiceEngine("gemini");
+    useVoiceBackendStore.getState().set("conv_hub", "live");
+    narrateViaGeminiLive.mockReturnValue(
+      Promise.resolve({
+        stream: new FakeMediaStream() as unknown as MediaStream,
+        finished: new Promise<void>(() => {}),
+        stop: vi.fn(),
+      }),
+    );
+    const store = useSpeechPlaybackStore.getState();
+    store.speakLiveSummary("msg_report", "Relatório longo.", "pt-BR", undefined, "conv_hub", {
+      waitTurn: true,
+    });
+    store.speakLiveSummary("msg_ack", "Mandei.", "pt-BR", undefined, "conv_hub", {
+      waitTurn: true,
+    });
+
+    expect(narrateViaGeminiLive).toHaveBeenCalledTimes(1);
+    expect(useSpeechPlaybackStore.getState().speakingItemId).toBe("msg_report");
+  });
+
   it("narrates through the local Unmute relay when that engine is chosen", () => {
     setLiveVoiceEngine("unmute");
     useVoiceBackendStore.getState().set("conv_live_unmute", "live");

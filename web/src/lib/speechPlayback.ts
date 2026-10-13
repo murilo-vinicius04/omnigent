@@ -310,6 +310,11 @@ export interface SpeakOptions {
    * which a hub call says itself.
    */
   dropDuringCall?: boolean;
+  /**
+   * Wait for the summary being read, even one from this conversation, rather
+   * than replace it: the hub's messages are separate news, not revisions.
+   */
+  waitTurn?: boolean;
 }
 
 interface SpeechPlaybackStoreState {
@@ -679,7 +684,7 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
     // -- it supersedes it, and hearing the stale one finish helps nobody.
     const otherConversationSpeaking =
       get().isSpeaking && Boolean(sessionId) && get().speakingSessionId !== (sessionId ?? null);
-    if (otherConversationSpeaking) {
+    if (otherConversationSpeaking || (options?.waitTurn && get().isSpeaking)) {
       speechQueue.push({ itemId, text, lang, audioUrl, sessionId, queuedAt: Date.now() });
       if (speechQueue.length > QUEUE_MAX) speechQueue.shift();
       return true;

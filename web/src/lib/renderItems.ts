@@ -67,6 +67,12 @@ export type RenderItem =
        * it just arrived or is being replayed from history.
        */
       createdAtS?: number;
+      /**
+       * The turn this text belongs to. One bubble can hold several turns (the
+       * hub posts each message as its own, with no user message between), and
+       * each turn's summary is that turn's alone to speak.
+       */
+      turnId?: string;
       spokenSummary?: {
         text: string;
         lang: string;
@@ -1690,6 +1696,7 @@ function textItem(run: AnyBlock[]): RenderItem {
         text: b.fullText,
         final: true,
         ...(b.ctx.createdAtS !== undefined ? { createdAtS: b.ctx.createdAtS } : {}),
+        ...(isAnonymousRid(b.ctx.responseId) ? {} : { turnId: b.ctx.responseId }),
         ...(b.spokenSummary ? { spokenSummary: b.spokenSummary } : {}),
         ...(b.files ? { files: b.files } : {}),
         ...(b.companionAnswer ? { companionAnswer: b.companionAnswer } : {}),
