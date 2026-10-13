@@ -1217,6 +1217,17 @@ for line in sys.stdin:
     empty = "REACH_FOR_A_TOOL" in content or (
         "Your reply was empty" in content and os.environ.get("FAKE_ROUTER_STUBBORN")
     )
+    refusals = os.environ.get("FAKE_ROUTER_REFUSALS")
+    if "REFUSE" in content and refusals:
+        left = int(open(refusals).read() or 0) if os.path.exists(refusals) else 0
+        if left:  # Google turning the call away: agy says so and exits
+            open(refusals, "w").write(str(left - 1))
+            sys.stderr.write(
+                "error: Eligibility check failed: UNAVAILABLE (code 503): "
+                "The service is currently unavailable.\\n"
+            )
+            sys.stderr.flush()
+            sys.exit(1)
     stall = os.environ.get("FAKE_ROUTER_STALLS")
     again = os.environ.get("FAKE_ROUTER_STALL_ALWAYS")
     if "STALL" in content and stall and (again or not os.path.exists(stall)):
@@ -1275,6 +1286,34 @@ async def test_a_router_that_stalls_twice_is_unavailable(router, monkeypatch, tm
     monkeypatch.setattr(hub_module, "ROUTE_RETRY_MIN_S", 0.5)
     with pytest.raises(DiscussionUnavailable, match="no answer within"):
         await router.decide("STALL here", said="cadê o plano?", timeout_s=1.5)
+    assert not router.running
+
+
+async def test_a_router_google_turns_away_is_asked_again_until_it_answers(
+    router, monkeypatch, tmp_path
+) -> None:
+    refusals = tmp_path / "refusals"
+    refusals.write_text("2")
+    monkeypatch.setenv("FAKE_ROUTER_REFUSALS", str(refusals))
+    monkeypatch.setattr(hub_module, "ROUTE_REFUSED_WAIT_S", 0.05)
+    monkeypatch.setattr(hub_module, "ROUTE_RETRY_MIN_S", 0.5)
+    reply = json.loads(await router.decide("REFUSE here", said="manda pro RAL", timeout_s=10))
+    assert reply["answer"]  # the third process answered
+    assert refusals.read_text() == "0"
+    await router.close()
+
+
+async def test_a_router_google_keeps_turning_away_is_unavailable(
+    router, monkeypatch, tmp_path
+) -> None:
+    refusals = tmp_path / "refusals"
+    refusals.write_text("99")
+    monkeypatch.setenv("FAKE_ROUTER_REFUSALS", str(refusals))
+    monkeypatch.setattr(hub_module, "ROUTE_REFUSED_WAIT_S", 0.2)
+    monkeypatch.setattr(hub_module, "ROUTE_RETRY_MIN_S", 0.5)
+    with pytest.raises(DiscussionUnavailable, match="UNAVAILABLE"):
+        await router.decide("REFUSE here", said="manda pro RAL", timeout_s=2)
+    assert int(refusals.read_text()) < 99  # it did ask again before giving up
     assert not router.running
 
 

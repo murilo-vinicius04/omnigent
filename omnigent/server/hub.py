@@ -110,6 +110,14 @@ ROUTE_RETRY_MIN_S: Final[float] = 20.0
 #: The least a second try gets after an empty reply, however late it is.
 EMPTY_RETRY_MIN_S: Final[float] = 20.0
 
+#: Wait before asking again when Google turns the router away. Its outages so
+#: far lasted about a minute (10-13 16:38 and 17:13), inside one routing budget.
+ROUTE_REFUSED_WAIT_S: Final[float] = 10.0
+
+#: How Google turning a call away reads in agy's error, e.g. "Eligibility check
+#: failed: UNAVAILABLE (code 503)". Not quota: an exhausted quota stays exhausted.
+_GOOGLE_REFUSED: Final[re.Pattern[str]] = re.compile(r"UNAVAILABLE|code 50[234]\b")
+
 #: What the router is told after a reply that came back empty.
 EMPTY_REPLY_NUDGE: Final[str] = (
     "[Your reply was empty: you have no tools here and nothing to look up. "
@@ -754,14 +762,28 @@ class HubRouter(DiscussionSession):
                     break
                 except DiscussionUnavailable as exc:
                     await self._kill()
-                    stalled = str(exc).startswith("no answer within")
-                    if not (
-                        first and stalled and deadline - time.monotonic() >= ROUTE_RETRY_MIN_S
-                    ):
+                    left = deadline - time.monotonic()
+                    stalled = first and str(exc).startswith("no answer within")
+                    if stalled:
+                        retry = left >= ROUTE_RETRY_MIN_S
+                    else:
+                        retry = bool(_GOOGLE_REFUSED.search(str(exc))) and (
+                            left >= ROUTE_REFUSED_WAIT_S + ROUTE_RETRY_MIN_S
+                        )
+                    if not retry:
                         self._record("question", said)
                         raise
-                    # A model call that never returns: a fresh process gets the rest.
-                    _logger.warning("hub router stalled; asking a fresh process")
+                    if stalled:
+                        # A model call that never returns: a fresh process gets the rest.
+                        _logger.warning("hub router stalled; asking a fresh process")
+                    else:
+                        # Google turned it away: its outages pass within the budget.
+                        _logger.warning(
+                            "hub router refused by Google; asking again in %g s: %s",
+                            ROUTE_REFUSED_WAIT_S,
+                            str(exc)[:200],
+                        )
+                        await asyncio.sleep(ROUTE_REFUSED_WAIT_S)
                     first = False
             self._briefed = True
             self._undelivered.clear()
