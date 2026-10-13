@@ -51,6 +51,10 @@ Fix: text items carry turnId; hook reads only the newest turn's own summary; sto
 speak_only messages queue (waitTurn) instead of replacing. Also: ReadAloudButton under each hub message; plan-limit
 rings in the Hub Projects panel header (ChatPage's status row hides with no host/branch/ring, and ChatPage.tsx
 has the other session's uncommitted edits, so not touched). Verified headless: 4 rings, 40 read-aloud buttons.
+**20:08 9d82aea91 (server restarted 20:07:53, page deployed):** user disliked hearing/seeing "RAL finished:". Hub
+messages about a project now open with a chip (markdown link titled "omnigent-project" → ChatMarkdown ProjectChip,
+folder icon, opens /c/<id> in-app); "Open X ↗" footer gone; narration reads hub_chat.own_words (no label). Stored
+entry.text keeps the label (router memory, voice-call news). Old messages keep the old look.
 **Waiting on the user / not tried live:** a real Gemini voice call in the Hub ("send to RAL …" should hang up;
 "check on RAL …" should show "Checking on RAL (read-only)…" and answer).
 **Offered, not built:** retry a timed-out spoken summary once; backup router off Google for >90 s outages;
