@@ -37,6 +37,12 @@ word for word (user: "resumo do resumo" lost information). The router only trans
 **19:20 5162de080 (page only, deployed):** Gemini/Unmute Hub calls sent each request twice (RAL 19:07, 19:12): the
 relay's ask_claude ran, then 3.8's late transcript of the asking turn was filed after the send and forwarded as
 "Also, said right after that…". The adapter now files reader words on toolCall and before onRelaySent.
+**19:37 8484e015f (server restarted 19:36:50, page deployed):** narration drifted into pt-PT/Spanish because no
+voice prompt named a language (Google native-audio voices take no languageCode; docs: restrict via system
+instructions). Every live voice (Gemini narrate/call/hub call, GPT call/narrate) now gets
+live_voice.speech_language_rule(<chat's language selector>): label spoken_summary_language → project → server
+default OMNIGENT_SPOKEN_SUMMARY_LANGUAGE=pt-BR; narration passes language_of=<chat> + lang=<summary lang>. Log line
+"gemini live language | mode=… language=…". Kyutai/Unmute TTS is not covered (own voice).
 **Waiting on the user / not tried live:** a real Gemini voice call in the Hub ("send to RAL …" should hang up;
 "check on RAL …" should show "Checking on RAL (read-only)…" and answer).
 **Offered, not built:** retry a timed-out spoken summary once; backup router off Google for >90 s outages;
