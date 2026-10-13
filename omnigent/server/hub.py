@@ -67,6 +67,25 @@ WATCH_MAX_S: Final[float] = 6 * 3600.0
 #: A session that has not started on what it was sent after this long.
 NOT_STARTED_S: Final[float] = 120.0
 
+#: Longest project reply kept for the hub chat to show in full.
+MAX_REPLY_CHARS: Final[int] = 20000
+
+#: Most files of one reply copied into the hub chat, and the largest one.
+MAX_REPLY_FILES: Final[int] = 8
+MAX_REPLY_FILE_BYTES: Final[int] = 25 * 1024 * 1024
+
+#: Names for the language tags a chat's language setting uses.
+_LANGUAGE_NAMES: Final[dict[str, str]] = {
+    "pt-br": "Brazilian Portuguese",
+    "pt-pt": "European Portuguese",
+    "pt": "Portuguese",
+    "en": "English",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "it": "Italian",
+}
+
 #: Files attached in the hub wait this long for a send to carry them.
 FILES_HOLD_S: Final[float] = 30 * 60.0
 
@@ -114,7 +133,7 @@ Reply with ONE line of JSON and nothing else, exactly one of:
 {{"answer": "..."}} -- you reply yourself: greetings, small talk, and anything \
 the list above or this chat already answers.
 {{"send": "<handle>", "message": "...", "say": "..."}} -- a project's Claude has \
-to do or answer it. "message" is their request in plain English for that Claude, \
+to do or answer it. "message" is their request in {language} for that Claude, \
 faithful and complete: Claude cannot see this chat, so carry what the request \
 depends on from earlier here, and keep code, paths and names exactly. "say" is a \
 short confirmation for them that names the project.
@@ -147,10 +166,10 @@ Requests about the hub itself (this chat, its router, its panel, what it \
 shows) are work for the project that builds the hub: the one they sent hub \
 problems to earlier in this chat. If none was, use "ask".
 Decide straight away from what is here: this is routing, not research.
-Reply to them in the language they wrote in; "message" for Claude is always \
-English. Never say a project did, found or finished anything the list or this \
-chat does not show. When it is unclear whether they want something sent, use \
-"ask".\
+Reply to them in the language they wrote in; "message" for Claude is in \
+{language} (the project's chat translates it for Claude). Never say a project \
+did, found or finished anything the list or this chat does not show. When it is \
+unclear whether they want something sent, use "ask".\
 """
 
 #: After a ``status`` decision: the live reading, then the answer.
@@ -374,10 +393,23 @@ class HubEntry:
     detail: str | None = None
     #: A path in the app to start a chat in a project, e.g. ``"/?project=x"``.
     link: str | None = None
+    #: The project's folder, so file paths in a reply link into its chat.
+    workspace: str | None = None
+    #: Files a reply came with, copied into the hub chat as ``output_file`` blocks.
+    files: list[dict[str, Any]] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """The JSON shape the page and the voice relay read."""
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ReplyFile:
+    """A file a project's reply came with, still in that project's chat."""
+
+    file_id: str
+    filename: str
+    mime_type: str = ""
 
 
 @dataclass(frozen=True)
@@ -387,6 +419,10 @@ class TurnState:
     status: str | None
     reply: str = ""
     pending_approvals: int = 0
+    #: Images and other files the reply came with, oldest first.
+    files: tuple[ReplyFile, ...] = ()
+    #: The project's folder, for the file paths its reply names.
+    workspace: str | None = None
 
     @property
     def working(self) -> bool:
@@ -404,6 +440,17 @@ class HubDecision:
     #: For ``model``: the model and effort asked for; empty leaves it as is.
     model: str = ""
     effort: str = ""
+
+
+#: The server's file metadata and byte stores, set at startup: copying a
+#: reply's files into the hub chat needs both.
+_file_stores: tuple[Any, Any] | None = None
+
+
+def use_file_stores(file_store: Any, artifact_store: Any) -> None:
+    """Give the hub the server's file stores, so it can copy files between chats."""
+    global _file_stores
+    _file_stores = (file_store, artifact_store)
 
 
 #: The Flash model ``agy models`` offered, once asked; ``None`` until then.
@@ -443,6 +490,15 @@ def hub_model() -> str:
         or _listed_model
         or SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
     )
+
+
+def language_phrase(tag: str) -> str:
+    """How the router is told the hub's language, e.g. ``"Brazilian Portuguese (pt-BR)"``."""
+    tag = tag.strip()
+    if not tag or tag.lower() == "auto":
+        return "the language they wrote in"
+    name = _LANGUAGE_NAMES.get(tag.lower()) or _LANGUAGE_NAMES.get(tag.split("-")[0].lower())
+    return f"{name} ({tag})" if name else tag
 
 
 def _without_label(text: str, label: str) -> str:
@@ -880,6 +936,11 @@ class HubBackend:
     delete_project: Callable[[str], Awaitable[int]]
     file_chat: Callable[[str, str], Awaitable[None]]
     configure: Callable[[str, str | None, str | None], Awaitable[None]] | None = None
+    #: Copy a reply's files from a project's chat into the hub chat:
+    #: ``(from_chat, to_chat, files)`` -> ``output_file`` blocks.
+    import_files: (
+        Callable[[str, str, Sequence[ReplyFile]], Awaitable[list[dict[str, Any]]]] | None
+    ) = None
 
 
 class Hub:
@@ -1193,6 +1254,7 @@ class Hub:
             ),
             how=how,
             message=text,
+            language=language_phrase(await self.language()),
         )
         try:
             reply = await router.decide(prompt, said=text, timeout_s=ROUTE_TIMEOUT_S)
@@ -1459,7 +1521,7 @@ class Hub:
                 # Idle twice in a row: a native session can go idle a moment
                 # before its final message is stored.
                 if state.reply and idle_polls >= 2:
-                    await self._report(session, state.reply)
+                    await self._report(session, state)
                     return
                 if seen_working and idle_polls >= 6:
                     self.say(
@@ -1488,7 +1550,8 @@ class Hub:
             if ended:
                 self.state.drop_watch(session.id)
 
-    async def _report(self, session: HubSession, reply: str) -> None:
+    async def _report(self, session: HubSession, state: TurnState) -> None:
+        reply = state.reply
         router = await self._router_factory()
         try:
             told = (
@@ -1505,9 +1568,34 @@ class Hub:
             kind="finished",
             session_id=session.id,
             session_name=session.name,
-            detail=reply[:8000],
+            detail=reply[:MAX_REPLY_CHARS],
+            workspace=state.workspace,
+            files=await self._import_files(session, state.files) or None,
         )
         router.remember(f"{session.name} finished: {told}")
+
+    async def _import_files(
+        self, session: HubSession, files: Sequence[ReplyFile]
+    ) -> list[dict[str, Any]]:
+        """Copy a reply's files into the hub chat; a file id only works in its own chat."""
+        backend = self.require_backend()
+        if not files or self.chat is None or backend.import_files is None:
+            return []
+        try:
+            return await backend.import_files(session.id, self.chat.session_id, files)
+        except Exception:  # noqa: BLE001 - the report still goes out, without its files
+            _logger.warning("hub could not copy %s's files", session.name, exc_info=True)
+            return []
+
+    async def language(self) -> str:
+        """The hub chat's language setting, e.g. ``"pt-BR"``; ``""`` when unset."""
+        if self.chat is None or not hasattr(self.chat, "language"):
+            return ""
+        try:
+            return await self.chat.language()
+        except Exception:  # noqa: BLE001 - unset is a safe answer
+            _logger.debug("hub language unknown", exc_info=True)
+            return ""
 
     async def close(self) -> None:
         """Stop every watch and pending answer."""
@@ -1574,6 +1662,44 @@ def _role(data: Any) -> str:
     if role is None and isinstance(data, dict):
         role = data.get("role")
     return str(role or "")
+
+
+def _field(obj: Any, key: str) -> Any:
+    return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
+
+
+def _blocks(data: Any) -> list[Any]:
+    content = _field(data, "content")
+    return list(content) if isinstance(content, list) else []
+
+
+def reply_text(data: Any) -> str:
+    """A message's answer text: its ``output_text`` blocks, paragraphs kept.
+
+    Not its spoken summary or translation, which ride along as other blocks.
+    """
+    parts = [
+        str(_field(b, "text") or "").strip()
+        for b in _blocks(data)
+        if _field(b, "type") in ("output_text", "text")
+    ]
+    return "\n\n".join(p for p in parts if p)
+
+
+def reply_files(data: Any) -> list[ReplyFile]:
+    """The files a message carries (``output_file`` blocks: charts, images)."""
+    found = []
+    for block in _blocks(data):
+        file_id = _field(block, "file_id")
+        if _field(block, "type") == "output_file" and isinstance(file_id, str) and file_id:
+            found.append(
+                ReplyFile(
+                    file_id=file_id,
+                    filename=str(_field(block, "filename") or file_id),
+                    mime_type=str(_field(block, "mime_type") or ""),
+                )
+            )
+    return found
 
 
 #: Messages written into a session that are not the person asking: system
@@ -1945,18 +2071,59 @@ def store_backend(
         recent = await asyncio.to_thread(
             conversation_store.list_items, session_id, limit=30, order="desc", type="message"
         )
+        # Newest first. The answer is the newest message with answer text: a
+        # spoken summary or an attached chart's caption comes after it.
         reply = ""
+        files: list[ReplyFile] = []
         for item in recent.data:
             if float(getattr(item, "created_at", 0) or 0) + 1 < since:
                 break
-            if _role(item.data) == "assistant" and _item_text(item.data):
-                reply = _item_text(item.data)
-                break
+            if _role(item.data) != "assistant":
+                continue
+            files[:0] = reply_files(item.data)
+            if not reply and _field(item.data, "agent") != "attachment":
+                reply = reply_text(item.data)
         return TurnState(
             status=status,
             reply=reply,
             pending_approvals=int(getattr(conv, "pending_elicitation_count", 0) or 0),
+            files=tuple(files),
+            workspace=getattr(conv, "workspace", None),
         )
+
+    async def import_files(
+        source_id: str, target_id: str, files: Sequence[ReplyFile]
+    ) -> list[dict[str, Any]]:
+        if _file_stores is None:
+            return []
+        file_store, artifact_store = _file_stores
+
+        def copy(file: ReplyFile) -> dict[str, Any] | None:
+            meta = file_store.get(file.file_id, session_id=source_id)
+            if meta is None or (meta.bytes or 0) > MAX_REPLY_FILE_BYTES:
+                return None
+            data = artifact_store.get(file.file_id)
+            made = file_store.create(
+                meta.filename or file.filename, len(data), meta.content_type, target_id
+            )
+            artifact_store.put(made.id, data)
+            return {
+                "type": "output_file",
+                "file_id": made.id,
+                "filename": made.filename,
+                "mime_type": meta.content_type or file.mime_type,
+            }
+
+        copied = []
+        for file in list(files)[:MAX_REPLY_FILES]:
+            try:
+                block = await asyncio.to_thread(copy, file)
+            except Exception:  # noqa: BLE001 - one unreadable file must not drop the rest
+                _logger.warning("hub could not copy file %s", file.file_id, exc_info=True)
+                continue
+            if block is not None:
+                copied.append(block)
+        return copied
 
     return HubBackend(
         sessions=sessions,
@@ -1971,4 +2138,5 @@ def store_backend(
         delete_project=delete_project,
         file_chat=file_chat,
         configure=configure,
+        import_files=import_files,
     )

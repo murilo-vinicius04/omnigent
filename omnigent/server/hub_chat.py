@@ -15,9 +15,13 @@ import hashlib
 import io
 import json
 import logging
+import pathlib
+import re
 import tarfile
 import time
+from collections.abc import Callable
 from typing import Any, Final
+from urllib.parse import quote
 
 from omnigent.server import hub as hub_module
 
@@ -40,8 +44,17 @@ FORWARDED_HEADERS: Final[tuple[str, ...]] = (
     "origin",
 )
 
-#: A finished session's reply is quoted in the hub up to this length.
-_REPLY_QUOTE_CHARS: Final[int] = 3000
+#: A finished project's reply is shown in the hub in full up to this length.
+_REPLY_SHOW_CHARS: Final[int] = 12000
+
+#: Where a reply names a file: a markdown link or image, or an inline code span.
+_FILE_REF: Final[re.Pattern[str]] = re.compile(r"(!?)\[([^\]\n]*)\]\(<?([^)\s>]+)>?\)|`([^`\n]+)`")
+
+#: A line that opens or closes a code fence.
+_FENCE: Final[re.Pattern[str]] = re.compile(r"^\s*(```|~~~)", re.MULTILINE)
+
+#: A cited position after a path, e.g. ``src/app.ts:42:7``.
+_POSITION_SUFFIX: Final[re.Pattern[str]] = re.compile(r":\d+(?::\d+)?$")
 
 _HUB_SPEC: Final[str] = """\
 spec_version: 1
@@ -148,12 +161,15 @@ def render(entry: hub_module.HubEntry, base_url: str = "") -> str:
     if entry.kind == "sent" and entry.detail:
         return f"{entry.text}\n\n> {_quote(entry.detail)}\n\n{link}".rstrip()
     if entry.kind == "finished" and entry.detail:
-        reply = entry.detail
-        if len(reply) > _REPLY_QUOTE_CHARS:
-            reply = (
-                reply[:_REPLY_QUOTE_CHARS].rstrip() + f" … (the rest is in {entry.session_name})"
+        # The reply as its own chat shows it: tables, headings and lists intact,
+        # and every file it names opening in that chat.
+        reply = _cut(entry.detail, _REPLY_SHOW_CHARS, entry.session_name or "its chat")
+        if base_url and entry.session_id:
+            chat = f"{base_url}/c/{entry.session_id}"
+            reply = link_workspace_files(
+                reply, entry.workspace, lambda rel: f"{chat}?file={quote(rel, safe='/')}"
             )
-        return f"{entry.text}\n\n> {_quote(reply)}\n\n{link}".rstrip()
+        return f"{entry.text}\n\n---\n\n{reply}\n\n{link}".rstrip()
     if entry.kind in ("attention", "finished", "status", "check", "model", "project") and link:
         return f"{entry.text}\n\n{link}"
     return entry.text
@@ -161,6 +177,69 @@ def render(entry: hub_module.HubEntry, base_url: str = "") -> str:
 
 def _quote(text: str) -> str:
     return "\n> ".join(text.strip().splitlines())
+
+
+def _cut(markdown: str, limit: int, name: str) -> str:
+    """At most *limit* characters, ended at a paragraph, with any code fence closed."""
+    if len(markdown) <= limit:
+        return markdown
+    head = markdown[:limit]
+    paragraph = head.rfind("\n\n")
+    if paragraph > limit // 2:
+        head = head[:paragraph]
+    if len(_FENCE.findall(head)) % 2:
+        head += "\n```"
+    return f"{head.rstrip()}\n\n… (the rest is in {name})"
+
+
+def workspace_file(target: str, workspace: str | None) -> str | None:
+    """The workspace-relative path *target* names, when it is a file there.
+
+    The chat page's rule: an absolute or ``~`` path counts only inside the
+    workspace, and the file must exist.
+    """
+    target = _POSITION_SUFFIX.sub("", target.strip())
+    if not workspace or not target or any(c.isspace() for c in target):
+        return None
+    if "://" in target or target.startswith(("#", "mailto:", "/v1/", "//")):
+        return None
+    root = pathlib.Path(workspace).expanduser()
+    path = pathlib.Path(target).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    try:
+        relative = path.resolve().relative_to(root.resolve())
+        found = path.is_file()
+    except (ValueError, OSError):
+        return None
+    return relative.as_posix() if found and relative.parts else None
+
+
+def link_workspace_files(
+    markdown: str, workspace: str | None, url_for: Callable[[str], str]
+) -> str:
+    """The reply with each file it names linked to that file in its project's chat.
+
+    Paths in code fences stay as written, as the chat page leaves them.
+    """
+    if not workspace:
+        return markdown
+
+    def linked(match: re.Match[str]) -> str:
+        _bang, label, target, code = match.groups()
+        relative = workspace_file(code if code is not None else target, workspace)
+        if relative is None:
+            return match.group(0)
+        if code is not None:
+            return f"[`{code}`]({url_for(relative)})"
+        return f"[{label or relative.rsplit('/', 1)[-1]}]({url_for(relative)})"
+
+    lines, fenced = [], False
+    for line in markdown.splitlines(keepends=True):
+        if _FENCE.match(line):
+            fenced = not fenced
+        lines.append(line if fenced or _FENCE.match(line) else _FILE_REF.sub(linked, line))
+    return "".join(lines)
 
 
 class HubConversation:
@@ -190,7 +269,10 @@ class HubConversation:
                         "type": "message",
                         "role": "assistant",
                         "agent": HUB_AGENT_NAME,
-                        "content": [{"type": "output_text", "text": render(entry, self.base_url)}],
+                        "content": [
+                            {"type": "output_text", "text": render(entry, self.base_url)},
+                            *(entry.files or []),
+                        ],
                     },
                 ),
             )
@@ -234,6 +316,15 @@ class HubConversation:
             return
         if persisted:
             _publish_input_consumed(self.session_id, persisted[0])
+
+    async def language(self) -> str:
+        """This chat's language setting, e.g. ``"pt-BR"``; ``""`` when unset."""
+        from omnigent.server.spoken_summary import resolve_spoken_summary_settings_async
+
+        _on, language, _conv = await resolve_spoken_summary_settings_async(
+            self.session_id, self.conversation_store
+        )
+        return "" if language.strip().lower() in ("", "auto") else language.strip()
 
     def busy(self, working: bool) -> None:
         """Show the chat as thinking while the hub works on a message."""

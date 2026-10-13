@@ -156,12 +156,53 @@ def test_a_long_reply_is_cut_and_points_at_its_session() -> None:
         text="brasa finished: all good.",
         session_id="s1",
         session_name="brasa",
-        detail="x" * 5000,
+        detail="x" * 13000,
     )
     text = hub_chat.render(entry, "")
-    assert text.startswith("brasa finished: all good.\n\n> xxx")
+    assert text.startswith("brasa finished: all good.\n\n---\n\nxxx")
     assert "… (the rest is in brasa)" in text
     assert "Open brasa" not in text  # no address known, so no link
+
+
+def test_a_cut_never_leaves_a_code_fence_open() -> None:
+    reply = "Intro.\n\n```python\n" + "x = 1\n" * 3000 + "```\n"
+    cut = hub_chat._cut(reply, 12000, "brasa")
+    assert cut.count("```") % 2 == 0
+    assert cut.endswith("… (the rest is in brasa)")
+
+
+def test_a_finished_reply_shows_as_its_own_chat_shows_it(tmp_path) -> None:
+    (tmp_path / "RA-L" / "reviews").mkdir(parents=True)
+    (tmp_path / "RA-L" / "reviews" / "REVISION_PLAN.md").write_text("# plan\n")
+    (tmp_path / "plot.png").write_bytes(b"png")
+    reply = (
+        "The full v2 plan is in `RA-L/reviews/REVISION_PLAN.md:12`.\n\n"
+        "| Group | Conditions |\n|---|---|\n| Ours | A1, A2 |\n\n"
+        "See [the plan](RA-L/reviews/REVISION_PLAN.md) and ![speed](plot.png).\n"
+        "Not linked: `/etc/hosts`, `npm test`, `missing.md`, [docs](https://x.dev/a.md).\n"
+        "```\ncat RA-L/reviews/REVISION_PLAN.md\n```\n"
+    )
+    entry = HubEntry(
+        id=5,
+        at=0,
+        role="hub",
+        kind="finished",
+        text="RAL finished: o plano está pronto.",
+        session_id="s1",
+        session_name="RAL",
+        detail=reply,
+        workspace=str(tmp_path),
+    )
+    text = hub_chat.render(entry, "http://h:6767")
+    plan = "http://h:6767/c/s1?file=RA-L/reviews/REVISION_PLAN.md"
+    assert text.startswith("RAL finished: o plano está pronto.\n\n---\n\n")
+    assert f"[`RA-L/reviews/REVISION_PLAN.md:12`]({plan})" in text
+    assert "| Group | Conditions |\n|---|---|\n| Ours | A1, A2 |" in text  # a table, not a quote
+    assert f"[the plan]({plan})" in text
+    assert "[speed](http://h:6767/c/s1?file=plot.png)" in text
+    assert "`/etc/hosts`, `npm test`, `missing.md`, [docs](https://x.dev/a.md)" in text
+    assert "```\ncat RA-L/reviews/REVISION_PLAN.md\n```" in text  # code stays code
+    assert text.endswith("[Open RAL ↗](http://h:6767/c/s1)")
 
 
 @pytest.mark.parametrize(
@@ -433,3 +474,80 @@ async def test_files_typed_into_the_hub_are_held_for_the_next_send(client, _hub_
         await asyncio.sleep(0.02)
     assert [(f.file_id, f.session_id) for f in hub.held_files()] == [(file_id, hub_id)]
     assert hub.state.entries[0].text == "esses são os anexos\n[attached: ReportOn26-4238v1.txt]"
+
+
+async def test_a_reply_and_its_chart_reach_the_hub_as_the_project_shows_them(
+    client, _hub_home, db_uri, tmp_path, monkeypatch
+) -> None:
+    from omnigent.entities import NewConversationItem
+    from omnigent.entities.conversation import parse_item_data
+    from omnigent.server.hub import HubSession
+    from tests.server.helpers import create_test_session
+
+    hub_id = (await client.get("/v1/hub")).json()["session_id"]
+    target = await create_test_session(client, title="RAL paper")
+    chart = b"\x89PNG\r\n\x1a\nchart"
+    uploaded = await client.post(
+        f"/v1/sessions/{target['id']}/resources/files",
+        files={"file": ("speed.png", chart, "image/png")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    chart_id = uploaded.json()["id"]
+    answer = "Done.\n\n| Run | Time |\n|---|---|\n| A | 3 s |"
+
+    def message(content: list[dict], agent: str = "claude-native-ui") -> NewConversationItem:
+        data = {"type": "message", "role": "assistant", "agent": agent, "content": content}
+        return NewConversationItem(
+            type="message", response_id="resp_1", data=parse_item_data("message", data)
+        )
+
+    # Stored as a native turn stores them: the answer, then its chart, then the
+    # spoken summary, which is the newest assistant message but not the answer.
+    store = SqlAlchemyConversationStore(db_uri)
+    store.append(target["id"], [message([{"type": "output_text", "text": answer}])])
+    store.append(
+        target["id"],
+        [
+            message(
+                [
+                    {"type": "output_text", "text": "Speed per run"},
+                    {
+                        "type": "output_file",
+                        "file_id": chart_id,
+                        "filename": "speed.png",
+                        "mime_type": "image/png",
+                    },
+                ],
+                agent="attachment",
+            )
+        ],
+    )
+    store.append(
+        target["id"],
+        [message([{"type": "spoken_summary", "text": "Terminei.", "lang": "pt-BR"}])],
+    )
+
+    monkeypatch.setattr(
+        hub_module,
+        "_file_stores",
+        (SqlAlchemyFileStore(db_uri), LocalArtifactStore(str(tmp_path / "artifacts"))),
+    )
+
+    async def perform(self, task, *, timeout_s=None):
+        return "Terminou, com a tabela e o gráfico."
+
+    monkeypatch.setattr(hub_module.HubRouter, "perform", perform)
+    hub = hub_module.hub_for(None)
+    state = await hub.require_backend().turn(target["id"], 0.0)
+    assert state.reply == answer
+    assert [f.filename for f in state.files] == ["speed.png"]
+
+    await hub._report(HubSession(id=target["id"], title="RAL paper"), state)
+
+    said = (await _items(client, hub_id))[-1]
+    text, attached = said["content"][0]["text"], said["content"][1]
+    assert "| Run | Time |\n|---|---|\n| A | 3 s |" in text
+    assert attached["type"] == "output_file" and attached["filename"] == "speed.png"
+    assert attached["file_id"] != chart_id  # the hub chat owns its own copy
+    copy = await client.get(f"/v1/sessions/{hub_id}/resources/files/{attached['file_id']}/content")
+    assert copy.content == chart

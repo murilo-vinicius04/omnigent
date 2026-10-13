@@ -1542,6 +1542,7 @@ def create_app(
         try:
             from omnigent.server import hub_chat
 
+            hub_module.use_file_stores(file_store, artifact_store)
             resumed = hub_chat.resume_after_restart(
                 conversation_store=conversation_store, app=app_inst, companions=discussion.registry
             )

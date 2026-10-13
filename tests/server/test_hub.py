@@ -382,6 +382,62 @@ async def test_a_message_goes_to_the_project_it_is_about_and_comes_back(tmp_path
     assert "Mean error is 3 mm across all 40 frets." in router.performed[0]
 
 
+class _Chat:
+    """Stands in for the hub's conversation: records what it is shown."""
+
+    def __init__(self, language: str = "") -> None:
+        self.session_id = "hub0"
+        self.posted: list[str] = []
+        self._language = language
+
+    def post(self, entry) -> None:
+        self.posted.append(entry.text)
+
+    def post_user(self, text: str) -> None:
+        self.posted.append(text)
+
+    def busy(self, working: bool) -> None:
+        pass
+
+    async def language(self) -> str:
+        return self._language
+
+
+@pytest.mark.parametrize(
+    ("tag", "phrase"),
+    [
+        ("pt-BR", "Brazilian Portuguese (pt-BR)"),
+        ("es", "Spanish (es)"),
+        ("ja", "ja"),
+        ("auto", "the language they wrote in"),
+        ("", "the language they wrote in"),
+    ],
+)
+def test_the_router_is_told_the_hubs_language(tag, phrase) -> None:
+    assert hub_module.language_phrase(tag) == phrase
+
+
+@pytest.mark.parametrize(
+    ("language", "told"),
+    [
+        ("pt-BR", "request in Brazilian Portuguese (pt-BR) for that Claude"),
+        ("", "request in the language they wrote in for that Claude"),
+    ],
+)
+async def test_a_send_goes_in_the_language_the_hub_is_set_to(tmp_path, language, told) -> None:
+    router = _Router('{"send": "aaaa", "message": "Resuma o erro médio.", "say": "Mandei."}')
+    server = _Server()
+    server.turns = [TurnState(status="running")]
+    hub = _hub(tmp_path, router, server)
+    hub.chat = _Chat(language)
+    hub.submit("manda a amarras resumir o erro médio")
+    await _settle(hub, until=lambda: bool(server.sent))
+    assert told in router.prompts[0]
+    assert "English" not in router.prompts[0]
+    assert server.sent == [(AMARRAS, "Resuma o erro médio.")]
+    await hub.close()
+
+
 async def test_a_report_never_repeats_the_finished_label(tmp_path) -> None:
     router = _Router('{"send": "aaaa", "message": "Run it.", "say": "Mandei."}')
     router.report = "AMARRAS finished: It ran."
@@ -783,7 +839,12 @@ def _msg(role: str, text: str, created_at: float = 0.0) -> SimpleNamespace:
         type="message",
         response_id="r",
         created_at=created_at,
-        data={"role": role, "content": [{"type": "input_text", "text": text}]},
+        data={
+            "role": role,
+            "content": [
+                {"type": "output_text" if role == "assistant" else "input_text", "text": text}
+            ],
+        },
     )
 
 
