@@ -82,7 +82,7 @@ class LiveOfferResponse(BaseModel):
     #: summary logic rather than being reinvented in the client.
     speak: str | None = None
     #: The call is the hub's voice: delegations go to the hub, not the
-    #: companion, and the call stays open after a send.
+    #: companion, and a send ends the call.
     hub: bool = False
 
 

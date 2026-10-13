@@ -726,6 +726,9 @@ def create_gemini_live_router(
                                     "name": name,
                                     "project": project,
                                     "output": output[:600],
+                                    # The page ends the call once the voice has said so.
+                                    "sent": name == "ask_claude"
+                                    and output.startswith(voice_hub.SENT_PREFIX),
                                 }
                             }
                         )

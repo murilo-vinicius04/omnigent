@@ -502,10 +502,12 @@ async def test_the_hubs_voice_runs_the_hubs_tools_on_the_server(tmp_path) -> Non
     assert first["tools"][1]["function"]["parameters"]["type"] == "object"
     # The model hears the hub's own result; the page only shows the call.
     assert second["messages"][-1]["content"] == (
-        "Sent to brasa. You will be told when it finishes."
+        "Sent to brasa. Its answer comes back in the hub chat, which reads it out. "
+        "Say that in one short sentence: the call ends right after."
     )
     assert shown[0]["toolCall"]["functionCalls"][0]["name"] == "ask_claude"
     assert shown[1]["omnigentToolDone"]["project"] == "brasa"
+    assert shown[1]["omnigentToolDone"]["sent"] is True  # the page ends the call
     # Sent from the call, it lands in the hub conversation like a typed send.
     assert [(e.kind, e.via) for e in hub.state.entries] == [("sent", "voice")]
 

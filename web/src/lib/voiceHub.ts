@@ -7,12 +7,14 @@
  * it a message, read-only checks — so this side only plays and records audio
  * and shows what the hub is doing. GPT-Live talks to OpenAI from the browser,
  * so the hub conversation's own call carries it. Sends and finished reports
- * land in the hub chat either way. Sending never ends the call.
+ * land in the hub chat either way. A send ends the call once the voice has
+ * said where it went, as a project chat's call ends on a hand-off.
  */
 import { create } from "zustand";
 
 import { startGeminiLive, type GeminiLiveEvent, type GeminiLiveSession } from "@/lib/geminiLive";
 import { openHub } from "@/lib/hubApi";
+import { describeHubTool } from "@/lib/hubTools";
 import { useLiveConversationStore } from "@/lib/liveConversation";
 import { getLiveVoiceEngine, unmuteEndpoint, type LiveVoiceEngine } from "@/lib/liveVoiceEngine";
 
@@ -54,19 +56,15 @@ interface VoiceHubState {
 /** How long a finished tool stays on the pill. */
 const DONE_SHOWN_MS = 6_000;
 
-/** The pill's words for a running hub tool. */
-export function describeHubTool(tool: string, project: string): string {
-  const where = project || "a project";
-  if (tool === "session_status" || tool === "project_status") {
-    return project === "all" ? "Looking at every project" : `Looking at ${where}`;
-  }
-  if (tool === "ask_claude") return `Sending to ${where}'s Claude`;
-  if (tool === "check_machine") return `Checking on ${where} (read-only)`;
-  return `${tool} — ${where}`;
-}
+/** Longest a call waits for the voice's goodbye after a send before it ends anyway. */
+const GOODBYE_CAP_MS = 20_000;
+
+export { describeHubTool };
 
 let session: GeminiLiveSession | null = null;
 let clearTimer: ReturnType<typeof setTimeout> | undefined;
+/** Set once a send went out: the call ends after the voice's next turn. */
+let endAfterTurn: ReturnType<typeof setTimeout> | null = null;
 /** The hub conversation whose GPT-Live call this hub is riding, while it is. */
 let gptHubId: string | null = null;
 let unwatchGpt: (() => void) | null = null;
@@ -74,6 +72,8 @@ let unwatchGpt: (() => void) | null = null;
 export const useVoiceHubStore = create<VoiceHubState>((set, get) => {
   const finish = (notice: string | null, tone: "info" | "warn" = "info") => {
     session = null;
+    if (endAfterTurn) clearTimeout(endAfterTurn);
+    endAfterTurn = null;
     gptHubId = null;
     unwatchGpt?.();
     unwatchGpt = null;
@@ -95,6 +95,15 @@ export const useVoiceHubStore = create<VoiceHubState>((set, get) => {
       });
       if (clearTimer) clearTimeout(clearTimer);
       clearTimer = setTimeout(() => set({ activity: null }), DONE_SHOWN_MS);
+      if (ev.sent && !endAfterTurn) {
+        endAfterTurn = setTimeout(() => get().stop(), GOODBYE_CAP_MS);
+      }
+    } else if (ev.type === "turnComplete" && endAfterTurn) {
+      // The goodbye after the send: let it play out, then hang up.
+      const ending = session;
+      void ending?.untilPlaybackDrained().then(() => {
+        if (session === ending) get().stop();
+      });
     }
   };
 

@@ -21,7 +21,7 @@ const h = vi.hoisted(() => ({
 vi.mock("@/lib/geminiLive", () => ({
   startGeminiLive: vi.fn(async (opts: typeof h.opts) => {
     h.opts = opts;
-    return { stop: h.stop, sendToolResponse: vi.fn() };
+    return { stop: h.stop, sendToolResponse: vi.fn(), untilPlaybackDrained: async () => {} };
   }),
 }));
 vi.mock("@/lib/liveConversation", () => ({
@@ -88,6 +88,22 @@ describe("voice hub", () => {
     expect(useVoiceHubStore.getState().activity?.state).toBe("done");
     await vi.advanceTimersByTimeAsync(6_500);
     expect(useVoiceHubStore.getState().activity).toBeNull();
+  });
+
+  it("ends the call after the goodbye that follows a send, not after a look", async () => {
+    await useVoiceHubStore.getState().start();
+    const done = { type: "toolDone", id: "t9", project: "RAL", output: "ok" };
+    h.opts?.onEvent?.({ ...done, name: "session_status", sent: false });
+    h.opts?.onEvent?.({ type: "turnComplete" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.stop).not.toHaveBeenCalled();
+
+    h.opts?.onEvent?.({ ...done, name: "ask_claude", output: "Sent to RAL.", sent: true });
+    expect(h.stop).not.toHaveBeenCalled(); // the voice still has to say where it went
+    h.opts?.onEvent?.({ type: "turnComplete" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.stop).toHaveBeenCalledWith("page hung up");
+    expect(useVoiceHubStore.getState().active).toBe(false);
   });
 
   it("says when Gemini stopped answering and ends the hub", async () => {

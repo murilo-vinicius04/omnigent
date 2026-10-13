@@ -3,6 +3,7 @@
 // Each adapter normalizes its transport into a shared LiveEngineHandle interface
 // so the live conversation store can run a single flow.
 
+import { describeHubTool } from "./hubTools";
 import { openLiveConversation, type LiveConversation } from "./liveVoice";
 import { startGeminiLive, type GeminiLiveSession, type GeminiLiveEvent } from "./geminiLive";
 import { getLiveVoiceEngine, unmuteEndpoint, type LiveVoiceEngine } from "./liveVoiceEngine";
@@ -71,6 +72,11 @@ export interface LiveEngineCallbacks {
   onError?: (error: string) => void;
   /** Emitted on a deliberate policy or lifecycle notice (e.g. idle timeout, session cap). */
   onNotice?: (notice: string | null, tone?: LiveNoticeTone) => void;
+  /**
+   * Emitted when the relay itself sent the request to a project (the hub's
+   * call): the call should end once the voice has said so.
+   */
+  onRelaySent?: (project: string) => void;
 }
 
 export interface LiveEngineHandle {
@@ -284,10 +290,22 @@ function relayedEngineAdapter(
         } else if (ev.type === "session") {
           // In the hub conversation the relay runs every tool itself.
           relayAnswersTools = ev.hub;
+        } else if (ev.type === "toolDone") {
+          if (relayAnswersTools) {
+            callbacks.onNotice?.(null);
+            if (ev.sent) callbacks.onRelaySent?.(ev.project);
+          }
         } else if (ev.type === "toolCall") {
           for (const call of ev.calls) {
             // The relay answers these itself; a reply from here would be a second one.
-            if (relayAnswersTools || SERVER_TOOLS.has(call.name)) continue;
+            if (relayAnswersTools) {
+              // Said on screen while it runs: a check can take most of a minute.
+              const named = call.args?.session ?? call.args?.project;
+              const project = typeof named === "string" ? named : "";
+              callbacks.onNotice?.(`${describeHubTool(call.name, project)}…`, "info");
+              continue;
+            }
+            if (SERVER_TOOLS.has(call.name)) continue;
             if (call.id) toolNames.set(call.id, call.name);
             if (call.name === "check_machine" && callbacks.onCheck) {
               const asked =

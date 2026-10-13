@@ -823,7 +823,9 @@ describe("startGeminiLive (stubbed)", () => {
       const { socket, session, states, nudges, say } = await live();
       await say(2_000);
       socket.emit("message", {
-        data: JSON.stringify({ toolCall: { functionCalls: [{ id: "c1", name: "check_machine" }] } }),
+        data: JSON.stringify({
+          toolCall: { functionCalls: [{ id: "c1", name: "check_machine" }] },
+        }),
       });
       await say(1_000);
       await vi.advanceTimersByTimeAsync(40_000);
@@ -838,7 +840,9 @@ describe("startGeminiLive (stubbed)", () => {
     it("counts again once Gemini drops a call they talked over", async () => {
       const { socket, nudges, say } = await live();
       socket.emit("message", {
-        data: JSON.stringify({ toolCall: { functionCalls: [{ id: "c1", name: "check_machine" }] } }),
+        data: JSON.stringify({
+          toolCall: { functionCalls: [{ id: "c1", name: "check_machine" }] },
+        }),
       });
       socket.emit("message", { data: JSON.stringify({ toolCallCancellation: { ids: ["c1"] } }) });
       await say(1_500);
@@ -852,7 +856,9 @@ describe("startGeminiLive (stubbed)", () => {
         data: JSON.stringify({ omnigentSession: { model: "gemini-3.8-live", toolsBlock: false } }),
       });
       socket.emit("message", {
-        data: JSON.stringify({ toolCall: { functionCalls: [{ id: "c1", name: "check_machine" }] } }),
+        data: JSON.stringify({
+          toolCall: { functionCalls: [{ id: "c1", name: "check_machine" }] },
+        }),
       });
       // "Are you hearing me?" mid-check is owed an answer now, not after the check.
       await say(1_500);
@@ -860,20 +866,33 @@ describe("startGeminiLive (stubbed)", () => {
       expect(nudges()).toBe(1);
       session.sendToolResponse([{ id: "c1", name: "check_machine", response: { output: "ok" } }]);
       const sent = socket.sent.filter((f) => typeof f === "string" && f.includes("toolResponse"));
-      expect(JSON.parse(sent[sent.length - 1] as string).toolResponse.functionResponses[0]).toEqual({
-        id: "c1",
-        name: "check_machine",
-        response: { scheduling: "WHEN_IDLE", output: "ok" },
-      });
+      expect(JSON.parse(sent[sent.length - 1] as string).toolResponse.functionResponses[0]).toEqual(
+        {
+          id: "c1",
+          name: "check_machine",
+          response: { scheduling: "WHEN_IDLE", output: "ok" },
+        },
+      );
     });
   });
 
   it("parses the relay's tool-done frame, and it clears the pending call", async () => {
     expect(
       parseServerMessages(
-        JSON.stringify({ omnigentToolDone: { id: "t1", name: "claude_status", project: "", output: "idle" } }),
+        JSON.stringify({
+          omnigentToolDone: { id: "t1", name: "claude_status", project: "", output: "idle" },
+        }),
       ),
-    ).toEqual([{ type: "toolDone", id: "t1", name: "claude_status", project: "", output: "idle" }]);
+    ).toEqual([
+      {
+        type: "toolDone",
+        id: "t1",
+        name: "claude_status",
+        project: "",
+        output: "idle",
+        sent: false,
+      },
+    ]);
   });
 
   it("does not count the relay's own hello as Gemini answering", async () => {

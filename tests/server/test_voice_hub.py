@@ -182,7 +182,11 @@ async def test_tools_route_to_the_named_session_and_land_in_the_hub_chat(tmp_pat
     name, out = await voice_hub.run_hub_tool(
         hub, "ask_claude", {"session": "brassa", "message": "run the order tests"}
     )
-    assert name == "brasa" and out == "Sent to brasa. You will be told when it finishes."
+    assert name == "brasa"
+    assert out == (
+        "Sent to brasa. Its answer comes back in the hub chat, which reads it out. "
+        "Say that in one short sentence: the call ends right after."
+    )
     assert fake.sent == [("s-brasa", "run the order tests")]
     assert await voice_hub.run_hub_tool(
         hub, "check_machine", {"session": "amarras", "question": "disk?"}
@@ -345,6 +349,15 @@ def _wait_for(predicate, timeout: float = 3.0) -> None:
 def test_the_hub_is_briefed_on_every_session_and_answers_its_own_tools(
     monkeypatch, tmp_path
 ) -> None:
+    run_hub_tool = voice_hub.run_hub_tool
+
+    async def run(hub, name, args):
+        # This app cannot deliver a send; the relay's flag is what is tested here.
+        if name == "ask_claude":
+            return "orders", f"{voice_hub.SENT_PREFIX}orders. The call ends right after."
+        return await run_hub_tool(hub, name, args)
+
+    monkeypatch.setattr(voice_hub, "run_hub_tool", run)
     upstream = _FakeUpstream()
     with TestClient(_hub_app(monkeypatch, tmp_path, upstream)) as tc:
         with tc.websocket_connect("/v1/live/gemini/ws?mode=hub") as ws:
@@ -364,6 +377,17 @@ def test_the_hub_is_briefed_on_every_session_and_answers_its_own_tools(
             done = json.loads(ws.receive_text())["omnigentToolDone"]
             assert done["project"] == "scanner"
             assert "Bash: make scan (running now)" in done["output"]
+            assert done["sent"] is False  # a look keeps the call open
+
+            send = {
+                "id": "t4",
+                "name": "ask_claude",
+                "args": {"session": "orders", "message": "x"},
+            }
+            upstream.push(json.dumps({"toolCall": {"functionCalls": [send]}}))
+            assert "toolCall" in ws.receive_text()
+            done = json.loads(ws.receive_text())["omnigentToolDone"]
+            assert done["sent"] is True  # the page ends the call after the goodbye
             _wait_for(lambda: any("toolResponse" in str(m) for m in upstream.sent))
     response = next(json.loads(m) for m in upstream.sent if "toolResponse" in str(m))
     reply = response["toolResponse"]["functionResponses"][0]

@@ -49,6 +49,7 @@ vi.mock("@/store/chatStore", () => ({
   useChatStore: { getState: () => ({ send }) },
 }));
 
+import { gptEngineAdapter } from "./liveEngineAdapters";
 import {
   useLiveConversationStore,
   conversationCostUsd,
@@ -450,6 +451,20 @@ describe("the hub's voice on GPT Live", () => {
       live.stop.mock.invocationCallOrder[0] ?? 0,
     );
     expect(useLiveConversationStore.getState().handedOff).toBe("manda pro RAL ler a ata");
+  });
+
+  it("hangs up once the relay has sent the request itself (Gemini)", async () => {
+    const opened = vi.spyOn(gptEngineAdapter, "open");
+    const { live, say } = await openHub();
+    const onRelaySent = opened.mock.calls.at(-1)?.[1].onRelaySent;
+    opened.mockRestore();
+    if (!onRelaySent) throw new Error("the call never listened for relay sends");
+    say({ who: "reader", text: "manda pro RAL ver o MPC" });
+    onRelaySent("RAL");
+
+    await vi.waitFor(() => expect(live.stop).toHaveBeenCalled());
+    expect(live.untilQuiet).toHaveBeenCalled();
+    expect(useLiveConversationStore.getState().handedOff).toBe("sent to RAL");
   });
 
   it("tells them when a session finishes, news from after the call opened only", async () => {

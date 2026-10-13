@@ -132,7 +132,15 @@ export type GeminiLiveEvent =
   | { type: "toolCall"; calls: GeminiToolCallItem[] }
   | { type: "toolCancel"; ids: string[] }
   // A tool the relay ran itself (the hub's, live status) and has answered.
-  | { type: "toolDone"; id?: string; name: string; project: string; output: string }
+  | {
+      type: "toolDone";
+      id?: string;
+      name: string;
+      project: string;
+      output: string;
+      /** The relay sent the request to a project: the call ends after the goodbye. */
+      sent: boolean;
+    }
   | { type: "session"; model: string; toolsBlock: boolean; hub: boolean };
 
 /**
@@ -177,6 +185,7 @@ export function parseServerMessages(data: string | ArrayBuffer): GeminiLiveEvent
       name: typeof done.name === "string" ? done.name : "",
       project: typeof done.project === "string" ? done.project : "",
       output: typeof done.output === "string" ? done.output : "",
+      sent: done.sent === true,
     });
   }
   const cancel = msgRec.toolCallCancellation as Record<string, unknown> | undefined;

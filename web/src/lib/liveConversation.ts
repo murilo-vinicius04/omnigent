@@ -380,9 +380,17 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
       set({ handedOff: question });
       const sentAt = transcript.length;
       current.speakBack(delegationId, `${reply.say} ${HUB_HANDED_OFF}`);
+      await endAfterHubSend(current, sentAt);
+    };
+
+    /**
+     * After a send from the hub's call: let the voice say where it went, wait
+     * for them to stop talking, hang up, and pass on anything they added.
+     */
+    const endAfterHubSend = async (current: LiveEngineHandle, sentAt: number): Promise<void> => {
       await current.untilQuiet(20_000);
       await readerQuiet(HANGUP_QUIET_MS, HANGUP_QUIET_CAP_MS);
-      get().stop();
+      if (activeHandle === current) get().stop();
       // What they added after the send goes to the hub too, as for Claude.
       const after = transcript
         .slice(sentAt)
@@ -393,6 +401,15 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
       if (worthFollowUp(after)) {
         void askHubByVoice(`${FOLLOW_UP_PREFIX} ${after}`, callSoFar()).catch(() => {});
       }
+    };
+
+    /** The hub's relay sent a request itself (Gemini, Unmute): end the call the same way. */
+    const relaySent = (project: string): void => {
+      const current = activeHandle;
+      if (!current || handedOff) return;
+      handedOff = true;
+      set({ handedOff: project ? `sent to ${project}` : "sent" });
+      void endAfterHubSend(current, transcript.length);
     };
 
     /** Tell the hub's voice each time a session finishes or needs them. */
@@ -516,6 +533,7 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
         onNotice: (notice, tone) => {
           set({ notice, noticeTone: tone ?? "info" });
         },
+        onRelaySent: (project) => relaySent(project),
       });
     } catch (error) {
       set({ connecting: false, error: String(error) });

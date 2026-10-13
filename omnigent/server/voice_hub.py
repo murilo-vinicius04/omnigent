@@ -55,8 +55,9 @@ HUB_ROLE: Final[str] = (
     "To give a project's Claude work or a question, call ask_claude with the "
     "project and what they want, in their own words. Do it when they tell you to "
     "send it or ask Claude; when it is your own idea, ask once and send on their "
-    "yes. The call stays open after sending: say which project it went to and "
-    "carry on. When a project finishes you will be told, and you tell them. "
+    "yes. Sending ends the call: say in one short sentence which project it went "
+    "to and that its answer comes back in the hub chat. When a project finishes "
+    "while you are talking you will be told, and you tell them. "
     "To put a project on another model or reasoning effort, call set_model with "
     "what they asked for; each project's line says what it runs and offers. "
     "New projects are made in the hub's Projects panel or by typing in the hub "
@@ -64,6 +65,10 @@ HUB_ROLE: Final[str] = (
     "Never say you sent, checked, found, changed or did anything unless a tool "
     "result in this reply says so."
 )
+
+#: How ask_claude's result starts when the request went to the project. The
+#: relays end the call on it, as a project chat's call ends on a hand-off.
+SENT_PREFIX: Final[str] = "Sent to "
 
 #: The hub's voice when it cannot call tools and delegates instead (GPT-Live).
 #: What it delegates goes to the hub's router, which acts on it and answers.
@@ -85,8 +90,8 @@ DELEGATING_HUB_ROLE: Final[str] = (
     "below already answers, such as what each project runs. "
     "When they tell you to send it or ask Claude, that is their yes: hand it over "
     "at once. When sending is your own idea, ask once and hand it over on their "
-    "yes. The call stays open after a send; when a project finishes you are "
-    "told, and you tell them. Never say you sent, checked, found, changed or did "
+    "yes. A send ends the call once you have said which project it went to; its "
+    "answer comes back in the hub chat. Never say you sent, checked, found, changed or did "
     "anything unless the backend told you so in this call."
 )
 
@@ -119,8 +124,8 @@ HUB_TOOLS: Final[list[dict[str, Any]]] = [
         "behavior": "NON_BLOCKING",
         "description": (
             "Send a message to one project's Claude, as if they typed it in its chat. "
-            "Only when they want it sent. The call stays open, and you are told "
-            "when it finishes."
+            "Only when they want it sent. The call ends once you have said where it "
+            "went; the answer comes back in the hub chat."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -391,7 +396,10 @@ async def run_hub_tool(hub: Hub, name: str, args: dict[str, Any]) -> tuple[str, 
             entry = await hub.send_to(session, message, via="voice")
             if entry.kind != "sent":
                 return session.name, entry.text
-            return session.name, f"Sent to {session.name}. You will be told when it finishes."
+            return session.name, (
+                f"{SENT_PREFIX}{session.name}. Its answer comes back in the hub chat, which "
+                "reads it out. Say that in one short sentence: the call ends right after."
+            )
         if name == "set_model":
             entry = await hub.set_model(
                 session,

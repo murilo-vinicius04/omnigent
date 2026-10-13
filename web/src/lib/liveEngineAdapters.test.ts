@@ -745,6 +745,42 @@ describe("liveEngineAdapters", () => {
       expect(session.stop).not.toHaveBeenCalled();
     });
 
+    it("in the hub conversation, shows each relayed tool and reports a send", async () => {
+      const onNotice = vi.fn();
+      const onRelaySent = vi.fn();
+      await geminiEngineAdapter.open("s_hub2", {
+        onUtterance: vi.fn(),
+        onDelegation: vi.fn(),
+        onNotice,
+        onRelaySent,
+      });
+      opts.onEvent?.({ type: "session", model: "gemini-3.8-live", toolsBlock: false, hub: true });
+      opts.onEvent?.({
+        type: "toolCall",
+        calls: [{ id: "c1", name: "check_machine", args: { project: "RAL", question: "disk" } }],
+      });
+      expect(onNotice).toHaveBeenLastCalledWith("Checking on RAL (read-only)…", "info");
+      opts.onEvent?.({
+        type: "toolDone",
+        id: "c1",
+        name: "check_machine",
+        project: "RAL",
+        output: "97% used",
+        sent: false,
+      });
+      expect(onNotice).toHaveBeenLastCalledWith(null);
+      expect(onRelaySent).not.toHaveBeenCalled();
+      opts.onEvent?.({
+        type: "toolDone",
+        id: "s1",
+        name: "ask_claude",
+        project: "RAL",
+        output: "Sent to RAL.",
+        sent: true,
+      });
+      expect(onRelaySent).toHaveBeenCalledWith("RAL");
+    });
+
     it("refuses check_machine on a page that cannot answer it", async () => {
       await geminiEngineAdapter.open("s_nocheck", { onUtterance: vi.fn(), onDelegation: vi.fn() });
       opts.onEvent?.({ type: "toolCall", calls: [{ id: "k2", name: "check_machine" }] });
