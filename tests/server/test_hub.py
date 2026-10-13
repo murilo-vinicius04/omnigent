@@ -203,10 +203,12 @@ class _Router:
         self.remembered: list[str] = []
         self.performed: list[str] = []
         self.down = False
+        self.why_down = "no answer within 90s"
+        self.report = "It fixed the scanner and all tests pass."
 
     async def decide(self, prompt: str, *, said: str, timeout_s: float) -> str:
         if self.down:
-            raise DiscussionUnavailable("no answer within 45s")
+            raise DiscussionUnavailable(self.why_down)
         self.prompts.append(prompt)
         return self.replies.pop(0)
 
@@ -216,7 +218,7 @@ class _Router:
 
     async def perform(self, task: str, *, timeout_s: float | None = None) -> str:
         self.performed.append(task)
-        return "It fixed the scanner and all tests pass."
+        return self.report
 
     def remember(self, text: str) -> None:
         self.remembered.append(text)
@@ -380,6 +382,22 @@ async def test_a_message_goes_to_the_project_it_is_about_and_comes_back(tmp_path
     assert "Mean error is 3 mm across all 40 frets." in router.performed[0]
 
 
+async def test_a_report_never_repeats_the_finished_label(tmp_path) -> None:
+    router = _Router('{"send": "aaaa", "message": "Run it.", "say": "Mandei."}')
+    router.report = "AMARRAS finished: It ran."
+    server = _Server()
+    server.turns = [TurnState(status="running"), TurnState(status="idle", reply="Ran.")] * 2
+    hub = _hub(tmp_path, router, server)
+    hub.submit("roda")
+    await _settle(hub, until=lambda: any(e.kind == "finished" for e in hub.state.entries))
+    finished = next(e for e in hub.state.entries if e.kind == "finished")
+    assert finished.text == "amarras finished: It ran."
+    assert hub_module._without_label("It finished: fine", "amarras finished:") == (
+        "It finished: fine"
+    )
+    await hub.close()
+
+
 async def test_a_message_goes_to_the_projects_newest_chat(tmp_path) -> None:
     router = _Router('{"send": "bbbb", "message": "Run it.", "say": "Sent."}')
     server = _Server()
@@ -454,7 +472,13 @@ async def test_a_router_that_cannot_answer_says_so_and_sends_nothing(tmp_path) -
     await _settle(hub)
     assert server.sent == []
     assert hub.state.entries[-1].kind == "error"
+    assert "took over 90 s" in hub.state.entries[-1].text
     assert "nothing was sent" in hub.state.entries[-1].text
+
+    router.why_down = "companion process ended: no stderr"
+    hub.submit("manda pra brasa")
+    await _settle(hub)
+    assert "router is not answering" in hub.state.entries[-1].text
 
 
 async def test_a_failed_send_is_reported_and_not_watched(tmp_path) -> None:
@@ -538,7 +562,7 @@ async def test_attached_files_go_with_the_send_and_only_once(tmp_path) -> None:
     hub.submit("e mais uma coisa")
     await _settle(hub)
     assert server.files[-1] == []  # carried once, not again
-    assert "Files they attached" not in router.prompts[-1]
+    assert "[Files they attached, which go" not in router.prompts[-1]
     await hub.close()
 
 
@@ -1012,15 +1036,16 @@ async def test_a_voice_ask_returns_what_the_hub_said_with_the_call_in_the_prompt
 # -- the router process ----------------------------------------------------------
 
 
-def test_the_router_runs_the_newest_flash_medium_agy_lists() -> None:
+def test_the_router_runs_the_newest_flash_low_agy_lists() -> None:
     listed = [
         "gemini-3.8-flash-low",
         "gemini-3.8-flash-medium",
+        "gemini-3.10-flash-low",
         "gemini-3.10-flash-medium",
-        "claude-opus-5-5-medium",
-        "gemini-3.9-pro-medium",
+        "claude-opus-5-5-low",
+        "gemini-3.9-pro-low",
     ]
-    assert hub_module.pick_router_model(listed) == "gemini-3.10-flash-medium"
+    assert hub_module.pick_router_model(listed) == "gemini-3.10-flash-low"
     assert hub_module.pick_router_model(["gpt-oss-120b-medium"]) is None
 
 
@@ -1036,8 +1061,8 @@ async def test_the_router_model_comes_from_agy_else_the_fallback(monkeypatch) ->
         return [{"id": "gemini-3.8-flash-low"}, {"id": "gemini-3.8-flash-medium"}]
 
     monkeypatch.setattr(hub_module, "_probe_agy_models", listed)
-    assert await hub_module.resolve_hub_model() == "gemini-3.8-flash-medium"
-    assert await hub_module.resolve_hub_model() == "gemini-3.8-flash-medium"
+    assert await hub_module.resolve_hub_model() == "gemini-3.8-flash-low"
+    assert await hub_module.resolve_hub_model() == "gemini-3.8-flash-low"
     assert len(asked) == 1  # asked once, then remembered
 
     async def unanswered(binary):

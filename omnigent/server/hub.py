@@ -42,8 +42,9 @@ _logger = logging.getLogger(__name__)
 HUB_DIR: Final[pathlib.Path] = data_dir() / "hub"
 
 #: The router's model family when ``OMNIGENT_HUB_MODEL`` is unset: the newest
-#: Gemini Flash at medium effort that ``agy models`` lists.
-_FLASH_MEDIUM: Final[re.Pattern[str]] = re.compile(r"^gemini-(\d+(?:\.\d+)*)-flash-medium$")
+#: Gemini Flash at low effort that ``agy models`` lists. Not medium: it can
+#: think for 40 s and more over one unclear message.
+_FLASH_LOW: Final[re.Pattern[str]] = re.compile(r"^gemini-(\d+(?:\.\d+)*)-flash-low$")
 
 #: Chats offered for adding to a project, newest first.
 LISTING_LIMIT: Final[int] = 100
@@ -69,8 +70,9 @@ NOT_STARTED_S: Final[float] = 120.0
 #: Files attached in the hub wait this long for a send to carry them.
 FILES_HOLD_S: Final[float] = 30 * 60.0
 
-#: Budget for one routing turn, a cold start included.
-ROUTE_TIMEOUT_S: Final[float] = 45.0
+#: Budget for one routing turn, a cold start included. The chat shows the hub
+#: as busy meanwhile; a slow decision beats "nothing was sent".
+ROUTE_TIMEOUT_S: Final[float] = 90.0
 
 #: The least a second try gets after an empty reply, however late it is.
 EMPTY_RETRY_MIN_S: Final[float] = 20.0
@@ -100,7 +102,9 @@ HUB_ROUTER_ROLE: Final[str] = (
 
 #: The routing turn. One JSON line keeps parsing trivial and every failure loud.
 _DECIDE_PROMPT: Final[str] = """\
-[Their projects right now, newest first. Each starts with its handle in brackets.]
+[Their projects right now, newest first. Each starts with its handle in \
+brackets; wherever "<handle>" appears below, that code or the project's name \
+both work.]
 {projects}
 {context}{files}
 [They {how}]
@@ -136,7 +140,13 @@ Projects are renamed and deleted, and existing chats added to them, only in \
 the Projects panel: say so when they ask, and never claim it was done.
 
 When files are attached, they go along with the next "send", whichever \
-project it is for: say which project, never claim a file was read.
+project it is for: say which project, never claim a file was read. No \
+"[Files they attached" line above means no file came with this message, \
+whatever the message says: use "ask" and tell them none arrived.
+Requests about the hub itself (this chat, its router, its panel, what it \
+shows) are work for the project that builds the hub: the one they sent hub \
+problems to earlier in this chat. If none was, use "ask".
+Decide straight away from what is here: this is routing, not research.
 Reply to them in the language they wrote in; "message" for Claude is always \
 English. Never say a project did, found or finished anything the list or this \
 chat does not show. When it is unclear whether they want something sent, use \
@@ -158,7 +168,7 @@ _REPORT_TASK: Final[str] = """\
 {name}'s Claude just finished what they sent it. Its reply is below. Tell \
 them in one or two plain sentences, in the language they have been writing \
 to you in, what it did or found, and whether it needs anything from them. No \
-code, no lists.
+code, no lists. The hub puts "{name} finished:" in front itself: do not repeat it.
 
 {reply}\
 """
@@ -401,10 +411,10 @@ _listed_model: str | None = None
 
 
 def pick_router_model(model_ids: Sequence[str]) -> str | None:
-    """The newest Gemini Flash (Medium) among these agy model ids."""
+    """The newest Gemini Flash (Low) among these agy model ids."""
     best: tuple[tuple[int, ...], str] | None = None
     for model_id in model_ids:
-        found = _FLASH_MEDIUM.match(model_id)
+        found = _FLASH_LOW.match(model_id)
         if found is None:
             continue
         version = tuple(int(part) for part in found.group(1).split("."))
@@ -422,7 +432,7 @@ async def resolve_hub_model() -> str:
         rows = await _probe_agy_models(_binary())
         _listed_model = pick_router_model([str(r["id"]) for r in rows or []])
         if _listed_model is None:
-            _logger.warning("agy lists no Gemini Flash (Medium); the hub router uses its fallback")
+            _logger.warning("agy lists no Gemini Flash (Low); the hub router uses its fallback")
     return hub_model()
 
 
@@ -433,6 +443,13 @@ def hub_model() -> str:
         or _listed_model
         or SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
     )
+
+
+def _without_label(text: str, label: str) -> str:
+    """The text without a leading copy of the label the hub adds itself."""
+    if text.casefold().startswith(label.casefold()):
+        return text[len(label) :].lstrip()
+    return text
 
 
 def _short(text: str, limit: int) -> str:
@@ -1181,9 +1198,14 @@ class Hub:
             reply = await router.decide(prompt, said=text, timeout_s=ROUTE_TIMEOUT_S)
         except DiscussionUnavailable as exc:
             _logger.warning("hub router unavailable: %s", exc)
+            why = (
+                f"I took over {ROUTE_TIMEOUT_S:g} s to work out where that goes"
+                if str(exc).startswith("no answer within")
+                else "I can't think right now (the Gemini router is not answering)"
+            )
             self.say(
-                "I can't think right now (the Gemini router is not answering), so "
-                "nothing was sent. Try again in a moment, or type it in the project's chat.",
+                f"{why}, so nothing was sent. Try again in a moment, or type it in "
+                "the project's chat.",
                 kind="error",
             )
             return
@@ -1477,6 +1499,7 @@ class Hub:
             ).strip()
         except DiscussionUnavailable:
             told = _short(reply, 300)
+        told = _without_label(told, f"{session.name} finished:")
         self.say(
             f"{session.name} finished: {told}",
             kind="finished",

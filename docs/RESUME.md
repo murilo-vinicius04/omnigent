@@ -14,12 +14,24 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-13 14:50 — Hub router timeouts fixed (read with the 12:35 block below)
+
+User at 14:14: "hub tem que mostrar os mesmos links/imagens/tabelas que a conversa original, corrige isso", then
+"como que o router nao ta respondendo" — both got "the Gemini router is not answering". Cause: the router on
+gemini-3.8-flash-medium THOUGHT 38-46 s (≈5,900 thinking tokens) on unclear messages; the budget was 45 s. Its
+thinking (agy keeps it: `~/.gemini/antigravity-cli/brain/<conv>/.system_generated/logs/transcript_full.jsonl`)
+was our prompt's fault: handle vs name (the ledger says "sent to omnigent", the prompt said use the code), no rule
+for complaints about the hub itself, and "esses sao os anexos" with no files listed. Fix: router = newest
+`gemini-*-flash-low`, prompt says handle OR name both work / hub problems go to the project they sent hub problems
+to / no files line = none arrived, ask; budget 90 s (chat shows busy; voice already says "still working" at 60 s);
+a timeout now says "I took over 90 s…". Replay tools: `scratchpad/replay.py` (warm agy, timed turns) + `ab2/`.
+Note: agy's `result.usage` is cumulative per process — per-turn tokens are in the transcript, not the result.
+The 14:14 links/images/tables request never reached the omnigent project (router failed); it is still to do.
+
 ## 2026-10-13 12:35 — READ FIRST (the Hub runs projects; session d9653808, conversation 247c77f5)
 
 **Waiting on the user (asked, no answer yet):**
-1. Re-send the 3 RA-L review files to RAL? They sit in the hub conversation `2b183f7b57ab47bebc0fe7a5288ec265`
-   (file ids 3379c9ad…, a34c8a43…, d52825d7…). Sending starts an Opus xhigh turn in RAL (quota), so only with a
-   yes; or the user re-attaches them in the Hub ("send these reviews to RAL").
+1. ~~Re-send the RA-L reviews~~ — done by the user at 12:36 (re-attached in the Hub; RAL read all three).
 2. Still open from 10-12 (below): close PR #6479 + delete the fork; block GitHub for bench workers.
 
 **Verified live:** projects migration (amarras/audio/brasa; user later renamed audio -> "omnigent", made "RAL");
