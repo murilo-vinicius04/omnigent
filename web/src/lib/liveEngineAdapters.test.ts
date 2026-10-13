@@ -781,6 +781,38 @@ describe("liveEngineAdapters", () => {
       expect(onRelaySent).toHaveBeenCalledWith("RAL");
     });
 
+    it("in the hub conversation, files the words that asked for a send before it", async () => {
+      const onUtterance = vi.fn();
+      const onRelaySent = vi.fn();
+      await geminiEngineAdapter.open("s_hub3", { onUtterance, onDelegation: vi.fn(), onRelaySent });
+      opts.onEvent?.({ type: "session", model: "gemini-3.8-live", toolsBlock: false, hub: true });
+      // 3.8 transcribes a turn as it ends, and the voice only talks after the
+      // send: the words stayed buffered and landed after it, as a follow-up.
+      opts.onEvent?.({ type: "inputTranscript", text: "dá pra limpar o openpi também?" });
+      opts.onEvent?.({
+        type: "toolCall",
+        calls: [{ id: "s1", name: "ask_claude", args: { project: "RAL", message: "clean" } }],
+      });
+      expect(onUtterance).toHaveBeenCalledWith({
+        who: "reader",
+        text: "dá pra limpar o openpi também?",
+      });
+      // A transcript that comes in after the call still belongs before the send.
+      opts.onEvent?.({ type: "inputTranscript", text: "só o cache" });
+      opts.onEvent?.({
+        type: "toolDone",
+        id: "s1",
+        name: "ask_claude",
+        project: "RAL",
+        output: "Sent to RAL.",
+        sent: true,
+      });
+      expect(onUtterance).toHaveBeenLastCalledWith({ who: "reader", text: "só o cache" });
+      expect(onUtterance.mock.invocationCallOrder.at(-1)).toBeLessThan(
+        onRelaySent.mock.invocationCallOrder[0] ?? 0,
+      );
+    });
+
     it("refuses check_machine on a page that cannot answer it", async () => {
       await geminiEngineAdapter.open("s_nocheck", { onUtterance: vi.fn(), onDelegation: vi.fn() });
       opts.onEvent?.({ type: "toolCall", calls: [{ id: "k2", name: "check_machine" }] });

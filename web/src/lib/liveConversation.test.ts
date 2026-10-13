@@ -465,6 +465,9 @@ describe("the hub's voice on GPT Live", () => {
     await vi.waitFor(() => expect(live.stop).toHaveBeenCalled());
     expect(live.untilQuiet).toHaveBeenCalled();
     expect(useLiveConversationStore.getState().handedOff).toBe("sent to RAL");
+    // The request itself was said before the send: it does not go again.
+    await settleCallbacks();
+    expect(askHubByVoice).not.toHaveBeenCalled();
   });
 
   it("tells them when a session finishes, news from after the call opened only", async () => {

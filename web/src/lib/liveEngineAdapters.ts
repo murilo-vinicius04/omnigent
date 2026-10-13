@@ -293,9 +293,15 @@ function relayedEngineAdapter(
         } else if (ev.type === "toolDone") {
           if (relayAnswersTools) {
             callbacks.onNotice?.(null);
+            // The words that asked for the send are in the transcript before
+            // it: otherwise they read as said after it, and went to the hub a
+            // second time when the call ended (19:07 and 19:12).
+            if (ev.sent) flushReader();
             if (ev.sent) callbacks.onRelaySent?.(ev.project);
           }
         } else if (ev.type === "toolCall") {
+          // A tool call ends the reader's turn: what they said led to it.
+          if (relayAnswersTools) flushReader();
           for (const call of ev.calls) {
             // The relay answers these itself; a reply from here would be a second one.
             if (relayAnswersTools) {
