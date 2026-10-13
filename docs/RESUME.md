@@ -34,6 +34,9 @@ end). Hang-up stats carry floorMs. Not yet seen on a real call.
 word for word (user: "resumo do resumo" lost information). The router only translates a summary in another language
 (whole) or summarizes the reply when no summary arrived. Dry run on the live DB (scratchpad hubreply/dryreport.py
 <chat> <name> <since>): RAL's disk reply → its 923-char summary + table + file links, router not called.
+**19:20 5162de080 (page only, deployed):** Gemini/Unmute Hub calls sent each request twice (RAL 19:07, 19:12): the
+relay's ask_claude ran, then 3.8's late transcript of the asking turn was filed after the send and forwarded as
+"Also, said right after that…". The adapter now files reader words on toolCall and before onRelaySent.
 **Waiting on the user / not tried live:** a real Gemini voice call in the Hub ("send to RAL …" should hang up;
 "check on RAL …" should show "Checking on RAL (read-only)…" and answer).
 **Offered, not built:** retry a timed-out spoken summary once; backup router off Google for >90 s outages;
