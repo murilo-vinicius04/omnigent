@@ -14,7 +14,24 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
-## 2026-10-13 — the Hub runs PROJECTS (session d9653808)
+## 2026-10-13 12:35 — READ FIRST (the Hub runs projects; session d9653808, conversation 247c77f5)
+
+**Waiting on the user (asked, no answer yet):**
+1. Re-send the 3 RA-L review files to RAL? They sit in the hub conversation `2b183f7b57ab47bebc0fe7a5288ec265`
+   (file ids 3379c9ad…, a34c8a43…, d52825d7…). Sending starts an Opus xhigh turn in RAL (quota), so only with a
+   yes; or the user re-attaches them in the Hub ("send these reviews to RAL").
+2. Still open from 10-12 (below): close PR #6479 + delete the fork; block GitHub for bench workers.
+
+**Verified live:** projects migration (amarras/audio/brasa; user later renamed audio -> "omnigent", made "RAL");
+hub chat made a project on request (scratch server); resumed watch reported in the Hub at 12:32 after a restart.
+Attachment copy verified by tests through the real routes only (a live try would spend quota).
+Deploy recipe unchanged: commit only own files (`SKIP=pyrefly,no-hardcoded-models,web-oxlint` — those hooks fail
+on files we never touched), web from `git archive HEAD web` + rsync to `omnigent/server/static/web-ui/`, then
+`systemctl --user restart omnigent-server.service`. Scratch UI testing: `scratchpad/hubsrv/run-projects.sh`
+(port 6791) + `scratchpad/hubprojects/check.py` (headless Chrome). Live API as the user: bearer token from
+`~/.omnigent/auth_tokens.json` (never print it).
+
+### What shipped 10-13
 
 User: "create a new project, not a new session… I don't like the concept of 'sessions'; I prefer having each
 project kept separate." Shipped 5f9bbf27f, live (server restarted ~11:55, page = clean `git archive HEAD` build):
