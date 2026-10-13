@@ -14,7 +14,37 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
-## 2026-10-13 16:40 — two more Hub fixes, live (server restarted 16:33:25; page = clean `git archive HEAD web`)
+## 2026-10-13 18:05 — READ FIRST (Hub evening; session d9653808, conversation 247c77f5 = project "omnigent")
+
+**State:** everything below is committed and live (server restarted 18:03:38, page = clean `git archive HEAD web`
+build, last code commit e53b54f99). Nothing running, no benchmark. The user drives this chat FROM THE HUB (voice
+or typed, pt-BR); the Hub forwards here and reports our final reply back (summary + links, read aloud), so keep
+final replies short. Answer in English.
+**Done today 16:10→18:05 (details in the block below):** Hub file links open in the Hub's own right rail; Hub
+messages narrated (speak_only spoken summaries); watch no longer reports "finished without a reply" while waiting
+for a summary; router retries Google 503s; Hub voice calls hang up after a send (GPT path 3975f8f28, Gemini/Unmute
+relay path 59abca6b9) and show the running tool; link address only from browser Origins; companion read-only checks
+survive cold starts (40 s first turn + fresh-process retry).
+**Waiting on the user / not tried live:** a real Gemini voice call in the Hub ("send to RAL …" should hang up;
+"check on RAL …" should show "Checking on RAL (read-only)…" and answer).
+**Offered, not built:** retry a timed-out spoken summary once; backup router off Google for >90 s outages;
+double narration (project's own summary + Hub report) when a project isn't muted; Hub chat shows nothing of what
+was SAID on a Gemini call (server tools post only results). Older: close PR #6479 + delete fork, block bench
+GitHub (needs explicit yes); rotate the OpenAI key.
+**Measured, costly to redo:** agy cold start can spend 15 s in Google sign-in (loadCodeAssist) before reading
+stdin; Google "Eligibility check failed: UNAVAILABLE (code 503)" outages lasted ~1 min (16:38, 17:13); a check is
+20 s per model turn / 60 s total; Flash Low router turns 2–13 s; the Hub's label `voice_backend: live` (Gemini Live
+reads its messages, no TTS recording).
+**Tools (scratchpad d9653808…/):** `hubapi.py GET|POST <path> [json]`, `hubtype.py "<text>"` (types into the real
+Hub — moves nothing now that only Origin callers set link addresses), `hubreply/rail.py [width]` (file link → rail),
+`hubreply/narr.py "<text>"`, `turnat.py CHAT SINCE AT` (replay the watch lookup). Live check:
+`hubapi.py POST /v1/discussion/<chat>/check '{"text": "..."}'`. Logs: `~/.omnigent/logs/server/` (narration
+decisions, `voice server tool |`, `companion check`), agy `~/.gemini/antigravity-cli/log/cli-*.log`.
+**Rules:** format/commit files BY NAME (a dir-wide ruff format touched the other session's routes_core.py at 17:55,
+layout only, left as is); SKIP=pyrefly,no-hardcoded-models,web-oxlint,web-tsc after running pyrefly on own files;
+never co-author trailers; restart `XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart omnigent-server.service`.
+
+## 2026-10-13 16:40 — two more Hub fixes, live (details for the block above)
 
 - **File links open in the Hub's own right rail (54336639c).** The Hub has no workspace, so its file tabs are
   `<chat id>/<path>` (`web/src/shell/chatFileRef.ts`) and the viewer reads that chat's workspace
