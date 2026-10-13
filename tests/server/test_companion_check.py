@@ -32,6 +32,10 @@ for line in sys.stdin:
     if "STALL" in content and stall and ("ALWAYS" in content or not os.path.exists(stall)):
         open(stall, "w").close()
         time.sleep(60)  # a turn agy never answers: it hung before reaching Google
+    slow = os.environ.get("FAKE_SLOW_FIRST")
+    if slow and not os.path.exists(slow):
+        open(slow, "w").close()
+        time.sleep(1.0)  # a cold start: agy signs in before it reads the question
     always = always or "ALWAYS_RUN" in content
     if always:
         say({"run": "wc -l notes.txt"})
@@ -182,6 +186,7 @@ async def test_a_first_turn_that_stalls_is_asked_again_in_a_fresh_process(
 ):
     monkeypatch.setenv("FAKE_STALL_FILE", str(tmp_path / "stalled"))
     monkeypatch.setattr(discussion, "_CHECK_TURN_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(discussion, "_CHECK_COLD_TURN_TIMEOUT_S", 0.5)
     monkeypatch.setattr(discussion, "_CHECK_RETRY_MIN_S", 0.5)
     result = await session.check("STALL how many lines are in notes.txt?", timeout_s=10)
     assert result.answer == "It has three lines."
@@ -193,9 +198,22 @@ async def test_a_first_turn_that_stalls_is_asked_again_in_a_fresh_process(
 async def test_a_check_that_keeps_stalling_says_so(session, fake_run, tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_STALL_FILE", str(tmp_path / "stalled"))
     monkeypatch.setattr(discussion, "_CHECK_TURN_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(discussion, "_CHECK_COLD_TURN_TIMEOUT_S", 0.3)
     monkeypatch.setattr(discussion, "_CHECK_RETRY_MIN_S", 0.3)
     result = await session.check("STALL ALWAYS how many lines?", timeout_s=5)
     assert result.answer is None
     assert result.needs_claude is not None and "no answer within" in result.needs_claude
     assert fake_run == []
     assert session.as_dict()["activity"] is None
+
+
+async def test_a_cold_start_is_not_mistaken_for_a_stall(session, fake_run, tmp_path, monkeypatch):
+    # agy signs in before it reads the question; only the first turn pays for it.
+    monkeypatch.setenv("FAKE_SLOW_FIRST", str(tmp_path / "started"))
+    monkeypatch.setenv("FAKE_STALL_FILE", str(tmp_path / "stalled"))
+    monkeypatch.setattr(discussion, "_CHECK_TURN_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(discussion, "_CHECK_COLD_TURN_TIMEOUT_S", 3.0)
+    result = await session.check("how many lines are in notes.txt?", timeout_s=10)
+    assert result.answer == "It has three lines."
+    assert not (tmp_path / "stalled").exists()  # answered by the first process
+    await session.close()

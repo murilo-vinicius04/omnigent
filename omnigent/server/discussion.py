@@ -306,6 +306,10 @@ DEFAULT_CHECK_TIMEOUT_S: Final[float] = 60.0
 #: Budget for each model turn inside a check.
 _CHECK_TURN_TIMEOUT_S: Final[float] = 20.0
 
+#: Budget for a turn a fresh process answers: agy's own start-up runs inside it
+#: (15 s of Google sign-in calls at 10-13 18:01 before the question was even read).
+_CHECK_COLD_TURN_TIMEOUT_S: Final[float] = 40.0
+
 #: Fresh processes a check may start when its first turn stalls or Google
 #: turns it away (agy hung before sending at 10-13 17:39 and 17:48).
 _CHECK_RETRIES: Final[int] = 2
@@ -1034,10 +1038,10 @@ class DiscussionSession:
                     left_s = deadline - time.monotonic()
                     if left_s < 1.0:
                         break
+                    # A process that has not answered yet is still starting up.
+                    turn_s = _CHECK_TURN_TIMEOUT_S if self._briefed else _CHECK_COLD_TURN_TIMEOUT_S
                     try:
-                        reply = await self._turn(
-                            message, timeout_s=min(_CHECK_TURN_TIMEOUT_S, left_s)
-                        )
+                        reply = await self._turn(message, timeout_s=min(turn_s, left_s))
                     except DiscussionUnavailable as exc:
                         stalled = str(exc).startswith("no answer within")
                         refused = bool(GOOGLE_REFUSED.search(str(exc)))
