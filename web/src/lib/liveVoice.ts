@@ -86,11 +86,13 @@ interface OfferResponse {
  *
  * @param text - The finished summary. Spoken as written, never rewritten.
  * @param options.signal - Aborts the narration and closes the session.
+ * @param options.sessionId - The chat it reads for: the voice speaks its language selector.
+ * @param options.lang - The summary's language, for a chat with none picked.
  * @throws LiveVoiceUnavailable when no session could be opened.
  */
 export async function narrateViaLive(
   text: string,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; sessionId?: string; lang?: string } = {},
 ): Promise<LiveNarration> {
   if (!text.trim()) throw new LiveVoiceUnavailable("nothing to read");
   if (typeof RTCPeerConnection === "undefined") {
@@ -183,7 +185,13 @@ export async function narrateViaLive(
     const response = await authenticatedFetch(OFFER_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sdp: pc.localDescription?.sdp ?? offer.sdp, mode: "narrate", text }),
+      body: JSON.stringify({
+        sdp: pc.localDescription?.sdp ?? offer.sdp,
+        mode: "narrate",
+        text,
+        session_id: options.sessionId || undefined,
+        language: options.lang || undefined,
+      }),
       signal: options.signal,
     });
     if (!response.ok) {

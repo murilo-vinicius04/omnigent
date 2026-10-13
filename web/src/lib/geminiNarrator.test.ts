@@ -129,6 +129,19 @@ describe("geminiNarrator", () => {
       await expect(narrateViaGeminiLive("   ")).rejects.toBeInstanceOf(LiveVoiceUnavailable);
     });
 
+    it("names the chat it reads for and the text's language, never as session_id", async () => {
+      const p = narrateViaGeminiLive("Relatório pronto.", { sessionId: "conv_x", lang: "pt-BR" });
+      await flush();
+      const socket = h.sockets[h.sockets.length - 1];
+      // session_id would make the relay open a conversation; language_of only
+      // tells it whose language selector to follow.
+      expect(socket.url).toBe(
+        "ws://stub/v1/live/gemini/ws?mode=narrate&language_of=conv_x&lang=pt-BR",
+      );
+      socket.open();
+      (await p).stop();
+    });
+
     it("connects to /v1/live/gemini/ws?mode=narrate and sends single clientContent turn", async () => {
       const p = narrateViaGeminiLive("Relatório pronto.");
       await flush();

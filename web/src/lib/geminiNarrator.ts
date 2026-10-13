@@ -39,11 +39,13 @@ export function frameForReading(text: string): string {
  * @param text - The finished summary to read aloud verbatim.
  * @param options.signal - Aborts the narration and closes the session.
  * @param options.endpoint - Relay socket path; the Unmute relay speaks the same frames.
+ * @param options.sessionId - The chat it reads for: the voice speaks its language selector.
+ * @param options.lang - The summary's language, for a chat with none picked.
  * @throws LiveVoiceUnavailable when no session could be opened or text is empty.
  */
 export async function narrateViaGeminiLive(
   text: string,
-  options: { signal?: AbortSignal; endpoint?: string } = {},
+  options: { signal?: AbortSignal; endpoint?: string; sessionId?: string; lang?: string } = {},
 ): Promise<LiveNarration> {
   if (!text || !text.trim()) {
     throw new LiveVoiceUnavailable("nothing to read");
@@ -116,8 +118,12 @@ export async function narrateViaGeminiLive(
   }
 
   const endpoint = options.endpoint ?? "/v1/live/gemini/ws";
+  const query = new URLSearchParams({ mode: "narrate" });
+  // Not `session_id`: that would make the relay open a conversation for it.
+  if (options.sessionId) query.set("language_of", options.sessionId);
+  if (options.lang) query.set("lang", options.lang);
   const socketUrl = resolveWebSocketUrl(
-    `${endpoint}${endpoint.includes("?") ? "&" : "?"}mode=narrate`,
+    `${endpoint}${endpoint.includes("?") ? "&" : "?"}${query.toString()}`,
   );
   ws = new WebSocket(socketUrl);
   const socket = ws;

@@ -227,7 +227,11 @@ describe("speechPlayback call coordination and queueing", () => {
       .speakLiveSummary("msg_gem", "Gemini text", "pt-BR", undefined, "conv_live_gemini");
 
     expect(started).toBe(true);
-    expect(narrateViaGeminiLive).toHaveBeenCalledWith("Gemini text");
+    // The voice is told which chat it reads for, and the summary's language.
+    expect(narrateViaGeminiLive).toHaveBeenCalledWith("Gemini text", {
+      sessionId: "conv_live_gemini",
+      lang: "pt-BR",
+    });
     expect(narrateViaLive).not.toHaveBeenCalled();
   });
 
@@ -249,6 +253,8 @@ describe("speechPlayback call coordination and queueing", () => {
     expect(started).toBe(true);
     expect(narrateViaGeminiLive).toHaveBeenCalledWith("Unmute text", {
       endpoint: "/v1/live/unmute/ws",
+      sessionId: "conv_live_unmute",
+      lang: "en",
     });
     expect(narrateViaLive).not.toHaveBeenCalled();
   });
@@ -270,7 +276,10 @@ describe("speechPlayback call coordination and queueing", () => {
       .speakLiveSummary("msg_gpt", "GPT text", "pt-BR", undefined, "conv_live_gpt");
 
     expect(started).toBe(true);
-    expect(narrateViaLive).toHaveBeenCalledWith("GPT text");
+    expect(narrateViaLive).toHaveBeenCalledWith("GPT text", {
+      sessionId: "conv_live_gpt",
+      lang: "pt-BR",
+    });
     expect(narrateViaGeminiLive).not.toHaveBeenCalled();
   });
 

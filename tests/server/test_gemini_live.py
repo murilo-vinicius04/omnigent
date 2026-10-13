@@ -67,6 +67,33 @@ def test_setup_frame_without_briefing_matches_today():
     assert "tools" not in frame_plain["setup"]
 
 
+def test_a_voice_speaks_only_the_chats_language():
+    # Google's native-audio voices take no language code, only instructions:
+    # left to choose, they read Portuguese with a Portuguese or Spanish accent.
+    reading = gemini_live.setup_frame(mode="narrate", language="pt-BR")["setup"]
+    parts = [p["text"] for p in reading["systemInstruction"]["parts"]]
+    assert parts[0] == NARRATOR_INSTRUCTIONS
+    assert "Brazilian Portuguese (pt-BR)" in parts[1]
+    assert "never European Portuguese or Spanish" in parts[1]
+    talking = gemini_live.setup_frame(system_instruction="Brief.", language="en-US")["setup"]
+    assert talking["systemInstruction"]["parts"][0]["text"] == "Brief."
+    assert "American English (en-US)" in talking["systemInstruction"]["parts"][1]["text"]
+
+
+@pytest.mark.parametrize("language", [None, "", "auto", "und"])
+def test_with_no_language_picked_the_voice_is_left_free(language):
+    assert gemini_live.setup_frame(language=language) == gemini_live.setup_frame()
+    assert gemini_live.setup_frame(mode="narrate", language=language) == gemini_live.setup_frame(
+        mode="narrate"
+    )
+
+
+def test_a_language_alone_gives_an_unbriefed_call_no_tools():
+    setup = gemini_live.setup_frame(language="pt-BR")["setup"]
+    assert "Brazilian Portuguese" in setup["systemInstruction"]["parts"][0]["text"]
+    assert "tools" not in setup
+
+
 def test_setup_frame_with_briefing():
     frame = gemini_live.setup_frame(system_instruction="Role and background notes")
     setup = frame["setup"]
@@ -473,6 +500,80 @@ def test_route_with_session_context_sends_briefed_setup_frame(
     assert "briefed=yes" in summary
     for r in caplog.records:
         assert "test-key" not in r.getMessage()
+
+
+def _first_setup(app, path: str, upstream) -> dict:
+    with TestClient(app) as tc:
+        with tc.websocket_connect(path):
+            deadline = 50
+            while not upstream.sent and deadline:
+                deadline -= 1
+                time.sleep(0.02)
+    assert upstream.sent
+    return json.loads(upstream.sent[0])["setup"]
+
+
+def test_narration_speaks_the_language_picked_for_its_chat(monkeypatch, tmp_path) -> None:
+    _with_key(monkeypatch, tmp_path)
+    upstream = _FakeUpstream()
+
+    async def fake_connect(url: str):
+        return upstream
+
+    asked: list[str] = []
+
+    async def picked(chat_id, store):
+        asked.append(chat_id)
+        return "en-US" if chat_id == "chat_en" else ""
+
+    monkeypatch.setattr("omnigent.server.routes.gemini_live.selected_language", picked)
+    app = _proxy_app(upstream_connect=fake_connect)
+    # The chat's selector wins over the language the summary was written in.
+    setup = _first_setup(
+        app, "/v1/live/gemini/ws?mode=narrate&language_of=chat_en&lang=pt-BR", upstream
+    )
+    assert asked == ["chat_en"]
+    assert "American English (en-US)" in setup["systemInstruction"]["parts"][-1]["text"]
+
+
+def test_narration_falls_back_to_the_summarys_language(monkeypatch, tmp_path) -> None:
+    _with_key(monkeypatch, tmp_path)
+    upstream = _FakeUpstream()
+
+    async def fake_connect(url: str):
+        return upstream
+
+    async def none_picked(chat_id, store):
+        return ""
+
+    monkeypatch.setattr("omnigent.server.routes.gemini_live.selected_language", none_picked)
+    setup = _first_setup(
+        _proxy_app(upstream_connect=fake_connect),
+        "/v1/live/gemini/ws?mode=narrate&language_of=chat_x&lang=pt-BR",
+        upstream,
+    )
+    assert "Brazilian Portuguese (pt-BR)" in setup["systemInstruction"]["parts"][-1]["text"]
+
+
+def test_a_call_speaks_the_language_picked_for_its_chat(monkeypatch, tmp_path) -> None:
+    _with_key(monkeypatch, tmp_path)
+    upstream = _FakeUpstream()
+
+    async def fake_connect(url: str):
+        return upstream
+
+    async def picked(chat_id, store):
+        return "pt-BR" if chat_id == "conv_a" else ""
+
+    monkeypatch.setattr("omnigent.server.routes.gemini_live.selected_language", picked)
+    reg = DiscussionRegistry()
+    reg.note("conv_a", "summary", "Claude finished the migration")
+    app = _proxy_app(upstream_connect=fake_connect, registry_provider=lambda: reg)
+    setup = _first_setup(app, "/v1/live/gemini/ws?session_id=conv_a", upstream)
+    parts = [p["text"] for p in setup["systemInstruction"]["parts"]]
+    assert "Claude finished the migration" in parts[0]
+    assert "Brazilian Portuguese (pt-BR)" in parts[-1]
+    assert setup["tools"]  # still the briefed call's tools
 
 
 def test_route_missing_session_id_skips_briefing_and_logs(monkeypatch, tmp_path, caplog) -> None:

@@ -39,8 +39,10 @@ from omnigent.server.live_voice import (
     frame_for_reading,
     open_session,
     reader_model,
+    speech_language_rule,
 )
 from omnigent.server.routes.live_voice_page import render_test_page
+from omnigent.server.spoken_summary import concrete_language, selected_language
 
 _logger = logging.getLogger(__name__)
 
@@ -70,6 +72,9 @@ class LiveOfferRequest(BaseModel):
     #: from that session's companion ledger, which is the only way the live
     #: model learns what Claude has been doing.
     session_id: str | None = None
+    #: The language the text to read is in, for a chat with no language picked.
+    #: The chat's own language selector wins.
+    language: str | None = None
 
 
 class LiveOfferResponse(BaseModel):
@@ -180,6 +185,14 @@ def create_live_voice_router(
             # companion's ledger rather than leaving it to invent context.
             companion = companions().peek(body.session_id) if body.session_id else None
             instructions = voice_briefing(companion)
+        # The voice speaks the chat's language selector, never a language or
+        # accent it picks for itself.
+        rule = speech_language_rule(
+            await selected_language(body.session_id, conversation_store)
+            or concrete_language(body.language)
+        )
+        if rule:
+            instructions = f"{instructions}\n\n{rule}"
         try:
             session_id, answer = await open_session(
                 sdp_offer=body.sdp,

@@ -541,7 +541,7 @@ function startLivePlayback(
   set: (partial: Partial<SpeechPlaybackStoreState>) => void,
   get: () => SpeechPlaybackStoreState,
 ): void {
-  const { itemId, text, sessionId } = item;
+  const { itemId, text, sessionId, lang } = item;
   set({ isSpeaking: true, speakingItemId: itemId });
 
   const clear = (): void => {
@@ -550,12 +550,16 @@ function startLivePlayback(
   };
 
   const engine = getLiveVoiceEngine();
+  // The voice speaks the chat's language selector; the summary's own
+  // language stands in when the chat has none picked.
+  const voiceLanguage = { sessionId: sessionId || undefined, lang: lang || undefined };
   const narrate =
     engine === "gemini"
-      ? narrateViaGeminiLive
+      ? (summary: string) => narrateViaGeminiLive(summary, voiceLanguage)
       : engine === "unmute"
-        ? (summary: string) => narrateViaGeminiLive(summary, { endpoint: unmuteEndpoint() })
-        : narrateViaLive;
+        ? (summary: string) =>
+            narrateViaGeminiLive(summary, { endpoint: unmuteEndpoint(), ...voiceLanguage })
+        : (summary: string) => narrateViaLive(summary, voiceLanguage);
 
   void narrate(text)
     .then((live) => {

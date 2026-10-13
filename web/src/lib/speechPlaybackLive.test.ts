@@ -78,7 +78,10 @@ describe("speech playback routing between voices", () => {
       .speakLiveSummary("m1", "All tests pass.", "en", "/audio/m1.mp3", "conv_a");
 
     await vi.waitFor(() => {
-      expect(narrateViaLive).toHaveBeenCalledWith("All tests pass.");
+      expect(narrateViaLive).toHaveBeenCalledWith("All tests pass.", {
+        sessionId: "conv_a",
+        lang: "en",
+      });
     });
     expect(played).toEqual([]);
   });

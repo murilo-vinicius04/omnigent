@@ -15,7 +15,7 @@ import os
 import pathlib
 from typing import Any, Final
 
-from omnigent.server.live_voice import NARRATOR_INSTRUCTIONS
+from omnigent.server.live_voice import NARRATOR_INSTRUCTIONS, speech_language_rule
 
 
 class GeminiLiveUnavailable(RuntimeError):
@@ -134,6 +134,7 @@ def setup_frame(
     tools: list[dict[str, Any]] | None = None,
     extra_tools: list[dict[str, Any]] | None = None,
     resume_handle: str | None = None,
+    language: str | None = None,
 ) -> dict:
     """Return the proven setup frame for the WebSocket's first message.
 
@@ -141,7 +142,37 @@ def setup_frame(
     :param extra_tools: Declarations added to the per-chat pair.
     :param resume_handle: Continue the session this handle names, after
         Google closed its connection.
+    :param language: The chat's language selector, e.g. ``"pt-BR"``: the voice
+        speaks only that. It goes in the instructions, the only place Google's
+        native-audio voices take it from.
     """
+    frame = _setup_frame(
+        model=model,
+        system_instruction=system_instruction,
+        mode=mode,
+        voice=voice,
+        tools=tools,
+        extra_tools=extra_tools,
+        resume_handle=resume_handle,
+    )
+    rule = speech_language_rule(language)
+    if rule:
+        setup = frame["setup"]
+        parts = setup.setdefault("systemInstruction", {"parts": []})["parts"]
+        parts.append({"text": rule})
+    return frame
+
+
+def _setup_frame(
+    *,
+    model: str | None,
+    system_instruction: str | None,
+    mode: str | None,
+    voice: str | None,
+    tools: list[dict[str, Any]] | None,
+    extra_tools: list[dict[str, Any]] | None,
+    resume_handle: str | None,
+) -> dict:
     name = model or (NARRATOR_MODEL if mode == "narrate" else MODEL)
     if not name.startswith("models/"):
         name = f"models/{name}"

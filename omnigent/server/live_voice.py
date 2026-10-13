@@ -77,6 +77,47 @@ NARRATOR_INSTRUCTIONS: Final[str] = (
 )
 
 
+#: What a live voice is told to speak, by the language selector's tags.
+_SPEECH_LANGUAGES: Final[dict[str, str]] = {
+    "pt-br": "Brazilian Portuguese",
+    "pt-pt": "European Portuguese",
+    "en-us": "American English",
+    "en-gb": "British English",
+    "es-es": "Spanish as spoken in Spain",
+    "fr-fr": "French",
+    "de-de": "German",
+}
+#: The accents those voices drifted into, named so they are ruled out.
+_ACCENT_NOTES: Final[dict[str, str]] = {
+    "pt-br": " with a Brazilian accent, never European Portuguese or Spanish",
+    "pt-pt": " with a Portuguese accent, never Brazilian Portuguese or Spanish",
+}
+
+
+def speech_language_rule(tag: str | None) -> str:
+    """The instruction that holds a live voice to the chat's language, ``""`` for none.
+
+    Google's native-audio voices take no language code: they "automatically
+    choose the appropriate language and don't support explicitly setting the
+    language code", and the docs restrict it "by specifying it in the system
+    instructions". Left to choose, they read Portuguese text with a Portuguese
+    or Spanish accent now and then.
+
+    :param tag: The chat's language selector, e.g. ``"pt-BR"``; ``"auto"``,
+        ``"und"`` or empty leaves the voice free.
+    """
+    tag = (tag or "").strip()
+    if not tag or tag.lower() in ("auto", "und"):
+        return ""
+    name = _SPEECH_LANGUAGES.get(tag.lower())
+    language = f"{name} ({tag})" if name else f"the language {tag}"
+    accent = _ACCENT_NOTES.get(tag.lower(), "")
+    return (
+        f"Speak only {language}{accent}, every word, whatever language the "
+        "text or the listener uses. Never switch to another language or accent."
+    )
+
+
 def frame_for_reading(text: str) -> str:
     """Wrap finished prose in the instruction that makes it read, not reply.
 

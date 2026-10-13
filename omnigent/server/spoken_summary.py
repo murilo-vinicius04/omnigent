@@ -645,6 +645,30 @@ def build_spoken_summary_prompt(
     return f"{instructions}\n\n---\n{user_content}"
 
 
+def concrete_language(tag: str | None) -> str:
+    """A language tag a voice can be held to; ``""`` for unset, auto or undetermined."""
+    tag = (tag or "").strip()
+    return "" if tag.lower() in ("", "auto", "und") else tag
+
+
+async def selected_language(session_id: str | None, conversation_store: Any) -> str:
+    """The chat's language selector, as its spoken summaries use it; ``""`` if unset.
+
+    Falls back as the summaries do: the chat's own pick, then its project's,
+    then the server default.
+    """
+    if not session_id or conversation_store is None:
+        return ""
+    try:
+        _on, language, _conv = await resolve_spoken_summary_settings_async(
+            session_id, conversation_store
+        )
+    except Exception:  # noqa: BLE001 - an unknown language leaves the voice free
+        _logger.debug("voice language unknown for %s", session_id, exc_info=True)
+        return ""
+    return concrete_language(language)
+
+
 async def resolve_spoken_summary_settings_async(
     session_id: str,
     conversation_store: ConversationStore | None,

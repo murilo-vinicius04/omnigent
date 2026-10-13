@@ -162,6 +162,23 @@ def test_narrate_mode_returns_the_framed_text_to_push(client, monkeypatch):
     assert "narrator" in str(seen["instructions"]).lower()
 
 
+def test_gpt_narration_speaks_the_summarys_language_when_its_chat_has_none(client, monkeypatch):
+    seen: dict[str, object] = {}
+
+    async def accept(*, sdp_offer, instructions, model=None, voice=None, backend=None):
+        seen.update(instructions=instructions)
+        return "live_n", "v=0 answer"
+
+    monkeypatch.setattr("omnigent.server.routes.live_voice.open_session", accept)
+    response = client.post(
+        "/v1/live/offer",
+        json={"sdp": "v=0 offer", "mode": "narrate", "text": "Tudo pronto.", "language": "pt-BR"},
+    )
+    assert response.status_code == 200
+    assert "Brazilian Portuguese (pt-BR)" in str(seen["instructions"])
+    assert "narrator" in str(seen["instructions"]).lower()
+
+
 def test_conversing_pushes_nothing_and_delegates_nothing(client, monkeypatch):
     seen: dict[str, object] = {}
 

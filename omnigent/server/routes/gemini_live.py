@@ -38,6 +38,7 @@ from omnigent.server import gemini_live, hub_chat, voice_hub
 from omnigent.server import hub as hub_module
 from omnigent.server.auth import AuthProvider
 from omnigent.server.discussion import DiscussionRegistry, registry, voice_briefing
+from omnigent.server.spoken_summary import concrete_language, selected_language
 
 _logger = logging.getLogger(__name__)
 
@@ -593,6 +594,17 @@ def create_gemini_live_router(
                 if code is not None:
                     upstream_close = f"{code}/{reason}" if reason else str(code)
 
+        # The voice speaks the chat's language selector. Narration names the
+        # chat it reads for (`language_of`), and the summary's own language
+        # (`lang`) stands in when that chat has none set.
+        if narrating:
+            language = await selected_language(
+                (websocket.query_params.get("language_of") or "").strip(), conversation_store
+            ) or concrete_language(websocket.query_params.get("lang"))
+        elif the_hub is not None:
+            language = concrete_language(await the_hub.language())
+        else:
+            language = await selected_language(session_id_clean, conversation_store)
         try:
             # The proven setup frame must precede anything else upstream.
             setup_kwargs: dict[str, Any]
@@ -610,6 +622,12 @@ def create_gemini_live_router(
                     else None
                 )
                 setup_kwargs = {"system_instruction": system_instruction, "extra_tools": watch}
+            setup_kwargs["language"] = language
+            _logger.info(
+                "gemini live language | mode=%s language=%s",
+                mode or "converse",
+                language or "free",
+            )
             frame = gemini_live.setup_frame(**setup_kwargs)
             await upstream.send(json.dumps(frame))
             if not narrating:
