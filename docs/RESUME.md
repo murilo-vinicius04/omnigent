@@ -14,6 +14,34 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-13 16:10 — READ FIRST (Hub afternoon; session d9653808, conversation 247c77f5)
+
+**State:** all Hub work below is committed and live (server restarted 16:00:32, branch feat/friendly-layer, last
+code commit 292c44196). Nothing running, no benchmark. The Hub forwards user requests INTO this conversation
+(project "omnigent", 247c77f5) and reports our final reply back, so keep final replies short and Hub-friendly.
+**What the Hub does now (hub.py / hub_chat.py):**
+- Router = newest `gemini-*-flash-LOW` from `agy models`; prompt says code-or-name both work, hub complaints go to
+  the project they sent hub problems to, no files line = none arrived; budget 90 s, first try 40 s then one retry in
+  a fresh process. Forwards are written in the hub chat's language (pt-BR via env), not English.
+- Report-back = router summary line + the project's spoken-summary `show` blocks (tables/images/links/output) +
+  file links + charts copied in + "Open X". NEVER the full reply (user called that a leak). Waits ≤30 s for the
+  summary; none -> the reply's tables.
+- Any hub message links a file a project's report named (`known_files`) to `/c/<chat>?file=<rel>`.
+**Open / offered, not built:** (1) fallback router off Google for multi-minute agy stalls (seen 15:56–16:02);
+(2) hub reports collapsed like the project chat's "Show original" (needs web work; spoken_summary block in hub
+messages would trigger narration — avoided); (3) status answers can take ~46 s (decide + follow_up, two turns).
+Older items still waiting on the user: close PR #6479 + delete fork, block bench GitHub (10-12 block below);
+rotate the OpenAI key.
+**Tools:** `scratchpad/hubtype.py "<text>"` types into the real Hub and times the reply (no Claude quota if the
+text can't be sent); `scratchpad/hubapi.py GET <path>` calls the live API as the user (token via
+`omnigent.cli_auth`, never printed); `scratchpad/replay.py <model> <out> <prompt.jsonl…>` replays router prompts on
+warm agy; agy transcripts with thinking: `~/.gemini/antigravity-cli/brain/<conv>/.system_generated/logs/
+transcript_full.jsonl`; agy logs `~/.gemini/antigravity-cli/log/`. Never `pkill -f <pattern>` that appears in
+your own command (it killed the shell twice) — kill by port PID.
+**Tests:** hub/voice/discussion suites 236 pass; the only failure is the old `test_live_voice.py::
+test_the_voice_is_told_when_to_delegate`. Commit with `SKIP=pyrefly,no-hardcoded-models,web-oxlint` but run
+`pre-commit run pyrefly --files <ours>` first (it caught a real shadowing bug in hub_chat.py).
+
 ## 2026-10-13 16:05 — file links in everything the hub says (417bc9897, 4ca15d1f9) + stall retry (292c44196)
 
 User: "ainda nao vejo o link do revision plan aqui no hub". Only NEW finished reports linked files; the hub's own
