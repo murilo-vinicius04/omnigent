@@ -31,7 +31,7 @@ from omnigent.antigravity_native_catalog import _probe_agy_models
 from omnigent.model_fallbacks import SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
 from omnigent.process_logging import data_dir
 from omnigent.server import hub_models, voice_hub
-from omnigent.server.discussion import DiscussionSession, DiscussionUnavailable
+from omnigent.server.discussion import GOOGLE_REFUSED, DiscussionSession, DiscussionUnavailable
 from omnigent.server.hub_models import SessionRun
 
 _logger = logging.getLogger(__name__)
@@ -114,9 +114,6 @@ EMPTY_RETRY_MIN_S: Final[float] = 20.0
 #: far lasted about a minute (10-13 16:38 and 17:13), inside one routing budget.
 ROUTE_REFUSED_WAIT_S: Final[float] = 10.0
 
-#: How Google turning a call away reads in agy's error, e.g. "Eligibility check
-#: failed: UNAVAILABLE (code 503)". Not quota: an exhausted quota stays exhausted.
-_GOOGLE_REFUSED: Final[re.Pattern[str]] = re.compile(r"UNAVAILABLE|code 50[234]\b")
 
 #: What the router is told after a reply that came back empty.
 EMPTY_REPLY_NUDGE: Final[str] = (
@@ -767,7 +764,7 @@ class HubRouter(DiscussionSession):
                     if stalled:
                         retry = left >= ROUTE_RETRY_MIN_S
                     else:
-                        retry = bool(_GOOGLE_REFUSED.search(str(exc))) and (
+                        retry = bool(GOOGLE_REFUSED.search(str(exc))) and (
                             left >= ROUTE_REFUSED_WAIT_S + ROUTE_RETRY_MIN_S
                         )
                     if not retry:

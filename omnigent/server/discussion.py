@@ -63,6 +63,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import time
 from collections import deque
 from collections.abc import Callable
@@ -304,6 +305,20 @@ DEFAULT_CHECK_TIMEOUT_S: Final[float] = 60.0
 
 #: Budget for each model turn inside a check.
 _CHECK_TURN_TIMEOUT_S: Final[float] = 20.0
+
+#: Fresh processes a check may start when its first turn stalls or Google
+#: turns it away (agy hung before sending at 10-13 17:39 and 17:48).
+_CHECK_RETRIES: Final[int] = 2
+
+#: The least time left for which a check starts a fresh process.
+_CHECK_RETRY_MIN_S: Final[float] = 12.0
+
+#: Wait before asking again after Google turned a call away.
+_REFUSED_WAIT_S: Final[float] = 5.0
+
+#: How Google turning a call away reads in agy's error, e.g. "Eligibility check
+#: failed: UNAVAILABLE (code 503)". Not quota: an exhausted quota stays exhausted.
+GOOGLE_REFUSED: Final[re.Pattern[str]] = re.compile(r"UNAVAILABLE|code 50[234]\b")
 
 _CHECK_PROMPT: Final[str] = """\
 [The voice you work with was asked something it can only answer by looking at \
@@ -1014,7 +1029,8 @@ class DiscussionSession:
                     max_runs=MAX_CHECK_COMMANDS,
                 )
                 message = "\n\n".join([*blocks, prompt]) if blocks else prompt
-                for _ in range(MAX_CHECK_COMMANDS + 3):
+                retries = _CHECK_RETRIES
+                for _ in range(MAX_CHECK_COMMANDS + 3 + _CHECK_RETRIES):
                     left_s = deadline - time.monotonic()
                     if left_s < 1.0:
                         break
@@ -1023,6 +1039,25 @@ class DiscussionSession:
                             message, timeout_s=min(_CHECK_TURN_TIMEOUT_S, left_s)
                         )
                     except DiscussionUnavailable as exc:
+                        stalled = str(exc).startswith("no answer within")
+                        refused = bool(GOOGLE_REFUSED.search(str(exc)))
+                        if (stalled or refused) and not ran and retries:
+                            # Before any command: a fresh process can take the whole
+                            # question again. After one, its results would be lost.
+                            wait_s = _REFUSED_WAIT_S if refused else 0.0
+                            if deadline - time.monotonic() - wait_s >= _CHECK_RETRY_MIN_S:
+                                retries -= 1
+                                _logger.warning(
+                                    "companion check for %s: %s; asking a fresh process",
+                                    self.session_id,
+                                    str(exc)[:200],
+                                )
+                                await self._kill()
+                                await asyncio.sleep(wait_s)
+                                await self._ensure_process()
+                                blocks = self._preamble()
+                                message = "\n\n".join([*blocks, prompt]) if blocks else prompt
+                                continue
                         # An empty reply is the model reaching for a tool of its
                         # own, which the CLI does not run here. The turn did end,
                         # so the process is in step: say so and ask again.

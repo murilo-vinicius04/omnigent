@@ -16,7 +16,7 @@ from omnigent.server.discussion import MAX_CHECK_COMMANDS, DiscussionSession
 #: A CLI that plays one scripted check: run a command, then answer from it.
 #: Markers in the question pick the other paths.
 _SCRIPTED_AGY = """\
-import json, sys
+import json, os, sys, time
 def reply(text):
     event = {"event": "result", "result": {"response": text}}
     sys.stdout.write(json.dumps(event) + "\\n")
@@ -28,6 +28,10 @@ for line in sys.stdin:
     if not line.strip():
         continue
     content = json.loads(line)["message"]["content"]
+    stall = os.environ.get("FAKE_STALL_FILE")
+    if "STALL" in content and stall and ("ALWAYS" in content or not os.path.exists(stall)):
+        open(stall, "w").close()
+        time.sleep(60)  # a turn agy never answers: it hung before reaching Google
     always = always or "ALWAYS_RUN" in content
     if always:
         say({"run": "wc -l notes.txt"})
@@ -171,3 +175,27 @@ def test_the_check_route_returns_the_answer_and_commands(
         state = client.get("/v1/discussion/s-route").json()
         assert state["activity"] is None
         assert any(e["kind"] == "command" for e in state["context"])
+
+
+async def test_a_first_turn_that_stalls_is_asked_again_in_a_fresh_process(
+    session, fake_run, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("FAKE_STALL_FILE", str(tmp_path / "stalled"))
+    monkeypatch.setattr(discussion, "_CHECK_TURN_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(discussion, "_CHECK_RETRY_MIN_S", 0.5)
+    result = await session.check("STALL how many lines are in notes.txt?", timeout_s=10)
+    assert result.answer == "It has three lines."
+    assert fake_run == ["wc -l notes.txt"]
+    assert (tmp_path / "stalled").exists()
+    await session.close()
+
+
+async def test_a_check_that_keeps_stalling_says_so(session, fake_run, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_STALL_FILE", str(tmp_path / "stalled"))
+    monkeypatch.setattr(discussion, "_CHECK_TURN_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(discussion, "_CHECK_RETRY_MIN_S", 0.3)
+    result = await session.check("STALL ALWAYS how many lines?", timeout_s=5)
+    assert result.answer is None
+    assert result.needs_claude is not None and "no answer within" in result.needs_claude
+    assert fake_run == []
+    assert session.as_dict()["activity"] is None
