@@ -26,6 +26,8 @@ for complaints about the hub itself, and "esses sao os anexos" with no files lis
 to / no files line = none arrived, ask; budget 90 s (chat shows busy; voice already says "still working" at 60 s);
 a timeout now says "I took over 90 s…". Replay tools: `scratchpad/replay.py` (warm agy, timed turns) + `ab2/`.
 Note: agy's `result.usage` is cumulative per process — per-turn tokens are in the transcript, not the result.
+Commit 3cd942561, live 14:35 (server restarted). Verified by typing into the real Hub chat: a project-list
+question answered in 11.5 s (cold start), "esses são os anexos" (no files) asked back in 2.5 s; both sent nothing.
 The 14:14 links/images/tables request never reached the omnigent project (router failed); it is still to do.
 
 ## 2026-10-13 12:35 — READ FIRST (the Hub runs projects; session d9653808, conversation 247c77f5)
