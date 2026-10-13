@@ -100,6 +100,13 @@ FILES_HOLD_S: Final[float] = 30 * 60.0
 #: as busy meanwhile; a slow decision beats "nothing was sent".
 ROUTE_TIMEOUT_S: Final[float] = 90.0
 
+#: A routing turn's first try. Flash Low answers in 2-13 s; a call that has not
+#: come back by then has usually stalled, and a fresh process gets the rest.
+ROUTE_FIRST_TRY_S: Final[float] = 40.0
+
+#: The least time left for which a stalled turn is tried again.
+ROUTE_RETRY_MIN_S: Final[float] = 20.0
+
 #: The least a second try gets after an empty reply, however late it is.
 EMPTY_RETRY_MIN_S: Final[float] = 20.0
 
@@ -733,16 +740,29 @@ class HubRouter(DiscussionSession):
         """
         async with self._lock:
             self._last_used = time.time()
-            try:
-                await self._ensure_process()
-                blocks = self._preamble()
-                reply = await self._routing_turn(
-                    "\n\n".join([*blocks, prompt]) if blocks else prompt, timeout_s=timeout_s
-                )
-            except DiscussionUnavailable:
-                await self._kill()
-                self._record("question", said)
-                raise
+            deadline = time.monotonic() + timeout_s
+            first = True
+            while True:
+                left = deadline - time.monotonic()
+                try:
+                    await self._ensure_process()
+                    blocks = self._preamble()
+                    reply = await self._routing_turn(
+                        "\n\n".join([*blocks, prompt]) if blocks else prompt,
+                        timeout_s=min(left, ROUTE_FIRST_TRY_S) if first else left,
+                    )
+                    break
+                except DiscussionUnavailable as exc:
+                    await self._kill()
+                    stalled = str(exc).startswith("no answer within")
+                    if not (
+                        first and stalled and deadline - time.monotonic() >= ROUTE_RETRY_MIN_S
+                    ):
+                        self._record("question", said)
+                        raise
+                    # A model call that never returns: a fresh process gets the rest.
+                    _logger.warning("hub router stalled; asking a fresh process")
+                    first = False
             self._briefed = True
             self._undelivered.clear()
             self._record("question", said)

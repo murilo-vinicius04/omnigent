@@ -1197,6 +1197,11 @@ for line in sys.stdin:
     empty = "REACH_FOR_A_TOOL" in content or (
         "Your reply was empty" in content and os.environ.get("FAKE_ROUTER_STUBBORN")
     )
+    stall = os.environ.get("FAKE_ROUTER_STALLS")
+    again = os.environ.get("FAKE_ROUTER_STALL_ALWAYS")
+    if "STALL" in content and stall and (again or not os.path.exists(stall)):
+        open(stall, "w").close()
+        sys.stdin.readline()  # never answers: a model call that does not come back
     response = "" if empty else json.dumps({"answer": os.getcwd(), "told": content[-300:]})
     sys.stdout.write(json.dumps({"event": "result", "result": {"response": response}}) + "\\n")
     sys.stdout.flush()
@@ -1229,6 +1234,28 @@ async def test_an_empty_reply_is_asked_again_in_the_same_process(router) -> None
     assert reply["told"] == EMPTY_REPLY_NUDGE
     assert router.running and router._process.pid == pid
     await router.close()
+
+
+async def test_a_stalled_routing_call_is_asked_again_in_a_fresh_process(
+    router, monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("FAKE_ROUTER_STALLS", str(tmp_path / "stalled"))
+    monkeypatch.setattr(hub_module, "ROUTE_FIRST_TRY_S", 0.5)
+    monkeypatch.setattr(hub_module, "ROUTE_RETRY_MIN_S", 0.5)
+    reply = json.loads(await router.decide("STALL here", said="cadê o plano?", timeout_s=5))
+    assert reply["answer"]  # answered by the second process
+    assert (tmp_path / "stalled").exists()
+    await router.close()
+
+
+async def test_a_router_that_stalls_twice_is_unavailable(router, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FAKE_ROUTER_STALLS", str(tmp_path / "stalled"))
+    monkeypatch.setenv("FAKE_ROUTER_STALL_ALWAYS", "1")
+    monkeypatch.setattr(hub_module, "ROUTE_FIRST_TRY_S", 0.5)
+    monkeypatch.setattr(hub_module, "ROUTE_RETRY_MIN_S", 0.5)
+    with pytest.raises(DiscussionUnavailable, match="no answer within"):
+        await router.decide("STALL here", said="cadê o plano?", timeout_s=1.5)
+    assert not router.running
 
 
 async def test_a_router_that_stays_empty_is_unavailable(router, monkeypatch) -> None:
