@@ -38,7 +38,10 @@ narrations still ran the old page: log `gemini live language | mode=narrate lang
 - 9d82aea91 No "RAL finished:" read or shown: project chip at top (markdown link titled "omnigent-project" →
   ChatMarkdown ProjectChip, opens /c/<id>), "Open X ↗" footer gone, narration = hub_chat.own_words. Stored
   entry.text keeps the label (router memory, voice-call news).
-**Not yet seen live:** the chip; full narration of a finished report; language rule after reload; a real Gemini
+- 348b32fa8 "Sent to RAL." / "Mandei para o RAL…" neither read nor shown: sent chip (title "omnigent-project-sent",
+  folder + name + send arrow, aria "Sent to RAL") above the quoted request; speech_text("sent") = "". Without
+  base_url the words stay. Server restarted 20:16:25, page = archive build of 348b32fa8.
+**Not yet seen live:** the chip (sent and finished); full narration of a finished report; language rule after reload; a real Gemini
 Hub call ("send to RAL" hangs up once, no duplicate; "check on RAL" shows "Checking on RAL (read-only)…").
 **Offered, not built:** retry a timed-out spoken summary; backup router off Google for >90 s outages; double
 narration (project's own + Hub report) when a project isn't muted; Hub chat shows nothing SAID on a Gemini call;
