@@ -438,6 +438,56 @@ async def test_a_send_goes_in_the_language_the_hub_is_set_to(tmp_path, language,
     await hub.close()
 
 
+TABLE = {"kind": "table", "label": "t", "content": "| a | b |\n|---|---|\n| 1 | 2 |"}
+CHART = {"kind": "file", "label": "speed", "content": "f_chart", "filename": "speed.png"}
+
+
+def _copying_hub(tmp_path, server: _Server, copied: list) -> Hub:
+    async def import_files(source, target, files):
+        copied.append((source, target, [f.file_id for f in files]))
+        return [{"type": "output_file", "file_id": f"copy_{f.file_id}"} for f in files]
+
+    router = _Router('{"send": "aaaa", "message": "Run it.", "say": "Mandei."}')
+    hub = _hub(tmp_path, router, server)
+    hub.bind(replace(server.backend(), import_files=import_files))
+    hub.chat = _Chat()
+    return hub
+
+
+async def test_a_report_waits_for_the_projects_summary_and_shows_what_it_picked(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(hub_module, "SUMMARY_WAIT_S", 5.0)
+    server = _Server()
+    waiting = TurnState(status="idle", reply="Ran.", summary_due=True)
+    summarized = TurnState(status="idle", reply="Ran.", show=(TABLE, CHART))
+    server.turns = [TurnState(status="running"), waiting, waiting, waiting, summarized]
+    copied: list = []
+    hub = _copying_hub(tmp_path, server, copied)
+    hub.submit("roda")
+    await _settle(hub, until=lambda: any(e.kind == "finished" for e in hub.state.entries))
+    finished = next(e for e in hub.state.entries if e.kind == "finished")
+    assert finished.show == [TABLE]  # the chart is copied, not linked
+    assert copied == [(AMARRAS, "hub0", ["f_chart"])]
+    assert finished.files == [{"type": "output_file", "file_id": "copy_f_chart"}]
+    await hub.close()
+
+
+async def test_a_summary_that_never_comes_does_not_hold_the_report(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(hub_module, "SUMMARY_WAIT_S", 0.05)
+    server = _Server()
+    server.turns = [
+        TurnState(status="running"),
+        TurnState(status="idle", reply="Ran.", summary_due=True),
+    ]
+    hub = _copying_hub(tmp_path, server, [])
+    hub.submit("roda")
+    await _settle(hub, until=lambda: any(e.kind == "finished" for e in hub.state.entries))
+    finished = next(e for e in hub.state.entries if e.kind == "finished")
+    assert finished.show is None and finished.detail == "Ran."
+    await hub.close()
+
+
 async def test_a_report_never_repeats_the_finished_label(tmp_path) -> None:
     router = _Router('{"send": "aaaa", "message": "Run it.", "say": "Mandei."}')
     router.report = "AMARRAS finished: It ran."

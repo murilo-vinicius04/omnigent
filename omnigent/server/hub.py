@@ -70,6 +70,13 @@ NOT_STARTED_S: Final[float] = 120.0
 #: Longest project reply kept for the hub chat to show in full.
 MAX_REPLY_CHARS: Final[int] = 20000
 
+#: How long a report waits for the project's spoken summary, which picks what
+#: its chat shows under the answer and lands a few seconds after it.
+SUMMARY_WAIT_S: Final[float] = 30.0
+
+#: The summary's ``show`` kinds the chat displays unless the reader opts in.
+SHOWN_KINDS: Final[frozenset[str]] = frozenset({"table", "image", "link", "output", "file"})
+
 #: Most files of one reply copied into the hub chat, and the largest one.
 MAX_REPLY_FILES: Final[int] = 8
 MAX_REPLY_FILE_BYTES: Final[int] = 25 * 1024 * 1024
@@ -397,6 +404,9 @@ class HubEntry:
     workspace: str | None = None
     #: Files a reply came with, copied into the hub chat as ``output_file`` blocks.
     files: list[dict[str, Any]] | None = None
+    #: What the project's chat shows under its summary of the reply: tables,
+    #: images, links, output (its spoken summary's ``show`` list).
+    show: list[dict[str, Any]] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """The JSON shape the page and the voice relay read."""
@@ -423,6 +433,10 @@ class TurnState:
     files: tuple[ReplyFile, ...] = ()
     #: The project's folder, for the file paths its reply names.
     workspace: str | None = None
+    #: The ``show`` list of the project's spoken summary of the reply.
+    show: tuple[dict[str, Any], ...] = ()
+    #: The project writes spoken summaries and this reply's has not landed yet.
+    summary_due: bool = False
 
     @property
     def working(self) -> bool:
@@ -1499,6 +1513,7 @@ class Hub:
         started = time.monotonic()
         seen_working = False
         idle_polls = 0
+        summary_polls = max(2, round(SUMMARY_WAIT_S / self._poll_s))
         told_approval = False
         ended = True
         try:
@@ -1520,7 +1535,11 @@ class Hub:
                 idle_polls += 1
                 # Idle twice in a row: a native session can go idle a moment
                 # before its final message is stored.
-                if state.reply and idle_polls >= 2:
+                if (
+                    state.reply
+                    and idle_polls >= 2
+                    and (not state.summary_due or idle_polls >= summary_polls)
+                ):
                     await self._report(session, state)
                     return
                 if seen_working and idle_polls >= 6:
@@ -1570,7 +1589,8 @@ class Hub:
             session_name=session.name,
             detail=reply[:MAX_REPLY_CHARS],
             workspace=state.workspace,
-            files=await self._import_files(session, state.files) or None,
+            files=await self._import_files(session, _files_to_copy(state)) or None,
+            show=[b for b in state.show if b.get("kind") not in ("file", None)] or None,
         )
         router.remember(f"{session.name} finished: {told}")
 
@@ -1684,6 +1704,40 @@ def reply_text(data: Any) -> str:
         if _field(b, "type") in ("output_text", "text")
     ]
     return "\n\n".join(p for p in parts if p)
+
+
+def spoken_summary(data: Any) -> dict[str, Any] | None:
+    """The spoken summary block a message carries, if any."""
+    for block in _blocks(data):
+        if _field(block, "type") == "spoken_summary":
+            return block if isinstance(block, dict) else dict(vars(block))
+    return None
+
+
+_SESSION_FILE: Final[re.Pattern[str]] = re.compile(r"^/v1/sessions/[^/]+/resources/files/([^/]+)")
+
+
+def _files_to_copy(state: TurnState) -> list[ReplyFile]:
+    """The reply's attachments plus the files its summary shows, each once."""
+    found = list(state.files)
+    for block in state.show:
+        content = str(block.get("content") or "")
+        session_file = _SESSION_FILE.match(content)
+        if block.get("kind") == "file" and content:
+            file_id = content
+        elif block.get("kind") == "image" and session_file:
+            file_id = session_file.group(1)
+        else:
+            continue
+        found.append(
+            ReplyFile(
+                file_id=file_id,
+                filename=str(block.get("filename") or block.get("label") or file_id),
+                mime_type=str(block.get("mime_type") or ""),
+            )
+        )
+    seen: set[str] = set()
+    return [f for f in found if not (f.file_id in seen or seen.add(f.file_id))]
 
 
 def reply_files(data: Any) -> list[ReplyFile]:
@@ -2073,23 +2127,48 @@ def store_backend(
         )
         # Newest first. The answer is the newest message with answer text: a
         # spoken summary or an attached chart's caption comes after it.
-        reply = ""
+        reply, reply_response = "", None
         files: list[ReplyFile] = []
+        summaries: list[tuple[Any, dict[str, Any]]] = []
         for item in recent.data:
             if float(getattr(item, "created_at", 0) or 0) + 1 < since:
                 break
             if _role(item.data) != "assistant":
                 continue
             files[:0] = reply_files(item.data)
+            summary = spoken_summary(item.data)
+            if summary is not None:
+                summaries.append((getattr(item, "response_id", None), summary))
             if not reply and _field(item.data, "agent") != "attachment":
                 reply = reply_text(item.data)
+                reply_response = getattr(item, "response_id", None) if reply else None
+        # The newest summary of this reply (a summary is revised once its audio is made).
+        chosen = next((s for r, s in summaries if r == reply_response), None) if reply else None
+        show = tuple(
+            b
+            for b in (chosen or {}).get("show") or []
+            if isinstance(b, dict) and b.get("kind") in SHOWN_KINDS
+        )
         return TurnState(
             status=status,
             reply=reply,
             pending_approvals=int(getattr(conv, "pending_elicitation_count", 0) or 0),
             files=tuple(files),
             workspace=getattr(conv, "workspace", None),
+            show=show,
+            summary_due=bool(reply) and chosen is None and await _summaries_on(session_id),
         )
+
+    async def _summaries_on(session_id: str) -> bool:
+        from omnigent.server.spoken_summary import resolve_spoken_summary_settings_async
+
+        try:
+            enabled, _language, _conv = await resolve_spoken_summary_settings_async(
+                session_id, conversation_store
+            )
+        except Exception:  # noqa: BLE001 - unknown: report without waiting
+            return False
+        return bool(enabled)
 
     async def import_files(
         source_id: str, target_id: str, files: Sequence[ReplyFile]

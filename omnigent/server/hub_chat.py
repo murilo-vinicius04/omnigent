@@ -44,9 +44,6 @@ FORWARDED_HEADERS: Final[tuple[str, ...]] = (
     "origin",
 )
 
-#: A finished project's reply is shown in the hub in full up to this length.
-_REPLY_SHOW_CHARS: Final[int] = 12000
-
 #: Where a reply names a file: a markdown link or image, or an inline code span.
 _FILE_REF: Final[re.Pattern[str]] = re.compile(r"(!?)\[([^\]\n]*)\]\(<?([^)\s>]+)>?\)|`([^`\n]+)`")
 
@@ -160,16 +157,29 @@ def render(entry: hub_module.HubEntry, base_url: str = "") -> str:
         link = f"[Start a chat in {entry.session_name} ↗]({base_url}{entry.link})"
     if entry.kind == "sent" and entry.detail:
         return f"{entry.text}\n\n> {_quote(entry.detail)}\n\n{link}".rstrip()
-    if entry.kind == "finished" and entry.detail:
-        # The reply as its own chat shows it: tables, headings and lists intact,
-        # and every file it names opening in that chat.
-        reply = _cut(entry.detail, _REPLY_SHOW_CHARS, entry.session_name or "its chat")
-        if base_url and entry.session_id:
-            chat = f"{base_url}/c/{entry.session_id}"
-            reply = link_workspace_files(
-                reply, entry.workspace, lambda rel: f"{chat}?file={quote(rel, safe='/')}"
-            )
-        return f"{entry.text}\n\n---\n\n{reply}\n\n{link}".rstrip()
+    if entry.kind == "finished" and (entry.detail or entry.show):
+        # What the project's own chat shows under its summary of the reply: the
+        # tables, images, links and output its summary picked, and the files the
+        # reply names. Never the reply itself: that is one click away.
+        chat = f"{base_url}/c/{entry.session_id}" if base_url and entry.session_id else ""
+        # Without the app's address there is no link to make, so no folder to look in.
+        workspace = entry.workspace if chat else None
+
+        def url_for(rel: str) -> str:
+            return f"{chat}?file={quote(rel, safe='/')}"
+
+        shown = (
+            show_markdown(entry.show, workspace, url_for)
+            if entry.show
+            else "\n\n".join(reply_tables(entry.detail or ""))
+        )
+        shown = link_workspace_files(shown, workspace, url_for)
+        files = " · ".join(
+            f"[`{label}`]({url_for(rel)})" if "/" in label else f"[{label}]({url_for(rel)})"
+            for label, rel in named_files(entry.detail or "", workspace)
+        )
+        parts = [entry.text, shown, files, link]
+        return "\n\n".join(part for part in parts if part)
     if entry.kind in ("attention", "finished", "status", "check", "model", "project") and link:
         return f"{entry.text}\n\n{link}"
     return entry.text
@@ -179,17 +189,72 @@ def _quote(text: str) -> str:
     return "\n> ".join(text.strip().splitlines())
 
 
-def _cut(markdown: str, limit: int, name: str) -> str:
-    """At most *limit* characters, ended at a paragraph, with any code fence closed."""
-    if len(markdown) <= limit:
-        return markdown
-    head = markdown[:limit]
-    paragraph = head.rfind("\n\n")
-    if paragraph > limit // 2:
-        head = head[:paragraph]
-    if len(_FENCE.findall(head)) % 2:
-        head += "\n```"
-    return f"{head.rstrip()}\n\n… (the rest is in {name})"
+def show_markdown(
+    blocks: list[dict[str, Any]], workspace: str | None, url_for: Callable[[str], str]
+) -> str:
+    """A summary's ``show`` blocks as the chat draws them, in markdown.
+
+    Images stored in the project's chat travel as copied files instead.
+    """
+    out = []
+    for block in blocks:
+        kind, content = block.get("kind"), str(block.get("content") or "").strip()
+        label = str(block.get("label") or "").strip()
+        if not content:
+            continue
+        if kind == "table":
+            out.append(content)
+        elif kind == "output":
+            out.append(f"```\n{content}\n```")
+        elif kind in ("image", "link"):
+            if content.startswith("/v1/sessions/"):
+                continue
+            relative = workspace_file(content, workspace)
+            if relative is not None:
+                out.append(f"[{label or relative.rsplit('/', 1)[-1]}]({url_for(relative)})")
+            elif content.startswith(("http://", "https://")):
+                out.append(f"{'!' if kind == 'image' else ''}[{label or content}]({content})")
+    return "\n\n".join(out)
+
+
+def reply_tables(markdown: str) -> list[str]:
+    """The markdown tables in a reply, outside code fences."""
+    tables, current, fenced = [], [], False
+    for line in [*markdown.splitlines(), ""]:
+        if _FENCE.match(line):
+            fenced = not fenced
+        is_row = not fenced and line.lstrip().startswith("|")
+        if is_row:
+            current.append(line.strip())
+            continue
+        if len(current) >= 2 and re.fullmatch(r"\|?[\s:|-]+\|?", current[1]):
+            tables.append("\n".join(current))
+        current = []
+    return tables
+
+
+def named_files(markdown: str, workspace: str | None) -> list[tuple[str, str]]:
+    """``(label, workspace path)`` of each file a reply links or names as a path.
+
+    As the chat's friendly view lifts them: markdown links to files, and
+    inline-code paths with a folder in them; only files that exist.
+    """
+    found: list[tuple[str, str]] = []
+    fenced = False
+    for line in markdown.splitlines():
+        if _FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        for match in _FILE_REF.finditer(line):
+            bang, label, target, code = match.groups()
+            if bang or (code is not None and "/" not in code):
+                continue
+            relative = workspace_file(code if code is not None else target, workspace)
+            if relative is not None and all(relative != r for _, r in found):
+                found.append((code if code is not None else label or relative, relative))
+    return found
 
 
 def workspace_file(target: str, workspace: str | None) -> str | None:

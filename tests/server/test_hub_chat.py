@@ -147,62 +147,72 @@ def test_hub_entries_render_as_chat_markdown(entry, expected) -> None:
     assert hub_chat.render(entry, "http://h:6767") == expected
 
 
-def test_a_long_reply_is_cut_and_points_at_its_session() -> None:
-    entry = HubEntry(
-        id=4,
-        at=0,
-        role="hub",
-        kind="finished",
-        text="brasa finished: all good.",
-        session_id="s1",
-        session_name="brasa",
-        detail="x" * 13000,
-    )
-    text = hub_chat.render(entry, "")
-    assert text.startswith("brasa finished: all good.\n\n---\n\nxxx")
-    assert "… (the rest is in brasa)" in text
-    assert "Open brasa" not in text  # no address known, so no link
-
-
-def test_a_cut_never_leaves_a_code_fence_open() -> None:
-    reply = "Intro.\n\n```python\n" + "x = 1\n" * 3000 + "```\n"
-    cut = hub_chat._cut(reply, 12000, "brasa")
-    assert cut.count("```") % 2 == 0
-    assert cut.endswith("… (the rest is in brasa)")
-
-
-def test_a_finished_reply_shows_as_its_own_chat_shows_it(tmp_path) -> None:
-    (tmp_path / "RA-L" / "reviews").mkdir(parents=True)
+def _finished(tmp_path, **fields) -> HubEntry:
+    (tmp_path / "RA-L" / "reviews").mkdir(parents=True, exist_ok=True)
     (tmp_path / "RA-L" / "reviews" / "REVISION_PLAN.md").write_text("# plan\n")
-    (tmp_path / "plot.png").write_bytes(b"png")
-    reply = (
-        "The full v2 plan is in `RA-L/reviews/REVISION_PLAN.md:12`.\n\n"
-        "| Group | Conditions |\n|---|---|\n| Ours | A1, A2 |\n\n"
-        "See [the plan](RA-L/reviews/REVISION_PLAN.md) and ![speed](plot.png).\n"
-        "Not linked: `/etc/hosts`, `npm test`, `missing.md`, [docs](https://x.dev/a.md).\n"
-        "```\ncat RA-L/reviews/REVISION_PLAN.md\n```\n"
+    base = {
+        "id": 5,
+        "at": 0,
+        "role": "hub",
+        "kind": "finished",
+        "text": "RAL finished: o plano está pronto.",
+        "session_id": "s1",
+        "session_name": "RAL",
+        "workspace": str(tmp_path),
+        "detail": (
+            "I've updated the plan. The full v2 plan is in `RA-L/reviews/REVISION_PLAN.md`.\n\n"
+            "| Group | Conditions |\n|---|---|\n| Ours | A1, A2 |\n\n"
+            "Not files: `/etc/hosts`, `npm test`, `missing/notes.md`.\n"
+            "```\n| not | a table |\n|---|---|\ncat RA-L/reviews/REVISION_PLAN.md\n```\n"
+        ),
+    }
+    return HubEntry(**{**base, **fields})
+
+
+PLAN = "http://h:6767/c/s1?file=RA-L/reviews/REVISION_PLAN.md"
+
+
+def test_a_report_shows_what_the_projects_summary_shows_never_the_reply(tmp_path) -> None:
+    table = "| Group | Conditions |\n|---|---|\n| Ours | A1, A2 |"
+    entry = _finished(tmp_path, show=[{"kind": "table", "label": "table", "content": table}])
+    assert hub_chat.render(entry, "http://h:6767") == (
+        "RAL finished: o plano está pronto.\n\n"
+        f"{table}\n\n"
+        f"[`RA-L/reviews/REVISION_PLAN.md`]({PLAN})\n\n"
+        "[Open RAL ↗](http://h:6767/c/s1)"
     )
-    entry = HubEntry(
-        id=5,
-        at=0,
-        role="hub",
-        kind="finished",
-        text="RAL finished: o plano está pronto.",
-        session_id="s1",
-        session_name="RAL",
-        detail=reply,
-        workspace=str(tmp_path),
-    )
-    text = hub_chat.render(entry, "http://h:6767")
-    plan = "http://h:6767/c/s1?file=RA-L/reviews/REVISION_PLAN.md"
-    assert text.startswith("RAL finished: o plano está pronto.\n\n---\n\n")
-    assert f"[`RA-L/reviews/REVISION_PLAN.md:12`]({plan})" in text
-    assert "| Group | Conditions |\n|---|---|\n| Ours | A1, A2 |" in text  # a table, not a quote
-    assert f"[the plan]({plan})" in text
-    assert "[speed](http://h:6767/c/s1?file=plot.png)" in text
-    assert "`/etc/hosts`, `npm test`, `missing.md`, [docs](https://x.dev/a.md)" in text
-    assert "```\ncat RA-L/reviews/REVISION_PLAN.md\n```" in text  # code stays code
-    assert text.endswith("[Open RAL ↗](http://h:6767/c/s1)")
+
+
+def test_without_a_summary_the_report_lifts_only_the_replys_tables(tmp_path) -> None:
+    text = hub_chat.render(_finished(tmp_path), "http://h:6767")
+    assert "| Group | Conditions |\n|---|---|\n| Ours | A1, A2 |" in text
+    assert "I've updated the plan" not in text and "| not | a table |" not in text
+    assert f"[`RA-L/reviews/REVISION_PLAN.md`]({PLAN})" in text
+
+
+def test_without_the_apps_address_a_report_makes_no_links(tmp_path) -> None:
+    text = hub_chat.render(_finished(tmp_path), "")
+    assert "](http" not in text and "?file=" not in text
+    assert text.startswith("RAL finished: o plano está pronto.\n\n| Group |")
+
+
+def test_show_blocks_render_as_the_chat_draws_them(tmp_path) -> None:
+    (tmp_path / "plots").mkdir()
+    (tmp_path / "plots" / "speed.png").write_bytes(b"png")
+    blocks = [
+        {"kind": "output", "label": "pytest", "content": "17 passed"},
+        {"kind": "link", "label": "the PR", "content": "https://github.com/o/r/pull/7"},
+        {"kind": "image", "label": "diagram", "content": "https://x.dev/d.png"},
+        {"kind": "image", "label": "speed", "content": str(tmp_path / "plots" / "speed.png")},
+        {"kind": "image", "label": "chart", "content": "/v1/sessions/s1/resources/files/f1"},
+    ]
+    shown = hub_chat.show_markdown(blocks, str(tmp_path), lambda rel: f"u/{rel}")
+    assert shown == (
+        "```\n17 passed\n```\n\n"
+        "[the PR](https://github.com/o/r/pull/7)\n\n"
+        "![diagram](https://x.dev/d.png)\n\n"
+        "[speed](u/plots/speed.png)"
+    )  # the stored chart travels as a copied file instead
 
 
 @pytest.mark.parametrize(
@@ -546,7 +556,9 @@ async def test_a_reply_and_its_chart_reach_the_hub_as_the_project_shows_them(
 
     said = (await _items(client, hub_id))[-1]
     text, attached = said["content"][0]["text"], said["content"][1]
+    assert text.startswith("RAL paper finished: Terminou, com a tabela e o gráfico.")
     assert "| Run | Time |\n|---|---|\n| A | 3 s |" in text
+    assert "Done." not in text  # the reply itself stays in its chat
     assert attached["type"] == "output_file" and attached["filename"] == "speed.png"
     assert attached["file_id"] != chart_id  # the hub chat owns its own copy
     copy = await client.get(f"/v1/sessions/{hub_id}/resources/files/{attached['file_id']}/content")
