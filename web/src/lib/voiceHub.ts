@@ -1,5 +1,5 @@
 /**
- * The voice hub: one call that reaches every session, the hub chat's voice,
+ * The voice hub: one call that reaches every project, the hub chat's voice,
  * on whichever live engine is chosen.
  *
  * Gemini and Unmute: their relay (`?mode=hub`) briefs the call on every recent
@@ -56,9 +56,9 @@ const DONE_SHOWN_MS = 6_000;
 
 /** The pill's words for a running hub tool. */
 export function describeHubTool(tool: string, project: string): string {
-  const where = project || "a session";
+  const where = project || "a project";
   if (tool === "session_status" || tool === "project_status") {
-    return project === "all" ? "Looking at every session" : `Looking at ${where}`;
+    return project === "all" ? "Looking at every project" : `Looking at ${where}`;
   }
   if (tool === "ask_claude") return `Sending to ${where}'s Claude`;
   if (tool === "check_machine") return `Checking on ${where} (read-only)`;
@@ -115,14 +115,14 @@ export const useVoiceHubStore = create<VoiceHubState>((set, get) => {
       return;
     }
     gptHubId = hubId;
-    set({ active: true, connecting: false, notice: "Listening — every session" });
+    set({ active: true, connecting: false, notice: "Listening — every project" });
     unwatchGpt = live.subscribe((state) => {
       if (gptHubId !== hubId) return;
       if (state.sessionId !== hubId) {
         finish(state.error ? `Hub ended: ${state.error}` : null, state.error ? "warn" : "info");
         return;
       }
-      set({ notice: state.notice ?? "Listening — every session", noticeTone: state.noticeTone });
+      set({ notice: state.notice ?? "Listening — every project", noticeTone: state.noticeTone });
     });
   };
 
@@ -149,7 +149,7 @@ export const useVoiceHubStore = create<VoiceHubState>((set, get) => {
           endpoint: hubEndpoint(engine),
           onEvent,
           onStateChange: (st) => {
-            if (st.state === "ready") set({ notice: "Listening — every session" });
+            if (st.state === "ready") set({ notice: "Listening — every project" });
             else if (st.state === "waiting") set({ notice: "Still thinking…" });
             else if (st.state === "nudged") {
               set({ notice: `${voice} went quiet — asking it to answer`, noticeTone: "warn" });

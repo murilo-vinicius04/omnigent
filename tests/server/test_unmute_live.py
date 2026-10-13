@@ -224,6 +224,12 @@ def test_a_call_speaks_with_the_voice_the_page_chose() -> None:
 
 def _app(**kwargs: Any) -> TestClient:
     app = FastAPI()
+
+    @app.get("/v1/projects")
+    async def projects() -> dict[str, Any]:
+        # The one project the hub's backend reads: "orders", holding s-brasa.
+        return {"data": [{"id": "p-orders", "name": "orders", "created_at": 1, "config": {}}]}
+
     app.include_router(routes.create_unmute_live_router(**kwargs), prefix="/v1")
     return TestClient(app)
 
@@ -400,10 +406,17 @@ def _hub(tmp_path, sent: list[tuple[str, str]]):
         HubCandidate,
         HubSession,
         HubState,
+        ProjectRecord,
         TurnState,
     )
 
     sessions = [HubSession(id="s-brasa", title="Orders", nickname="brasa")]
+
+    async def projects():
+        return [ProjectRecord(id="p-brasa", name="brasa", chat_ids=("s-brasa",))]
+
+    async def unused(*args):
+        raise AssertionError("the voice never changes projects")
 
     async def listed(ids):
         return [s for s in sessions if s.id in ids]
@@ -435,6 +448,11 @@ def _hub(tmp_path, sent: list[tuple[str, str]]):
             send=send,
             check=check,
             turn=turn,
+            projects=projects,
+            create_project=unused,
+            rename_project=unused,
+            delete_project=unused,
+            file_chat=unused,
         )
     )
     return hub
@@ -538,7 +556,11 @@ class _HubStore:
     def list_conversations(self, **kwargs):
         from types import SimpleNamespace
 
-        return SimpleNamespace(data=list(self.convs.values()))
+        project = kwargs.get("project")
+        convs = list(self.convs.values())
+        if project is not None:
+            convs = [c for c in convs if (c.id == "s-brasa") == (project == "orders")]
+        return SimpleNamespace(data=convs)
 
     def list_items(self, session_id, limit=100, order="asc", type=None):
         from types import SimpleNamespace
@@ -548,6 +570,8 @@ class _HubStore:
 
 def test_a_call_from_the_hub_conversation_is_the_hubs_voice(monkeypatch, tmp_path) -> None:
     from omnigent.server import hub as hub_module
+
+    monkeypatch.setenv("OMNIGENT_HUB_MODEL", "test-hub-model")  # never asks the real agy
 
     monkeypatch.setattr(hub_module, "HUB_DIR", tmp_path / "hub")
     monkeypatch.setattr(hub_module, "_HUBS", {})
@@ -581,7 +605,7 @@ def test_a_call_from_the_hub_conversation_is_the_hubs_voice(monkeypatch, tmp_pat
             time.sleep(0.02)
     [call] = opened
     assert call.hub is hub
-    assert '"Orders" · idle' in (call.instructions or "")  # briefed on every session
+    assert 'orders · "Orders" · idle' in (call.instructions or "")  # briefed on every project
     assert "hubconv" not in (call.instructions or "")  # never offers itself
     asked = [e for e in unmute.sent if e["type"] == "unmute.response.create"]
     assert len(asked) == 1  # the send is not news; the finish is

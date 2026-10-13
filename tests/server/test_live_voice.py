@@ -357,7 +357,12 @@ class _HubStore:
     def list_conversations(self, **kwargs):
         from types import SimpleNamespace
 
-        return SimpleNamespace(data=list(self.convs.values()))
+        # One project, "orders", holds s-brasa; the hub itself is in none.
+        project = kwargs.get("project")
+        convs = list(self.convs.values())
+        if project is not None:
+            convs = [c for c in convs if (c.id == "s-brasa") == (project == "orders")]
+        return SimpleNamespace(data=convs)
 
     def list_items(self, session_id, limit=100, order="asc", type=None):
         from types import SimpleNamespace
@@ -365,10 +370,22 @@ class _HubStore:
         return SimpleNamespace(data=[])
 
 
+def _with_orders_project(app: FastAPI) -> FastAPI:
+    """Serve the one project the hub's backend reads through the app's routes."""
+
+    @app.get("/v1/projects")
+    async def projects() -> dict:
+        return {"data": [{"id": "p-orders", "name": "orders", "created_at": 1, "config": {}}]}
+
+    return app
+
+
 def test_a_call_in_the_hub_conversation_is_the_hubs_voice(monkeypatch, tmp_path):
     """GPT-Live cannot call the hub's tools, so it delegates and the hub acts."""
     from omnigent.server import hub as hub_module
     from omnigent.server import voice_hub
+
+    monkeypatch.setenv("OMNIGENT_HUB_MODEL", "test-hub-model")  # never asks the real agy
 
     monkeypatch.setattr(hub_module, "HUB_DIR", tmp_path / "hub")
     monkeypatch.setattr(hub_module, "_HUBS", {})
@@ -379,7 +396,7 @@ def test_a_call_in_the_hub_conversation_is_the_hubs_voice(monkeypatch, tmp_path)
         return "live_h", "v=0 answer"
 
     monkeypatch.setattr("omnigent.server.routes.live_voice.open_session", accept)
-    app = FastAPI()
+    app = _with_orders_project(FastAPI())
     app.include_router(create_live_voice_router(conversation_store=_HubStore()), prefix="/v1")
     with TestClient(app) as tc:
         hub_call = tc.post("/v1/live/offer", json={"sdp": "v=0", "session_id": "hubconv"})
@@ -387,7 +404,7 @@ def test_a_call_in_the_hub_conversation_is_the_hubs_voice(monkeypatch, tmp_path)
         plain = tc.post("/v1/live/offer", json={"sdp": "v=0", "session_id": "s-brasa"})
     assert hub_call.json()["hub"] is True
     assert prompt.startswith(voice_hub.DELEGATING_HUB_ROLE)
-    assert '"Orders" · WORKING' in prompt and '"Hub"' not in prompt
+    assert 'orders · "Orders" · WORKING' in prompt and '"Hub"' not in prompt
     # Client delegation: the hub answers what is delegated, not a backend model.
     assert seen["backend"] is None
     assert plain.json()["hub"] is False

@@ -1,4 +1,4 @@
-"""The hub chat: routing decisions, the log, sending, watching, and its routes."""
+"""The hub chat: projects, routing decisions, the log, sending, watching, its routes."""
 
 from __future__ import annotations
 
@@ -22,13 +22,17 @@ from omnigent.server.hub import (
     Hub,
     HubBackend,
     HubCandidate,
+    HubProject,
     HubRouter,
     HubSession,
     HubState,
+    ProjectRecord,
     TurnState,
     assign_handles,
+    find_project,
     find_session,
     parse_decision,
+    project_line,
     session_line,
 )
 from omnigent.server.routes.hub import create_hub_router
@@ -36,6 +40,9 @@ from omnigent.server.routes.hub import create_hub_router
 AMARRAS = "d14bc7496a6a42b6b6a0730b3f4f5f20"
 BRASA = "ba9b8af460dd40f5b333b58f72d0683c"
 AUDIO = "247c77f5f57748b0a2747e4b14548cac"
+#: Project ids: their handles are "aaaa" and "bbbb".
+P_AMARRAS = "aaaa1111aaaa1111aaaa1111aaaa1111"
+P_BRASA = "bbbb2222bbbb2222bbbb2222bbbb2222"
 
 
 @pytest.mark.parametrize(
@@ -51,6 +58,7 @@ AUDIO = "247c77f5f57748b0a2747e4b14548cac"
         ('{"check": "ba9b", "question": "Disk free?"}', "check", "ba9b", "", "Disk free?"),
         ('{"status": "247c"}', "status", "247c", "", ""),
         ('{"ask": "Which one?"}', "ask", None, "Which one?", ""),
+        ('{"new_project": "robot arm", "say": "Ok."}', "new_project", None, "Ok.", "robot arm"),
         ('Sure! {"answer": "Oi!"} ', "answer", None, "Oi!", ""),
         ("no json here", "none", None, "no json here", ""),
         ('{"answer": ', "none", None, '{"answer":', ""),
@@ -64,11 +72,6 @@ def test_router_replies_parse_into_one_action(reply, action, handle, text, messa
         text,
         message,
     )
-
-
-def test_a_reply_can_teach_the_hub_a_name() -> None:
-    decision = parse_decision('{"answer": "Ok.", "names": {"d14b": "amarras", "x": " "}}')
-    assert decision.names == {"d14b": "amarras"}
 
 
 def test_handles_are_the_shortest_unique_prefix() -> None:
@@ -100,6 +103,34 @@ SESSIONS = [
 def test_sessions_are_found_by_handle_nickname_or_title(spoken, expected) -> None:
     found = find_session(SESSIONS, spoken)
     assert (found.id if found else None) == expected
+
+
+def test_projects_are_found_by_handle_name_or_their_chats_title() -> None:
+    projects = [
+        HubProject(id=P_AMARRAS, name="amarras", handle="aaaa", chat=SESSIONS[0]),
+        HubProject(id=P_BRASA, name="brasa", handle="bbbb"),
+    ]
+    assert find_project(projects, "aaaa").id == P_AMARRAS
+    assert find_project(projects, "a marras").id == P_AMARRAS
+    assert find_project(projects, "project analysis and organization").id == P_AMARRAS
+    assert find_project(projects, "brassa").id == P_BRASA
+    assert find_project(projects, "kitchen") is None
+
+
+def test_a_project_without_a_chat_says_nothing_can_be_sent_to_it() -> None:
+    line = project_line(HubProject(id=P_BRASA, name="brasa", handle="bbbb"))
+    assert line == "[bbbb] brasa · no chat yet: nothing can be sent to it"
+    many = project_line(
+        HubProject(
+            id=P_AMARRAS,
+            name="amarras",
+            handle="aaaa",
+            chats=3,
+            chat=replace(SESSIONS[0], handle="aaaa"),
+        )
+    )
+    assert many.startswith('[aaaa] amarras · "Project Analysis and Organization"')
+    assert many.endswith("3 chats, this is the newest")
 
 
 def test_a_session_line_says_what_the_router_needs() -> None:
@@ -191,17 +222,41 @@ class _Router:
 
 
 class _Server:
-    """The sessions, sends and turn states the hub sees."""
+    """The projects, chats, sends and turn states the hub sees."""
 
     def __init__(self) -> None:
         self.sessions = [
-            HubSession(id=AMARRAS, title="Project Analysis", first_ask="petrobras chains docs"),
-            HubSession(id=BRASA, title="Cloned project review"),
+            HubSession(
+                id=AMARRAS,
+                title="Project Analysis",
+                first_ask="petrobras chains docs",
+                project_id=P_AMARRAS,
+            ),
+            HubSession(id=BRASA, title="Cloned project review", project_id=P_BRASA),
+            HubSession(id="loose0", title="Greeting"),
+        ]
+        self.projects = [
+            ProjectRecord(id=P_AMARRAS, name="amarras", chat_ids=(AMARRAS,), created_at=1.0),
+            ProjectRecord(id=P_BRASA, name="brasa", chat_ids=(BRASA,), created_at=2.0),
         ]
         self.sent: list[tuple[str, str]] = []
         self.checked: list[tuple[str, str]] = []
         self.turns: list[TurnState] = []
         self.fail_send = False
+        self.created: list[tuple[str, str | None]] = []
+
+    def _file(self, session_id: str, project_id: str) -> None:
+        self.projects = [
+            replace(r, chat_ids=tuple(c for c in r.chat_ids if c != session_id))
+            for r in self.projects
+        ]
+        self.projects = [
+            replace(r, chat_ids=(session_id, *r.chat_ids)) if r.id == project_id else r
+            for r in self.projects
+        ]
+        self.sessions = [
+            replace(s, project_id=project_id) if s.id == session_id else s for s in self.sessions
+        ]
 
     def backend(self) -> HubBackend:
         async def sessions(ids):
@@ -211,6 +266,7 @@ class _Server:
             return [
                 HubCandidate(id=s.id, title=s.title, updated_at=s.updated_at)
                 for s in self.sessions
+                if not s.project_id
             ]
 
         async def activity(session_id):
@@ -228,6 +284,32 @@ class _Server:
         async def turn(session_id, since):
             return self.turns.pop(0) if len(self.turns) > 1 else self.turns[0]
 
+        async def projects():
+            return list(self.projects)
+
+        async def create_project(name, from_chat):
+            self.created.append((name, from_chat))
+            record = ProjectRecord(id=f"new{len(self.created)}" + "0" * 28, name=name)
+            self.projects.append(record)
+            if from_chat:
+                self._file(from_chat, record.id)
+            return next(r for r in self.projects if r.id == record.id)
+
+        async def rename_project(project_id, name):
+            self.projects = [
+                replace(r, name=name) if r.id == project_id else r for r in self.projects
+            ]
+
+        async def delete_project(project_id):
+            found = next(r for r in self.projects if r.id == project_id)
+            for chat_id in found.chat_ids:
+                self._file(chat_id, "")
+            self.projects = [r for r in self.projects if r.id != project_id]
+            return len(found.chat_ids)
+
+        async def file_chat(session_id, project_id):
+            self._file(session_id, project_id)
+
         return HubBackend(
             sessions=sessions,
             listing=listing,
@@ -235,6 +317,11 @@ class _Server:
             send=send,
             check=check,
             turn=turn,
+            projects=projects,
+            create_project=create_project,
+            rename_project=rename_project,
+            delete_project=delete_project,
+            file_chat=file_chat,
         )
 
 
@@ -258,10 +345,9 @@ async def _settle(hub: Hub, *, until=None, timeout: float = 2.0) -> None:
     raise AssertionError("hub did not settle")
 
 
-async def test_a_message_goes_to_the_session_it_is_about_and_comes_back(tmp_path) -> None:
+async def test_a_message_goes_to_the_project_it_is_about_and_comes_back(tmp_path) -> None:
     router = _Router(
-        '{"send": "d14b", "message": "Summarize the mean error.", "say": "Mandei pra amarras.",'
-        ' "names": {"d14b": "amarras"}}'
+        '{"send": "aaaa", "message": "Summarize the mean error.", "say": "Mandei pra amarras."}'
     )
     server = _Server()
     server.turns = [
@@ -275,33 +361,61 @@ async def test_a_message_goes_to_the_session_it_is_about_and_comes_back(tmp_path
     assert (said.role, said.kind, said.via) == ("you", "message", "typed")
     await _settle(hub, until=lambda: any(e.kind == "finished" for e in hub.state.entries))
 
+    # Sent to the project's chat; the router saw projects, not loose chats.
     assert server.sent == [(AMARRAS, "Summarize the mean error.")]
-    assert "[d14b]" in router.prompts[0] and "manda a amarras" in router.prompts[0]
+    assert '[aaaa] amarras · "Project Analysis"' in router.prompts[0]
+    assert "[bbbb] brasa" in router.prompts[0] and "Greeting" not in router.prompts[0]
+    assert "manda a amarras" in router.prompts[0]
     kinds = [(e.role, e.kind) for e in hub.state.entries]
     assert kinds == [("you", "message"), ("hub", "sent"), ("hub", "finished")]
     sent, finished = hub.state.entries[1], hub.state.entries[2]
     assert sent.text == "Mandei pra amarras." and sent.detail == "Summarize the mean error."
-    assert sent.session_name == "amarras"  # learned from this very reply
+    assert (sent.session_id, sent.session_name) == (AMARRAS, "amarras")
     assert finished.text == "amarras finished: It fixed the scanner and all tests pass."
-    # The newest reply, read after the session stayed idle, is the one reported.
+    # The newest reply, read after the chat stayed idle, is the one reported.
     assert finished.detail == "Mean error is 3 mm across all 40 frets."
     assert "Mean error is 3 mm across all 40 frets." in router.performed[0]
-    assert hub.state.names == {AMARRAS: "amarras"}
 
 
-async def test_an_unknown_session_sends_nothing(tmp_path) -> None:
+async def test_a_message_goes_to_the_projects_newest_chat(tmp_path) -> None:
+    router = _Router('{"send": "bbbb", "message": "Run it.", "say": "Sent."}')
+    server = _Server()
+    server.turns = [TurnState(status="idle", reply="Done.")]
+    server._file("loose0", P_BRASA)  # now brasa's newest chat
+    hub = _hub(tmp_path, router, server)
+    hub.submit("run it in brasa")
+    await _settle(hub)
+    assert server.sent == [("loose0", "Run it.")]
+    await hub.close()
+
+
+async def test_an_unknown_project_sends_nothing(tmp_path) -> None:
     router = _Router('{"send": "zzzz", "message": "x", "say": "Sent."}')
     server = _Server()
     hub = _hub(tmp_path, router, server)
     hub.submit("send it to the kitchen")
     await _settle(hub)
     assert server.sent == []
-    assert "couldn't tell which session" in hub.state.entries[-1].text
-    assert "Project Analysis, Cloned project review" in hub.state.entries[-1].text
+    assert hub.state.entries[-1].text == (
+        "I couldn't tell which project you mean. Your projects: brasa, amarras."
+    )
 
 
-async def test_a_status_question_reads_the_session_live(tmp_path) -> None:
-    router = _Router('{"status": "ba9b"}', '{"answer": "Brasa terminou e está parada."}')
+async def test_a_project_without_a_chat_gets_a_link_to_start_one(tmp_path) -> None:
+    router = _Router('{"send": "cccc", "message": "Build it.", "say": "Sent."}')
+    server = _Server()
+    server.projects.append(ProjectRecord(id="cccc" + "3" * 28, name="robot arm"))
+    hub = _hub(tmp_path, router, server)
+    hub.submit("tell robot arm to build it")
+    await _settle(hub)
+    assert server.sent == []
+    last = hub.state.entries[-1]
+    assert last.kind == "attention" and "robot arm has no chat yet" in last.text
+    assert last.link == "/?project=robot%20arm"
+
+
+async def test_a_status_question_reads_the_project_live(tmp_path) -> None:
+    router = _Router('{"status": "bbbb"}', '{"answer": "Brasa terminou e está parada."}')
     server = _Server()
     hub = _hub(tmp_path, router, server)
     hub.submit("o que a brasa tá fazendo?")
@@ -316,14 +430,14 @@ async def test_a_status_question_reads_the_session_live(tmp_path) -> None:
 
 
 async def test_a_check_runs_read_only_and_reports(tmp_path) -> None:
-    router = _Router('{"check": "d14b", "question": "How much disk is free?"}')
+    router = _Router('{"check": "aaaa", "question": "How much disk is free?"}')
     server = _Server()
     hub = _hub(tmp_path, router, server)
     hub.submit("quanto de disco livre?")
     await _settle(hub)
     assert server.checked == [(AMARRAS, "How much disk is free?")]
     assert [e.text for e in hub.state.entries if e.kind == "check"] == [
-        "Checking on Project Analysis…",
+        "Checking on amarras…",
         "18 GB free.",
     ]
 
@@ -341,7 +455,7 @@ async def test_a_router_that_cannot_answer_says_so_and_sends_nothing(tmp_path) -
 
 
 async def test_a_failed_send_is_reported_and_not_watched(tmp_path) -> None:
-    router = _Router('{"send": "ba9b", "message": "Run it.", "say": "Sent."}')
+    router = _Router('{"send": "bbbb", "message": "Run it.", "say": "Sent."}')
     server = _Server()
     server.fail_send = True
     hub = _hub(tmp_path, router, server)
@@ -352,8 +466,8 @@ async def test_a_failed_send_is_reported_and_not_watched(tmp_path) -> None:
     assert hub._watches == {}
 
 
-async def test_a_session_waiting_for_approval_is_flagged_once(tmp_path) -> None:
-    router = _Router('{"send": "ba9b", "message": "Deploy.", "say": "Sent."}')
+async def test_a_project_waiting_for_approval_is_flagged_once(tmp_path) -> None:
+    router = _Router('{"send": "bbbb", "message": "Deploy.", "say": "Sent."}')
     server = _Server()
     server.turns = [
         TurnState(status="waiting", pending_approvals=1),
@@ -365,12 +479,12 @@ async def test_a_session_waiting_for_approval_is_flagged_once(tmp_path) -> None:
     hub.submit("deploy brasa")
     await _settle(hub, until=lambda: any(e.kind == "finished" for e in hub.state.entries))
     attention = [e.text for e in hub.state.entries if e.kind == "attention"]
-    assert attention == ["Cloned project review is waiting for your approval."]
+    assert attention == ["brasa is waiting for your approval."]
 
 
-async def test_a_session_that_never_starts_is_flagged(tmp_path, monkeypatch) -> None:
+async def test_a_project_that_never_starts_is_flagged(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(hub_module, "NOT_STARTED_S", 0.05)
-    router = _Router('{"send": "ba9b", "message": "Go.", "say": "Sent."}')
+    router = _Router('{"send": "bbbb", "message": "Go.", "say": "Sent."}')
     server = _Server()
     server.turns = [TurnState(status="idle")]
     hub = _hub(tmp_path, router, server)
@@ -379,53 +493,110 @@ async def test_a_session_that_never_starts_is_flagged(tmp_path, monkeypatch) -> 
     assert "hasn't started on it yet" in hub.state.entries[-1].text
 
 
-# -- which sessions the hub runs ----------------------------------------------
+# -- projects ---------------------------------------------------------------------
 
 
-async def test_a_new_hub_starts_with_the_sessions_they_named(tmp_path) -> None:
-    HubState("u1", root=tmp_path).name(BRASA, "brasa")
-    hub = _hub(tmp_path, _Router(), _Server())
-    assert [s.name for s in await hub.sessions()] == ["brasa"]
-    assert HubState("u1", root=tmp_path).members == [BRASA]
-
-
-async def test_without_names_a_new_hub_starts_with_this_weeks_sessions(tmp_path) -> None:
+async def test_projects_are_newest_first_with_their_newest_chat(tmp_path) -> None:
     server = _Server()
-    server.sessions[1] = replace(server.sessions[1], updated_at=time.time() - 30 * 24 * 3600)
+    server.sessions[0] = replace(server.sessions[0], updated_at=50.0)
+    server.projects.append(ProjectRecord(id="cccc" + "3" * 28, name="empty", created_at=9.0))
     hub = _hub(tmp_path, _Router(), server)
-    assert [s.id for s in await hub.sessions()] == [AMARRAS]
-    # A session started later stays out until they add it.
-    server.sessions.append(HubSession(id="new0", title="Greeting"))
-    assert [s.id for s in await hub.sessions()] == [AMARRAS]
-    assert [c.id for c in await hub.candidates()] == [BRASA, "new0"]
+    projects = await hub.projects()
+    assert [(p.name, p.handle, p.chats) for p in projects] == [
+        ("amarras", "aaaa", 1),
+        ("empty", "cccc", 0),
+        ("brasa", "bbbb", 1),
+    ]
+    assert projects[0].chat.name == "amarras" and projects[0].chat.handle == "aaaa"
+    assert projects[1].chat is None
+    # The voice reaches each project through its chat, by the project's name.
+    assert [s.name for s in await hub.sessions()] == ["amarras", "brasa"]
 
 
-async def test_sessions_are_added_renamed_and_removed(tmp_path) -> None:
-    HubState("u1", root=tmp_path).set_members([AMARRAS])
+async def test_the_old_session_list_becomes_projects_once(tmp_path) -> None:
+    state = HubState("u1", root=tmp_path)
+    state.set_members([AMARRAS, "loose0", "gone"])
+    state.name("loose0", "greetings")
+    server = _Server()
+    server.projects = []
+    server.sessions[0] = replace(server.sessions[0], project_id="")
+    server.sessions[1] = replace(server.sessions[1], project_id="")
+    hub = _hub(tmp_path, _Router(), server)
+    assert sorted(p.name for p in await hub.projects()) == ["Project Analysis", "greetings"]
+    assert server.created == [("Project Analysis", AMARRAS), ("greetings", "loose0")]
+    # Done once: a project deleted later is not made again.
+    server.projects = []
+    assert await hub.projects() == []
+    assert len(server.created) == 2
+    assert HubState("u1", root=tmp_path).moved_to_projects
+
+
+async def test_a_moved_name_that_is_taken_gets_a_number(tmp_path) -> None:
+    state = HubState("u1", root=tmp_path)
+    state.set_members(["loose0"])
+    state.name("loose0", "Brasa")
     hub = _hub(tmp_path, _Router(), _Server())
-    assert await hub.add("not-theirs") is None
-    added = await hub.add(BRASA)
-    assert added is not None
-    assert (added.kind, added.text) == ("members", "Added Cloned project review to the hub.")
-    assert await hub.add(BRASA) is None  # already in
-    by_id = {s.id: s for s in await hub.sessions()}
-    assert set(by_id) == {AMARRAS, BRASA}
+    await hub.projects()
+    names = [r.name for r in await hub.require_backend().projects()]
+    assert names == ["amarras", "brasa", "Brasa 2"]
 
-    renamed = await hub.rename(by_id[BRASA], "  brasa ")
-    assert renamed.text == "Renamed Cloned project review to brasa."
-    by_id = {s.id: s for s in await hub.sessions()}
-    with pytest.raises(ValueError, match="brasa is already called that"):
-        await hub.rename(by_id[AMARRAS], "Brasa")
-    assert (await hub.rename(by_id[BRASA], "")).text == "Renamed brasa to Cloned project review."
-    assert BRASA not in HubState("u1", root=tmp_path).names
 
-    by_id = {s.id: s for s in await hub.sessions()}
-    removed = await hub.remove(by_id[BRASA])
-    assert removed.text == (
-        "Took Cloned project review out of the hub; the session itself is untouched."
+async def test_projects_are_made_renamed_given_chats_and_deleted(tmp_path) -> None:
+    server = _Server()
+    hub = _hub(tmp_path, _Router(), server)
+
+    with pytest.raises(ValueError, match="already a project called brasa"):
+        await hub.create_project(" Brasa ")
+    with pytest.raises(ValueError, match="needs a name"):
+        await hub.create_project("  ")
+    entry, record = await hub.create_project("robot  arm")
+    assert (entry.kind, record.name, entry.link) == (
+        "project",
+        "robot arm",
+        "/?project=robot%20arm",
     )
-    assert [s.id for s in await hub.sessions()] == [AMARRAS]
-    assert HubState("u1", root=tmp_path).members == [AMARRAS]
+    assert entry.text.startswith("Created project robot arm. It has no chat yet")
+
+    with pytest.raises(ValueError, match="not one of yours outside every project"):
+        await hub.create_project("again", from_chat=AMARRAS)  # already in amarras
+    entry, _ = await hub.create_project("hello", from_chat="loose0")
+    assert entry.text == "Created project hello, with “Greeting” as its chat."
+    assert entry.session_id == "loose0" and entry.link is None
+
+    by_name = {p.name: p for p in await hub.projects()}
+    with pytest.raises(ValueError, match="already a project called amarras"):
+        await hub.rename_project(by_name["robot arm"], "AMARRAS")
+    renamed = await hub.rename_project(by_name["robot arm"], "arm")
+    assert renamed.text == "Renamed robot arm to arm."
+
+    server.sessions.append(HubSession(id="loose1", title="Notes"))
+    by_name = {p.name: p for p in await hub.projects()}
+    with pytest.raises(ValueError):
+        await hub.add_chat(by_name["arm"], AMARRAS)
+    added = await hub.add_chat(by_name["arm"], "loose1")
+    assert added.text == "Moved “Notes” into arm."
+    assert {p.name: p.chats for p in await hub.projects()}["arm"] == 1
+
+    deleted = await hub.delete_project({p.name: p for p in await hub.projects()}["arm"])
+    assert deleted.text == "Deleted project arm; its chat is kept, outside any project."
+    assert "arm" not in {p.name for p in await hub.projects()}
+    assert "loose1" in {c.id for c in await hub.candidates()}
+
+
+async def test_a_new_project_can_be_asked_for_in_the_chat(tmp_path) -> None:
+    router = _Router('{"new_project": "robot arm", "say": "Criando."}', '{"new_project": "brasa"}')
+    server = _Server()
+    hub = _hub(tmp_path, router, server)
+    hub.submit("cria um projeto robot arm")
+    await _settle(hub)
+    last = hub.state.entries[-1]
+    assert (last.kind, last.link) == ("project", "/?project=robot%20arm")
+    assert server.created == [("robot arm", None)]
+    hub.submit("cria brasa")
+    await _settle(hub)
+    assert (
+        hub.state.entries[-1].text == "I didn't make it: there is already a project called brasa."
+    )
 
 
 # -- reading sessions from the stores -----------------------------------------
@@ -478,10 +649,19 @@ class _ConvStore:
             ]
         }
         self.listed: list[dict] = []
+        #: Project name -> id, for listing a project's chats.
+        self.project_ids: dict[str, str] = {}
 
     def list_conversations(self, **kwargs):
         self.listed.append(kwargs)
-        return SimpleNamespace(data=list(self.convs))
+        project = kwargs.get("project")
+        convs = list(self.convs)
+        if project == "":
+            convs = [c for c in convs if not getattr(c, "project_id", None)]
+        elif project is not None:
+            wanted = self.project_ids.get(project)
+            convs = [c for c in convs if getattr(c, "project_id", None) == wanted]
+        return SimpleNamespace(data=convs)
 
     def get_conversation(self, session_id):
         return next((c for c in self.convs if c.id == session_id), None)
@@ -521,6 +701,7 @@ async def test_the_listing_is_theirs_newest_first() -> None:
     ]
     assert store.listed[0]["owned_by"] == "morys5"
     assert store.listed[0]["sort_by"] == "updated_at"
+    assert store.listed[0]["project"] == ""  # only chats outside every project
 
 
 async def test_an_archived_session_drops_out_of_the_hub() -> None:
@@ -567,6 +748,84 @@ async def test_the_hub_never_offers_itself_or_an_excluded_session() -> None:
     assert await backend.sessions([AMARRAS]) == []
 
 
+def _projects_app(store: _ConvStore) -> tuple[FastAPI, list[tuple[str, str, object]]]:
+    """The projects and session routes the store backend calls, recorded."""
+    calls: list[tuple[str, str, object]] = []
+    rows: dict[str, dict] = {}
+    app = FastAPI()
+
+    @app.get("/v1/projects")
+    async def list_projects():
+        return {"data": list(rows.values())}
+
+    @app.post("/v1/projects")
+    async def create(body: dict):
+        pid = f"{len(rows) + 1:032d}"
+        rows[pid] = {"id": pid, "name": body["name"], "created_at": 5, "config": body["config"]}
+        store.project_ids[body["name"]] = pid
+        calls.append(("POST", "/v1/projects", body))
+        return rows[pid]
+
+    @app.patch("/v1/projects/{pid}")
+    async def rename(pid: str, body: dict):
+        calls.append(("PATCH", f"/v1/projects/{pid}", body))
+        store.project_ids[body["name"]] = store.project_ids.pop(rows[pid]["name"])
+        rows[pid]["name"] = body["name"]
+        return rows[pid]
+
+    @app.delete("/v1/projects/{pid}")
+    async def delete(pid: str):
+        calls.append(("DELETE", f"/v1/projects/{pid}", None))
+        store.project_ids.pop(rows.pop(pid)["name"])
+        return {"deleted": True}
+
+    @app.patch("/v1/sessions/{sid}")
+    async def file(sid: str, body: dict):
+        calls.append(("PATCH", f"/v1/sessions/{sid}", body))
+        store.get_conversation(sid).project_id = body["project_id"] or None
+        return {}
+
+    return app, calls
+
+
+async def test_store_projects_go_through_the_projects_routes() -> None:
+    store = _ConvStore()
+    store.convs[0].host_id = "host1"
+    store.convs[0].agent_id = "claude-native"
+    app, calls = _projects_app(store)
+    registry = DiscussionRegistry()
+    backend = hub_module.store_backend(
+        store, user_id="morys5", app=app, headers={}, companions=lambda: registry
+    )
+
+    record = await backend.create_project("amarras", AMARRAS)
+    assert (record.name, record.folder, record.chat_ids) == ("amarras", "/home/x", (AMARRAS,))
+    # Its new chats start where the chat it was made from runs.
+    assert calls[0] == (
+        "POST",
+        "/v1/projects",
+        {
+            "name": "amarras",
+            "config": {"workspace": "/home/x", "host_id": "host1", "agent_id": "claude-native"},
+        },
+    )
+    assert calls[1] == ("PATCH", f"/v1/sessions/{AMARRAS}", {"project_id": record.id})
+    listed = await backend.projects()
+    assert [(r.name, r.folder, r.chat_ids) for r in listed] == [("amarras", "/home/x", (AMARRAS,))]
+    assert store.listed[-1]["project"] == "amarras"
+    assert [c.id for c in await backend.listing()] == [BRASA]
+
+    await backend.rename_project(record.id, "chains")
+    assert [r.name for r in await backend.projects()] == ["chains"]
+    assert await backend.delete_project(record.id) == 1
+    assert calls[-2:] == [
+        ("PATCH", f"/v1/sessions/{AMARRAS}", {"project_id": ""}),
+        ("DELETE", f"/v1/projects/{record.id}", None),
+    ]
+    assert await backend.projects() == []
+    assert [c.id for c in await backend.listing()] == [AMARRAS, BRASA]
+
+
 # -- the routes ------------------------------------------------------------------
 
 
@@ -587,7 +846,7 @@ def test_the_hub_needs_a_signed_in_user(tmp_path) -> None:
 
 
 async def test_a_voice_ask_returns_what_the_hub_said_with_the_call_in_the_prompt(tmp_path) -> None:
-    router = _Router('{"send": "ba9b", "message": "Run the tests.", "say": "Mandei pra brasa."}')
+    router = _Router('{"send": "bbbb", "message": "Run the tests.", "say": "Mandei pra brasa."}')
     server = _Server()
     hub = _hub(tmp_path, router, server)
     said = await hub.ask("manda ela rodar", via="voice", context="Me: a brasa quebrou\nVoice: Ok.")
@@ -599,6 +858,45 @@ async def test_a_voice_ask_returns_what_the_hub_said_with_the_call_in_the_prompt
 
 
 # -- the router process ----------------------------------------------------------
+
+
+def test_the_router_runs_the_newest_flash_medium_agy_lists() -> None:
+    listed = [
+        "gemini-3.8-flash-low",
+        "gemini-3.8-flash-medium",
+        "gemini-3.10-flash-medium",
+        "claude-opus-5-5-medium",
+        "gemini-3.9-pro-medium",
+    ]
+    assert hub_module.pick_router_model(listed) == "gemini-3.10-flash-medium"
+    assert hub_module.pick_router_model(["gpt-oss-120b-medium"]) is None
+
+
+async def test_the_router_model_comes_from_agy_else_the_fallback(monkeypatch) -> None:
+    from omnigent.model_fallbacks import SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
+
+    monkeypatch.delenv("OMNIGENT_HUB_MODEL", raising=False)
+    monkeypatch.setattr(hub_module, "_listed_model", None)
+    asked: list[str] = []
+
+    async def listed(binary):
+        asked.append(binary)
+        return [{"id": "gemini-3.8-flash-low"}, {"id": "gemini-3.8-flash-medium"}]
+
+    monkeypatch.setattr(hub_module, "_probe_agy_models", listed)
+    assert await hub_module.resolve_hub_model() == "gemini-3.8-flash-medium"
+    assert await hub_module.resolve_hub_model() == "gemini-3.8-flash-medium"
+    assert len(asked) == 1  # asked once, then remembered
+
+    async def unanswered(binary):
+        return None
+
+    monkeypatch.setattr(hub_module, "_listed_model", None)
+    monkeypatch.setattr(hub_module, "_probe_agy_models", unanswered)
+    assert await hub_module.resolve_hub_model() == SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
+    monkeypatch.setenv("OMNIGENT_HUB_MODEL", "pinned-model")
+    assert hub_module.hub_model() == "pinned-model"
+
 
 #: A stand-in for the CLI: answers with the folder it runs in and what it was
 #: told, and replies empty (a tool call the CLI refused) when asked to.

@@ -46,14 +46,14 @@ _REPLY_QUOTE_CHARS: Final[int] = 3000
 _HUB_SPEC: Final[str] = """\
 spec_version: 1
 name: hub
-description: One chat for all of your sessions.
+description: One chat for all of your projects.
 executor:
   type: omnigent
   config:
     # Never launched: the hub's messages never reach a runner. Named so the
     # chat shows the model that really answers (the router, on Gemini).
     harness: agy
-    model: gemini-3.7-flash-medium
+    model: {model}
 """
 
 
@@ -65,7 +65,7 @@ def is_hub(conv: Any) -> bool:
 
 def _hub_bundle() -> bytes:
     """A gzipped tarball holding the hub's one-file spec."""
-    data = _HUB_SPEC.encode("utf-8")
+    data = _HUB_SPEC.format(model=hub_module.hub_model()).encode("utf-8")
     out = io.BytesIO()
     with tarfile.open(fileobj=out, mode="w:gz") as tar:
         info = tarfile.TarInfo("config.yaml")
@@ -117,7 +117,7 @@ def ensure_hub_conversation(
         agent_id=agent_id,
         agent_name=HUB_AGENT_NAME,
         agent_bundle_location=location,
-        agent_description="One chat for all of your sessions.",
+        agent_description="One chat for all of your projects.",
         title=HUB_TITLE,
         labels={HUB_LABEL: "1", pinned_label_key(user_id): str(int(time.time() * 1000))},
     )
@@ -140,11 +140,11 @@ def render(entry: hub_module.HubEntry, base_url: str = "") -> str:
         ``"http://localhost:6767"``. The chat links only absolute URLs (a bare
         ``/c/...`` reads as a file path), so without it there is no link.
     """
-    link = (
-        f"[Open {entry.session_name} ↗]({base_url}/c/{entry.session_id})"
-        if entry.session_id and base_url
-        else ""
-    )
+    link = ""
+    if base_url and entry.session_id:
+        link = f"[Open {entry.session_name} ↗]({base_url}/c/{entry.session_id})"
+    elif base_url and entry.link:
+        link = f"[Start a chat in {entry.session_name} ↗]({base_url}{entry.link})"
     if entry.kind == "sent" and entry.detail:
         return f"{entry.text}\n\n> {_quote(entry.detail)}\n\n{link}".rstrip()
     if entry.kind == "finished" and entry.detail:
@@ -154,7 +154,7 @@ def render(entry: hub_module.HubEntry, base_url: str = "") -> str:
                 reply[:_REPLY_QUOTE_CHARS].rstrip() + f" … (the rest is in {entry.session_name})"
             )
         return f"{entry.text}\n\n> {_quote(reply)}\n\n{link}".rstrip()
-    if entry.kind in ("attention", "finished", "status", "check", "model", "members") and link:
+    if entry.kind in ("attention", "finished", "status", "check", "model", "project") and link:
         return f"{entry.text}\n\n{link}"
     return entry.text
 

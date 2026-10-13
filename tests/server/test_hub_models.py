@@ -14,6 +14,7 @@ from omnigent.server.hub import (
     HubCandidate,
     HubSession,
     HubState,
+    ProjectRecord,
     TurnState,
     parse_decision,
     session_line,
@@ -216,6 +217,13 @@ class _Server:
                 raise RuntimeError("runner gone")
             self.configured.append((session_id, model, effort))
 
+        async def projects():
+            # Each chat is its own project, named like its chat.
+            return [
+                ProjectRecord(id=f"{n}{n}{n}{n}" + "0" * 28, name=s.title, chat_ids=(s.id,))
+                for n, s in zip("ab", self.sessions, strict=True)
+            ]
+
         return HubBackend(
             sessions=sessions,
             listing=listing,
@@ -223,6 +231,11 @@ class _Server:
             send=nothing,
             check=nothing,
             turn=turn,
+            projects=projects,
+            create_project=nothing,
+            rename_project=nothing,
+            delete_project=nothing,
+            file_chat=nothing,
             configure=configure,
         )
 
@@ -247,7 +260,7 @@ async def _session(hub: Hub, session_id: str) -> HubSession:
 
 
 async def test_asking_for_another_model_changes_it_and_says_so(tmp_path) -> None:
-    router = _Router('{"model": "d14b", "to": "sonnet", "effort": "high"}')
+    router = _Router('{"model": "aaaa", "to": "sonnet", "effort": "high"}')
     server = _Server()
     hub = _hub(tmp_path, router, server)
     hub.submit("coloca a amarras no sonnet, esforço alto")
@@ -312,12 +325,12 @@ async def test_a_session_without_a_picker_is_left_alone(tmp_path) -> None:
 async def test_the_voice_changes_models_with_the_same_rules(tmp_path) -> None:
     hub = _hub(tmp_path, _Router(), server := _Server())
     shown, output = await voice_hub.run_hub_tool(
-        hub, "set_model", {"session": "sol review", "model": "sol", "effort": "max"}
+        hub, "set_model", {"project": "sol review", "model": "sol", "effort": "max"}
     )
     assert shown == "Sol review"
     assert "can't take 'max' effort" in output and server.configured == []
     shown, output = await voice_hub.run_hub_tool(
-        hub, "set_model", {"session": "sol review", "effort": "medium"}
+        hub, "set_model", {"project": "sol review", "effort": "medium"}
     )
     assert server.configured == [(SOL, None, "medium")]
     assert output.startswith("Switched Sol review to medium effort;")

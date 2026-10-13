@@ -1,4 +1,4 @@
-// The hub conversation's right rail: its Sessions panel, nothing else.
+// The hub conversation's right rail: its Projects panel, nothing else.
 
 import type * as UseTerminalsModule from "@/hooks/useTerminals";
 import type * as UseChildSessionsModule from "@/hooks/useChildSessions";
@@ -60,8 +60,8 @@ vi.mock("@/hooks/useAgents", () => ({
   useDeleteMcpServer: () => ({ mutate: vi.fn(), isPending: false, error: null }),
 }));
 vi.mock("./Sidebar", () => ({ Sidebar: () => <div data-testid="sidebar" /> }));
-vi.mock("./HubSessionsPanel", () => ({
-  HubSessionsPanel: () => <div data-testid="hub-sessions-panel" />,
+vi.mock("./HubProjectsPanel", () => ({
+  HubProjectsPanel: () => <div data-testid="hub-projects-panel" />,
 }));
 vi.mock("./FilesPanel", () => ({
   FilesPanel: () => <div data-testid="files-panel" />,
@@ -142,19 +142,19 @@ function renderShell() {
 }
 
 describe("the hub's rail", () => {
-  it("is the Sessions tab alone, even over a remembered Files tab", async () => {
-    // The hub runs other sessions and has no workspace of its own: files,
+  it("is the Projects tab alone, even over a remembered Files tab", async () => {
+    // The hub runs other projects and has no workspace of its own: files,
     // agents, companion and to-do would all be empty for it.
     writeSessionWorkspaceState("conv_ws", { rightRailTab: "files" });
     renderShell();
 
     await waitFor(() =>
-      expect(screen.getByRole("tab", { name: "Sessions" })).toHaveAttribute(
+      expect(screen.getByRole("tab", { name: "Projects" })).toHaveAttribute(
         "aria-selected",
         "true",
       ),
     );
-    expect(screen.getByTestId("hub-sessions-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("hub-projects-panel")).toBeInTheDocument();
     for (const name of [/^Files$/, /^Changes/, "GitHub", /^Agents/, "Companion", /^To-do/]) {
       expect(screen.queryByRole("tab", { name })).toBeNull();
     }

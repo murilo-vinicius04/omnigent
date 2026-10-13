@@ -1,4 +1,4 @@
-"""The voice hub: one call across sessions — live status, tools, and the relay."""
+"""The voice hub: one call across projects — live status, tools, and the relay."""
 
 from __future__ import annotations
 
@@ -14,7 +14,15 @@ from fastapi.testclient import TestClient
 from omnigent.server import discussion, gemini_live, voice_hub
 from omnigent.server import hub as hub_module
 from omnigent.server.discussion import DiscussionRegistry
-from omnigent.server.hub import Hub, HubBackend, HubCandidate, HubSession, HubState, TurnState
+from omnigent.server.hub import (
+    Hub,
+    HubBackend,
+    HubCandidate,
+    HubSession,
+    HubState,
+    ProjectRecord,
+    TurnState,
+)
 from omnigent.server.routes.gemini_live import create_gemini_live_router
 from omnigent.server.voice_hub import render_activity
 
@@ -24,6 +32,13 @@ SESSIONS = [
     ),
     HubSession(id="s-brasa", title="Orders SaaS", nickname="brasa"),
     HubSession(id="s-audio", title="Corrigir áudio", status="running", now="Bash: pytest"),
+]
+
+#: Each chat is its own project, named as they call it.
+PROJECTS = [
+    ProjectRecord(id="pa" + "0" * 30, name="amarras", chat_ids=("s-amarras",), created_at=3),
+    ProjectRecord(id="pb" + "0" * 30, name="brasa", chat_ids=("s-brasa",), created_at=2),
+    ProjectRecord(id="pc" + "0" * 30, name="Corrigir áudio", chat_ids=("s-audio",), created_at=1),
 ]
 
 
@@ -132,6 +147,12 @@ class _FakeServer:
         async def router():
             return _Router()
 
+        async def projects():
+            return list(PROJECTS)
+
+        async def unused(*args):
+            raise AssertionError("the voice never changes projects")
+
         hub = Hub("u1", router_factory=router, state=HubState("u1", root=tmp_path), poll_s=60)
         hub.bind(
             HubBackend(
@@ -141,6 +162,11 @@ class _FakeServer:
                 send=send,
                 check=check,
                 turn=turn,
+                projects=projects,
+                create_project=unused,
+                rename_project=unused,
+                delete_project=unused,
+                file_chat=unused,
             )
         )
         return hub
@@ -174,7 +200,7 @@ async def test_an_unknown_session_sends_nothing(tmp_path) -> None:
     _, out = await voice_hub.run_hub_tool(
         hub, "ask_claude", {"session": "kitchen", "message": "x"}
     )
-    assert "No session called 'kitchen'" in out and "amarras, brasa, Corrigir áudio" in out
+    assert "No project called 'kitchen'" in out and "amarras, brasa, Corrigir áudio" in out
     assert fake.sent == [] and hub.state.entries == []
 
 
@@ -231,6 +257,7 @@ class _Stores:
                 live_status="running",
                 updated_at=time.time(),
                 pending_elicitation_count=0,
+                project_id="p-scanner",
             ),
             SimpleNamespace(
                 id="s-brasa",
@@ -239,11 +266,13 @@ class _Stores:
                 live_status="idle",
                 updated_at=time.time(),
                 pending_elicitation_count=0,
+                project_id="p-orders",
             ),
         ]
 
     def list_conversations(self, **kwargs):
-        return SimpleNamespace(data=list(self.convs))
+        wanted = {"scanner": "p-scanner", "orders": "p-orders"}.get(kwargs.get("project") or "")
+        return SimpleNamespace(data=[c for c in self.convs if c.project_id == wanted])
 
     def get_conversation(self, session_id):
         return next(c for c in self.convs if c.id == session_id)
@@ -270,6 +299,7 @@ def _hub_app(monkeypatch, tmp_path, upstream: _FakeUpstream) -> FastAPI:
     monkeypatch.setattr(gemini_live, "KEY_PATH", env)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setattr(discussion, "LEDGER_DIR", tmp_path / "ledgers")
+    monkeypatch.setenv("OMNIGENT_HUB_MODEL", "test-hub-model")  # never asks the real agy
     monkeypatch.setattr(hub_module, "HUB_DIR", tmp_path / "hub")
     monkeypatch.setattr(hub_module, "_HUBS", {})
 
@@ -282,6 +312,16 @@ def _hub_app(monkeypatch, tmp_path, upstream: _FakeUpstream) -> FastAPI:
     # A chat voice is only briefed (and given tools) once its companion has notes.
     companions.note("s-amarras", "summary", "Scan coverage is 92%.")
     app = FastAPI()
+
+    @app.get("/v1/projects")
+    async def projects():
+        return {
+            "data": [
+                {"id": "p-scanner", "name": "scanner", "created_at": 1, "config": {}},
+                {"id": "p-orders", "name": "orders", "created_at": 1, "config": {}},
+            ]
+        }
+
     app.include_router(
         create_gemini_live_router(
             upstream_connect=connect,
@@ -315,14 +355,14 @@ def test_the_hub_is_briefed_on_every_session_and_answers_its_own_tools(
             names = [d["name"] for d in setup["tools"][0]["functionDeclarations"]]
             assert names == ["session_status", "ask_claude", "check_machine", "set_model"]
             instruction = setup["systemInstruction"]["parts"][0]["text"]
-            assert '"Scanner" · WORKING (now: Bash: make scan)' in instruction
-            assert '"Orders" · idle' in instruction
+            assert 'scanner · "Scanner" · WORKING (now: Bash: make scan)' in instruction
+            assert 'orders · "Orders" · idle' in instruction
 
             call = {"id": "t1", "name": "session_status", "args": {"session": "scaner"}}
             upstream.push(json.dumps({"toolCall": {"functionCalls": [call]}}))
             assert "toolCall" in ws.receive_text()  # the page sees the call, to show it
             done = json.loads(ws.receive_text())["omnigentToolDone"]
-            assert done["project"] == "Scanner"
+            assert done["project"] == "scanner"
             assert "Bash: make scan (running now)" in done["output"]
             _wait_for(lambda: any("toolResponse" in str(m) for m in upstream.sent))
     response = next(json.loads(m) for m in upstream.sent if "toolResponse" in str(m))

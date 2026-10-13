@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { describeHubTool, useVoiceHubStore } from "@/lib/voiceHub";
 
 /**
- * Turns the voice hub on and off: one call across every session, from anywhere
+ * Turns the voice hub on and off: one call across every project, from anywhere
  * in the app rather than from one chat's composer.
  */
 export function VoiceHubButton({
@@ -18,7 +18,7 @@ export function VoiceHubButton({
 }) {
   const active = useVoiceHubStore((s) => s.active);
   const connecting = useVoiceHubStore((s) => s.connecting);
-  const label = active ? "Stop the voice hub" : "Voice hub: talk to every session";
+  const label = active ? "Stop the voice hub" : "Voice hub: talk to every project";
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -61,7 +61,7 @@ export function VoiceHubStatus() {
   else if (activity?.state === "running")
     line = `${describeHubTool(activity.tool, activity.project)}…`;
   else if (activity) line = `${describeHubTool(activity.tool, activity.project)} — done`;
-  else line = notice ?? "Listening — every session";
+  else line = notice ?? "Listening — every project";
   return (
     <div
       role="status"

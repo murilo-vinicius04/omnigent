@@ -111,10 +111,10 @@ describe("voice hub", () => {
   });
 
   it("words each tool the way the pill says it", () => {
-    expect(describeHubTool("session_status", "all")).toBe("Looking at every session");
+    expect(describeHubTool("session_status", "all")).toBe("Looking at every project");
     expect(describeHubTool("session_status", "amarras")).toBe("Looking at amarras");
     expect(describeHubTool("check_machine", "Brasa")).toBe("Checking on Brasa (read-only)");
-    expect(describeHubTool("ask_claude", "")).toBe("Sending to a session's Claude");
+    expect(describeHubTool("ask_claude", "")).toBe("Sending to a project's Claude");
   });
 
   it("on Unmute, opens the Unmute relay as the hub", async () => {

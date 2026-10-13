@@ -1,11 +1,11 @@
-"""The hub: one chat, with no name, that runs your sessions for you.
+"""The hub: one chat, with no name, that runs your projects for you.
 
-You talk to the hub -- typed on its page, or aloud through the voice hub --
-and it works out which of your sessions a message is for, sends it there,
-and tells you in this same chat when that session's Claude finishes. There
-is nothing to set up: the sessions are your recent ones, read fresh on every
-message, so a session started a minute ago is reachable, and the hub learns
-what you call each one ("amarras", "the audio one") as you go.
+You talk to the hub -- typed in its chat, or aloud through the voice hub --
+and it works out which of your projects a message is for, sends it to that
+project's chat, and tells you in this same chat when its Claude finishes.
+A project is one of your Omnigent projects (the sidebar's Projects); the
+chat the hub sends to is the project's newest. Projects are made, renamed
+and deleted in the hub's Projects panel, or made by asking the hub.
 
 The router is a companion process (warm ``agy``, Gemini) with its own role,
 so deciding where a message goes costs no Claude quota. What the hub says
@@ -21,11 +21,14 @@ import json
 import logging
 import os
 import pathlib
+import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Final, Literal
 
+from omnigent.antigravity_native_catalog import _probe_agy_models
+from omnigent.model_fallbacks import SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
 from omnigent.process_logging import data_dir
 from omnigent.server import hub_models, voice_hub
 from omnigent.server.discussion import DiscussionSession, DiscussionUnavailable
@@ -33,24 +36,23 @@ from omnigent.server.hub_models import SessionRun
 
 _logger = logging.getLogger(__name__)
 
+
 #: Where each user's hub log, nicknames and conversation id are kept: beside
 #: the server's database, since the conversation id belongs to that database.
 HUB_DIR: Final[pathlib.Path] = data_dir() / "hub"
 
-#: The router's model when ``OMNIGENT_HUB_MODEL`` is unset.
-DEFAULT_HUB_MODEL: Final[str] = "gemini-3.7-flash-medium"
+#: The router's model family when ``OMNIGENT_HUB_MODEL`` is unset: the newest
+#: Gemini Flash at medium effort that ``agy models`` lists.
+_FLASH_MEDIUM: Final[re.Pattern[str]] = re.compile(r"^gemini-(\d+(?:\.\d+)*)-flash-medium$")
 
-#: A new hub with no nicknames yet starts with the sessions touched this recently.
-RECENT_S: Final[float] = 7 * 24 * 3600.0
-
-#: At most this many of them, newest first.
-MAX_SESSIONS: Final[int] = 8
-
-#: Sessions offered for adding to the hub, newest first.
+#: Chats offered for adding to a project, newest first.
 LISTING_LIMIT: Final[int] = 100
 
-#: Longest nickname the Sessions panel takes.
-MAX_NICKNAME_CHARS: Final[int] = 60
+#: A project's chats read per listing; the newest is the one the hub sends to.
+CHATS_PER_PROJECT: Final[int] = 50
+
+#: Longest project name the hub takes (the projects API allows 100).
+MAX_PROJECT_NAME_CHARS: Final[int] = 80
 
 #: Log entries kept on disk and served to the page.
 MAX_LOG: Final[int] = 400
@@ -81,21 +83,22 @@ EMPTY_REPLY_NUDGE: Final[str] = (
 _QUOTE_CHARS: Final[int] = 180
 
 HUB_ROUTER_ROLE: Final[str] = (
-    "You are the hub: the one chat an engineer uses to run several Claude Code "
-    "sessions on their machine. Each session is a separate Claude working on its "
-    "own task; you are not Claude and cannot see code or files yourself. With "
-    "every message you get the list of their sessions, what each was started "
-    "with, what it was last asked and what it is doing now. Your job is to work "
-    "out which session a message is for and pass it on, to say what the "
-    "sessions are doing, and to answer small things yourself. You have no tools: "
-    "never search files or run commands; everything you need is in the message. "
-    "Be brief: one or two plain sentences, no lists unless asked."
+    "You are the hub: the one chat an engineer uses to run several projects on "
+    "their machine. Each project is kept separate: its own chat with its own "
+    "Claude (or another coding agent) working in its own folder. You are not "
+    "Claude and cannot see code or files yourself. With every message you get "
+    "the list of their projects, what each project's chat was started with, "
+    "what it was last asked and what it is doing now. Your job is to work out "
+    "which project a message is for and pass it on, to say what the projects "
+    "are doing, and to answer small things yourself. You have no tools: never "
+    "search files or run commands; everything you need is in the message. Be "
+    "brief: one or two plain sentences, no lists unless asked."
 )
 
 #: The routing turn. One JSON line keeps parsing trivial and every failure loud.
 _DECIDE_PROMPT: Final[str] = """\
-[Their sessions right now, newest first. Each starts with its handle in brackets.]
-{sessions}
+[Their projects right now, newest first. Each starts with its handle in brackets.]
+{projects}
 {context}
 [They {how}]
 {message}
@@ -103,33 +106,34 @@ _DECIDE_PROMPT: Final[str] = """\
 Reply with ONE line of JSON and nothing else, exactly one of:
 {{"answer": "..."}} -- you reply yourself: greetings, small talk, and anything \
 the list above or this chat already answers.
-{{"send": "<handle>", "message": "...", "say": "..."}} -- a session's Claude has \
+{{"send": "<handle>", "message": "...", "say": "..."}} -- a project's Claude has \
 to do or answer it. "message" is their request in plain English for that Claude, \
 faithful and complete: Claude cannot see this chat, so carry what the request \
 depends on from earlier here, and keep code, paths and names exactly. "say" is a \
-short confirmation for them that names the session.
-{{"status": "<handle>"}} -- they ask what a session is doing now or whether it \
+short confirmation for them that names the project.
+{{"status": "<handle>"}} -- they ask what a project is doing now or whether it \
 finished, and its line above does not say enough.
 {{"check": "<handle>", "question": "..."}} -- a fact on their machine (disk, \
-processes, services, logs, files, git) that read-only commands in that session's \
+processes, services, logs, files, git) that read-only commands in that project's \
 folder can show. Nothing is changed by a check.
 {{"model": "<handle>", "to": "<model>", "effort": "<effort>"}} -- they want a \
-session to run on another model or reasoning effort. Give only what they asked \
-to change: "to" is one of the models that session offers (its id) or \
+project to run on another model or reasoning effort. Give only what they asked \
+to change: "to" is one of the models that project offers (its id) or \
 "default"; "effort" is one of its efforts or "default". If what they want is \
-not in its list, use "ask" and name what it offers. A session never changes \
+not in its list, use "ask" and name what it offers. A project never changes \
 provider here (Claude Code stays Claude Code): that is the Switch button in the \
-Sessions panel.
-{{"ask": "..."}} -- you cannot tell which session they mean, or whether they \
-want anything sent at all: one short question that names the likely sessions \
+Projects panel.
+{{"new_project": "<name>", "say": "..."}} -- they ask for a new project. Use \
+the name they gave; if they gave none, use "ask" for one. The project starts \
+empty: they give it its first task from the link the hub posts.
+{{"ask": "..."}} -- you cannot tell which project they mean, or whether they \
+want anything sent at all: one short question that names the likely projects \
 or what you would send.
-Sessions are added to or taken out of this list only with the Add and Remove \
-buttons in the Sessions panel: say so when they ask, and never claim it was done.
+Projects are renamed and deleted, and existing chats added to them, only in \
+the Projects panel: say so when they ask, and never claim it was done.
 
-Add "names": {{"<handle>": "<what they call it>"}} to any reply when they tell \
-you, or make plain, what they call a session.
 Reply to them in the language they wrote in; "message" for Claude is always \
-English. Never say a session did, found or finished anything the list or this \
+English. Never say a project did, found or finished anything the list or this \
 chat does not show. When it is unclear whether they want something sent, use \
 "ask".\
 """
@@ -155,7 +159,16 @@ code, no lists.
 """
 
 EntryKind = Literal[
-    "message", "sent", "finished", "status", "check", "model", "members", "attention", "error"
+    "message",
+    "sent",
+    "finished",
+    "status",
+    "check",
+    "model",
+    "project",
+    "members",
+    "attention",
+    "error",
 ]
 
 #: Entries an open voice hub call is told about as they happen.
@@ -164,11 +177,11 @@ SPOKEN_KINDS: Final[frozenset[str]] = frozenset({"finished", "attention"})
 
 @dataclass(frozen=True)
 class HubSession:
-    """One session as the hub sees it.
+    """One chat as the hub sees it: a project's newest, the one it sends to.
 
     :param id: The session id.
     :param title: Its title, often generated, e.g. ``"Project Analysis"``.
-    :param nickname: What they call it, once the hub has learned it.
+    :param nickname: Its project's name, which is what the hub calls it.
     :param status: Live status, e.g. ``"running"`` or ``"idle"``.
     :param handle: Short unique id prefix the router uses, e.g. ``"d14b"``.
     :param first_ask: The first thing it was asked.
@@ -178,6 +191,7 @@ class HubSession:
     :param now: Its current step while working, e.g. ``"Bash: pytest"``.
     :param pending_approvals: Approvals it is waiting on.
     :param run: Its provider, model and effort, and what it could switch to.
+    :param project_id: The project it belongs to.
     """
 
     id: str
@@ -193,6 +207,7 @@ class HubSession:
     now: str = ""
     pending_approvals: int = 0
     run: SessionRun = field(default_factory=SessionRun)
+    project_id: str = ""
 
     @property
     def name(self) -> str:
@@ -218,12 +233,13 @@ class HubSession:
             "updated_at": self.updated_at,
             "pending_approvals": self.pending_approvals,
             "run": self.run.as_dict(),
+            "project_id": self.project_id,
         }
 
 
 @dataclass(frozen=True)
 class HubCandidate:
-    """A session of theirs, as listed for adding to the hub.
+    """A chat of theirs outside every project, as listed for adding to one.
 
     :param provider: Its harness as the chat names it, e.g. ``"Codex"``.
     """
@@ -235,6 +251,58 @@ class HubCandidate:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ProjectRecord:
+    """One of their projects as stored, before the hub reads its chat.
+
+    :param id: The project id.
+    :param name: Its name, e.g. ``"amarras"``.
+    :param icon: Its emoji, when they picked one.
+    :param folder: The folder its new chats start in, when it has one.
+    :param chat_ids: Its chats, newest activity first; archived ones left out.
+    :param created_at: Seconds since the epoch.
+    """
+
+    id: str
+    name: str
+    icon: str = ""
+    folder: str = ""
+    chat_ids: tuple[str, ...] = ()
+    created_at: float = 0.0
+
+
+@dataclass(frozen=True)
+class HubProject:
+    """One project as the hub shows and routes it.
+
+    :param chats: How many chats it has, up to :data:`CHATS_PER_PROJECT`.
+    :param chat: Its newest chat, which the hub sends to; ``None`` while it
+        has none yet.
+    """
+
+    id: str
+    name: str
+    handle: str = ""
+    icon: str = ""
+    folder: str = ""
+    chats: int = 0
+    updated_at: float = 0.0
+    chat: HubSession | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        """The shape the Projects panel reads."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "handle": self.handle,
+            "icon": self.icon,
+            "folder": self.folder,
+            "chats": self.chats,
+            "updated_at": self.updated_at,
+            "chat": self.chat.as_dict() if self.chat is not None else None,
+        }
 
 
 @dataclass(frozen=True)
@@ -257,6 +325,8 @@ class HubEntry:
     session_id: str | None = None
     session_name: str | None = None
     detail: str | None = None
+    #: A path in the app to start a chat in a project, e.g. ``"/?project=x"``.
+    link: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """The JSON shape the page and the voice relay read."""
@@ -280,19 +350,52 @@ class TurnState:
 class HubDecision:
     """What the router decided about one message."""
 
-    action: Literal["answer", "send", "status", "check", "model", "ask", "none"]
+    action: Literal["answer", "send", "status", "check", "model", "new_project", "ask", "none"]
     text: str = ""
     handle: str | None = None
     message: str = ""
-    names: dict[str, str] = field(default_factory=dict)
     #: For ``model``: the model and effort asked for; empty leaves it as is.
     model: str = ""
     effort: str = ""
 
 
+#: The Flash model ``agy models`` offered, once asked; ``None`` until then.
+_listed_model: str | None = None
+
+
+def pick_router_model(model_ids: Sequence[str]) -> str | None:
+    """The newest Gemini Flash (Medium) among these agy model ids."""
+    best: tuple[tuple[int, ...], str] | None = None
+    for model_id in model_ids:
+        found = _FLASH_MEDIUM.match(model_id)
+        if found is None:
+            continue
+        version = tuple(int(part) for part in found.group(1).split("."))
+        if best is None or version > best[0]:
+            best = (version, model_id)
+    return best[1] if best else None
+
+
+async def resolve_hub_model() -> str:
+    """Ask agy which Flash it offers, once; agy drops old versions."""
+    global _listed_model
+    if _listed_model is None and not os.environ.get("OMNIGENT_HUB_MODEL", "").strip():
+        from omnigent.server.discussion import _binary
+
+        rows = await _probe_agy_models(_binary())
+        _listed_model = pick_router_model([str(r["id"]) for r in rows or []])
+        if _listed_model is None:
+            _logger.warning("agy lists no Gemini Flash (Medium); the hub router uses its fallback")
+    return hub_model()
+
+
 def hub_model() -> str:
-    """The router's model: ``OMNIGENT_HUB_MODEL`` or the default."""
-    return os.environ.get("OMNIGENT_HUB_MODEL", "").strip() or DEFAULT_HUB_MODEL
+    """The router's model: ``OMNIGENT_HUB_MODEL``, else what agy offers, else the fallback."""
+    return (
+        os.environ.get("OMNIGENT_HUB_MODEL", "").strip()
+        or _listed_model
+        or SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
+    )
 
 
 def _short(text: str, limit: int) -> str:
@@ -300,21 +403,28 @@ def _short(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def assign_handles(session_ids: Sequence[str]) -> dict[str, str]:
-    """Shortest unique id prefix per session, at least four characters."""
+def assign_handles(ids: Sequence[str]) -> dict[str, str]:
+    """Shortest unique id prefix per id, at least four characters."""
     handles: dict[str, str] = {}
-    for sid in session_ids:
+    for sid in ids:
         size = 4
         while size < len(sid) and any(
-            other != sid and other.startswith(sid[:size]) for other in session_ids
+            other != sid and other.startswith(sid[:size]) for other in ids
         ):
             size += 1
         handles[sid] = sid[:size]
     return handles
 
 
+def project_link(name: str) -> str:
+    """The app's path that starts a new chat filed in this project."""
+    from urllib.parse import quote
+
+    return f"/?project={quote(name, safe='')}"
+
+
 def session_line(session: HubSession) -> str:
-    """One session as the router reads it."""
+    """One project's chat as the router reads it."""
     name = f"{session.nickname} · " if session.nickname else ""
     state = "WORKING" if session.working else "idle"
     if session.working and session.now:
@@ -343,10 +453,28 @@ def session_line(session: HubSession) -> str:
 
 
 def sessions_block(sessions: Sequence[HubSession]) -> str:
-    """Every session, one line each, or a note that there are none."""
+    """Every project's chat, one line each, or a note that there are none."""
     if not sessions:
-        return "(No sessions in the last week. They start one from the sidebar.)"
+        return "(No projects with a chat yet. They make one in the Projects panel.)"
     return "\n".join(session_line(s) for s in sessions)
+
+
+def project_line(project: HubProject) -> str:
+    """One project as the router reads it, with or without a chat yet."""
+    if project.chat is not None:
+        line = session_line(project.chat)
+    else:
+        line = f"[{project.handle}] {project.name} · no chat yet: nothing can be sent to it"
+    if project.chats > 1:
+        line += f" · {project.chats} chats, this is the newest"
+    return line
+
+
+def projects_block(projects: Sequence[HubProject]) -> str:
+    """Every project, one line each, or a note that there are none."""
+    if not projects:
+        return "(No projects yet. They make one in the Projects panel, or ask you to.)"
+    return "\n".join(project_line(p) for p in projects)
 
 
 def parse_decision(reply: str) -> HubDecision:
@@ -360,12 +488,6 @@ def parse_decision(reply: str) -> HubDecision:
         return HubDecision(action="none", text=reply.strip())
     if not isinstance(parsed, dict):
         return HubDecision(action="none")
-    raw_names = parsed.get("names")
-    names = (
-        {str(k).strip(): str(v).strip() for k, v in raw_names.items() if str(v).strip()}
-        if isinstance(raw_names, dict)
-        else {}
-    )
 
     def text(key: str) -> str:
         value = parsed.get(key)
@@ -373,53 +495,73 @@ def parse_decision(reply: str) -> HubDecision:
 
     if text("send"):
         return HubDecision(
-            action="send",
-            handle=text("send"),
-            message=text("message"),
-            text=text("say"),
-            names=names,
+            action="send", handle=text("send"), message=text("message"), text=text("say")
         )
     if text("check"):
-        return HubDecision(
-            action="check", handle=text("check"), message=text("question"), names=names
-        )
+        return HubDecision(action="check", handle=text("check"), message=text("question"))
     if text("status"):
-        return HubDecision(action="status", handle=text("status"), names=names)
+        return HubDecision(action="status", handle=text("status"))
     if text("model"):
         return HubDecision(
-            action="model",
-            handle=text("model"),
-            model=text("to"),
-            effort=text("effort"),
-            names=names,
+            action="model", handle=text("model"), model=text("to"), effort=text("effort")
         )
+    if text("new_project"):
+        return HubDecision(action="new_project", message=text("new_project"), text=text("say"))
     if text("ask"):
-        return HubDecision(action="ask", text=text("ask"), names=names)
+        return HubDecision(action="ask", text=text("ask"))
     if text("answer"):
-        return HubDecision(action="answer", text=text("answer"), names=names)
-    return HubDecision(action="none", names=names)
+        return HubDecision(action="answer", text=text("answer"))
+    return HubDecision(action="none")
 
 
-def find_session(sessions: Sequence[HubSession], spoken: str) -> HubSession | None:
-    """The session a handle, nickname or title means, forgiving speech."""
+def _find(
+    spoken: str, ids: Sequence[tuple[str, ...]], names: Sequence[tuple[str | None, ...]]
+) -> int | None:
+    """Which item an id, handle or name means, forgiving speech.
+
+    :param ids: Each item's exact ids, e.g. its handle and full id.
+    :param names: Each item's names, matched loosely.
+    :returns: The item's index, or ``None`` when none or several fit.
+    """
     want = voice_hub.normalize(spoken)
     if not want:
         return None
-    for session in sessions:
-        if session.handle == spoken.strip() or session.id == spoken.strip():
-            return session
-    keyed: dict[str, HubSession] = {}
-    for session in sessions:
-        for key in (session.nickname, session.title):
-            if key and voice_hub.normalize(key) and voice_hub.normalize(key) not in keyed:
-                keyed[voice_hub.normalize(key)] = session
+    for index, exact in enumerate(ids):
+        if spoken.strip() in exact:
+            return index
+    keyed: dict[str, int] = {}
+    for index, keys in enumerate(names):
+        for key in keys:
+            norm = voice_hub.normalize(key or "")
+            if norm and norm not in keyed:
+                keyed[norm] = index
     if want in keyed:
         return keyed[want]
-    containing = {s.id: s for key, s in keyed.items() if key and (key in want or want in key)}
+    containing = {i for key, i in keyed.items() if key in want or want in key}
     if len(containing) == 1:
-        return next(iter(containing.values()))
+        return next(iter(containing))
     close = difflib.get_close_matches(want, list(keyed), n=1, cutoff=0.6)
     return keyed[close[0]] if close else None
+
+
+def find_session(sessions: Sequence[HubSession], spoken: str) -> HubSession | None:
+    """The chat a handle, project name or title means, forgiving speech."""
+    index = _find(
+        spoken,
+        [(s.handle, s.id) for s in sessions],
+        [(s.nickname, s.title) for s in sessions],
+    )
+    return sessions[index] if index is not None else None
+
+
+def find_project(projects: Sequence[HubProject], spoken: str) -> HubProject | None:
+    """The project a handle, name or its chat's title means, forgiving speech."""
+    index = _find(
+        spoken,
+        [(p.handle, p.id) for p in projects],
+        [(p.name, p.chat.title if p.chat is not None else None) for p in projects],
+    )
+    return projects[index] if index is not None else None
 
 
 class HubRouter(DiscussionSession):
@@ -509,11 +651,21 @@ class HubState:
     def __init__(self, key: str, *, root: pathlib.Path | None = None) -> None:
         self._dir = (root or HUB_DIR) / key
         self._entries: list[HubEntry] = []
+        #: What they called each session before the hub ran projects.
         self.names: dict[str, str] = {}
-        #: The sessions in the hub, in the order added; ``None`` until first set.
+        #: The sessions the hub ran before it ran projects; ``None`` if never set.
         self.members: list[str] | None = None
         self._waiters: set[asyncio.Future[None]] = set()
         self._load()
+
+    @property
+    def moved_to_projects(self) -> bool:
+        """Whether its old session list has been made into projects."""
+        return (self._dir / "projects-moved.json").exists()
+
+    def mark_moved_to_projects(self, made: dict[str, str]) -> None:
+        """Record that the old session list is now projects: ``{session: project}``."""
+        self._write("projects-moved.json", made)
 
     @property
     def entries(self) -> list[HubEntry]:
@@ -607,14 +759,22 @@ class HubState:
 class HubBackend:
     """What the hub needs from the server, injected so tests can fake it.
 
-    :param sessions: The sessions with these ids, in that order, nicknames
-        not yet applied; gone and archived ones are left out.
-    :param listing: Their sessions, newest first, to pick one to add from.
-    :param activity: A session's live status, in full.
-    :param send: Post a message into a session, as if typed there.
+    :param sessions: The chats with these ids, in that order; gone and
+        archived ones are left out.
+    :param listing: Their chats outside every project, newest first, to pick
+        one to add to a project from.
+    :param activity: A chat's live status, in full.
+    :param send: Post a message into a chat, as if typed there.
     :param check: Answer a question with read-only commands in its folder.
-    :param turn: Where a session is with work sent at a given time.
-    :param configure: Set a session's model and effort, as its own picker
+    :param turn: Where a chat is with work sent at a given time.
+    :param projects: Their projects, each with its chats newest first.
+    :param create_project: Make a project with this name; with a chat id,
+        file that chat in it and start its new chats where that chat runs.
+    :param rename_project: Give a project another name.
+    :param delete_project: Delete a project, its chats kept outside any
+        project; returns how many chats it had.
+    :param file_chat: Put a chat in a project.
+    :param configure: Set a chat's model and effort, as its own picker
         does: ``None`` leaves one as is, ``"default"`` clears it.
     """
 
@@ -624,6 +784,11 @@ class HubBackend:
     send: Callable[[str, str], Awaitable[None]]
     check: Callable[[str, str], Awaitable[str]]
     turn: Callable[[str, float], Awaitable[TurnState]]
+    projects: Callable[[], Awaitable[list[ProjectRecord]]]
+    create_project: Callable[[str, str | None], Awaitable[ProjectRecord]]
+    rename_project: Callable[[str, str], Awaitable[None]]
+    delete_project: Callable[[str], Awaitable[int]]
+    file_chat: Callable[[str, str], Awaitable[None]]
     configure: Callable[[str, str | None, str | None], Awaitable[None]] | None = None
 
 
@@ -660,72 +825,173 @@ class Hub:
             raise RuntimeError("hub has no backend bound")
         return self._backend
 
-    async def members(self) -> list[str]:
-        """The ids of the sessions in the hub.
+    async def _move_sessions_to_projects(self) -> None:
+        """Once: make each session the hub ran before into a project of its own.
 
-        A new hub starts with the sessions they have nicknamed, else with
-        the ones they touched this week.
+        The project takes the name they called the session, else its title,
+        and its new chats start where that session runs.
         """
-        if self.state.members is None:
-            seed = list(self.state.names)
-            if not seed:
-                cutoff = time.time() - RECENT_S
-                listed = await self.require_backend().listing()
-                seed = [c.id for c in listed if not c.updated_at or c.updated_at >= cutoff]
-            self.state.set_members(seed[:MAX_SESSIONS])
-        return list(self.state.members or [])
+        if self.state.moved_to_projects:
+            return
+        made: dict[str, str] = {}
+        backend = self.require_backend()
+        if self.state.members:
+            existing = {r.name.casefold(): r for r in await backend.projects()}
+            chats = {s.id: s for s in await backend.sessions(self.state.members)}
+            for session_id in self.state.members:
+                chat = chats.get(session_id)
+                if chat is None or chat.project_id:
+                    continue
+                name = self._free_name(
+                    self.state.names.get(session_id) or chat.title or session_id[:8], existing
+                )
+                try:
+                    record = await backend.create_project(name, session_id)
+                except Exception:  # noqa: BLE001 - the rest still move; this one stays a chat
+                    _logger.warning("hub could not make %s a project", session_id, exc_info=True)
+                    continue
+                existing[record.name.casefold()] = record
+                made[session_id] = record.id
+        self.state.mark_moved_to_projects(made)
+        if made:
+            _logger.info("hub moved %d sessions into projects", len(made))
+
+    @staticmethod
+    def _free_name(wanted: str, taken: dict[str, ProjectRecord]) -> str:
+        """*wanted*, or *wanted* with a number when a project has that name."""
+        base = " ".join(wanted.split())[:MAX_PROJECT_NAME_CHARS] or "Project"
+        name, n = base, 2
+        while name.casefold() in taken:
+            name, n = f"{base} {n}", n + 1
+        return name
+
+    async def projects(self) -> list[HubProject]:
+        """Their projects, most recently active first, each with its newest chat."""
+        await self._move_sessions_to_projects()
+        backend = self.require_backend()
+        records = await backend.projects()
+        newest = [r.chat_ids[0] for r in records if r.chat_ids]
+        chats = {s.id: s for s in await backend.sessions(newest)} if newest else {}
+        handles = assign_handles([r.id for r in records])
+        out: list[HubProject] = []
+        for record in records:
+            chat = chats.get(record.chat_ids[0]) if record.chat_ids else None
+            if chat is not None:
+                chat = replace(
+                    chat, nickname=record.name, handle=handles[record.id], project_id=record.id
+                )
+            out.append(
+                HubProject(
+                    id=record.id,
+                    name=record.name,
+                    handle=handles[record.id],
+                    icon=record.icon,
+                    folder=record.folder,
+                    chats=len(record.chat_ids),
+                    updated_at=max(chat.updated_at if chat else 0.0, record.created_at),
+                    chat=chat,
+                )
+            )
+        out.sort(key=lambda p: p.updated_at, reverse=True)
+        return out
 
     async def sessions(self) -> list[HubSession]:
-        """The hub's sessions, newest first, with handles and nicknames applied."""
-        raw = await self.require_backend().sessions(await self.members())
-        raw.sort(key=lambda s: s.updated_at, reverse=True)
-        handles = assign_handles([s.id for s in raw])
-        return [
-            replace(s, handle=handles[s.id], nickname=self.state.names.get(s.id) or s.nickname)
-            for s in raw
-        ]
+        """Each project's newest chat, named after its project, newest first."""
+        return [p.chat for p in await self.projects() if p.chat is not None]
 
     async def candidates(self) -> list[HubCandidate]:
-        """Their sessions not in the hub, newest first."""
-        members = set(await self.members())
-        return [c for c in await self.require_backend().listing() if c.id not in members]
+        """Their chats outside every project, newest first."""
+        return await self.require_backend().listing()
 
-    async def add(self, session_id: str) -> HubEntry | None:
-        """Put one of their sessions in the hub; ``None`` when it is not theirs."""
+    def _project_entry(
+        self, text: str, project: HubProject | ProjectRecord, **fields: Any
+    ) -> HubEntry:
+        return self.say(text, kind="project", session_name=project.name, **fields)
+
+    async def create_project(
+        self, name: str, *, from_chat: str | None = None, via: str = "panel"
+    ) -> tuple[HubEntry, ProjectRecord]:
+        """Make a project; with *from_chat*, that chat becomes its first.
+
+        :raises ValueError: The name is empty, already a project's, or the
+            chat is not one of theirs outside every project.
+        """
+        name = " ".join(name.split())
+        if not name:
+            raise ValueError("a project needs a name")
+        if len(name) > MAX_PROJECT_NAME_CHARS:
+            raise ValueError(f"a project name has at most {MAX_PROJECT_NAME_CHARS} characters")
+        backend = self.require_backend()
+        for record in await backend.projects():
+            if record.name.casefold() == name.casefold():
+                raise ValueError(f"there is already a project called {record.name}")
+        chat_title = ""
+        if from_chat:
+            found = next((c for c in await self.candidates() if c.id == from_chat), None)
+            if found is None:
+                raise ValueError("that chat is not one of yours outside every project")
+            chat_title = found.title or "that chat"
+        record = await backend.create_project(name, from_chat)
+        if from_chat:
+            entry = self._project_entry(
+                f"Created project {record.name}, with “{chat_title}” as its chat.",
+                record,
+                via=via,
+                session_id=from_chat,
+            )
+        else:
+            entry = self._project_entry(
+                f"Created project {record.name}. It has no chat yet: start one to give it "
+                "its first task, and pick its folder and agent there.",
+                record,
+                via=via,
+                link=project_link(record.name),
+            )
+        return entry, record
+
+    async def rename_project(self, project: HubProject, name: str) -> HubEntry:
+        """Give a project another name, in the sidebar too.
+
+        :raises ValueError: The name is empty or another project's.
+        """
+        name = " ".join(name.split())
+        if not name:
+            raise ValueError("a project needs a name")
+        if len(name) > MAX_PROJECT_NAME_CHARS:
+            raise ValueError(f"a project name has at most {MAX_PROJECT_NAME_CHARS} characters")
+        for other in await self.projects():
+            if other.id != project.id and other.name.casefold() == name.casefold():
+                raise ValueError(f"there is already a project called {other.name}")
+        if name == project.name:
+            return self._project_entry(f"{project.name} is already called that.", project)
+        await self.require_backend().rename_project(project.id, name)
+        return self.say(f"Renamed {project.name} to {name}.", kind="project", session_name=name)
+
+    async def delete_project(self, project: HubProject) -> HubEntry:
+        """Delete a project; its chats are kept, outside any project."""
+        count = await self.require_backend().delete_project(project.id)
+        kept = (
+            "it had no chats"
+            if count == 0
+            else ("its chat is kept" if count == 1 else f"its {count} chats are kept")
+        )
+        return self.say(
+            f"Deleted project {project.name}; {kept}, outside any project.", kind="project"
+        )
+
+    async def add_chat(self, project: HubProject, session_id: str) -> HubEntry:
+        """Put one of their chats outside every project into this one.
+
+        :raises ValueError: The chat is not one of theirs outside every project.
+        """
         found = next((c for c in await self.candidates() if c.id == session_id), None)
         if found is None:
-            return None
-        self.state.set_members([*await self.members(), session_id])
-        name = self.state.names.get(session_id) or found.title or session_id[:4]
-        return self.say(
-            f"Added {name} to the hub.", kind="members", session_id=session_id, session_name=name
-        )
-
-    async def remove(self, session: HubSession) -> HubEntry:
-        """Take a session out of the hub; the session itself is untouched."""
-        self.state.set_members([m for m in await self.members() if m != session.id])
-        return self.say(
-            f"Took {session.name} out of the hub; the session itself is untouched.",
-            kind="members",
-        )
-
-    async def rename(self, session: HubSession, nickname: str) -> HubEntry:
-        """Call a session something else; an empty name goes back to its title.
-
-        :raises ValueError: Another of the hub's sessions is already called that.
-        """
-        nickname = " ".join(nickname.split())[:MAX_NICKNAME_CHARS]
-        if nickname:
-            for other in await self.sessions():
-                if other.id != session.id and other.name.casefold() == nickname.casefold():
-                    raise ValueError(f"{other.name} is already called that")
-        self.state.name(session.id, nickname)
-        new_name = nickname or session.title or session.handle
-        return self.say(
-            f"Renamed {session.name} to {new_name}.",
-            kind="members",
-            session_id=session.id,
-            session_name=new_name,
+            raise ValueError("that chat is not one of yours outside every project")
+        await self.require_backend().file_chat(session_id, project.id)
+        return self._project_entry(
+            f"Moved “{found.title or 'Untitled'}” into {project.name}.",
+            project,
+            session_id=session_id,
         )
 
     def submit(self, text: str, *, via: str = "typed") -> HubEntry:
@@ -776,11 +1042,11 @@ class Hub:
                     self.chat.busy(False)
 
     async def _answer(self, text: str, via: str, *, context: str = "") -> None:
-        sessions = await self.sessions()
+        projects = await self.projects()
         router = await self._router_factory()
         how = "said, aloud, on a voice call" if via == "voice" else "wrote"
         prompt = _DECIDE_PROMPT.format(
-            sessions=sessions_block(sessions),
+            projects=projects_block(projects),
             context=(
                 f"\n[The voice call so far, oldest first]\n{context.strip()}\n"
                 if context.strip()
@@ -795,7 +1061,7 @@ class Hub:
             _logger.warning("hub router unavailable: %s", exc)
             self.say(
                 "I can't think right now (the Gemini router is not answering), so "
-                "nothing was sent. Try again in a moment, or type it in the session.",
+                "nothing was sent. Try again in a moment, or type it in the project's chat.",
                 kind="error",
             )
             return
@@ -806,22 +1072,31 @@ class Hub:
             decision.handle,
             text[:200],
         )
-        by_handle = {s.handle: s for s in sessions}
-        for handle, nickname in decision.names.items():
-            named = by_handle.get(handle)
-            if named is not None:
-                self.state.name(named.id, nickname)
-                by_handle[handle] = replace(named, nickname=nickname)
-        sessions = list(by_handle.values())
-        target = (
-            by_handle.get(decision.handle or "") or find_session(sessions, decision.handle or "")
+        if decision.action == "new_project":
+            try:
+                entry, _ = await self.create_project(decision.message, via=via)
+            except ValueError as exc:
+                entry = self.say(f"I didn't make it: {exc}.")
+            router.remember(entry.text)
+            return
+        project = (
+            next((p for p in projects if p.handle == decision.handle), None)
+            or find_project(projects, decision.handle)
             if decision.handle
             else None
         )
-        if decision.action in ("send", "status", "check", "model") and target is None:
-            names = ", ".join(s.name for s in sessions) or "none"
-            said = f"I couldn't tell which session you mean. Your sessions: {names}."
+        if decision.action in ("send", "status", "check", "model") and project is None:
+            names = ", ".join(p.name for p in projects) or "none yet"
+            said = f"I couldn't tell which project you mean. Your projects: {names}."
             self.say(said)
+            router.remember(said)
+            return
+        target = project.chat if project is not None else None
+        if project is not None and target is None and decision.action != "ask":
+            said = f"{project.name} has no chat yet, so nothing was sent. Start one first."
+            self.say(
+                said, kind="attention", session_name=project.name, link=project_link(project.name)
+            )
             router.remember(said)
             return
         if decision.action == "send" and target is not None:
@@ -1074,6 +1349,7 @@ def hub_for(user_id: str | None) -> Hub:
     if hub is None:
 
         async def router() -> HubRouter:
+            await resolve_hub_model()
             made = await registry().get(f"hub-{key}", factory=HubRouter)
             assert isinstance(made, HubRouter)
             return made
@@ -1270,6 +1546,7 @@ def store_backend(
             conversation_store.list_conversations,
             limit=LISTING_LIMIT + len(exclude) + 1,
             owned_by=user_id,
+            project="",
             sort_by="updated_at",
             order="desc",
         )
@@ -1324,9 +1601,88 @@ def store_backend(
                     now=now,
                     pending_approvals=int(getattr(conv, "pending_elicitation_count", 0) or 0),
                     run=run,
+                    project_id=str(getattr(conv, "project_id", None) or ""),
                 )
             )
         return out
+
+    async def _chat_ids(name: str) -> tuple[str, ...]:
+        page = await asyncio.to_thread(
+            conversation_store.list_conversations,
+            limit=CHATS_PER_PROJECT,
+            owned_by=user_id,
+            project=name,
+            sort_by="updated_at",
+            order="desc",
+        )
+        return tuple(conv.id for conv in page.data if _offered(conv))
+
+    def _record(row: dict[str, Any], chat_ids: tuple[str, ...]) -> ProjectRecord:
+        config = row.get("config") or {}
+        return ProjectRecord(
+            id=str(row["id"]),
+            name=str(row["name"]),
+            icon=str(config.get("icon") or ""),
+            folder=str(config.get("workspace") or ""),
+            chat_ids=chat_ids,
+            created_at=float(row.get("created_at") or 0),
+        )
+
+    async def projects() -> list[ProjectRecord]:
+        async with _client() as client:
+            response = await client.get("/v1/projects", headers=headers)
+        if response.status_code == 404:
+            # A server without a project store: nothing to run yet.
+            return []
+        response.raise_for_status()
+        rows = list(response.json().get("data") or [])
+        chat_ids = await asyncio.gather(*(_chat_ids(str(row["name"])) for row in rows))
+        return [_record(row, ids) for row, ids in zip(rows, chat_ids, strict=True)]
+
+    async def file_chat(session_id: str, project_id: str) -> None:
+        async with _client() as client:
+            response = await client.patch(
+                f"/v1/sessions/{session_id}", json={"project_id": project_id}, headers=headers
+            )
+        response.raise_for_status()
+
+    async def create_project(name: str, from_chat: str | None) -> ProjectRecord:
+        # A chat it starts from sets where its new chats start: same folder,
+        # machine and agent.
+        config: dict[str, Any] = {}
+        if from_chat:
+            conv = await asyncio.to_thread(conversation_store.get_conversation, from_chat)
+            for key in ("workspace", "host_id", "agent_id"):
+                value = getattr(conv, key, None)
+                if value:
+                    config[key] = str(value)
+        async with _client() as client:
+            response = await client.post(
+                "/v1/projects", json={"name": name, "config": config}, headers=headers
+            )
+        response.raise_for_status()
+        row = response.json()
+        if from_chat:
+            await file_chat(from_chat, str(row["id"]))
+        return _record(row, (from_chat,) if from_chat else ())
+
+    async def rename_project(project_id: str, name: str) -> None:
+        async with _client() as client:
+            response = await client.patch(
+                f"/v1/projects/{project_id}", json={"name": name}, headers=headers
+            )
+        response.raise_for_status()
+
+    async def delete_project(project_id: str) -> int:
+        # Its chats leave it first: the projects route deletes only the row.
+        found = next((r for r in await projects() if r.id == project_id), None)
+        chat_ids = found.chat_ids if found is not None else ()
+        for chat_id in chat_ids:
+            await file_chat(chat_id, "")
+        async with _client() as client:
+            response = await client.delete(f"/v1/projects/{project_id}", headers=headers)
+        response.raise_for_status()
+        return len(chat_ids)
 
     async def send(session_id: str, text: str) -> None:
         body = {
@@ -1391,5 +1747,10 @@ def store_backend(
         send=send,
         check=check,
         turn=turn,
+        projects=projects,
+        create_project=create_project,
+        rename_project=rename_project,
+        delete_project=delete_project,
+        file_chat=file_chat,
         configure=configure,
     )

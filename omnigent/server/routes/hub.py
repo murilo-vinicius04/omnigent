@@ -2,7 +2,7 @@
 
 The hub is a regular conversation, one per user: its messages travel the
 normal session routes (the events route hands them to the hub). This router
-finds or makes that conversation and keeps the list of sessions it reaches.
+finds or makes that conversation and manages the projects it runs.
 """
 
 from __future__ import annotations
@@ -41,26 +41,33 @@ class HubVoiceIn(BaseModel):
 
 
 class HubModelIn(BaseModel):
-    """A model or effort picked for a session in the hub's Sessions panel."""
+    """A model or effort picked for a project in the hub's Projects panel."""
 
-    session_id: str = Field(min_length=1, max_length=200)
-    #: A model id it offers, ``"default"``, or empty to keep the model.
+    project_id: str = Field(min_length=1, max_length=200)
+    #: A model id its chat offers, ``"default"``, or empty to keep the model.
     model: str = Field(default="", max_length=256)
-    #: An effort it offers, ``"default"``, or empty to keep the effort.
+    #: An effort its chat offers, ``"default"``, or empty to keep the effort.
     effort: str = Field(default="", max_length=32)
 
 
-class HubMemberIn(BaseModel):
-    """A session to put in the hub."""
+class HubProjectIn(BaseModel):
+    """A project to make."""
 
-    session_id: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=200)
+    #: A chat of theirs outside every project to be its first, if any.
+    from_chat: str | None = Field(default=None, max_length=200)
 
 
 class HubNameIn(BaseModel):
-    """What to call a session in the hub."""
+    """A project's new name."""
 
-    #: Its new name; empty goes back to its title.
-    name: str = Field(default="", max_length=200)
+    name: str = Field(min_length=1, max_length=200)
+
+
+class HubChatIn(BaseModel):
+    """A chat to put in a project."""
+
+    session_id: str = Field(min_length=1, max_length=200)
 
 
 def create_hub_router(
@@ -110,70 +117,86 @@ def create_hub_router(
 
     @router.get("/hub")
     async def get_hub(request: Request) -> dict[str, Any]:
-        """The caller's hub conversation, made on first use, and its sessions."""
+        """The caller's hub conversation, made on first use, and its projects."""
         hub, session_id = await _bound(request)
         return {
             "session_id": session_id,
-            "sessions": [s.as_dict() for s in await hub.sessions()],
+            "projects": [p.as_dict() for p in await hub.projects()],
             "model": hub_module.hub_model(),
             "last_id": hub.state.last_id,
         }
 
-    @router.get("/hub/sessions")
-    async def hub_sessions(request: Request) -> dict[str, Any]:
-        """The sessions the hub can reach, with their live status."""
+    @router.get("/hub/projects")
+    async def hub_projects(request: Request) -> dict[str, Any]:
+        """Their projects, with each one's newest chat and its live status."""
         hub, _ = await _bound(request)
-        return {"sessions": [s.as_dict() for s in await hub.sessions()]}
+        return {"projects": [p.as_dict() for p in await hub.projects()]}
 
-    async def _member(hub: hub_module.Hub, session_id: str) -> hub_module.HubSession:
-        session = next((s for s in await hub.sessions() if s.id == session_id), None)
-        if session is None:
-            raise HTTPException(status_code=404, detail="not one of the hub's sessions")
-        return session
+    async def _project(hub: hub_module.Hub, project_id: str) -> hub_module.HubProject:
+        project = next((p for p in await hub.projects() if p.id == project_id), None)
+        if project is None:
+            raise HTTPException(status_code=404, detail="not one of your projects")
+        return project
 
-    @router.get("/hub/candidates")
-    async def hub_candidates(request: Request) -> dict[str, Any]:
-        """Their sessions not in the hub, newest first, to add one."""
+    @router.post("/hub/projects")
+    async def hub_create_project(request: Request, body: HubProjectIn) -> dict[str, Any]:
+        """Make a project, empty or with one of their chats as its first."""
         hub, _ = await _bound(request)
-        return {"sessions": [c.as_dict() for c in await hub.candidates()]}
-
-    @router.post("/hub/members")
-    async def hub_add(request: Request, body: HubMemberIn) -> dict[str, Any]:
-        """Put one of their sessions in the hub."""
-        hub, _ = await _bound(request)
-        entry = await hub.add(body.session_id)
-        if entry is None:
-            raise HTTPException(status_code=404, detail="not one of your sessions outside the hub")
-        return {"text": entry.text}
-
-    @router.delete("/hub/members/{session_id}")
-    async def hub_remove(request: Request, session_id: str) -> dict[str, Any]:
-        """Take a session out of the hub; the session itself is untouched."""
-        hub, _ = await _bound(request)
-        entry = await hub.remove(await _member(hub, session_id))
-        return {"text": entry.text}
-
-    @router.patch("/hub/members/{session_id}")
-    async def hub_rename(request: Request, session_id: str, body: HubNameIn) -> dict[str, Any]:
-        """Call a session something else in the hub, by chat and voice too."""
-        hub, _ = await _bound(request)
-        session = await _member(hub, session_id)
         try:
-            entry = await hub.rename(session, body.name)
+            entry, record = await hub.create_project(body.name, from_chat=body.from_chat)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"text": entry.text, "id": record.id, "name": record.name, "link": entry.link}
+
+    @router.patch("/hub/projects/{project_id}")
+    async def hub_rename_project(
+        request: Request, project_id: str, body: HubNameIn
+    ) -> dict[str, Any]:
+        """Give a project another name, in the sidebar too."""
+        hub, _ = await _bound(request)
+        project = await _project(hub, project_id)
+        try:
+            entry = await hub.rename_project(project, body.name)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"text": entry.text}
 
+    @router.delete("/hub/projects/{project_id}")
+    async def hub_delete_project(request: Request, project_id: str) -> dict[str, Any]:
+        """Delete a project; its chats are kept, outside any project."""
+        hub, _ = await _bound(request)
+        entry = await hub.delete_project(await _project(hub, project_id))
+        return {"text": entry.text}
+
+    @router.get("/hub/candidates")
+    async def hub_candidates(request: Request) -> dict[str, Any]:
+        """Their chats outside every project, newest first."""
+        hub, _ = await _bound(request)
+        return {"chats": [c.as_dict() for c in await hub.candidates()]}
+
+    @router.post("/hub/projects/{project_id}/chats")
+    async def hub_add_chat(request: Request, project_id: str, body: HubChatIn) -> dict[str, Any]:
+        """Put one of their chats outside every project into this one."""
+        hub, _ = await _bound(request)
+        project = await _project(hub, project_id)
+        try:
+            entry = await hub.add_chat(project, body.session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"text": entry.text}
+
     @router.post("/hub/model")
     async def hub_model(request: Request, body: HubModelIn) -> dict[str, Any]:
-        """Change a session's model or effort, by the same rules as asking for it.
+        """Change a project's model or effort, by the same rules as asking for it.
 
-        The change is checked against what that session offers and written
-        into the hub chat, so a pick made here reads like one asked for.
+        The change is checked against what the project's chat offers and
+        written into the hub chat, so a pick made here reads like one asked for.
         """
         hub, _ = await _bound(request)
-        session = await _member(hub, body.session_id)
-        entry = await hub.set_model(session, body.model, body.effort, via="panel")
+        project = await _project(hub, body.project_id)
+        if project.chat is None:
+            raise HTTPException(status_code=409, detail=f"{project.name} has no chat yet")
+        entry = await hub.set_model(project.chat, body.model, body.effort, via="panel")
         return {"changed": entry.kind == "model", "text": entry.text}
 
     @router.post("/hub/voice")

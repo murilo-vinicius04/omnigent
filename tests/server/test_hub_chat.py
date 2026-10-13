@@ -3,17 +3,43 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
+from omnigent.runtime.agent_cache import AgentCache
 from omnigent.server import discussion, hub_chat
 from omnigent.server import hub as hub_module
+from omnigent.server.app import create_app
 from omnigent.server.hub import HubEntry
+from omnigent.stores.agent_store.sqlalchemy_store import SqlAlchemyAgentStore
+from omnigent.stores.artifact_store.local import LocalArtifactStore
+from omnigent.stores.comment_store.sqlalchemy_store import SqlAlchemyCommentStore
+from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
+from omnigent.stores.file_store.sqlalchemy_store import SqlAlchemyFileStore
+from omnigent.stores.project_store.sqlalchemy_store import SqlAlchemyProjectStore
+
+
+@pytest.fixture()
+def app(runtime_init: None, db_uri: str, tmp_path: Path) -> FastAPI:
+    """The test app with first-class projects, which the hub runs."""
+    artifact_store = LocalArtifactStore(str(tmp_path / "artifacts"))
+    return create_app(
+        agent_store=SqlAlchemyAgentStore(db_uri),
+        file_store=SqlAlchemyFileStore(db_uri),
+        conversation_store=SqlAlchemyConversationStore(db_uri),
+        artifact_store=artifact_store,
+        agent_cache=AgentCache(artifact_store=artifact_store, cache_dir=tmp_path / "cache"),
+        comment_store=SqlAlchemyCommentStore(db_uri),
+        project_store=SqlAlchemyProjectStore(db_uri),
+    )
 
 
 @pytest.fixture()
 def _hub_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNIGENT_HUB_MODEL", "test-hub-model")  # never asks the real agy
     monkeypatch.setattr(hub_module, "HUB_DIR", tmp_path / "hub")
     monkeypatch.setattr(hub_module, "_HUBS", {})
     monkeypatch.setattr(discussion, "LEDGER_DIR", tmp_path / "ledgers")
@@ -185,18 +211,27 @@ async def test_the_call_hears_only_news_from_after_it_opened(client, _hub_home) 
     assert quiet.json() == {"updates": [], "last_id": body["last_id"]}
 
 
-async def test_the_hub_reads_and_changes_a_session_model_through_its_own_routes(
-    client, _hub_home
-) -> None:
+async def _project_with(client: httpx.AsyncClient, name: str, **session_args) -> dict:
+    """A project made through the hub from a new chat of theirs; returns the chat."""
     from tests.server.helpers import create_test_session
 
-    session = await create_test_session(
+    session = await create_test_session(client, **session_args)
+    made = await client.post("/v1/hub/projects", json={"name": name, "from_chat": session["id"]})
+    assert made.status_code == 200, made.text
+    return {**session, "project_id": made.json()["id"]}
+
+
+async def test_the_hub_reads_and_changes_a_project_model_through_its_own_routes(
+    client, _hub_home
+) -> None:
+    session = await _project_with(
         client,
-        title="Amarras",
+        "Amarras",
+        title="Chains",
         labels={"omnigent.wrapper": "claude-code-native-ui", "omnigent.ui": "terminal"},
     )
-    listed = (await client.get("/v1/hub/sessions")).json()["sessions"]
-    run = next(s["run"] for s in listed if s["id"] == session["id"])
+    listed = (await client.get("/v1/hub/projects")).json()["projects"]
+    run = next(p["chat"]["run"] for p in listed if p["chat"]["id"] == session["id"])
     assert run["provider"] == "Claude Code"
     assert run["efforts"] == ["low", "medium", "high", "xhigh", "max"]
 
@@ -205,30 +240,29 @@ async def test_the_hub_reads_and_changes_a_session_model_through_its_own_routes(
 
     stored = (await client.get(f"/v1/sessions/{session['id']}")).json()
     assert (stored["model_override"], stored["reasoning_effort"]) == ("sonnet", "high")
-    listed = (await client.get("/v1/hub/sessions")).json()["sessions"]
-    run = next(s["run"] for s in listed if s["id"] == session["id"])
+    listed = (await client.get("/v1/hub/projects")).json()["projects"]
+    run = next(p["chat"]["run"] for p in listed if p["chat"]["id"] == session["id"])
     # What it reports running stays the truth until it reports the switch.
     assert (run["model"], run["requested"], run["effort"]) == ("test-agent", "sonnet", "high")
 
 
-async def test_a_pick_in_the_sessions_panel_is_checked_and_logged_in_the_hub(
+async def test_a_pick_in_the_projects_panel_is_checked_and_logged_in_the_hub(
     client, _hub_home
 ) -> None:
-    from tests.server.helpers import create_test_session
-
-    session = await create_test_session(
-        client, title="Amarras", labels={"omnigent.wrapper": "claude-code-native-ui"}
+    session = await _project_with(
+        client, "Amarras", title="Chains", labels={"omnigent.wrapper": "claude-code-native-ui"}
     )
+    project_id = session["project_id"]
     hub_id = (await client.get("/v1/hub")).json()["session_id"]
 
     refused = await client.post(
-        "/v1/hub/model", json={"session_id": session["id"], "effort": "ultra"}
+        "/v1/hub/model", json={"project_id": project_id, "effort": "ultra"}
     )
     assert refused.status_code == 200, refused.text
     assert refused.json()["changed"] is False
     assert "can't take 'ultra' effort" in refused.json()["text"]
 
-    done = await client.post("/v1/hub/model", json={"session_id": session["id"], "effort": "max"})
+    done = await client.post("/v1/hub/model", json={"project_id": project_id, "effort": "max"})
     assert done.json() == {
         "changed": True,
         "text": "Switched Amarras to max effort; it applies from its next message.",
@@ -240,48 +274,79 @@ async def test_a_pick_in_the_sessions_panel_is_checked_and_logged_in_the_hub(
     ]
     assert said[-1].startswith("Switched Amarras to max effort;")
 
-    missing = await client.post("/v1/hub/model", json={"session_id": "nope", "effort": "max"})
+    missing = await client.post("/v1/hub/model", json={"project_id": "nope", "effort": "max"})
     assert missing.status_code == 404
 
 
-async def test_sessions_are_added_removed_and_renamed_from_the_panel(client, _hub_home) -> None:
+async def test_projects_are_made_renamed_given_chats_and_deleted_from_the_panel(
+    client, _hub_home
+) -> None:
     from tests.server.helpers import create_test_session
 
-    amarras = await create_test_session(client, title="Project Analysis")
+    chains = await create_test_session(client, title="Project Analysis")
     greeting = await create_test_session(client, title="Greeting")
     hub_id = (await client.get("/v1/hub")).json()["session_id"]
 
-    async def in_hub() -> list[tuple[str, str]]:
-        listed = (await client.get("/v1/hub/sessions")).json()["sessions"]
-        return sorted((s["id"], s["name"]) for s in listed)
+    async def projects() -> list[tuple[str, int, str | None]]:
+        listed = (await client.get("/v1/hub/projects")).json()["projects"]
+        return sorted((p["name"], p["chats"], (p["chat"] or {}).get("id")) for p in listed)
 
-    assert await in_hub() == sorted(
-        [(amarras["id"], "Project Analysis"), (greeting["id"], "Greeting")]
+    # Nothing is a project until they make one; their chats are offered for one.
+    assert await projects() == []
+    offered = [c["id"] for c in (await client.get("/v1/hub/candidates")).json()["chats"]]
+    assert offered == [greeting["id"], chains["id"]]  # never the hub itself
+
+    empty = await client.post("/v1/hub/projects", json={"name": "robot arm"})
+    assert empty.status_code == 200, empty.text
+    assert empty.json()["link"] == "/?project=robot%20arm"
+    made = await client.post(
+        "/v1/hub/projects", json={"name": "amarras", "from_chat": chains["id"]}
     )
-
-    removed = await client.delete(f"/v1/hub/members/{greeting['id']}")
-    assert removed.status_code == 200, removed.text
-    assert await in_hub() == [(amarras["id"], "Project Analysis")]
-    later = await create_test_session(client, title="Started later")
-    assert await in_hub() == [(amarras["id"], "Project Analysis")]
-    offered = [c["id"] for c in (await client.get("/v1/hub/candidates")).json()["sessions"]]
-    assert offered == [later["id"], greeting["id"]]  # never the hub itself
-
-    added = await client.post("/v1/hub/members", json={"session_id": greeting["id"]})
-    assert added.json() == {"text": "Added Greeting to the hub."}
-    assert (await client.post("/v1/hub/members", json={"session_id": hub_id})).status_code == 404
-
-    renamed = await client.patch(f"/v1/hub/members/{amarras['id']}", json={"name": "amarras"})
-    assert renamed.json() == {"text": "Renamed Project Analysis to amarras."}
-    clash = await client.patch(f"/v1/hub/members/{greeting['id']}", json={"name": "Amarras"})
+    assert made.json()["text"] == "Created project amarras, with “Project Analysis” as its chat."
+    clash = await client.post("/v1/hub/projects", json={"name": "Amarras"})
     assert clash.status_code == 409
-    assert clash.json()["detail"] == "amarras is already called that"
-    assert await in_hub() == sorted([(amarras["id"], "amarras"), (greeting["id"], "Greeting")])
-    gone = await client.patch(f"/v1/hub/members/{later['id']}", json={"name": "x"})
+    assert clash.json()["detail"] == "there is already a project called amarras"
+    assert await projects() == [("amarras", 1, chains["id"]), ("robot arm", 0, None)]
+    # In the sidebar too: the chat is filed in the project.
+    stored = (await client.get(f"/v1/sessions/{chains['id']}")).json()
+    assert stored["project_id"] == made.json()["id"]
+
+    arm = empty.json()["id"]
+    added = await client.post(f"/v1/hub/projects/{arm}/chats", json={"session_id": greeting["id"]})
+    assert added.json() == {"text": "Moved “Greeting” into robot arm."}
+    taken = await client.post(f"/v1/hub/projects/{arm}/chats", json={"session_id": hub_id})
+    assert taken.status_code == 404
+
+    renamed = await client.patch(f"/v1/hub/projects/{arm}", json={"name": "arm"})
+    assert renamed.json() == {"text": "Renamed robot arm to arm."}
+    assert await projects() == [("amarras", 1, chains["id"]), ("arm", 1, greeting["id"])]
+
+    deleted = await client.delete(f"/v1/hub/projects/{arm}")
+    assert deleted.json() == {
+        "text": "Deleted project arm; its chat is kept, outside any project."
+    }
+    assert await projects() == [("amarras", 1, chains["id"])]
+    assert (await client.get(f"/v1/sessions/{greeting['id']}")).json().get("project_id") is None
+    gone = await client.patch(f"/v1/hub/projects/{arm}", json={"name": "x"})
     assert gone.status_code == 404
 
     said = [
         i["content"][0]["text"] for i in await _items(client, hub_id) if i["type"] == "message"
     ]
-    assert said[-3].startswith("Took Greeting out of the hub;")
-    assert said[-1].startswith("Renamed Project Analysis to amarras.")
+    assert said[0].startswith("Created project robot arm. It has no chat yet")
+    assert "[Start a chat in robot arm ↗](http://test/?project=robot%20arm)" in said[0]
+    assert said[-1] == "Deleted project arm; its chat is kept, outside any project."
+
+
+async def test_the_old_session_list_becomes_projects(client, _hub_home) -> None:
+    from tests.server.helpers import create_test_session
+
+    chains = await create_test_session(client, title="Project Analysis")
+    loose = await create_test_session(client, title="Greeting")
+    state = hub_module.HubState("local")
+    state.set_members([chains["id"]])
+    state.name(chains["id"], "amarras")
+    listed = (await client.get("/v1/hub/projects")).json()["projects"]
+    assert [(p["name"], p["chat"]["id"]) for p in listed] == [("amarras", chains["id"])]
+    offered = [c["id"] for c in (await client.get("/v1/hub/candidates")).json()["chats"]]
+    assert offered == [loose["id"]]

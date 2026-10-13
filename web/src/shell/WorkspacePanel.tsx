@@ -41,7 +41,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { BrowserPane } from "@/components/BrowserPane/BrowserPane";
 import { CompanionPanel } from "./CompanionPanel";
-import { HubSessionsPanel } from "./HubSessionsPanel";
+import { HubProjectsPanel } from "./HubProjectsPanel";
 import { TodoPanel } from "./TodoPanel";
 import { useChatStore } from "@/store/chatStore";
 import { useSessionAgent } from "@/hooks/useAgents";
@@ -580,7 +580,7 @@ interface WorkspacePanelProps {
   onRightRailTabChange: (next: RightRailTab) => void;
   /** Whether the Files/Changes tabs are available (agent spec exposes an os_env). */
   showFilesPanel: boolean;
-  /** Whether this is the hub, whose rail is its Sessions tab alone. */
+  /** Whether this is the hub, whose rail is its Projects tab alone. */
   showHubSessions?: boolean;
   /** Whether the GitHub tab is available (same on-disk-workspace gate as Files). */
   showGithubTab: boolean;
@@ -811,14 +811,14 @@ function WorkspacePanelImpl({
         >
           <TabsList variant="pill" className="gap-1">
             {showHubSessions && (
-              <WorkspaceTabTooltip label="Sessions">
+              <WorkspaceTabTooltip label="Projects">
                 <TabsTrigger
                   value="sessions"
-                  aria-label="Sessions"
+                  aria-label="Projects"
                   className="size-6 shrink-0 p-0 hover:border-1 hover:border-muted rounded-md!"
                 >
                   <LayersIcon />
-                  <span className="sr-only">Sessions</span>
+                  <span className="sr-only">Projects</span>
                 </TabsTrigger>
               </WorkspaceTabTooltip>
             )}
@@ -1040,7 +1040,7 @@ function WorkspacePanelImpl({
         ) : rightRailTab === "github" && showGithubTab ? (
           <GithubPanel conversationId={conversationId} />
         ) : rightRailTab === "sessions" && showHubSessions ? (
-          <HubSessionsPanel />
+          <HubProjectsPanel />
         ) : rightRailTab === "companion" ? (
           <CompanionPanel conversationId={conversationId} />
         ) : rightRailTab === "todos" ? (

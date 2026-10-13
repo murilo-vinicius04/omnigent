@@ -1,5 +1,5 @@
 /**
- * The hub: one regular conversation per user that runs all of their sessions.
+ * The hub: one regular conversation per user that runs all of their projects.
  *
  * Its messages travel the normal session routes; the server answers them
  * through the hub instead of a runner. This only finds (or makes) it.
@@ -69,7 +69,7 @@ export async function askHubByVoice(text: string, context: string): Promise<stri
   return body.say ?? "";
 }
 
-/** Wait up to `waitS` for news after `after`: a session finished or needs them. */
+/** Wait up to `waitS` for news after `after`: a project finished or needs them. */
 export async function hubUpdates(
   after: number,
   waitS: number,
@@ -80,7 +80,7 @@ export async function hubUpdates(
   return { updates: body.updates ?? [], lastId: body.last_id ?? after };
 }
 
-/** One model a session can switch to, as its own picker lists it. */
+/** One model a project's chat can switch to, as its own picker lists it. */
 export interface HubModelChoice {
   id: string;
   label: string;
@@ -88,7 +88,7 @@ export interface HubModelChoice {
   efforts: string[];
 }
 
-/** What a session runs on and what it could run on instead. */
+/** What a project's chat runs on and what it could run on instead. */
 export interface HubSessionRun {
   /** Its harness as the chat names it, e.g. "Claude Code". */
   provider: string;
@@ -105,10 +105,10 @@ export interface HubSessionRun {
   efforts: string[];
 }
 
-/** One session as the hub sees it. */
+/** A project's newest chat, the one the hub sends to. */
 export interface HubSessionRow {
   id: string;
-  /** What the hub calls it: its nickname, else its title. */
+  /** What the hub calls it: its project's name. */
   name: string;
   title: string;
   nickname: string | null;
@@ -120,23 +120,41 @@ export interface HubSessionRow {
   updated_at: number;
   pending_approvals: number;
   run: HubSessionRun;
+  project_id: string;
 }
 
-/** The sessions the hub runs, newest first, with what each runs on. */
-export async function listHubSessions(): Promise<HubSessionRow[]> {
-  const body = await readJson<{ sessions?: HubSessionRow[] }>(
-    await authenticatedFetch("/v1/hub/sessions"),
+/** One project as the hub runs it. */
+export interface HubProjectRow {
+  id: string;
+  name: string;
+  handle: string;
+  /** Its emoji, when one was picked; "" otherwise. */
+  icon: string;
+  /** The folder its new chats start in; "" when it has none. */
+  folder: string;
+  /** How many chats it has. */
+  chats: number;
+  /** Seconds since the epoch. */
+  updated_at: number;
+  /** Its newest chat; `null` until it has one. */
+  chat: HubSessionRow | null;
+}
+
+/** Their projects, most recently active first, each with its newest chat. */
+export async function listHubProjects(): Promise<HubProjectRow[]> {
+  const body = await readJson<{ projects?: HubProjectRow[] }>(
+    await authenticatedFetch("/v1/hub/projects"),
   );
-  return body.sessions ?? [];
+  return body.projects ?? [];
 }
 
 /**
- * Put a session on another model and/or effort, by the same rules as asking
- * the hub: only what that session offers, and the change is written into the
+ * Put a project on another model and/or effort, by the same rules as asking
+ * the hub: only what its chat offers, and the change is written into the
  * hub chat. `""` keeps a setting, `"default"` clears it.
  */
-export async function setHubSessionModel(
-  sessionId: string,
+export async function setHubProjectModel(
+  projectId: string,
   change: { model?: string; effort?: string },
 ): Promise<{ changed: boolean; text: string }> {
   return readJson<{ changed: boolean; text: string }>(
@@ -144,7 +162,7 @@ export async function setHubSessionModel(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        session_id: sessionId,
+        project_id: projectId,
         model: change.model ?? "",
         effort: change.effort ?? "",
       }),
@@ -152,7 +170,7 @@ export async function setHubSessionModel(
   );
 }
 
-/** One of their sessions outside the hub, offered for adding. */
+/** One of their chats outside every project, offered for adding to one. */
 export interface HubCandidate {
   id: string;
   title: string;
@@ -162,18 +180,68 @@ export interface HubCandidate {
   provider: string;
 }
 
-/** Their sessions not in the hub, newest first. */
-export async function listHubCandidates(): Promise<HubCandidate[]> {
-  const body = await readJson<{ sessions?: HubCandidate[] }>(
+/** Their chats outside every project, newest first. */
+export async function listHubChats(): Promise<HubCandidate[]> {
+  const body = await readJson<{ chats?: HubCandidate[] }>(
     await authenticatedFetch("/v1/hub/candidates"),
   );
-  return body.sessions ?? [];
+  return body.chats ?? [];
 }
 
-/** Put one of their sessions in the hub. Returns what the hub chat says about it. */
-export async function addHubSession(sessionId: string): Promise<string> {
+/** What making a project gave back. */
+export interface CreatedHubProject {
+  /** What the hub chat says about it. */
+  text: string;
+  id: string;
+  name: string;
+  /** Where to start its first chat; `null` when it has one already. */
+  link: string | null;
+}
+
+/**
+ * Make a project. With `fromChat`, that chat (one outside every project)
+ * becomes its first, and its new chats start where that one runs. Rejects
+ * when the name is taken.
+ */
+export async function createHubProject(
+  name: string,
+  fromChat?: string,
+): Promise<CreatedHubProject> {
+  return readJson<CreatedHubProject>(
+    await authenticatedFetch("/v1/hub/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, from_chat: fromChat ?? null }),
+    }),
+  );
+}
+
+/** Give a project another name (the sidebar's too). Rejects when it is taken. */
+export async function renameHubProject(projectId: string, name: string): Promise<string> {
   const body = await readJson<{ text: string }>(
-    await authenticatedFetch("/v1/hub/members", {
+    await authenticatedFetch(`/v1/hub/projects/${encodeURIComponent(projectId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+  );
+  return body.text;
+}
+
+/** Delete a project; its chats are kept, outside any project. */
+export async function deleteHubProject(projectId: string): Promise<string> {
+  const body = await readJson<{ text: string }>(
+    await authenticatedFetch(`/v1/hub/projects/${encodeURIComponent(projectId)}`, {
+      method: "DELETE",
+    }),
+  );
+  return body.text;
+}
+
+/** Put one of their chats outside every project into this project. */
+export async function addHubProjectChat(projectId: string, sessionId: string): Promise<string> {
+  const body = await readJson<{ text: string }>(
+    await authenticatedFetch(`/v1/hub/projects/${encodeURIComponent(projectId)}/chats`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: sessionId }),
@@ -182,27 +250,7 @@ export async function addHubSession(sessionId: string): Promise<string> {
   return body.text;
 }
 
-/** Take a session out of the hub; the session itself is untouched. */
-export async function removeHubSession(sessionId: string): Promise<string> {
-  const body = await readJson<{ text: string }>(
-    await authenticatedFetch(`/v1/hub/members/${encodeURIComponent(sessionId)}`, {
-      method: "DELETE",
-    }),
-  );
-  return body.text;
-}
-
-/**
- * Call a session something else in the hub (chat and voice use it too).
- * `""` goes back to its title. Rejects when another session has that name.
- */
-export async function renameHubSession(sessionId: string, name: string): Promise<string> {
-  const body = await readJson<{ text: string }>(
-    await authenticatedFetch(`/v1/hub/members/${encodeURIComponent(sessionId)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    }),
-  );
-  return body.text;
+/** The new-chat page, with its chat filed in this project. */
+export function projectChatLink(name: string): string {
+  return `/?project=${encodeURIComponent(name)}`;
 }
