@@ -1564,7 +1564,8 @@ class Hub:
                 ):
                     await self._report(session, state)
                     return
-                if seen_working and idle_polls >= 6:
+                # A reply waiting on its summary is reported above once the wait ends.
+                if seen_working and not state.reply and idle_polls >= 6:
                     self.say(
                         f"{session.name} finished without writing a reply.",
                         kind="finished",

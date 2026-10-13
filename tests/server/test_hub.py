@@ -488,6 +488,26 @@ async def test_a_summary_that_never_comes_does_not_hold_the_report(tmp_path, mon
     await hub.close()
 
 
+async def test_a_reply_waiting_on_its_summary_is_never_called_missing(
+    tmp_path, monkeypatch
+) -> None:
+    # The summary wait (10 polls here, 8 live) outlasts the 6 idle polls after
+    # which a turn with no reply is called empty; a turn that has one is not.
+    monkeypatch.setattr(hub_module, "SUMMARY_WAIT_S", 0.1)
+    server = _Server()
+    server.turns = [
+        TurnState(status="running"),
+        TurnState(status="idle", reply="Ran.", summary_due=True),
+    ]
+    hub = _copying_hub(tmp_path, server, [])
+    hub.submit("roda")
+    await _settle(hub, until=lambda: any(e.kind == "finished" for e in hub.state.entries))
+    [finished] = [e for e in hub.state.entries if e.kind == "finished"]
+    assert finished.detail == "Ran."
+    assert "without writing a reply" not in finished.text
+    await hub.close()
+
+
 async def test_a_report_never_repeats_the_finished_label(tmp_path) -> None:
     router = _Router('{"send": "aaaa", "message": "Run it.", "say": "Mandei."}')
     router.report = "AMARRAS finished: It ran."
