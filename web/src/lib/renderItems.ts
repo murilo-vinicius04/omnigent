@@ -73,6 +73,8 @@ export type RenderItem =
         audioFileId?: string;
         audioPending?: boolean;
         show?: SummaryShowBlock[];
+        /** Spoken only; the message itself stays the view. */
+        speakOnly?: boolean;
       };
       /** Files this turn attached, lifted from its message blocks. */
       files?: AttachedFile[];

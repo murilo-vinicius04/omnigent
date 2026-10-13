@@ -282,6 +282,8 @@ export interface TextDone {
     audioFileId?: string;
     audioPending?: boolean;
     show?: SummaryShowBlock[];
+    /** Spoken only; the message itself stays the view. */
+    speakOnly?: boolean;
   };
   /** Files this assistant message attached. */
   files?: AttachedFile[];

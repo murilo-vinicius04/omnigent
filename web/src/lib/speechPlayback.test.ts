@@ -15,6 +15,7 @@ vi.mock("./geminiNarrator", () => ({
 import {
   claimSpeechChannel,
   clearSpeechQueue,
+  isMessageSpoken,
   resetSpokenMessageTracking,
   setConversationSpeaking,
   useSpeechPlaybackStore,
@@ -101,6 +102,22 @@ describe("speechPlayback call coordination and queueing", () => {
     expect(handled).toBe(true);
     expect(playedAudios).toHaveLength(0);
     expect(narrateViaLive).not.toHaveBeenCalled();
+  });
+
+  it("drops a hub message read during a call instead of saving it for after", () => {
+    // A hub call says the hub's news itself; reading it again after the call repeats it.
+    setConversationSpeaking(true, vi.fn());
+
+    const handled = useSpeechPlaybackStore
+      .getState()
+      .speakLiveSummary("msg_hub", "Hub news", "pt-BR", "/audio/hub.mp3", "conv_hub", {
+        dropDuringCall: true,
+      });
+    setConversationSpeaking(false);
+
+    expect(handled).toBe(true);
+    expect(isMessageSpoken("msg_hub")).toBe(true);
+    expect(playedAudios).toHaveLength(0);
   });
 
   it("plays queued summary when the call ends", () => {

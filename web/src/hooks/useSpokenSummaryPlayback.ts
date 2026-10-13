@@ -247,7 +247,9 @@ export function useSpokenSummaryPlayback(
               sessionId,
               itemId: responseId,
             });
-            speakLiveSummary(responseId, summary!.text, summary!.lang, audioUrl, sessionId);
+            speakLiveSummary(responseId, summary!.text, summary!.lang, audioUrl, sessionId, {
+              dropDuringCall: summary!.speakOnly,
+            });
           } else if (
             isFinal &&
             ((!wasObservedLive && !isFreshSummary && !awaitingSummary) ||

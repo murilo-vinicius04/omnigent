@@ -304,6 +304,14 @@ export function clearInMemorySpokenTracking(): void {
   persistedIdsSetCache = null;
 }
 
+export interface SpeakOptions {
+  /**
+   * Drop it rather than wait while a voice call is open: the hub's messages,
+   * which a hub call says itself.
+   */
+  dropDuringCall?: boolean;
+}
+
 interface SpeechPlaybackStoreState {
   isSpeaking: boolean;
   speakingItemId: string | null;
@@ -316,6 +324,7 @@ interface SpeechPlaybackStoreState {
     lang?: string,
     audioUrl?: string,
     sessionId?: string | null,
+    options?: SpeakOptions,
   ) => boolean;
   playManual: (itemId: string) => void;
   /**
@@ -622,6 +631,7 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
     lang?: string,
     audioUrl?: string,
     sessionId?: string | null,
+    options?: SpeakOptions,
   ) => {
     // Hard requirement: do NOT autoplay anything into a muted session. The
     // volume control is the switch: zero means the reader wants quiet here.
@@ -648,6 +658,10 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
     if (!audioUrl && !live) return false;
     markMessageSpoken(itemId);
 
+    if (liveConversationOpen && options?.dropDuringCall) {
+      reportNarration({ path: "playback", decision: "dropped-during-call", sessionId, itemId });
+      return true;
+    }
     // A live conversation is open: wait rather than talk over it or silence the call.
     // The call must never sit silent while billing, and summaries wait until the call ends.
     if (liveConversationOpen) {

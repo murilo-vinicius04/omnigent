@@ -808,7 +808,9 @@ function renderItem(
           data-testid="assistant-text-section"
           className={cn("min-w-0", followsText && "mt-2")}
         >
-          {item.spokenSummary && item.spokenSummary.text.trim().length > 0 ? (
+          {item.spokenSummary &&
+          item.spokenSummary.text.trim().length > 0 &&
+          !item.spokenSummary.speakOnly ? (
             <FriendlyResponse
               summary={item.spokenSummary}
               id={responseId || item.itemId || undefined}

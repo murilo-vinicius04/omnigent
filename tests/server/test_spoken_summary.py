@@ -2995,6 +2995,7 @@ async def test_relay_turn_end_with_tts_enabled_schedules_audio_synthesis() -> No
         text: str,
         language: str,
         show: list[dict[str, Any]] | None = None,
+        speak_only: bool = False,
     ) -> None:
         spawned_calls.append(
             {
@@ -3006,6 +3007,7 @@ async def test_relay_turn_end_with_tts_enabled_schedules_audio_synthesis() -> No
                 "text": text,
                 "language": language,
                 "show": show,
+                "speak_only": speak_only,
             }
         )
 
@@ -3047,6 +3049,7 @@ async def test_relay_turn_end_with_tts_enabled_schedules_audio_synthesis() -> No
     assert call["text"] == "Resumo do relay."
     assert call["language"] == "pt-BR"
     assert call["show"] is None
+    assert call["speak_only"] is False  # a project's summary is its view
 
 
 @pytest.mark.asyncio

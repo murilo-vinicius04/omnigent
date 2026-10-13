@@ -208,6 +208,17 @@ def _quote(text: str) -> str:
     return "\n> ".join(text.strip().splitlines())
 
 
+#: Hub messages still being read aloud (written and recorded), kept from collection.
+_narrations: set[asyncio.Task[None]] = set()
+
+
+def speech_text(entry: hub_module.HubEntry) -> str:
+    """What the hub says aloud for an entry: its own words, never what it quotes or shows."""
+    from omnigent.server.spoken_summary import strip_markdown_for_speech
+
+    return strip_markdown_for_speech(entry.text)
+
+
 def file_url(base_url: str, session_id: str, relative: str) -> str:
     """A link that opens a file in its chat's file viewer."""
     return f"{base_url}/c/{session_id}?file={quote(relative, safe='/')}"
@@ -441,6 +452,83 @@ class HubConversation:
                     type="response.output_item.done", item=persisted[0].to_api_dict()
                 ).model_dump(),
             )
+            self._narrate(entry, persisted[0].response_id)
+
+    def _narrate(self, entry: hub_module.HubEntry, response_id: str | None) -> None:
+        """Have the page read the message aloud, as it reads a project's summary."""
+        text = speech_text(entry)
+        if not text or not response_id:
+            return
+        try:
+            task = asyncio.get_running_loop().create_task(self._post_speech(text, response_id))
+        except RuntimeError:  # no event loop, so nothing to record it with
+            return
+        _narrations.add(task)
+        task.add_done_callback(_narrations.discard)
+
+    async def _post_speech(self, text: str, response_id: str) -> None:
+        """Attach the words to speak to a message, then its recording when one is made.
+
+        A spoken summary the page only reads aloud (``speak_only``): the message
+        itself, with its tables and links, stays what the chat shows.
+        """
+        from omnigent.entities import NewConversationItem
+        from omnigent.entities.conversation import parse_item_data
+        from omnigent.server.routes._sessions.common import session_stream
+        from omnigent.server.routes._sessions.helpers import (
+            _schedule_summary_audio_if_enabled,
+        )
+        from omnigent.server.schemas import OutputItemDoneEvent
+        from omnigent.server.spoken_summary import (
+            detect_bcp47_language,
+            resolve_spoken_summary_settings_async,
+        )
+
+        try:
+            enabled, language, _conv = await resolve_spoken_summary_settings_async(
+                self.session_id, self.conversation_store
+            )
+            if not enabled:
+                return
+            if not language or language == "auto":
+                language = detect_bcp47_language(text)
+            file_store, artifact_store = hub_module._file_stores or (None, None)
+            part, record = await _schedule_summary_audio_if_enabled(
+                self.conversation_store,
+                file_store,
+                artifact_store,
+                self.session_id,
+                response_id,
+                {"type": "spoken_summary", "text": text, "lang": language, "speak_only": True},
+            )
+            item = NewConversationItem(
+                type="message",
+                response_id=response_id,
+                data=parse_item_data(
+                    "message",
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "agent": "spoken_summary",
+                        "content": [part],
+                    },
+                ),
+            )
+            persisted = await asyncio.to_thread(
+                self.conversation_store.append, self.session_id, [item]
+            )
+            if persisted:
+                session_stream.publish(
+                    self.session_id,
+                    OutputItemDoneEvent(
+                        type="response.output_item.done", item=persisted[0].to_api_dict()
+                    ).model_dump(),
+                )
+            record()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the written message already landed
+            _logger.warning("hub message not read aloud in %s", self.session_id, exc_info=True)
 
     def post_user(self, text: str) -> None:
         """Store what they said on a voice call as their message, and publish it."""

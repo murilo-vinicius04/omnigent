@@ -75,6 +75,7 @@ describe("crossSessionNarration", () => {
       "en-US",
       "/v1/sessions/conv_other/resources/files/f_1/content",
       "conv_other",
+      { dropDuringCall: undefined },
     );
   });
 

@@ -141,7 +141,9 @@ async function speakIfSummaryReady(sessionId: string, now: () => number): Promis
       // revision carries the audio, and that is the one worth hearing.
       const spoke = useSpeechPlaybackStore
         .getState()
-        .speakLiveSummary(responseId, summary.text, summary.lang, audioUrl, sessionId);
+        .speakLiveSummary(responseId, summary.text, summary.lang, audioUrl, sessionId, {
+          dropDuringCall: summary.speakOnly,
+        });
       reportNarration({
         path: "cross-session",
         decision: spoke ? "handed-to-playback" : "declined-by-playback",

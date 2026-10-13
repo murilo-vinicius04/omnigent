@@ -324,9 +324,7 @@ export function outputFilesFromMessageContent(content: unknown): AttachedFile[] 
  * rendered block: passing one off as the other is how a reader ends up
  * trusting an answer from something that cannot see the code.
  */
-export function companionAnswerFromMessageContent(
-  content: unknown,
-): { asked: string } | undefined {
+export function companionAnswerFromMessageContent(content: unknown): { asked: string } | undefined {
   if (!Array.isArray(content)) return undefined;
   for (const block of content) {
     if (!block || typeof block !== "object") continue;
@@ -394,6 +392,7 @@ export function spokenSummaryFromMessageContent(content: unknown):
       audioFileId?: string;
       audioPending?: boolean;
       show?: SummaryShowBlock[];
+      speakOnly?: boolean;
     }
   | undefined {
   if (!Array.isArray(content)) return undefined;
@@ -416,12 +415,16 @@ export function spokenSummaryFromMessageContent(content: unknown):
       // Parts of the answer worth showing rather than describing: rendered
       // under the summary and never spoken.
       const show = parseShowBlocks(b.show);
+      // Read aloud, but the message stays the view: the hub's own messages are
+      // already short, and their tables and links would hide behind "Show original".
+      const speakOnly = b.speak_only === true;
       return {
         text: b.text,
         lang: b.lang,
         ...(audioFileId ? { audioFileId } : {}),
         ...(audioPending ? { audioPending: true } : {}),
         ...(show.length ? { show } : {}),
+        ...(speakOnly ? { speakOnly: true } : {}),
       };
     }
   }

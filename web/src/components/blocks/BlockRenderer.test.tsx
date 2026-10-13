@@ -85,6 +85,32 @@ describe("BlockRenderer dispatch", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps a message that is only read aloud as it was written", () => {
+    // The hub's messages: short already, and their tables and links must not
+    // hide behind "Show original".
+    const items: RenderItem[] = [
+      {
+        kind: "text",
+        itemId: "msg_hub",
+        text: "RAL finished: o plano está pronto.\n\n| Run | Time |\n|---|---|\n| A | 3 s |",
+        final: true,
+        spokenSummary: {
+          text: "RAL finished: o plano está pronto.",
+          lang: "pt-BR",
+          speakOnly: true,
+        },
+      },
+    ];
+    render(
+      <FileViewerContext.Provider value={FILE_VIEWER_NOOP}>
+        <BlockRenderer items={items} sessionStatus="idle" />
+      </FileViewerContext.Provider>,
+    );
+
+    expect(screen.queryByTestId("friendly-response")).toBeNull();
+    expect(screen.getByRole("table")).toBeInTheDocument();
+  });
+
   it("keeps the answer's file links clickable under the rewrite", () => {
     // The rewrite is prose, so a video the answer linked would sit behind
     // "Show original" -- the reader asked "where's the video?".

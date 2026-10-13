@@ -8848,6 +8848,7 @@ async def _schedule_summary_audio_if_enabled(
             str(decorated_part.get("text") or ""),
             str(decorated_part.get("lang") or "pt-BR"),
             show=list(decorated_part.get("show") or []) or None,
+            speak_only=decorated_part.get("speak_only") is True,
         )
 
     return decorated_part, _spawn
@@ -8862,6 +8863,7 @@ def _spawn_summary_audio(
     text: str,
     language: str,
     show: list[dict[str, Any]] | None = None,
+    speak_only: bool = False,
 ) -> None:
     """Synthesize a summary in the background and append its audio when ready.
 
@@ -8880,6 +8882,7 @@ def _spawn_summary_audio(
     :param language: Target language tag, e.g. ``"pt-BR"``.
     :param show: Blocks the summary displays, repeated so this item carries the
         whole summary: a reader merging the two keeps whichever arrives last.
+    :param speak_only: The summary is only read aloud; its message stays the view.
     """
 
     async def _synthesize_and_append() -> None:
@@ -8905,6 +8908,7 @@ def _spawn_summary_audio(
                                 "lang": language,
                                 "audio_file_id": audio_file_id,
                                 **({"show": show} if show else {}),
+                                **({"speak_only": True} if speak_only else {}),
                             }
                         ],
                     },

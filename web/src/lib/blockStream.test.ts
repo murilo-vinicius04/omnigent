@@ -18,7 +18,7 @@ import type {
   ToolResultBlock,
   UserMessageBlock,
 } from "./blocks";
-import { BlockStream } from "./blockStream";
+import { BlockStream, spokenSummaryFromMessageContent } from "./blockStream";
 import type { StreamEvent } from "./events";
 import type { Response } from "./types";
 
@@ -1781,5 +1781,21 @@ describe("BlockStream — naming a turn already in flight", () => {
 
     // Exactly one reasoning section was opened for the whole thought.
     expect(blocks.filter((b) => b.type === "reasoning_start")).toHaveLength(1);
+  });
+});
+
+describe("spoken summaries only read aloud", () => {
+  it("carry the flag that keeps their message as the view", () => {
+    const content = [{ type: "spoken_summary", text: "Oi!", lang: "pt-BR", speak_only: true }];
+    expect(spokenSummaryFromMessageContent(content)).toEqual({
+      text: "Oi!",
+      lang: "pt-BR",
+      speakOnly: true,
+    });
+  });
+
+  it("are absent from a project's summary, which is its view", () => {
+    const content = [{ type: "spoken_summary", text: "Pronto.", lang: "pt-BR" }];
+    expect(spokenSummaryFromMessageContent(content)).toEqual({ text: "Pronto.", lang: "pt-BR" });
   });
 });

@@ -98,6 +98,102 @@ async def test_a_message_typed_into_the_hub_is_answered_there(client, _hub_home)
     assert _hub_home == ["oi"]
 
 
+def _kind(item: dict) -> str:
+    """The type of a stored message's first part, e.g. ``"spoken_summary"``."""
+    return (item.get("content") or [{}])[0].get("type", "")
+
+
+async def test_the_hubs_messages_are_read_aloud_and_still_shown_as_written(
+    client, _hub_home, db_uri, tmp_path, monkeypatch
+) -> None:
+    from omnigent.server import tts
+
+    monkeypatch.setenv("OMNIGENT_SPOKEN_SUMMARY_ENABLED", "true")
+    monkeypatch.setenv("OMNIGENT_SPOKEN_SUMMARY_LANGUAGE", "pt-BR")
+    recorded: list[tuple[str, str]] = []
+
+    async def synthesize(text: str, *, language: str = "pt-BR") -> tts.SummaryAudio:
+        recorded.append((text, language))
+        return tts.SummaryAudio(b"ID3voice", "summary.mp3", "audio/mpeg")
+
+    monkeypatch.setattr(tts, "synthesize_summary", synthesize)
+    monkeypatch.setattr(
+        hub_module,
+        "_file_stores",
+        (SqlAlchemyFileStore(db_uri), LocalArtifactStore(str(tmp_path / "artifacts"))),
+    )
+    session_id = (await client.get("/v1/hub")).json()["session_id"]
+    await client.post(
+        f"/v1/sessions/{session_id}/events",
+        json={
+            "type": "message",
+            "data": {"role": "user", "content": [{"type": "input_text", "text": "oi"}]},
+        },
+    )
+    for _ in range(200):
+        items = await _items(client, session_id)
+        spoken = [i for i in items if _kind(i) == "spoken_summary"]
+        if len(spoken) == 2:
+            break
+        await asyncio.sleep(0.02)
+
+    [reply] = [i for i in items if i["role"] == "assistant" and _kind(i) == "output_text"]
+    assert reply["content"] == [
+        {"type": "output_text", "text": "Oi! Nenhuma sessão por aqui ainda."}
+    ]
+    # The words first, then the same words with their recording, both on the reply's turn.
+    words, voiced = (i["content"][0] for i in spoken)
+    assert [i["response_id"] for i in spoken] == [reply["response_id"]] * 2
+    assert words == {
+        "type": "spoken_summary",
+        "text": "Oi! Nenhuma sessão por aqui ainda.",
+        "lang": "pt-BR",
+        "speak_only": True,
+        "audio_pending": True,
+    }
+    assert voiced["speak_only"] is True and voiced["text"] == words["text"]
+    assert recorded == [("Oi! Nenhuma sessão por aqui ainda.", "pt-BR")]
+    audio = await client.get(
+        f"/v1/sessions/{session_id}/resources/files/{voiced['audio_file_id']}/content"
+    )
+    assert audio.content == b"ID3voice"
+
+
+async def test_without_spoken_summaries_the_hub_stays_silent(client, _hub_home) -> None:
+    session_id = (await client.get("/v1/hub")).json()["session_id"]
+    await client.post(
+        f"/v1/sessions/{session_id}/events",
+        json={
+            "type": "message",
+            "data": {"role": "user", "content": [{"type": "input_text", "text": "oi"}]},
+        },
+    )
+    for _ in range(100):
+        items = await _items(client, session_id)
+        if any(i.get("role") == "assistant" for i in items):
+            break
+        await asyncio.sleep(0.02)
+    await asyncio.sleep(0.1)
+    items = await _items(client, session_id)
+    assert not [i for i in items if _kind(i) == "spoken_summary"]
+
+
+def test_the_hub_says_its_own_words_never_what_it_quotes_or_shows(tmp_path) -> None:
+    sent = HubEntry(
+        id=2,
+        at=0,
+        role="hub",
+        kind="sent",
+        text="Mandei pra **brasa** rodar `npm test`.",
+        session_id="s1",
+        session_name="brasa",
+        detail="Run the tests.\nThen report.",
+    )
+    assert hub_chat.speech_text(sent) == "Mandei pra brasa rodar npm test."
+    report = _finished(tmp_path, text="RAL finished: o plano está em `REVISION_PLAN.md`.")
+    assert hub_chat.speech_text(report) == "RAL finished: o plano está em REVISION_PLAN.md."
+
+
 async def test_a_deleted_hub_is_made_again(client, _hub_home) -> None:
     session_id = (await client.get("/v1/hub")).json()["session_id"]
     assert (await client.delete(f"/v1/sessions/{session_id}")).status_code in (200, 204)
