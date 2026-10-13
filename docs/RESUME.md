@@ -14,6 +14,25 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-13 15:10 — Hub shows the project's real reply; forwards in the hub's language
+
+Commit a6f3b39bd, live 15:08 (server restarted; it resumed the open watch on this conversation).
+- User: "hub tem que mostrar os mesmos links/imagens/tabelas que a conversa original". Causes found: the report
+  read the NEWEST assistant message, which is the spoken summary (Portuguese narration) or an attached chart's
+  caption, not the answer (report #44 quoted RAL's narration); then quoted it cut at 3,000 chars in a blockquote;
+  text only, and file paths are only clickable inside the chat that owns the workspace.
+- Now: `turn()` takes the newest message with `output_text` (skips spoken_summary/`agent: attachment`), collects
+  `output_file` blocks; the report shows the full reply (12k, cut at a paragraph) under the summary; paths inside
+  the project's folder that exist link to `/c/<chat>?file=<rel>` (`hub_chat.link_workspace_files`); files are copied
+  into the hub chat through the server's stores (`hub.use_file_stores`, set in app lifespan) — works after restarts.
+- Forwards: router prompt said "message for Claude is always English"; now `{language}` = the hub chat's
+  spoken-summary language (pt-BR via env), and the project's chat translates to English for Claude as for typed text.
+- Verified: scratch server + headless Chrome (table, link, chart render; link opens the file); live data: RAL's
+  13:07 reply picked correctly, plan link made; live deep link opened REVISION_PLAN.md in RAL's file viewer; the
+  router on Flash Low wrote a forward in Portuguese (6.1 s). Not yet seen: a real report-back after the deploy.
+- Difference left: RAL's own chat shows the reply TRANSLATED (pt summary + tables, "Show original"); the hub shows
+  its pt summary line + the full ORIGINAL (English) reply. Offered to the user, not built.
+
 ## 2026-10-13 14:50 — Hub router timeouts fixed (read with the 12:35 block below)
 
 User at 14:14: "hub tem que mostrar os mesmos links/imagens/tabelas que a conversa original, corrige isso", then
