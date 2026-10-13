@@ -154,6 +154,32 @@ def ensure_hub_conversation(
     return session_id
 
 
+#: The link title that marks a project's name as a chip (the page draws a pill).
+PROJECT_CHIP_TITLE: Final[str] = "omnigent-project"
+
+#: Entries about one project: they open with its chip.
+_PROJECT_KINDS: Final[frozenset[str]] = frozenset(
+    {"sent", "finished", "attention", "status", "check", "model", "project"}
+)
+
+
+def own_words(entry: hub_module.HubEntry) -> str:
+    """An entry's words without the ``"<project> finished:"`` label its chip replaces."""
+    if entry.kind == "finished" and entry.session_name:
+        return hub_module._without_label(entry.text, f"{entry.session_name} finished:")
+    return entry.text
+
+
+def _chip(entry: hub_module.HubEntry, base_url: str) -> str:
+    """The project an entry is about, as the chip the page draws at its top."""
+    if entry.kind not in _PROJECT_KINDS or not entry.session_id or not entry.session_name:
+        return ""
+    name = entry.session_name.replace("[", "\\[").replace("]", "\\]")
+    if not base_url:
+        return f"**{name}**"
+    return f'[{name}]({base_url}/c/{entry.session_id} "{PROJECT_CHIP_TITLE}")'
+
+
 def render(
     entry: hub_module.HubEntry,
     base_url: str = "",
@@ -167,15 +193,18 @@ def render(
     :param files: Files projects' replies named, by name or path: ``(chat,
         workspace path)``. Wherever the hub mentions one, it links to it.
     """
+    entry = replace(entry, text=own_words(entry))
     if files and base_url:
         entry = replace(entry, text=link_known_files(entry.text, files, base_url))
+    # The project is a chip on top, which opens its chat; a project with no
+    # chat yet gets a link to start one.
+    chip = _chip(entry, base_url)
     link = ""
-    if base_url and entry.session_id:
-        link = f"[Open {entry.session_name} ↗]({base_url}/c/{entry.session_id})"
-    elif base_url and entry.link:
+    if base_url and entry.link and not entry.session_id:
         link = f"[Start a chat in {entry.session_name} ↗]({base_url}{entry.link})"
     if entry.kind == "sent" and entry.detail:
-        return f"{entry.text}\n\n> {_quote(entry.detail)}\n\n{link}".rstrip()
+        parts = [chip, entry.text, f"> {_quote(entry.detail)}", link]
+        return "\n\n".join(part for part in parts if part)
     if entry.kind == "finished" and (entry.detail or entry.show):
         # What the project's own chat shows under its summary of the reply: the
         # tables, images, links and output its summary picked, and the files the
@@ -197,10 +226,10 @@ def render(
             f"[`{label}`]({url_for(rel)})" if "/" in label else f"[{label}]({url_for(rel)})"
             for label, rel in named_files(entry.detail or "", workspace)
         )
-        parts = [entry.text, shown, file_links, link]
+        parts = [chip, entry.text, shown, file_links, link]
         return "\n\n".join(part for part in parts if part)
-    if entry.kind in ("attention", "finished", "status", "check", "model", "project") and link:
-        return f"{entry.text}\n\n{link}"
+    if entry.kind in _PROJECT_KINDS:
+        return "\n\n".join(part for part in (chip, entry.text, link) if part)
     return entry.text
 
 
@@ -213,10 +242,13 @@ _narrations: set[asyncio.Task[None]] = set()
 
 
 def speech_text(entry: hub_module.HubEntry) -> str:
-    """What the hub says aloud for an entry: its own words, never what it quotes or shows."""
+    """What the hub says aloud for an entry: its own words, never what it quotes or shows.
+
+    Not the project's name or "finished" either: the chip shows which project it is.
+    """
     from omnigent.server.spoken_summary import strip_markdown_for_speech
 
-    return strip_markdown_for_speech(entry.text)
+    return strip_markdown_for_speech(own_words(entry))
 
 
 def file_url(base_url: str, session_id: str, relative: str) -> str:

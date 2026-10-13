@@ -12,6 +12,7 @@
 
 import type React from "react";
 import { useMemo } from "react";
+import { FolderIcon } from "lucide-react";
 import { defaultRemarkPlugins } from "streamdown";
 import remarkBreaks from "remark-breaks";
 import { normalizeExplicitMathDelimiters } from "@/components/ai-elements/mathMarkdown";
@@ -20,6 +21,7 @@ import { WORKSPACE_FILE_LINK_ATTR } from "@/components/ai-elements/streamdown-se
 import { ZoomableImage } from "@/components/ImageLightbox";
 import { useThrottledValue } from "@/hooks/useThrottledValue";
 import { cn } from "@/lib/utils";
+import { Link } from "@/lib/routing";
 import {
   useFileViewer,
   useFileViewerConversationId,
@@ -159,6 +161,32 @@ function WorkspacePathInlineCode({
 // (which stops a link-only table column collapsing to ~2ch) on the attribute.
 const STREAMDOWN_LINK_CLASS = "wrap-anywhere font-medium text-primary underline";
 
+/** The link title the hub puts on a project's name: drawn as a chip, not a link. */
+export const PROJECT_CHIP_TITLE = "omnigent-project";
+
+/**
+ * A project named at the top of a hub message: a small pill that opens its
+ * chat, so the message itself need not say which project it is.
+ */
+function ProjectChip({ href, children }: { href: string; children: React.ReactNode }) {
+  let to = href;
+  try {
+    to = new URL(href, window.location.href).pathname;
+  } catch {
+    // Not a URL: keep it as written.
+  }
+  return (
+    <Link
+      to={to}
+      data-testid="hub-project-chip"
+      className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/50 px-2 py-0.5 align-middle text-xs font-medium text-foreground no-underline transition-colors hover:bg-muted"
+    >
+      <FolderIcon className="size-3 text-muted-foreground" aria-hidden="true" />
+      {children}
+    </Link>
+  );
+}
+
 /**
  * Anchor renderer for markdown links. A link to a workspace file, its href
  * parked on a fragment by `markWorkspaceFileLinks` and the real path moved to
@@ -181,6 +209,10 @@ function WorkspaceFileLink({
   const path = typeof marked === "string" ? marked : "";
   const openWorkspaceFile = useWorkspaceFileOpener(path);
   const openAppFileLink = useOpenAppFileLink();
+
+  if (!path && title === PROJECT_CHIP_TITLE && typeof href === "string") {
+    return <ProjectChip href={href}>{children}</ProjectChip>;
+  }
 
   if (!path) {
     return (

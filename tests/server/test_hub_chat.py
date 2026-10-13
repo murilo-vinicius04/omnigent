@@ -190,8 +190,9 @@ def test_the_hub_says_its_own_words_never_what_it_quotes_or_shows(tmp_path) -> N
         detail="Run the tests.\nThen report.",
     )
     assert hub_chat.speech_text(sent) == "Mandei pra brasa rodar npm test."
+    # The project's chip says which project it is: the voice reads the report only.
     report = _finished(tmp_path, text="RAL finished: o plano está em `REVISION_PLAN.md`.")
-    assert hub_chat.speech_text(report) == "RAL finished: o plano está em REVISION_PLAN.md."
+    assert hub_chat.speech_text(report) == "o plano está em REVISION_PLAN.md."
 
 
 async def test_a_deleted_hub_is_made_again(client, _hub_home) -> None:
@@ -220,8 +221,8 @@ async def test_a_deleted_hub_is_made_again(client, _hub_home) -> None:
                 session_name="brasa",
                 detail="Run the tests.\nThen report.",
             ),
-            "Mandei pra brasa.\n\n> Run the tests.\n> Then report.\n\n"
-            "[Open brasa ↗](http://h:6767/c/s1)",
+            '[brasa](http://h:6767/c/s1 "omnigent-project")\n\n'
+            "Mandei pra brasa.\n\n> Run the tests.\n> Then report.",
             id="sent-quotes-what-went",
         ),
         pytest.param(
@@ -234,7 +235,8 @@ async def test_a_deleted_hub_is_made_again(client, _hub_home) -> None:
                 session_id="s2",
                 session_name="amarras",
             ),
-            "amarras is waiting for your approval.\n\n[Open amarras ↗](http://h:6767/c/s2)",
+            '[amarras](http://h:6767/c/s2 "omnigent-project")\n\n'
+            "amarras is waiting for your approval.",
             id="attention-links-the-session",
         ),
     ],
@@ -272,10 +274,10 @@ def test_a_report_shows_what_the_projects_summary_shows_never_the_reply(tmp_path
     table = "| Group | Conditions |\n|---|---|\n| Ours | A1, A2 |"
     entry = _finished(tmp_path, show=[{"kind": "table", "label": "table", "content": table}])
     assert hub_chat.render(entry, "http://h:6767") == (
-        "RAL finished: o plano está pronto.\n\n"
+        '[RAL](http://h:6767/c/s1 "omnigent-project")\n\n'
+        "o plano está pronto.\n\n"
         f"{table}\n\n"
-        f"[`RA-L/reviews/REVISION_PLAN.md`]({PLAN})\n\n"
-        "[Open RAL ↗](http://h:6767/c/s1)"
+        f"[`RA-L/reviews/REVISION_PLAN.md`]({PLAN})"
     )
 
 
@@ -289,7 +291,7 @@ def test_without_a_summary_the_report_lifts_only_the_replys_tables(tmp_path) -> 
 def test_without_the_apps_address_a_report_makes_no_links(tmp_path) -> None:
     text = hub_chat.render(_finished(tmp_path), "")
     assert "](http" not in text and "?file=" not in text
-    assert text.startswith("RAL finished: o plano está pronto.\n\n| Group |")
+    assert text.startswith("**RAL**\n\no plano está pronto.\n\n| Group |")
 
 
 def test_the_hub_links_a_file_a_project_named_wherever_it_mentions_it(tmp_path) -> None:
@@ -485,7 +487,9 @@ async def test_a_pick_in_the_projects_panel_is_checked_and_logged_in_the_hub(
     said = [
         i["content"][0]["text"] for i in await _items(client, hub_id) if i["type"] == "message"
     ]
-    assert said[-1].startswith("Switched Amarras to max effort;")
+    chip, words = said[-1].split("\n\n", 1)
+    assert chip.startswith("[Amarras](") and chip.endswith(' "omnigent-project")')
+    assert words.startswith("Switched Amarras to max effort;")
 
     missing = await client.post("/v1/hub/model", json={"project_id": "nope", "effort": "max"})
     assert missing.status_code == 404
@@ -720,7 +724,7 @@ async def test_a_reply_and_its_chart_reach_the_hub_as_the_project_shows_them(
     said = (await _items(client, hub_id))[-1]
     text, attached = said["content"][0]["text"], said["content"][1]
     # The project's own summary, as written, not the router's summary of it.
-    assert text.startswith("RAL paper finished: Terminei.")
+    assert text.startswith("[RAL paper](") and "\n\nTerminei.\n\n" in text
     assert "| Run | Time |\n|---|---|\n| A | 3 s |" in text
     assert "Done." not in text  # the reply itself stays in its chat
     assert attached["type"] == "output_file" and attached["filename"] == "speed.png"
