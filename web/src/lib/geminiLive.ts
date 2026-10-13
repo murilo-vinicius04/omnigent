@@ -129,6 +129,8 @@ export type GeminiLiveEvent =
   | { type: "interrupted" }
   | { type: "turnComplete" }
   | { type: "setupComplete" }
+  // Google's own voice detection: the reader started (true) or stopped talking.
+  | { type: "voiceActivity"; active: boolean }
   | { type: "toolCall"; calls: GeminiToolCallItem[] }
   | { type: "toolCancel"; ids: string[] }
   // A tool the relay ran itself (the hub's, live status) and has answered.
@@ -216,6 +218,10 @@ export function parseServerMessages(data: string | ArrayBuffer): GeminiLiveEvent
     if (calls.length > 0) {
       events.push({ type: "toolCall", calls });
     }
+  }
+  const activity = msgRec.voiceActivity as Record<string, unknown> | undefined;
+  if (activity?.type === "ACTIVITY_START" || activity?.type === "ACTIVITY_END") {
+    events.push({ type: "voiceActivity", active: activity.type === "ACTIVITY_START" });
   }
   if (content?.interrupted) events.push({ type: "interrupted" });
   const parts = content?.modelTurn && (content.modelTurn as Record<string, unknown>).parts;
@@ -324,9 +330,15 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
   let lastSpeechAt = 0;
   let lastAnswerAt = 0;
   // When the first unanswered sentence ended (0: nothing owed). Later speech
-  // does not move it: "are you there?" asked again into a session that stopped
-  // answering is the same unanswered turn, not a fresh one to wait on.
+  // does not restart it: "are you there?" asked again into a session that
+  // stopped answering is the same unanswered turn, not a fresh one to wait on.
+  // The clock only runs while the reader is quiet, though: no answer is owed
+  // mid-sentence, and the 18:18 call was hung up 30 s into one.
   let owedSince = 0;
+  // When Google's voice detection said the reader started talking, until it
+  // says they stopped (0: not talking). Gemini 3.8 transcribes a turn only
+  // once it ends, so this is the one sign it is hearing a long one.
+  let floorSince = 0;
   let nudges = 0;
   let lastNudgeAt = 0;
   // Tool calls not yet answered, and whether the model can talk meanwhile.
@@ -373,6 +385,7 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
           omnigentStats: {
             closeReason,
             owedMs: owedSince ? now - owedSince : 0,
+            floorMs: floorSince ? now - floorSince : 0,
             nudges,
             sinceSpeechMs: lastSpeechAt ? now - lastSpeechAt : -1,
             sinceAnswerMs: lastAnswerAt ? now - lastAnswerAt : -1,
@@ -461,6 +474,17 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
       // The relay answered it; the model owes the reader what it found.
       pendingTools.delete(event.id ?? event.name);
       if (!owedSince) owedSince = Date.now();
+    }
+    if (event.type === "voiceActivity") {
+      floorSince = event.active ? Date.now() : 0;
+      if (event.active) {
+        // Its own detector hears them, however long the transcript takes.
+        speechStartedAt = 0;
+        if (deafNotified) {
+          deafNotified = false;
+          onStateChange?.({ state: "clear" });
+        }
+      }
     }
     if (event.type === "toolCancel") {
       // The reader talked over a running call and the model dropped it: it
@@ -583,7 +607,7 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
         // Gemini's to notice; its interruption stops playback.
         if (isSpeech(pcm) && sources.length === 0) {
           lastSpeechAt = Date.now();
-          if (!speechStartedAt) speechStartedAt = lastSpeechAt;
+          if (!speechStartedAt && !floorSince) speechStartedAt = lastSpeechAt;
         }
         ws.send(JSON.stringify(buildAudioFrame(pcm)));
       }
@@ -661,10 +685,12 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
     startResolved = true;
     // Owed an answer and nothing came back: hang up so the reader is told the
     // session died, instead of waiting on an endpoint that stopped listening.
+    let lastTickAt = Date.now();
     stallInterval = setInterval(() => {
       if (
         !stopped &&
         !deafNotified &&
+        !floorSince &&
         speechStartedAt &&
         Date.now() - speechStartedAt >= NOT_HEARD_MS
       ) {
@@ -675,8 +701,13 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
       if (!owedSince && lastSpeechAt > lastAnswerAt && now - lastSpeechAt >= QUIET_MS) {
         owedSince = lastSpeechAt;
       }
+      // While they talk, by Google's detection or by the mic, the model's
+      // silence is not a stall: hold the clock where it is.
+      const holdingFloor = floorSince > 0 || now - lastSpeechAt < QUIET_MS;
+      if (owedSince && holdingFloor) owedSince = Math.min(now, owedSince + (now - lastTickAt));
+      lastTickAt = now;
       // A model that cannot talk during a tool is not stalled while it waits.
-      if (stopped || !owedSince || (toolsBlock && pendingTools.size > 0)) return;
+      if (stopped || !owedSince || holdingFloor || (toolsBlock && pendingTools.size > 0)) return;
       const owedMs = now - owedSince;
       if (owedMs >= REPLY_SLOW_MS && !slowNotified) {
         // Tell the reader we are still waiting rather than sitting in silence
@@ -684,10 +715,8 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
         slowNotified = true;
         onStateChange?.({ state: "waiting", sinceMs: owedMs });
       }
-      const readerQuiet = now - lastSpeechAt >= QUIET_MS;
       if (
         owedMs >= NUDGE_MS &&
-        readerQuiet &&
         nudges < MAX_NUDGES &&
         now - lastNudgeAt >= NUDGE_MS &&
         ws &&

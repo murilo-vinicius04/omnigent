@@ -768,10 +768,50 @@ describe("startGeminiLive (stubbed)", () => {
       await say(1_500);
       await vi.advanceTimersByTimeAsync(11_000);
       await say(1_500);
+      // Asking again holds the clock while they ask; it does not restart it.
       await vi.advanceTimersByTimeAsync(9_000);
+      expect(states).not.toContainEqual(expect.objectContaining({ state: "closed" }));
+      await vi.advanceTimersByTimeAsync(6_000);
       expect(states).toContainEqual(
         expect.objectContaining({ state: "closed", reason: "gemini stopped responding" }),
       );
+    });
+
+    const activity = (type: "ACTIVITY_START" | "ACTIVITY_END") =>
+      JSON.stringify({ voiceActivity: { type, audioOffset: "1.0s" } });
+
+    it("never hangs up while Gemini says they are still talking", async () => {
+      const { socket, states, nudges, say } = await live();
+      // The 18:18 call: a few words, a pause, then a long turn that Gemini's
+      // detector kept open (start, no end) while the page hung up on it.
+      await say(1_000);
+      await vi.advanceTimersByTimeAsync(2_500);
+      socket.emit("message", { data: activity("ACTIVITY_START") });
+      for (let i = 0; i < 8; i++) {
+        await say(4_000);
+        // Thinking pauses longer than the page's own quiet mark.
+        await vi.advanceTimersByTimeAsync(2_000);
+      }
+      expect(states).not.toContainEqual(expect.objectContaining({ state: "closed" }));
+      expect(states).not.toContainEqual(expect.objectContaining({ state: "waiting" }));
+      expect(states).not.toContainEqual({ state: "not-hearing" });
+      expect(nudges()).toBe(0);
+      // Once Gemini says they stopped, the reply is owed again.
+      socket.emit("message", { data: activity("ACTIVITY_END") });
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(nudges()).toBe(1);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(states).toContainEqual(
+        expect.objectContaining({ state: "closed", reason: "gemini stopped responding" }),
+      );
+    });
+
+    it("never hangs up mid-sentence, even without Gemini's detection", async () => {
+      const { states, say } = await live();
+      await say(1_000);
+      await vi.advanceTimersByTimeAsync(2_500);
+      await say(40_000);
+      expect(states).not.toContainEqual(expect.objectContaining({ state: "closed" }));
     });
 
     it("nudges a quiet model to answer, at most twice, never over the reader", async () => {
@@ -874,6 +914,18 @@ describe("startGeminiLive (stubbed)", () => {
         },
       );
     });
+  });
+
+  it("parses Google's voice detection frames", () => {
+    expect(
+      parseServerMessages(
+        JSON.stringify({ voiceActivity: { type: "ACTIVITY_START", audioOffset: "2.120s" } }),
+      ),
+    ).toEqual([{ type: "voiceActivity", active: true }]);
+    expect(
+      parseServerMessages(JSON.stringify({ voiceActivity: { type: "ACTIVITY_END" } })),
+    ).toEqual([{ type: "voiceActivity", active: false }]);
+    expect(parseServerMessages(JSON.stringify({ voiceActivity: { type: "OTHER" } }))).toEqual([]);
   });
 
   it("parses the relay's tool-done frame, and it clears the pending call", async () => {
