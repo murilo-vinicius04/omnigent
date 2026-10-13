@@ -30,6 +30,10 @@ survive cold starts (40 s first turn + fresh-process retry).
 ACTIVITY_END (still listening). The owed-reply clock now holds while the reader talks (voiceActivity frames, or
 mic level), and the not-hearing notice is skipped while Gemini's detector is open (3.8 transcribes only at turn
 end). Hang-up stats carry floorMs. Not yet seen on a real call.
+**18:58 99e0ed153 (server restarted 18:58:23):** Hub "finished" reports are now the project's own spoken summary
+word for word (user: "resumo do resumo" lost information). The router only translates a summary in another language
+(whole) or summarizes the reply when no summary arrived. Dry run on the live DB (scratchpad hubreply/dryreport.py
+<chat> <name> <since>): RAL's disk reply → its 923-char summary + table + file links, router not called.
 **Waiting on the user / not tried live:** a real Gemini voice call in the Hub ("send to RAL …" should hang up;
 "check on RAL …" should show "Checking on RAL (read-only)…" and answer).
 **Offered, not built:** retry a timed-out spoken summary once; backup router off Google for >90 s outages;
