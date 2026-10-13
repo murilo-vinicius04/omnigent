@@ -20,6 +20,7 @@ import re
 import tarfile
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any, Final
 from urllib.parse import quote
 
@@ -49,6 +50,16 @@ _FILE_REF: Final[re.Pattern[str]] = re.compile(r"(!?)\[([^\]\n]*)\]\(<?([^)\s>]+
 
 #: A line that opens or closes a code fence.
 _FENCE: Final[re.Pattern[str]] = re.compile(r"^\s*(```|~~~)", re.MULTILINE)
+
+#: In the hub's own words, a file name or path a project's reply named.
+_NAMED_FILE: Final[re.Pattern[str]] = re.compile(
+    r"\[[^\]\n]*\]\([^)\n]*\)"  # a link already: left alone
+    r"|`([^`\n]+)`"  # inline code
+    r"|(?<![\w/.~-])(~?/?[\w.-]+(?:/[\w.-]+)*\.[A-Za-z][A-Za-z0-9]{0,7})(?![\w/-])"  # a bare name
+)
+
+#: How many of the latest reports the hub looks in for the files projects named.
+_KNOWN_FILE_REPORTS: Final[int] = 40
 
 #: A cited position after a path, e.g. ``src/app.ts:42:7``.
 _POSITION_SUFFIX: Final[re.Pattern[str]] = re.compile(r":\d+(?::\d+)?$")
@@ -143,13 +154,21 @@ def ensure_hub_conversation(
     return session_id
 
 
-def render(entry: hub_module.HubEntry, base_url: str = "") -> str:
+def render(
+    entry: hub_module.HubEntry,
+    base_url: str = "",
+    files: dict[str, tuple[str, str]] | None = None,
+) -> str:
     """One hub entry as the markdown its chat message carries.
 
     :param base_url: The app's address as the reader opens it, e.g.
         ``"http://localhost:6767"``. The chat links only absolute URLs (a bare
         ``/c/...`` reads as a file path), so without it there is no link.
+    :param files: Files projects' replies named, by name or path: ``(chat,
+        workspace path)``. Wherever the hub mentions one, it links to it.
     """
+    if files and base_url:
+        entry = replace(entry, text=link_known_files(entry.text, files, base_url))
     link = ""
     if base_url and entry.session_id:
         link = f"[Open {entry.session_name} ↗]({base_url}/c/{entry.session_id})"
@@ -187,6 +206,51 @@ def render(entry: hub_module.HubEntry, base_url: str = "") -> str:
 
 def _quote(text: str) -> str:
     return "\n> ".join(text.strip().splitlines())
+
+
+def file_url(base_url: str, session_id: str, relative: str) -> str:
+    """A link that opens a file in its chat's file viewer."""
+    return f"{base_url}/c/{session_id}?file={quote(relative, safe='/')}"
+
+
+def link_known_files(text: str, files: dict[str, tuple[str, str]], base_url: str) -> str:
+    """The hub's words with each file a project named linked to it in that project's chat."""
+
+    def linked(match: re.Match[str]) -> str:
+        code, bare = match.group(1), match.group(2)
+        named = code if code is not None else bare
+        if named is None:
+            return match.group(0)
+        known = files.get(_POSITION_SUFFIX.sub("", named.strip()))
+        if known is None:
+            return match.group(0)
+        url = file_url(base_url, *known)
+        return f"[`{named}`]({url})" if code is not None else f"[{named}]({url})"
+
+    lines, fenced = [], False
+    for line in text.splitlines(keepends=True):
+        if _FENCE.match(line):
+            fenced = not fenced
+        lines.append(line if fenced or _FENCE.match(line) else _NAMED_FILE.sub(linked, line))
+    return "".join(lines)
+
+
+def known_files(
+    entries: list[hub_module.HubEntry], workspace_of: Callable[[str], str | None]
+) -> dict[str, tuple[str, str]]:
+    """The files the latest reports' replies named: by path, as written, and by name.
+
+    The newest report wins a name two of them share.
+    """
+    found: dict[str, tuple[str, str]] = {}
+    reports = [e for e in reversed(entries) if e.kind == "finished" and e.detail and e.session_id]
+    for entry in reports[:_KNOWN_FILE_REPORTS]:
+        assert entry.session_id is not None
+        workspace = entry.workspace or workspace_of(entry.session_id)
+        for label, relative in named_files(entry.detail or "", workspace):
+            for key in (relative, label, relative.rsplit("/", 1)[-1]):
+                found.setdefault(key, (entry.session_id, relative))
+    return found
 
 
 def show_markdown(
@@ -310,11 +374,33 @@ def link_workspace_files(
 class HubConversation:
     """Writes what the hub says into its conversation, and shows it working."""
 
-    def __init__(self, conversation_store: Any, session_id: str) -> None:
+    def __init__(
+        self, conversation_store: Any, session_id: str, state: hub_module.HubState | None = None
+    ) -> None:
         self.conversation_store = conversation_store
         self.session_id = session_id
         #: The app's address as the reader last opened it, for links.
         self.base_url = ""
+        #: The hub's log, for the files its reports named.
+        self.state = state
+        self._workspaces: dict[str, str | None] = {}
+
+    def _workspace(self, session_id: str) -> str | None:
+        """A chat's folder; reports written before they kept it need it looked up."""
+        if session_id not in self._workspaces:
+            conv = self.conversation_store.get_conversation(session_id)
+            self._workspaces[session_id] = getattr(conv, "workspace", None)
+        return self._workspaces[session_id]
+
+    def known_files(self) -> dict[str, tuple[str, str]]:
+        """The files projects' replies named, for linking wherever the hub mentions one."""
+        if self.state is None or not self.base_url:
+            return {}
+        try:
+            return known_files(self.state.entries, self._workspace)
+        except Exception:  # noqa: BLE001 - unlinked text beats no message
+            _logger.warning("hub could not gather the files projects named", exc_info=True)
+            return {}
 
     def post(self, entry: hub_module.HubEntry) -> None:
         """Store one hub entry as an assistant message and publish it."""
@@ -335,7 +421,10 @@ class HubConversation:
                         "role": "assistant",
                         "agent": HUB_AGENT_NAME,
                         "content": [
-                            {"type": "output_text", "text": render(entry, self.base_url)},
+                            {
+                                "type": "output_text",
+                                "text": render(entry, self.base_url, self.known_files()),
+                            },
                             *(entry.files or []),
                         ],
                     },
@@ -418,7 +507,7 @@ def attach(hub: hub_module.Hub, conversation_store: Any, session_id: str | None)
     if session_id is None:
         return
     if hub.chat is None or hub.chat.session_id != session_id:
-        hub.chat = HubConversation(conversation_store, session_id)
+        hub.chat = HubConversation(conversation_store, session_id, hub.state)
 
 
 def bind_request(

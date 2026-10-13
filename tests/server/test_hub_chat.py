@@ -196,6 +196,35 @@ def test_without_the_apps_address_a_report_makes_no_links(tmp_path) -> None:
     assert text.startswith("RAL finished: o plano está pronto.\n\n| Group |")
 
 
+def test_the_hub_links_a_file_a_project_named_wherever_it_mentions_it(tmp_path) -> None:
+    report = _finished(tmp_path, workspace=None)  # written before reports kept the folder
+    entries = [report, HubEntry(id=6, at=0, role="hub", kind="message", text="x")]
+    files = hub_chat.known_files(entries, lambda sid: str(tmp_path) if sid == "s1" else None)
+    assert files["REVISION_PLAN.md"] == ("s1", "RA-L/reviews/REVISION_PLAN.md")
+    said = HubEntry(
+        id=7,
+        at=0,
+        role="hub",
+        kind="message",
+        text=(
+            "O RAL terminou a v2 em `REVISION_PLAN.md` (RA-L/reviews/REVISION_PLAN.md). "
+            "Nada em `notes.md` nem [aqui](https://x.dev/REVISION_PLAN.md)."
+        ),
+    )
+    assert hub_chat.render(said, "http://h:6767", files) == (
+        f"O RAL terminou a v2 em [`REVISION_PLAN.md`]({PLAN}) "
+        f"([RA-L/reviews/REVISION_PLAN.md]({PLAN})). "
+        "Nada em `notes.md` nem [aqui](https://x.dev/REVISION_PLAN.md)."
+    )
+    assert hub_chat.render(said, "", files) == said.text  # no address, no links
+
+
+def test_the_hubs_chat_reads_the_hubs_log_for_named_files(tmp_path) -> None:
+    hub = hub_module.Hub("u1", router_factory=None, state=hub_module.HubState("u1", root=tmp_path))
+    hub_chat.attach(hub, conversation_store=None, session_id="hub0")
+    assert hub.chat.state is hub.state
+
+
 def test_show_blocks_render_as_the_chat_draws_them(tmp_path) -> None:
     (tmp_path / "plots").mkdir()
     (tmp_path / "plots" / "speed.png").write_bytes(b"png")

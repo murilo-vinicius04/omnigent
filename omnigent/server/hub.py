@@ -173,6 +173,8 @@ Requests about the hub itself (this chat, its router, its panel, what it \
 shows) are work for the project that builds the hub: the one they sent hub \
 problems to earlier in this chat. If none was, use "ask".
 Decide straight away from what is here: this is routing, not research.
+When you mention a file a project wrote, put its path or name in backticks: \
+the chat links it to that file.
 Reply to them in the language they wrote in; "message" for Claude is in \
 {language} (the project's chat translates it for Claude). Never say a project \
 did, found or finished anything the list or this chat does not show. When it is \
