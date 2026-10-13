@@ -14,6 +14,17 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-13 15:25 — CORRECTION: the hub must NOT show the whole reply (b66b58ee4, live 15:22)
+
+a6f3b39bd put the project's full English reply under the hub's summary; the user: "a resposta do claude vazou
+aqui no hub". What they want is what the PROJECT CHAT shows: its pt summary + the `show` blocks its spoken summary
+picked (table/image/link/output; code off by default; files) + file links, original behind a click. Now a report =
+router summary line + the project's spoken-summary `show` list (read in `turn()`, same response_id) + named file
+links + charts copied + "Open X". Waits up to 30 s (`SUMMARY_WAIT_S`) for the summary; none -> the reply's tables.
+Not used: embedding a spoken_summary block in the hub message (would render FriendlyResponse with "Show original",
+but in-session narration would read it aloud, maybe twice with cross-session narration). The leaked 15:10 entry
+(#59) stays in the hub chat history.
+
 ## 2026-10-13 15:10 — Hub shows the project's real reply; forwards in the hub's language
 
 Commit a6f3b39bd, live 15:08 (server restarted; it resumed the open watch on this conversation).
