@@ -14,6 +14,22 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-13 — the Hub runs PROJECTS (session d9653808)
+
+User: "create a new project, not a new session… I don't like the concept of 'sessions'; I prefer having each
+project kept separate." Shipped 5f9bbf27f, live (server restarted ~11:55, page = clean `git archive HEAD` build):
+- Hub list = the user's Omnigent projects (sidebar Projects, `/v1/projects`); a project's NEWEST chat is where the
+  hub sends, reports and changes models. Old `members.json` list moved once into projects amarras, audio, brasa
+  (`~/.omnigent/hub/morys5/projects-moved.json`; backup `morys5.bak-20261013-projects`).
+- Right rail tab "Projects" (`web/src/shell/HubProjectsPanel.tsx`): New project (new chat → opens `/?project=<name>`,
+  or from an existing chat), per project: Open / New chat / Move a chat in / Rename / Delete (chats kept, unfiled),
+  provider/model/effort of its chat. Routes `/v1/hub/projects*`, `/v1/hub/candidates` (chats outside projects).
+- Hub chat action `new_project`; voices say "project".
+- **agy dropped gemini-3.7-flash-medium**, so the router had been failing every turn. It now runs the newest
+  `gemini-*-flash-medium` that `agy models` lists (`hub.resolve_hub_model`), else the model_fallbacks default.
+- Not built: rename/delete by chat or voice (panel only); project folder for a project made empty (picked on its
+  first chat page). The user has not tried it yet.
+
 ## 2026-10-12 03:10 — READ FIRST (benchmarks + a published PR; session d9653808, conversation 247c77f5)
 
 **Waiting on the user (asked, no answer yet):**
