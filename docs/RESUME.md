@@ -38,6 +38,15 @@ Keep it current before going idle. If something here is stale, fix it here.
   UNAVAILABLE (code 503)" during Google outages (16:38-16:39, 17:13); the router used to give up at once and the
   user's 17:13 RAL message (meeting minutes link) was lost. Now: wait 10 s, fresh process, repeat while the 90 s
   budget leaves ≥20 s. The lost message was re-sent word for word via hubtype.py at 17:17 (Hub → RAL).
+- **Hub voice call ends after a send (3975f8f28, live 17:34).** User: the mic / Gemini Live session stayed open
+  after the Hub sent the request. `/v1/hub/voice` now returns `sent`; the page (liveConversation `answerInHub`)
+  says the hub's words + "ending the call", waits for quiet, stops the call, and sends words said after the send
+  to the hub as a follow-up — same as a project chat's hand-off to Claude. A direct answer keeps the call open.
+  Not yet tried on a real call.
+- **Hub link address (3c58ea194, live 17:36).** My scripts (hubapi.py/hubtype.py: no Origin, Host 127.0.0.1)
+  re-bound the hub's link base to 127.0.0.1 (a different site for the user's browser). `adopt_address`: only a
+  caller with an Origin sets it; a script only fills a missing one. Router-written links to host paths of known
+  files are relinked to `/c/<chat>?file=`. Messages posted 17:30–17:36 keep 127.0.0.1 links.
 - Not handled: a project whose own narration is on can be heard twice (its summary via cross-session narration,
   then the Hub's report). Offer: leave a reported project's summary to the Hub while the Hub is open.
 
