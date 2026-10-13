@@ -34,6 +34,10 @@ Keep it current before going idle. If something here is stale, fix it here.
   24 s lost the report (16:38:22). The slow summary itself: this chat's companion agy started cold after the 16:33
   restart and sat in sign-in until Google answered 503 at 16:39:01; the 45 s budget ended at 16:38:43. Offered,
   not built: retry a timed-out summary once.
+- **Router retries when Google refuses (b98608c23, live 17:17).** agy exits with "Eligibility check failed:
+  UNAVAILABLE (code 503)" during Google outages (16:38-16:39, 17:13); the router used to give up at once and the
+  user's 17:13 RAL message (meeting minutes link) was lost. Now: wait 10 s, fresh process, repeat while the 90 s
+  budget leaves ≥20 s. The lost message was re-sent word for word via hubtype.py at 17:17 (Hub → RAL).
 - Not handled: a project whose own narration is on can be heard twice (its summary via cross-session narration,
   then the Hub's report). Offer: leave a reported project's summary to the Hub while the Hub is open.
 
