@@ -332,8 +332,7 @@ export async function startGeminiLive(opts: GeminiLiveOptions = {}): Promise<Gem
   // When the first unanswered sentence ended (0: nothing owed). Later speech
   // does not restart it: "are you there?" asked again into a session that
   // stopped answering is the same unanswered turn, not a fresh one to wait on.
-  // The clock only runs while the reader is quiet, though: no answer is owed
-  // mid-sentence, and the 18:18 call was hung up 30 s into one.
+  // The clock only runs while the reader is quiet: no answer is owed mid-sentence.
   let owedSince = 0;
   // When Google's voice detection said the reader started talking, until it
   // says they stopped (0: not talking). Gemini 3.8 transcribes a turn only

@@ -13,6 +13,7 @@ import {
 import { Link, useNavigate } from "@/lib/routing";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PlanLimitPills } from "@/components/PlanLimitPills";
 import { RunningDot } from "@/components/RunningDot";
 import {
   Command,
@@ -120,6 +121,10 @@ export function HubProjectsPanel() {
       <div className="flex items-center justify-between gap-2 px-1">
         <span className="text-xs text-muted-foreground">
           {rows.length === 1 ? "1 project" : `${rows.length} projects`}
+        </span>
+        {/* The plan limits every project draws on: a chat shows them under its composer. */}
+        <span className="ml-auto flex items-center" data-testid="hub-plan-limits">
+          <PlanLimitPills />
         </span>
         <NewProjectDialog />
       </div>

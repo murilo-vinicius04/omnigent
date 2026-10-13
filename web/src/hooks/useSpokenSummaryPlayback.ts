@@ -163,11 +163,8 @@ export function useSpokenSummaryPlayback(
         );
 
         // Select the text item that actually carries the spoken summary (the LAST/final one), not the first.
-        // Only this turn's own texts, when the bubble says which those are: the
-        // hub posts each message as its own turn with nothing between them, so
-        // the newest one shares a bubble with the last, whose summary was
-        // already read. Taking that one re-read the old message under the new
-        // id (19:27) or filed the new one as history (19:32).
+        // Only this turn's own texts: one bubble can hold several turns (the
+        // hub's messages), and an earlier turn's summary is not this one's.
         const allTexts = bubble.items.filter(
           (it): it is Extract<RenderItem, { kind: "text" }> => it.kind === "text",
         );

@@ -42,6 +42,7 @@ import {
 import { CompanionAnswerNote } from "@/components/chat/CompanionAnswerNote";
 import { AttachedFiles } from "@/components/chat/AttachedFiles";
 import { FriendlyResponse } from "@/components/chat/FriendlyResponse";
+import { ReadAloudButton } from "@/components/chat/ReadAloudButton";
 import { ElicitationCard } from "./ApprovalCard";
 import { ReasoningView } from "./ReasoningView";
 import { SlashCommandCard } from "./SlashCommandCard";
@@ -813,13 +814,22 @@ function renderItem(
           !item.spokenSummary.speakOnly ? (
             <FriendlyResponse
               summary={item.spokenSummary}
-              id={responseId || item.itemId || undefined}
+              id={item.turnId || responseId || item.itemId || undefined}
               fileLinks={friendlyFileLinks(item.text)}
             >
               <FilePathAwareMessageResponse>{item.text}</FilePathAwareMessageResponse>
             </FriendlyResponse>
           ) : (
-            <FilePathAwareMessageResponse>{item.text}</FilePathAwareMessageResponse>
+            <>
+              <FilePathAwareMessageResponse>{item.text}</FilePathAwareMessageResponse>
+              {/* Narrated but shown as written (the hub's messages): its own play control. */}
+              {item.spokenSummary?.speakOnly && item.spokenSummary.text.trim().length > 0 && (
+                <ReadAloudButton
+                  summary={item.spokenSummary}
+                  id={item.turnId || responseId || item.itemId || ""}
+                />
+              )}
+            </>
           )}
           {item.files && item.files.length > 0 && <AttachedFiles files={item.files} />}
           {item.companionAnswer && <CompanionAnswerNote asked={item.companionAnswer.asked} />}

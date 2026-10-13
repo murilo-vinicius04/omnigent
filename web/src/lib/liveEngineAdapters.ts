@@ -293,9 +293,8 @@ function relayedEngineAdapter(
         } else if (ev.type === "toolDone") {
           if (relayAnswersTools) {
             callbacks.onNotice?.(null);
-            // The words that asked for the send are in the transcript before
-            // it: otherwise they read as said after it, and went to the hub a
-            // second time when the call ended (19:07 and 19:12).
+            // File the words that asked for the send before it, or they read
+            // as said after it and go to the hub a second time.
             if (ev.sent) flushReader();
             if (ev.sent) callbacks.onRelaySent?.(ev.project);
           }
