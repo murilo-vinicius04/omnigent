@@ -43,6 +43,14 @@ instructions). Every live voice (Gemini narrate/call/hub call, GPT call/narrate)
 live_voice.speech_language_rule(<chat's language selector>): label spoken_summary_language → project → server
 default OMNIGENT_SPOKEN_SUMMARY_LANGUAGE=pt-BR; narration passes language_of=<chat> + lang=<summary lang>. Log line
 "gemini live language | mode=… language=…". Kyutai/Unmute TTS is not covered (own voice).
+**20:05 20e95f320 + 696236ce9 (page only, deployed):** Hub "finished" reports were not narrated: the page merges
+consecutive assistant messages (the hub's, each its own turn) into ONE bubble with the newest turn's id; the
+narration hook took the bubble's last summary (re-read the previous "sent" msg at 19:27, filed RAL's report as
+history at 19:32) and stopped a reading when its id left the bubble (omnigent report cut 2.6 s in at 19:37:58).
+Fix: text items carry turnId; hook reads only the newest turn's own summary; stop only if the turn is gone;
+speak_only messages queue (waitTurn) instead of replacing. Also: ReadAloudButton under each hub message; plan-limit
+rings in the Hub Projects panel header (ChatPage's status row hides with no host/branch/ring, and ChatPage.tsx
+has the other session's uncommitted edits, so not touched). Verified headless: 4 rings, 40 read-aloud buttons.
 **Waiting on the user / not tried live:** a real Gemini voice call in the Hub ("send to RAL …" should hang up;
 "check on RAL …" should show "Checking on RAL (read-only)…" and answer).
 **Offered, not built:** retry a timed-out spoken summary once; backup router off Google for >90 s outages;
