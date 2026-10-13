@@ -427,7 +427,7 @@ def _hub(tmp_path, sent: list[tuple[str, str]]):
     async def activity(session_id):
         return f"status of {session_id}"
 
-    async def send(session_id, text):
+    async def send(session_id, text, files=()):
         sent.append((session_id, text))
 
     async def check(session_id, question):

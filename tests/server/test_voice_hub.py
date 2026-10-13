@@ -132,7 +132,7 @@ class _FakeServer:
         async def activity(session_id):
             return f"status of {session_id}"
 
-        async def send(session_id, text):
+        async def send(session_id, text, files=()):
             if self.fail:
                 raise RuntimeError("runner gone")
             self.sent.append((session_id, text))

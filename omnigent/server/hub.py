@@ -66,6 +66,9 @@ WATCH_MAX_S: Final[float] = 6 * 3600.0
 #: A session that has not started on what it was sent after this long.
 NOT_STARTED_S: Final[float] = 120.0
 
+#: Files attached in the hub wait this long for a send to carry them.
+FILES_HOLD_S: Final[float] = 30 * 60.0
+
 #: Budget for one routing turn, a cold start included.
 ROUTE_TIMEOUT_S: Final[float] = 45.0
 
@@ -99,7 +102,7 @@ HUB_ROUTER_ROLE: Final[str] = (
 _DECIDE_PROMPT: Final[str] = """\
 [Their projects right now, newest first. Each starts with its handle in brackets.]
 {projects}
-{context}
+{context}{files}
 [They {how}]
 {message}
 
@@ -132,6 +135,8 @@ or what you would send.
 Projects are renamed and deleted, and existing chats added to them, only in \
 the Projects panel: say so when they ask, and never claim it was done.
 
+When files are attached, they go along with the next "send", whichever \
+project it is for: say which project, never claim a file was read.
 Reply to them in the language they wrote in; "message" for Claude is always \
 English. Never say a project did, found or finished anything the list or this \
 chat does not show. When it is unclear whether they want something sent, use \
@@ -251,6 +256,38 @@ class HubCandidate:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class HubFile:
+    """A file they attached in the hub chat, held until a send carries it.
+
+    :param file_id: Its id in the conversation it was uploaded to.
+    :param filename: e.g. ``"Review541750(Reviewer2)Of26-4238v1.txt"``.
+    :param kind: Its content block type: ``"input_file"`` or ``"input_image"``.
+    :param session_id: The conversation that owns it (the hub's).
+    """
+
+    file_id: str
+    filename: str
+    kind: str = "input_file"
+    session_id: str = ""
+
+
+def attached_files(blocks: Sequence[Any], session_id: str) -> list[HubFile]:
+    """The files among a message's content blocks."""
+    return [
+        HubFile(
+            file_id=str(block["file_id"]),
+            filename=str(block.get("filename") or block["file_id"]),
+            kind=str(block["type"]),
+            session_id=session_id,
+        )
+        for block in blocks
+        if isinstance(block, dict)
+        and block.get("type") in ("input_file", "input_image")
+        and block.get("file_id")
+    ]
 
 
 @dataclass(frozen=True)
@@ -764,7 +801,8 @@ class HubBackend:
     :param listing: Their chats outside every project, newest first, to pick
         one to add to a project from.
     :param activity: A chat's live status, in full.
-    :param send: Post a message into a chat, as if typed there.
+    :param send: Post a message into a chat, as if typed there, with the
+        files attached in the hub copied into that chat.
     :param check: Answer a question with read-only commands in its folder.
     :param turn: Where a chat is with work sent at a given time.
     :param projects: Their projects, each with its chats newest first.
@@ -781,7 +819,7 @@ class HubBackend:
     sessions: Callable[[Sequence[str]], Awaitable[list[HubSession]]]
     listing: Callable[[], Awaitable[list[HubCandidate]]]
     activity: Callable[[str], Awaitable[str]]
-    send: Callable[[str, str], Awaitable[None]]
+    send: Callable[[str, str, Sequence[HubFile]], Awaitable[None]]
     check: Callable[[str, str], Awaitable[str]]
     turn: Callable[[str, float], Awaitable[TurnState]]
     projects: Callable[[], Awaitable[list[ProjectRecord]]]
@@ -814,6 +852,9 @@ class Hub:
         #: The hub's conversation, when it has one: what the hub says is
         #: written there too (:class:`omnigent.server.hub_chat.HubConversation`).
         self.chat: Any = None
+        #: Files attached in the hub chat that no send has carried yet.
+        self._files: list[HubFile] = []
+        self._files_at = 0.0
 
     def bind(self, backend: HubBackend) -> None:
         """Use this backend from now on; the newest request's wins."""
@@ -994,11 +1035,44 @@ class Hub:
             session_id=session_id,
         )
 
-    def submit(self, text: str, *, via: str = "typed") -> HubEntry:
-        """Record what they said and answer it in the background."""
-        entry = self.state.append(role="you", kind="message", text=text.strip(), via=via)
+    def submit(self, text: str, *, via: str = "typed", files: Sequence[HubFile] = ()) -> HubEntry:
+        """Record what they said and answer it in the background.
+
+        :param files: Files attached to it; they wait for the next send.
+        """
+        said = text.strip()
+        if files:
+            self.hold_files(files)
+            names = ", ".join(f.filename for f in files)
+            said = f"{said}\n[attached: {names}]" if said else f"[attached: {names}]"
+        entry = self.state.append(role="you", kind="message", text=said, via=via)
+        if not text.strip():
+            # Files alone: nothing to route yet, so ask where they go.
+            self.say(
+                f"Got {self._count(files)}. Tell me which project they are for and what to do "
+                "with them; they go along with the next thing I send."
+            )
+            return entry
         self._spawn(self._handle(text.strip(), via))
         return entry
+
+    @staticmethod
+    def _count(files: Sequence[HubFile]) -> str:
+        return "1 file" if len(files) == 1 else f"{len(files)} files"
+
+    def hold_files(self, files: Sequence[HubFile]) -> None:
+        """Keep files for the next send; ones attached earlier stay too."""
+        held = {f.file_id: f for f in self.held_files()}
+        for f in files:
+            held[f.file_id] = f
+        self._files = list(held.values())
+        self._files_at = time.time()
+
+    def held_files(self) -> list[HubFile]:
+        """Files waiting for a send, until they are :data:`FILES_HOLD_S` old."""
+        if self._files and time.time() - self._files_at > FILES_HOLD_S:
+            self._files = []
+        return list(self._files)
 
     async def ask(self, text: str, *, via: str = "voice", context: str = "") -> list[HubEntry]:
         """Answer what a voice handed over, and return what the hub said.
@@ -1045,11 +1119,19 @@ class Hub:
         projects = await self.projects()
         router = await self._router_factory()
         how = "said, aloud, on a voice call" if via == "voice" else "wrote"
+        held = self.held_files()
         prompt = _DECIDE_PROMPT.format(
             projects=projects_block(projects),
             context=(
                 f"\n[The voice call so far, oldest first]\n{context.strip()}\n"
                 if context.strip()
+                else ""
+            ),
+            files=(
+                "\n[Files they attached, which go with the next send: "
+                + ", ".join(f.filename for f in held)
+                + "]"
+                if held
                 else ""
             ),
             how=how,
@@ -1217,28 +1299,36 @@ class Hub:
     async def send_to(
         self, session: HubSession, message: str, *, via: str, say: str = ""
     ) -> HubEntry:
-        """Post into a session, log it here, and watch for its answer."""
+        """Post into a chat, with any files held, log it here, and watch for its answer."""
         sent_at = time.time()
+        files = self.held_files()
         try:
-            await self.require_backend().send(session.id, message)
+            await self.require_backend().send(session.id, message, files)
         except Exception as exc:  # noqa: BLE001 - say it failed, never pretend
             _logger.warning("hub send to %s failed", session.id, exc_info=True)
+            kept = f" The {self._count(files)} stay here for the next try." if files else ""
             return self.say(
-                f"Sending to {session.name} failed ({type(exc).__name__}); nothing was sent.",
+                f"Sending to {session.name} failed ({type(exc).__name__}); nothing was sent."
+                + kept,
                 kind="error",
                 session_id=session.id,
                 session_name=session.name,
             )
+        self._files = []
+        names = ", ".join(f.filename for f in files)
         entry = self.say(
-            say or f"Sent to {session.name}.",
+            (say or f"Sent to {session.name}.")
+            + (f" With {self._count(files)}: {names}." if files else ""),
             kind="sent",
             via=via,
             session_id=session.id,
             session_name=session.name,
-            detail=message,
+            detail=message + (f"\n\nAttached: {names}" if files else ""),
         )
         router = await self._router_factory()
-        router.remember(f"sent to {session.name}: {message}")
+        router.remember(
+            f"sent to {session.name}: {message}" + (f" (attached: {names})" if files else "")
+        )
         self.watch(session, sent_at)
         return entry
 
@@ -1684,15 +1774,45 @@ def store_backend(
         response.raise_for_status()
         return len(chat_ids)
 
-    async def send(session_id: str, text: str) -> None:
-        body = {
-            "type": "message",
-            "data": {
-                "role": "user",
-                "content": [{"type": "input_text", "text": text}, {"type": "force_claude"}],
+    async def _copy_file(client: Any, file: HubFile, session_id: str) -> dict[str, Any]:
+        """Copy a file from the hub into a chat: a file id only works in its own chat."""
+        got = await client.get(
+            f"/v1/sessions/{file.session_id}/resources/files/{file.file_id}/content",
+            headers=headers,
+        )
+        got.raise_for_status()
+        from omnigent.runner.identity import OMNIGENT_INTERNAL_WS_ORIGIN
+
+        # The server's own upload: the reader's Origin passed its check when
+        # they attached the file, and may not be loopback.
+        made = await client.post(
+            f"/v1/sessions/{session_id}/resources/files",
+            files={
+                "file": (
+                    file.filename,
+                    got.content,
+                    got.headers.get("content-type", "application/octet-stream"),
+                )
             },
-        }
+            headers={**headers, "origin": OMNIGENT_INTERNAL_WS_ORIGIN},
+        )
+        made.raise_for_status()
+        return {"type": file.kind, "file_id": made.json()["id"], "filename": file.filename}
+
+    async def send(session_id: str, text: str, files: Sequence[HubFile] = ()) -> None:
         async with _client() as client:
+            attached = [await _copy_file(client, f, session_id) for f in files]
+            body = {
+                "type": "message",
+                "data": {
+                    "role": "user",
+                    "content": [
+                        *attached,
+                        {"type": "input_text", "text": text},
+                        {"type": "force_claude"},
+                    ],
+                },
+            }
             response = await client.post(
                 f"/v1/sessions/{session_id}/events", json=body, headers=headers
             )

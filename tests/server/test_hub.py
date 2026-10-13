@@ -22,6 +22,7 @@ from omnigent.server.hub import (
     Hub,
     HubBackend,
     HubCandidate,
+    HubFile,
     HubProject,
     HubRouter,
     HubSession,
@@ -244,6 +245,7 @@ class _Server:
         self.turns: list[TurnState] = []
         self.fail_send = False
         self.created: list[tuple[str, str | None]] = []
+        self.files: list[list[str]] = []
 
     def _file(self, session_id: str, project_id: str) -> None:
         self.projects = [
@@ -272,10 +274,11 @@ class _Server:
         async def activity(session_id):
             return f"Claude is idle: the last task finished. ({session_id[:4]})"
 
-        async def send(session_id, text):
+        async def send(session_id, text, files=()):
             if self.fail_send:
                 raise RuntimeError("runner gone")
             self.sent.append((session_id, text))
+            self.files.append([f.filename for f in files])
 
         async def check(session_id, question):
             self.checked.append((session_id, question))
@@ -491,6 +494,80 @@ async def test_a_project_that_never_starts_is_flagged(tmp_path, monkeypatch) -> 
     hub.submit("go brasa")
     await _settle(hub, until=lambda: any(e.kind == "attention" for e in hub.state.entries))
     assert "hasn't started on it yet" in hub.state.entries[-1].text
+
+
+# -- attached files ---------------------------------------------------------------
+
+REVIEWS = [
+    HubFile(file_id="f1", filename="Review541750(Reviewer2).txt", session_id="hubconv"),
+    HubFile(file_id="f2", filename="ReportOn26-4238v1.txt", session_id="hubconv"),
+]
+
+
+def test_files_are_read_from_a_messages_blocks() -> None:
+    blocks = [
+        {"type": "input_file", "file_id": "f1", "filename": "a.txt"},
+        {"type": "input_image", "file_id": "f2", "filename": "b.png"},
+        {"type": "input_text", "text": "these are the attachments"},
+        {"type": "input_file", "filename": "no id"},
+    ]
+    assert hub_module.attached_files(blocks, "hubconv") == [
+        HubFile(file_id="f1", filename="a.txt", kind="input_file", session_id="hubconv"),
+        HubFile(file_id="f2", filename="b.png", kind="input_image", session_id="hubconv"),
+    ]
+
+
+async def test_attached_files_go_with_the_send_and_only_once(tmp_path) -> None:
+    router = _Router(
+        '{"send": "bbbb", "message": "Here are the reviews.", "say": "Mandei pra brasa."}',
+        '{"send": "bbbb", "message": "And one more thing.", "say": "Mandei."}',
+    )
+    server = _Server()
+    server.turns = [TurnState(status="running")]
+    hub = _hub(tmp_path, router, server)
+    said = hub.submit("esses são os anexos", files=REVIEWS)
+    await _settle(hub)
+    assert said.text.endswith("[attached: Review541750(Reviewer2).txt, ReportOn26-4238v1.txt]")
+    assert "[Files they attached, which go with the next send: Review541750" in router.prompts[0]
+    assert server.files == [["Review541750(Reviewer2).txt", "ReportOn26-4238v1.txt"]]
+    sent = next(e for e in hub.state.entries if e.kind == "sent")
+    assert sent.text == (
+        "Mandei pra brasa. With 2 files: Review541750(Reviewer2).txt, ReportOn26-4238v1.txt."
+    )
+    assert sent.detail.endswith("Attached: Review541750(Reviewer2).txt, ReportOn26-4238v1.txt")
+    hub.submit("e mais uma coisa")
+    await _settle(hub)
+    assert server.files[-1] == []  # carried once, not again
+    assert "Files they attached" not in router.prompts[-1]
+    await hub.close()
+
+
+async def test_files_alone_wait_for_where_they_go(tmp_path) -> None:
+    router = _Router('{"send": "aaaa", "message": "Read the reviews.", "say": "Sent."}')
+    server = _Server()
+    server.turns = [TurnState(status="running")]
+    hub = _hub(tmp_path, router, server)
+    hub.submit("", files=REVIEWS[:1])
+    await _settle(hub)
+    assert router.prompts == []  # nothing to route yet
+    assert hub.state.entries[-1].text.startswith("Got 1 file. Tell me which project")
+    hub.submit("manda pra amarras ler")
+    await _settle(hub)
+    assert server.files == [["Review541750(Reviewer2).txt"]]
+    await hub.close()
+
+
+async def test_files_stay_when_the_send_fails_and_expire_later(tmp_path, monkeypatch) -> None:
+    router = _Router('{"send": "bbbb", "message": "Reviews.", "say": "Sent."}')
+    server = _Server()
+    server.fail_send = True
+    hub = _hub(tmp_path, router, server)
+    hub.submit("manda pra brasa", files=REVIEWS)
+    await _settle(hub)
+    assert hub.state.entries[-1].text.endswith("The 2 files stay here for the next try.")
+    assert [f.file_id for f in hub.held_files()] == ["f1", "f2"]
+    monkeypatch.setattr(hub_module, "FILES_HOLD_S", 0.0)
+    assert hub.held_files() == []
 
 
 # -- projects ---------------------------------------------------------------------

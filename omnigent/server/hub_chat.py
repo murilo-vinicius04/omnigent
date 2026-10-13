@@ -331,6 +331,7 @@ async def accept_message(
         headers=headers,
         companions=registry,
     )
-    if text:
-        hub.submit(text, via="typed")
+    files = hub_module.attached_files(blocks, conv.id)
+    if text or files:
+        hub.submit(text, via="typed", files=files)
     return {"queued": True, "item_id": consumed.id}

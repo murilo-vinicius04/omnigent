@@ -350,3 +350,86 @@ async def test_the_old_session_list_becomes_projects(client, _hub_home) -> None:
     assert [(p["name"], p["chat"]["id"]) for p in listed] == [("amarras", chains["id"])]
     offered = [c["id"] for c in (await client.get("/v1/hub/candidates")).json()["chats"]]
     assert offered == [loose["id"]]
+
+
+async def test_a_file_attached_in_the_hub_reaches_the_projects_chat(
+    client, _hub_home, monkeypatch
+) -> None:
+    from tests.server.helpers import create_test_session
+
+    hub_id = (await client.get("/v1/hub")).json()["session_id"]
+    review = b"Reviewer 2: the related work misses two 2025 papers.\n"
+    uploaded = await client.post(
+        f"/v1/sessions/{hub_id}/resources/files",
+        files={"file": ("Review541750(Reviewer2).txt", review, "text/plain")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    file_id = uploaded.json()["id"]
+    target = await create_test_session(client, title="RAL paper")
+
+    # Test chats have no runner, so the message itself is caught here; the
+    # file copy before it goes through the real routes.
+    posted: list[dict] = []
+    real_post = httpx.AsyncClient.post
+
+    async def post(self, url, *args, **kwargs):
+        if str(url).endswith(f"/v1/sessions/{target['id']}/events"):
+            posted.append(kwargs["json"])
+            return httpx.Response(202, request=httpx.Request("POST", str(url)))
+        return await real_post(self, url, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    backend = hub_module.hub_for(None).require_backend()
+    held = hub_module.attached_files(
+        [{"type": "input_file", "file_id": file_id, "filename": "Review541750(Reviewer2).txt"}],
+        hub_id,
+    )
+    await backend.send(target["id"], "Here are the reviews.", held)
+
+    # The chat owns its own copy: a file id only resolves inside its own chat.
+    files = (await client.get(f"/v1/sessions/{target['id']}/resources/files")).json()["data"]
+    assert [f["name"] for f in files] == ["Review541750(Reviewer2).txt"]
+    copy_id = files[0]["id"]
+    assert copy_id != file_id
+    content = await client.get(f"/v1/sessions/{target['id']}/resources/files/{copy_id}/content")
+    assert content.content == review
+    assert posted[0]["data"]["content"][:2] == [
+        {"type": "input_file", "file_id": copy_id, "filename": "Review541750(Reviewer2).txt"},
+        {"type": "input_text", "text": "Here are the reviews."},
+    ]
+
+
+async def test_files_typed_into_the_hub_are_held_for_the_next_send(client, _hub_home) -> None:
+    hub_id = (await client.get("/v1/hub")).json()["session_id"]
+    uploaded = await client.post(
+        f"/v1/sessions/{hub_id}/resources/files",
+        files={
+            "file": ("ReportOn26-4238v1.txt", b"Decision: revise and resubmit.\n", "text/plain")
+        },
+    )
+    file_id = uploaded.json()["id"]
+    posted = await client.post(
+        f"/v1/sessions/{hub_id}/events",
+        json={
+            "type": "message",
+            "data": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_file",
+                        "file_id": file_id,
+                        "filename": "ReportOn26-4238v1.txt",
+                    },
+                    {"type": "input_text", "text": "esses são os anexos"},
+                ],
+            },
+        },
+    )
+    assert posted.status_code == 202, posted.text
+    hub = hub_module._HUBS["local"]
+    for _ in range(100):
+        if any(e.role == "hub" for e in hub.state.entries):
+            break
+        await asyncio.sleep(0.02)
+    assert [(f.file_id, f.session_id) for f in hub.held_files()] == [(file_id, hub_id)]
+    assert hub.state.entries[0].text == "esses são os anexos\n[attached: ReportOn26-4238v1.txt]"
