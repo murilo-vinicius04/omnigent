@@ -692,6 +692,14 @@ class HubState:
         self.names: dict[str, str] = {}
         #: The sessions the hub ran before it ran projects; ``None`` if never set.
         self.members: list[str] | None = None
+        #: Sends not yet reported back, kept across restarts: session id ->
+        #: ``{"sent_at": ..., "name": ...}``.
+        self.watches: dict[str, dict[str, Any]] = {}
+        #: Whose hub this is and the address links use, for resuming watches.
+        self.owner: dict[str, Any] = {}
+        #: Files attached and not yet sent, and when they were attached.
+        self.files: list[dict[str, Any]] = []
+        self.files_at = 0.0
         self._waiters: set[asyncio.Future[None]] = set()
         self._load()
 
@@ -726,6 +734,33 @@ class HubState:
             raw = json.loads((self._dir / "members.json").read_text(encoding="utf-8"))
             if isinstance(raw, list):
                 self.members = [str(m) for m in raw]
+        with contextlib.suppress(OSError, ValueError, AttributeError):
+            raw = json.loads((self._dir / "watches.json").read_text(encoding="utf-8"))
+            self.watches = {str(k): dict(v) for k, v in (raw.get("watches") or {}).items()}
+            self.owner = {k: raw.get(k) for k in ("user_id", "base_url")}
+        with contextlib.suppress(OSError, ValueError, AttributeError):
+            raw = json.loads((self._dir / "files.json").read_text(encoding="utf-8"))
+            self.files = [dict(f) for f in raw.get("files") or []]
+            self.files_at = float(raw.get("at") or 0.0)
+
+    def keep_watch(self, session_id: str, *, sent_at: float, name: str, **owner: Any) -> None:
+        """Remember a send still to report back, so a restart does not lose it.
+
+        :param owner: ``user_id`` and ``base_url``, for resuming it after a restart.
+        """
+        self.watches[session_id] = {"sent_at": sent_at, "name": name}
+        self.owner = {**self.owner, **owner}
+        self._write("watches.json", {**self.owner, "watches": self.watches})
+
+    def drop_watch(self, session_id: str) -> None:
+        """Forget a send: it was reported back, or will never be."""
+        if self.watches.pop(session_id, None) is not None:
+            self._write("watches.json", {**self.owner, "watches": self.watches})
+
+    def keep_files(self, files: Sequence[dict[str, Any]], at: float) -> None:
+        """Remember the files waiting for a send; an empty list forgets them."""
+        self.files, self.files_at = list(files), at
+        self._write("files.json", {"at": at, "files": self.files})
 
     def append(self, **fields: Any) -> HubEntry:
         """Add a line, write it out, and wake everyone waiting for one."""
@@ -840,8 +875,10 @@ class Hub:
         router_factory: Callable[[], Awaitable[HubRouter]],
         state: HubState | None = None,
         poll_s: float = WATCH_POLL_S,
+        user_id: str | None = None,
     ) -> None:
         self.key = key
+        self.user_id = user_id
         self.state = state or HubState(key)
         self._router_factory = router_factory
         self._backend: HubBackend | None = None
@@ -853,8 +890,8 @@ class Hub:
         #: written there too (:class:`omnigent.server.hub_chat.HubConversation`).
         self.chat: Any = None
         #: Files attached in the hub chat that no send has carried yet.
-        self._files: list[HubFile] = []
-        self._files_at = 0.0
+        self._files = [HubFile(**f) for f in self.state.files]
+        self._files_at = self.state.files_at
 
     def bind(self, backend: HubBackend) -> None:
         """Use this backend from now on; the newest request's wins."""
@@ -1065,14 +1102,17 @@ class Hub:
         held = {f.file_id: f for f in self.held_files()}
         for f in files:
             held[f.file_id] = f
-        self._files = list(held.values())
-        self._files_at = time.time()
+        self._set_files(list(held.values()))
 
     def held_files(self) -> list[HubFile]:
         """Files waiting for a send, until they are :data:`FILES_HOLD_S` old."""
         if self._files and time.time() - self._files_at > FILES_HOLD_S:
-            self._files = []
+            self._set_files([])
         return list(self._files)
+
+    def _set_files(self, files: list[HubFile]) -> None:
+        self._files, self._files_at = files, time.time()
+        self.state.keep_files([asdict(f) for f in files], self._files_at)
 
     async def ask(self, text: str, *, via: str = "voice", context: str = "") -> list[HubEntry]:
         """Answer what a voice handed over, and return what the hub said.
@@ -1314,7 +1354,8 @@ class Hub:
                 session_id=session.id,
                 session_name=session.name,
             )
-        self._files = []
+        if files:
+            self._set_files([])
         names = ", ".join(f.filename for f in files)
         entry = self.say(
             (say or f"Sent to {session.name}.")
@@ -1333,19 +1374,49 @@ class Hub:
         return entry
 
     def watch(self, session: HubSession, sent_at: float) -> None:
-        """Report back when the session finishes; one watch per session."""
+        """Report back when the session finishes; one watch per session.
+
+        The watch is written down first, so a server restart resumes it
+        (:meth:`resume_watches`) instead of losing the report.
+        """
         running = self._watches.get(session.id)
         if running is not None and not running.done():
             return
+        self.state.keep_watch(
+            session.id,
+            sent_at=sent_at,
+            name=session.name,
+            user_id=self.user_id,
+            base_url=getattr(self.chat, "base_url", "") or "",
+        )
         task = asyncio.ensure_future(self._watch(session, sent_at))
         self._watches[session.id] = task
 
+    def resume_watches(self) -> int:
+        """Start again the watches a server restart stopped; returns how many."""
+        resumed = 0
+        for session_id, kept in list(self.state.watches.items()):
+            sent_at = float(kept.get("sent_at") or 0.0)
+            if time.time() - sent_at > WATCH_MAX_S:
+                self.state.drop_watch(session_id)
+                continue
+            running = self._watches.get(session_id)
+            if running is not None and not running.done():
+                continue
+            name = str(kept.get("name") or session_id[:8])
+            session = HubSession(id=session_id, title=name, nickname=name)
+            self._watches[session_id] = asyncio.ensure_future(self._watch(session, sent_at))
+            resumed += 1
+        return resumed
+
     async def _watch(self, session: HubSession, sent_at: float) -> None:
-        deadline = time.monotonic() + WATCH_MAX_S
+        # A resumed watch keeps its original budget, not a fresh one.
+        deadline = time.monotonic() + WATCH_MAX_S - max(0.0, time.time() - sent_at)
         started = time.monotonic()
         seen_working = False
         idle_polls = 0
         told_approval = False
+        ended = True
         try:
             while time.monotonic() < deadline:
                 await asyncio.sleep(self._poll_s)
@@ -1385,11 +1456,15 @@ class Hub:
                     )
                     return
         except asyncio.CancelledError:
+            # Stopped, not finished (a shutdown): kept on disk for the restart.
+            ended = False
             raise
         except Exception:  # noqa: BLE001 - a broken watch must not take the hub down
             _logger.warning("hub watch on %s failed", session.id, exc_info=True)
         finally:
             self._watches.pop(session.id, None)
+            if ended:
+                self.state.drop_watch(session.id)
 
     async def _report(self, session: HubSession, reply: str) -> None:
         router = await self._router_factory()
@@ -1444,7 +1519,7 @@ def hub_for(user_id: str | None) -> Hub:
             assert isinstance(made, HubRouter)
             return made
 
-        hub = Hub(key, router_factory=router)
+        hub = Hub(key, router_factory=router, user_id=user_id)
         _HUBS[key] = hub
     return hub
 

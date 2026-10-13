@@ -570,6 +570,81 @@ async def test_files_stay_when_the_send_fails_and_expire_later(tmp_path, monkeyp
     assert hub.held_files() == []
 
 
+# -- a server restart ----------------------------------------------------------
+
+
+async def test_a_send_still_waiting_is_reported_after_a_restart(tmp_path) -> None:
+    router = _Router('{"send": "bbbb", "message": "Run it.", "say": "Sent."}')
+    server = _Server()
+    server.turns = [TurnState(status="running")]
+    hub = _hub(tmp_path, router, server)
+    hub.submit("run it in brasa")
+    await _settle(hub)
+    assert set(HubState("u1", root=tmp_path).watches) == {BRASA}
+    await hub.close()  # the server stops mid-watch
+    assert set(HubState("u1", root=tmp_path).watches) == {BRASA}  # still owed
+
+    server.turns = [TurnState(status="idle", reply="All tests pass.")]
+    again = _hub(tmp_path, router, server)
+    assert again.resume_watches() == 1
+    await _settle(again, until=lambda: any(e.kind == "finished" for e in again.state.entries))
+    finished = again.state.entries[-1]
+    assert (finished.text, finished.session_id) == (
+        "brasa finished: It fixed the scanner and all tests pass.",
+        BRASA,
+    )
+    await _settle(again, until=lambda: not again._watches)
+    assert HubState("u1", root=tmp_path).watches == {}  # reported, so forgotten
+    assert again.resume_watches() == 0
+
+
+async def test_a_watch_too_old_to_matter_is_dropped_on_resume(tmp_path) -> None:
+    HubState("u1", root=tmp_path).keep_watch(
+        BRASA, sent_at=time.time() - hub_module.WATCH_MAX_S - 1, name="brasa", user_id="u1"
+    )
+    hub = _hub(tmp_path, _Router(), _Server())
+    assert hub.resume_watches() == 0
+    assert HubState("u1", root=tmp_path).watches == {}
+
+
+async def test_held_files_survive_a_restart(tmp_path) -> None:
+    hub = _hub(tmp_path, _Router(), _Server())
+    hub.hold_files(REVIEWS)
+    await hub.close()
+    again = _hub(tmp_path, _Router(), _Server())
+    assert again.held_files() == REVIEWS
+
+
+def test_the_server_resumes_every_hubs_watches_at_startup(tmp_path, monkeypatch) -> None:
+    from omnigent.server import hub_chat
+
+    monkeypatch.setattr(hub_module, "HUB_DIR", tmp_path)
+    monkeypatch.setattr(hub_module, "_HUBS", {})
+    (tmp_path / "morys5").mkdir()
+    (tmp_path / "morys5" / "conversation.json").write_text('{"id": "hubconv"}')
+    HubState("morys5", root=tmp_path).keep_watch(
+        AMARRAS, sent_at=time.time(), name="amarras", user_id="morys5", base_url="http://h:6767"
+    )
+    registry = DiscussionRegistry()
+
+    async def start():
+        resumed = hub_chat.resume_after_restart(
+            conversation_store=_ConvStore(), app=None, companions=lambda: registry
+        )
+        hub = hub_module._HUBS["morys5"]
+        running = set(hub._watches)
+        await hub.close()
+        return resumed, hub, running
+
+    resumed, hub, running = asyncio.run(start())
+    assert resumed == 1 and running == {AMARRAS}
+    assert (hub.user_id, hub.chat.session_id, hub.chat.base_url) == (
+        "morys5",
+        "hubconv",
+        "http://h:6767",
+    )
+
+
 # -- projects ---------------------------------------------------------------------
 
 

@@ -291,6 +291,39 @@ def bind_request(
     )
 
 
+def resume_after_restart(*, conversation_store: Any, app: Any, companions: Any) -> int:
+    """Resume the report-backs every user's hub owed when the server stopped.
+
+    Called once at startup. The watches only read stores, so the backend is
+    bound without a caller's credentials; the first request binds its own.
+
+    :returns: How many watches were started again.
+    """
+    resumed = 0
+    for path in sorted(hub_module.HUB_DIR.glob("*/watches.json")):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(raw, dict) or not raw.get("watches"):
+            continue
+        user_id = raw.get("user_id")
+        hub = hub_module.hub_for(user_id)
+        attach(hub, conversation_store, known_hub_id(user_id))
+        bind_request(
+            hub,
+            conversation_store=conversation_store,
+            user_id=user_id,
+            app=app,
+            headers={},
+            companions=companions,
+        )
+        if hub.chat is not None and raw.get("base_url"):
+            hub.chat.base_url = str(raw["base_url"])
+        resumed += hub.resume_watches()
+    return resumed
+
+
 async def accept_message(
     *,
     conv: Any,

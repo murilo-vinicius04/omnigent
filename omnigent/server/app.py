@@ -1538,6 +1538,18 @@ def create_app(
         # the reader comes back.
         companion_sweep_task = asyncio.create_task(sweep_idle_companions())
 
+        # Report-backs the hub owed when the server last stopped.
+        try:
+            from omnigent.server import hub_chat
+
+            resumed = hub_chat.resume_after_restart(
+                conversation_store=conversation_store, app=app_inst, companions=discussion.registry
+            )
+            if resumed:
+                _logger.info("hub resumed %d report-back watch(es) after restart", resumed)
+        except Exception:  # noqa: BLE001 - a lost report-back must not stop the server booting
+            _logger.warning("hub watches not resumed after restart", exc_info=True)
+
         try:
             yield
         finally:
