@@ -47,6 +47,20 @@ Keep it current before going idle. If something here is stale, fix it here.
   re-bound the hub's link base to 127.0.0.1 (a different site for the user's browser). `adopt_address`: only a
   caller with an Origin sets it; a script only fills a missing one. Router-written links to host paths of known
   files are relinked to `/c/<chat>?file=`. Messages posted 17:30–17:36 keep 127.0.0.1 links.
+- **Read-only checks (c6b216a35, e53b54f99, live 18:03).** Hub-call checks at 17:40/17:48 died "no answer within
+  20s". The 20 s is PER MODEL TURN of a check (pick a command / answer); the whole check has 60 s. Cause: agy reads
+  the question only after starting up, and its Google sign-in calls (loadCodeAssist) took 15 s, so a cold first
+  turn timed out before the model was asked. Now: a fresh process's first turn gets 40 s, and a stalled or
+  Google-refused first turn (before any command) is retried in a fresh process up to twice. Live: cold check 6.6 s,
+  `stat` check 6.6 s, correct answers. GOOGLE_REFUSED now lives in discussion.py (hub.py imports it).
+- **Gemini/Unmute hub calls end after a send (59abca6b9, live 18:01).** 3975f8f28 only covered GPT Live (page
+  runs the tools); on Gemini/Unmute the relay runs them, so the 17:40 send left the call open until 17:41:33. The
+  relay's `omnigentToolDone` now carries `sent`; the Gemini adapter calls `onRelaySent` → liveConversation
+  `endAfterHubSend` (goodbye, quiet, stop); the radio hub (voiceHub.ts) stops after the next turnComplete. The
+  voice is told the call ends (voice_hub HUB role, ask_claude output, tool description). While a relayed tool
+  runs the call shows "Checking on RAL (read-only)…" (shared `web/src/lib/hubTools.ts`). Not tried on a real call.
+- Mistake to avoid: `ruff format omnigent/server` reformatted the other session's uncommitted
+  routes/sessions/routes_core.py (layout only, 17:55); restored a clean __init__.py from HEAD. Format files by name.
 - Not handled: a project whose own narration is on can be heard twice (its summary via cross-session narration,
   then the Hub's report). Offer: leave a reported project's summary to the Hub while the Hub is open.
 
