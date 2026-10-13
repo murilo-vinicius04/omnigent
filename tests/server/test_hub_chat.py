@@ -189,7 +189,8 @@ def test_the_hub_says_its_own_words_never_what_it_quotes_or_shows(tmp_path) -> N
         session_name="brasa",
         detail="Run the tests.\nThen report.",
     )
-    assert hub_chat.speech_text(sent) == "Mandei pra brasa rodar npm test."
+    # The sent chip shows it went: nothing to read.
+    assert hub_chat.speech_text(sent) == ""
     # The project's chip says which project it is: the voice reads the report only.
     report = _finished(tmp_path, text="RAL finished: o plano está em `REVISION_PLAN.md`.")
     assert hub_chat.speech_text(report) == "o plano está em REVISION_PLAN.md."
@@ -221,9 +222,9 @@ async def test_a_deleted_hub_is_made_again(client, _hub_home) -> None:
                 session_name="brasa",
                 detail="Run the tests.\nThen report.",
             ),
-            '[brasa](http://h:6767/c/s1 "omnigent-project")\n\n'
-            "Mandei pra brasa.\n\n> Run the tests.\n> Then report.",
-            id="sent-quotes-what-went",
+            '[brasa](http://h:6767/c/s1 "omnigent-project-sent")\n\n'
+            "> Run the tests.\n> Then report.",
+            id="sent-chip-quotes-what-went",
         ),
         pytest.param(
             HubEntry(
@@ -243,6 +244,20 @@ async def test_a_deleted_hub_is_made_again(client, _hub_home) -> None:
 )
 def test_hub_entries_render_as_chat_markdown(entry, expected) -> None:
     assert hub_chat.render(entry, "http://h:6767") == expected
+
+
+def test_without_the_apps_address_a_send_keeps_its_words() -> None:
+    sent = HubEntry(
+        id=2,
+        at=0,
+        role="hub",
+        kind="sent",
+        text="Mandei pra brasa.",
+        session_id="s1",
+        session_name="brasa",
+        detail="Run the tests.",
+    )
+    assert hub_chat.render(sent, "") == "**brasa**\n\nMandei pra brasa.\n\n> Run the tests."
 
 
 def _finished(tmp_path, **fields) -> HubEntry:

@@ -157,6 +157,9 @@ def ensure_hub_conversation(
 #: The link title that marks a project's name as a chip (the page draws a pill).
 PROJECT_CHIP_TITLE: Final[str] = "omnigent-project"
 
+#: The chip on a message that went to a project: it shows the send, in no words.
+PROJECT_SENT_CHIP_TITLE: Final[str] = "omnigent-project-sent"
+
 #: Entries about one project: they open with its chip.
 _PROJECT_KINDS: Final[frozenset[str]] = frozenset(
     {"sent", "finished", "attention", "status", "check", "model", "project"}
@@ -177,7 +180,8 @@ def _chip(entry: hub_module.HubEntry, base_url: str) -> str:
     name = entry.session_name.replace("[", "\\[").replace("]", "\\]")
     if not base_url:
         return f"**{name}**"
-    return f'[{name}]({base_url}/c/{entry.session_id} "{PROJECT_CHIP_TITLE}")'
+    title = PROJECT_SENT_CHIP_TITLE if entry.kind == "sent" else PROJECT_CHIP_TITLE
+    return f'[{name}]({base_url}/c/{entry.session_id} "{title}")'
 
 
 def render(
@@ -203,7 +207,10 @@ def render(
     if base_url and entry.link and not entry.session_id:
         link = f"[Start a chat in {entry.session_name} ↗]({base_url}{entry.link})"
     if entry.kind == "sent" and entry.detail:
-        parts = [chip, entry.text, f"> {_quote(entry.detail)}", link]
+        # The sent chip says it went; the quote is what went. Without a link
+        # there is no chip to say it, so the words stay.
+        said = "" if chip.startswith("[") else entry.text
+        parts = [chip, said, f"> {_quote(entry.detail)}", link]
         return "\n\n".join(part for part in parts if part)
     if entry.kind == "finished" and (entry.detail or entry.show):
         # What the project's own chat shows under its summary of the reply: the
@@ -244,10 +251,13 @@ _narrations: set[asyncio.Task[None]] = set()
 def speech_text(entry: hub_module.HubEntry) -> str:
     """What the hub says aloud for an entry: its own words, never what it quotes or shows.
 
-    Not the project's name or "finished" either: the chip shows which project it is.
+    Not the project's name or "finished" either: the chip shows which project it
+    is. Nothing for a send: its chip shows it went.
     """
     from omnigent.server.spoken_summary import strip_markdown_for_speech
 
+    if entry.kind == "sent":
+        return ""
     return strip_markdown_for_speech(own_words(entry))
 
 

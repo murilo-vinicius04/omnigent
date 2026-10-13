@@ -34,6 +34,20 @@ describe("hub project chips", () => {
     expect(screen.getByText("Compilei o cuRobo.")).toBeInTheDocument();
   });
 
+  it("marks a message the hub sent with the sent chip, no words needed", () => {
+    renderMarkdown(
+      '[RAL](http://localhost:6767/c/4a1867870bb74b44b3fb98f1ddd42887 "omnigent-project-sent")\n\n' +
+        "> Gere os gráficos.",
+    );
+
+    const chip = screen.getByTestId("hub-project-chip-sent");
+    expect(chip).toHaveTextContent("RAL");
+    expect(chip).toHaveAttribute("href", "/c/4a1867870bb74b44b3fb98f1ddd42887");
+    expect(chip).toHaveAccessibleName("Sent to RAL");
+    expect(screen.queryByTestId("hub-project-chip")).toBeNull();
+    expect(screen.getByText("Gere os gráficos.")).toBeInTheDocument();
+  });
+
   it("leaves any other link a plain link", () => {
     renderMarkdown("[Open RAL ↗](http://localhost:6767/c/4a18)");
 

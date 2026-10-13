@@ -12,7 +12,7 @@
 
 import type React from "react";
 import { useMemo } from "react";
-import { FolderIcon } from "lucide-react";
+import { FolderIcon, SendHorizontalIcon } from "lucide-react";
 import { defaultRemarkPlugins } from "streamdown";
 import remarkBreaks from "remark-breaks";
 import { normalizeExplicitMathDelimiters } from "@/components/ai-elements/mathMarkdown";
@@ -164,25 +164,41 @@ const STREAMDOWN_LINK_CLASS = "wrap-anywhere font-medium text-primary underline"
 /** The link title the hub puts on a project's name: drawn as a chip, not a link. */
 export const PROJECT_CHIP_TITLE = "omnigent-project";
 
+/** The same, on a message the hub sent to the project: the chip shows the send. */
+export const PROJECT_SENT_CHIP_TITLE = "omnigent-project-sent";
+
 /**
  * A project named at the top of a hub message: a small pill that opens its
- * chat, so the message itself need not say which project it is.
+ * chat, so the message itself need not say which project it is. A sent one
+ * carries a send arrow in place of "Sent to RAL".
  */
-function ProjectChip({ href, children }: { href: string; children: React.ReactNode }) {
+function ProjectChip({
+  href,
+  sent,
+  children,
+}: {
+  href: string;
+  sent: boolean;
+  children: React.ReactNode;
+}) {
   let to = href;
   try {
     to = new URL(href, window.location.href).pathname;
   } catch {
     // Not a URL: keep it as written.
   }
+  const name = typeof children === "string" ? children : undefined;
   return (
     <Link
       to={to}
-      data-testid="hub-project-chip"
+      data-testid={sent ? "hub-project-chip-sent" : "hub-project-chip"}
+      aria-label={sent && name ? `Sent to ${name}` : undefined}
+      title={sent && name ? `Sent to ${name}` : undefined}
       className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/50 px-2 py-0.5 align-middle text-xs font-medium text-foreground no-underline transition-colors hover:bg-muted"
     >
       <FolderIcon className="size-3 text-muted-foreground" aria-hidden="true" />
       {children}
+      {sent && <SendHorizontalIcon className="ml-0.5 size-3 text-primary" aria-hidden="true" />}
     </Link>
   );
 }
@@ -210,8 +226,13 @@ function WorkspaceFileLink({
   const openWorkspaceFile = useWorkspaceFileOpener(path);
   const openAppFileLink = useOpenAppFileLink();
 
-  if (!path && title === PROJECT_CHIP_TITLE && typeof href === "string") {
-    return <ProjectChip href={href}>{children}</ProjectChip>;
+  const chip = title === PROJECT_CHIP_TITLE || title === PROJECT_SENT_CHIP_TITLE;
+  if (!path && chip && typeof href === "string") {
+    return (
+      <ProjectChip href={href} sent={title === PROJECT_SENT_CHIP_TITLE}>
+        {children}
+      </ProjectChip>
+    );
   }
 
   if (!path) {
