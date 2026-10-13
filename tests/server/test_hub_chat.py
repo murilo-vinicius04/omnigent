@@ -361,6 +361,7 @@ async def test_a_voice_hands_the_hub_what_was_said_and_gets_what_to_say(client, 
     )
     assert res.status_code == 200, res.text
     assert res.json()["say"] == "Oi! Nenhuma sessão por aqui ainda."
+    assert res.json()["sent"] is False  # answered, nothing sent: the call stays open
     # What was said on the call, and the hub's answer, show in the hub too.
     items = await _items(client, session_id)
     said = [(i["role"], i["content"][0]["text"]) for i in items if i["type"] == "message"]
@@ -369,6 +370,20 @@ async def test_a_voice_hands_the_hub_what_was_said_and_gets_what_to_say(client, 
         ("assistant", "Oi! Nenhuma sessão por aqui ainda."),
     ]
     assert _hub_home == ["tudo certo por aí?"]
+
+
+async def test_a_voice_is_told_when_its_request_went_to_a_project(
+    client, _hub_home, monkeypatch
+) -> None:
+    async def ask(self, text, *, via, context=""):
+        return [HubEntry(id=9, at=0, role="hub", kind="sent", text="Mandei pro RAL.")]
+
+    monkeypatch.setattr(hub_module.Hub, "ask", ask)
+    await client.get("/v1/hub")
+    res = await client.post("/v1/hub/voice", json={"text": "manda pro RAL", "context": ""})
+    assert res.status_code == 200, res.text
+    assert res.json()["say"] == "Mandei pro RAL."
+    assert res.json()["sent"] is True  # the page ends the call, as after a hand-off to Claude
 
 
 async def test_the_call_hears_only_news_from_after_it_opened(client, _hub_home) -> None:

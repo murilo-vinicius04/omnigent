@@ -58,15 +58,21 @@ export async function hubLastId(): Promise<number> {
  * Hand what was said on a voice call to the hub and get back what to say.
  * The request and the hub's answer show in the hub conversation too.
  */
-export async function askHubByVoice(text: string, context: string): Promise<string> {
-  const body = await readJson<{ say?: string }>(
+/** What the hub did with a spoken request: the words to say, and whether it went to a project. */
+export interface HubVoiceReply {
+  say: string;
+  sent: boolean;
+}
+
+export async function askHubByVoice(text: string, context: string): Promise<HubVoiceReply> {
+  const body = await readJson<{ say?: string; sent?: boolean }>(
     await authenticatedFetch("/v1/hub/voice", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, context: context.slice(-8000) }),
     }),
   );
-  return body.say ?? "";
+  return { say: body.say ?? "", sent: body.sent === true };
 }
 
 /** Wait up to `waitS` for news after `after`: a project finished or needs them. */

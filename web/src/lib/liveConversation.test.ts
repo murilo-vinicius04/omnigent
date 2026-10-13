@@ -29,7 +29,10 @@ vi.mock("./companionApi", () => ({
   prewarmCompanion: (sessionId: string) => prewarmCompanion(sessionId),
 }));
 
-const askHubByVoice = vi.fn(async (_text: string, _context: string) => "Mandei pra brasa.");
+const askHubByVoice = vi.fn(async (_text: string, _context: string) => ({
+  say: "A brasa está rodando os testes.",
+  sent: false,
+}));
 const hubLastId = vi.fn(async () => 7);
 const hubUpdates = vi.fn(
   async (_after: number, _waitS: number): Promise<{ updates: unknown[]; lastId: number }> =>
@@ -418,7 +421,7 @@ describe("the hub's voice on GPT Live", () => {
     delegate("d1", "sim, manda");
 
     await vi.waitFor(() => {
-      expect(live.commentary).toHaveBeenCalledWith("d1", "Mandei pra brasa.");
+      expect(live.commentary).toHaveBeenCalledWith("d1", "A brasa está rodando os testes.");
     });
     const [question, context] = askHubByVoice.mock.calls[0] ?? [];
     expect(question).toBe("sim, manda");
@@ -430,6 +433,23 @@ describe("the hub's voice on GPT Live", () => {
     await settleCallbacks();
     expect(live.stop).not.toHaveBeenCalled();
     useLiveConversationStore.getState().stop();
+  });
+
+  it("hangs up once the hub has sent the request to a project", async () => {
+    askHubByVoice.mockResolvedValueOnce({ say: "Mandei pro RAL.", sent: true });
+    const { live, say, delegate } = await openHub();
+    say({ who: "reader", text: "manda pro RAL ler a ata" });
+    delegate("d3", "manda pro RAL ler a ata");
+
+    await vi.waitFor(() => expect(live.stop).toHaveBeenCalled());
+    const [, spoken] = live.commentary.mock.calls[0] ?? [];
+    expect(spoken).toContain("Mandei pro RAL.");
+    expect(spoken).toContain("ending the call");
+    // Not before the goodbye was said.
+    expect(live.untilQuiet.mock.invocationCallOrder[0]).toBeLessThan(
+      live.stop.mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(useLiveConversationStore.getState().handedOff).toBe("manda pro RAL ler a ata");
   });
 
   it("tells them when a session finishes, news from after the call opened only", async () => {

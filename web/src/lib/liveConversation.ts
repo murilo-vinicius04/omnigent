@@ -27,6 +27,10 @@ export { USD_PER_MINUTE };
 const HANDED_OFF =
   "I've sent that to Claude. Its answer will show up in the chat, so I'm ending the call now.";
 
+/** Added to the hub's words when it sent the request to a project. */
+const HUB_HANDED_OFF =
+  "Its answer will show up in the Hub chat and be read out there, so I'm ending the call now.";
+
 /** Returned to the voice when a question needed Claude but could not be sent. */
 const NOT_SENT =
   "I couldn't send that to Claude from here, so it will need to be typed in the chat.";
@@ -353,21 +357,42 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
 
     /**
      * In the hub conversation a delegation goes to the hub, which reads,
-     * sends to or checks the session it is about and says what it did. The
-     * call stays open: the hub tells it when a session finishes.
+     * sends to or checks the project it is about and says what it did. A send
+     * ends the call, as a hand-off to Claude does: the project's answer comes
+     * back in the hub chat, which reads it out. Anything else keeps it open.
      */
     const answerInHub = async (delegationId: string, question: string): Promise<void> => {
       set({ notice: WORKING_ON_IT, noticeTone: "info" });
-      let say: string;
+      let reply = { say: "", sent: false };
       try {
-        say = (await askHubByVoice(question, callSoFar())) || HUB_UNREACHABLE;
+        reply = await askHubByVoice(question, callSoFar());
       } catch {
-        say = HUB_UNREACHABLE;
+        // Said below as unreachable.
       }
       const current = activeHandle;
-      if (!current) return;
+      if (!current || handedOff) return;
       set({ notice: null, noticeTone: "info" });
-      current.speakBack(delegationId, say);
+      if (!reply.sent) {
+        current.speakBack(delegationId, reply.say || HUB_UNREACHABLE);
+        return;
+      }
+      handedOff = true;
+      set({ handedOff: question });
+      const sentAt = transcript.length;
+      current.speakBack(delegationId, `${reply.say} ${HUB_HANDED_OFF}`);
+      await current.untilQuiet(20_000);
+      await readerQuiet(HANGUP_QUIET_MS, HANGUP_QUIET_CAP_MS);
+      get().stop();
+      // What they added after the send goes to the hub too, as for Claude.
+      const after = transcript
+        .slice(sentAt)
+        .filter((line) => line.who === "reader")
+        .map((line) => line.text.trim())
+        .filter(Boolean)
+        .join(" ");
+      if (worthFollowUp(after)) {
+        void askHubByVoice(`${FOLLOW_UP_PREFIX} ${after}`, callSoFar()).catch(() => {});
+      }
     };
 
     /** Tell the hub's voice each time a session finishes or needs them. */

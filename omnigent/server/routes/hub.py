@@ -203,9 +203,10 @@ def create_hub_router(
     async def hub_voice(request: Request, body: HubVoiceIn) -> dict[str, Any]:
         """Act on what a voice handed over and return what the voice should say.
 
-        For a voice that cannot run the hub's tools itself (GPT-Live): the
-        request and the hub's answer land in the hub conversation as for a
-        typed message, and the call stays open.
+        For a voice that cannot run the hub's tools itself (GPT-Live, Gemini
+        Live): the request and the hub's answer land in the hub conversation as
+        for a typed message. ``sent`` says it went to a project, so the call can
+        end the way a project chat's call ends once Claude has the request.
         """
         hub, _ = await _bound(request)
         # Shielded: a slow answer must still land in the chat after the voice
@@ -214,9 +215,10 @@ def create_hub_router(
         try:
             said = await asyncio.wait_for(asyncio.shield(work), VOICE_TIMEOUT_S)
         except TimeoutError:
-            return {"say": VOICE_TOO_SLOW, "last_id": hub.state.last_id}
+            return {"say": VOICE_TOO_SLOW, "sent": False, "last_id": hub.state.last_id}
         return {
             "say": "\n".join(e.text for e in said) or "Nothing came back from the hub.",
+            "sent": any(e.kind == "sent" for e in said),
             "last_id": hub.state.last_id,
         }
 
