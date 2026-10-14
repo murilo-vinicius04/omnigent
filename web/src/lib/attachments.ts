@@ -15,7 +15,24 @@ export const ATTACHMENT_SIZE_LIMITS_MB = {
   image: 5,
   pdf: 20,
   text: 10,
+  archive: 25,
 } as const;
+
+/**
+ * What the file picker offers. Mirrors {@link classifyAttachment}: zip
+ * archives too, which a native CLI chat receives as a file to unzip.
+ */
+export const ATTACHMENT_ACCEPT =
+  "image/*,application/pdf,text/*,application/json,.zip,application/zip";
+
+// A zip archive by the types browsers and systems give it. Mirrors
+// _ZIP_MIMES on the server.
+const ZIP_MIMES = new Set([
+  "application/zip",
+  "application/x-zip-compressed",
+  "application/x-zip",
+  "multipart/x-zip",
+]);
 
 export type AttachmentCategory = keyof typeof ATTACHMENT_SIZE_LIMITS_MB;
 
@@ -119,7 +136,7 @@ function extensionOf(filename: string): string {
 
 /**
  * Classify a file into an attachment category, or `null` if its type is not
- * supported (e.g. pptx, docx, xlsx, zip, binaries). Uses the browser MIME
+ * supported (e.g. pptx, docx, xlsx, binaries). Uses the browser MIME
  * type first, falling back to the filename extension for code/text files
  * whose MIME is unreliable.
  */
@@ -136,6 +153,7 @@ export function classifyAttachment(file: File): AttachmentCategory | null {
   ) {
     return "text";
   }
+  if (ZIP_MIMES.has(type) || ext === ".zip") return "archive";
   return null;
 }
 
@@ -160,7 +178,7 @@ export function validateAttachments(files: File[]): AttachmentValidation {
     const category = classifyAttachment(file);
     if (category === null) {
       errors.push(
-        `"${name}" can't be attached — only images, PDF, and text/code files are supported.`,
+        `"${name}" can't be attached — only images, PDF, text/code files and zip archives are supported.`,
       );
       continue;
     }

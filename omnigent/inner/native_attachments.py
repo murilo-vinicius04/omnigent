@@ -42,6 +42,7 @@ MIME_TO_EXT: dict[str, str] = {
     "image/webp": ".webp",
     "image/svg+xml": ".svg",
     "application/pdf": ".pdf",
+    "application/zip": ".zip",
     "text/plain": ".txt",
 }
 

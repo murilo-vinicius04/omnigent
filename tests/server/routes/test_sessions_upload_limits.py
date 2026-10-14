@@ -87,6 +87,24 @@ def test_upload_rejects_unsupported_type(upload_client: tuple[TestClient, str]) 
     assert "Unsupported attachment type" in resp.text
 
 
+@pytest.mark.parametrize(
+    "declared", ["application/zip", "application/x-zip-compressed", "application/octet-stream"]
+)
+def test_upload_accepts_a_zip_however_it_is_declared(
+    upload_client: tuple[TestClient, str], declared: str
+) -> None:
+    """A zip is stored as application/zip: a native chat gets it as a file to unzip."""
+    client, session_id = upload_client
+    resp = client.post(
+        f"/v1/sessions/{session_id}/resources/files",
+        files={"file": ("logs.zip", b"PK\x03\x04 fake zip bytes", declared)},
+    )
+    assert resp.status_code in (200, 201), resp.text
+    body = resp.json()
+    assert body["name"] == "logs.zip"
+    assert body.get("content_type", body.get("mime_type", "application/zip")) == "application/zip"
+
+
 def test_upload_rejects_oversized_image(upload_client: tuple[TestClient, str]) -> None:
     """An image over the per-type limit is rejected with 413."""
     client, session_id = upload_client

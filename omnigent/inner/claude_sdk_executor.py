@@ -59,6 +59,7 @@ from omnigent.llms._usage_observer import notify_from_dict as _notify_usage_from
 from omnigent.llms.adapters._content import parse_data_uri as _parse_replay_data_uri
 from omnigent.model_metadata import concrete_reported_model
 from omnigent.reasoning_effort import CLAUDE_EFFORTS, validate_effort
+from omnigent.runtime.content_resolver import archive_note, is_archive
 from omnigent.spec.types import RetryPolicy
 
 from ._subprocess_lifecycle import close_anyio_subprocess_transport
@@ -648,6 +649,15 @@ def _to_anthropic_content_blocks(
                             "media_type": "application/pdf",
                             "data": data,
                         },
+                    }
+                )
+            elif is_archive(media_type):
+                # A zip read as text is only garbled bytes.
+                filename = block.get("filename")
+                result.append(
+                    {
+                        "type": "text",
+                        "text": archive_note(filename if isinstance(filename, str) else None),
                     }
                 )
             else:

@@ -37,7 +37,7 @@ import { Button } from "@/components/ui/button";
 import { useAppName } from "@/lib/branding";
 import { cn } from "@/lib/utils";
 import { QueuedMessagesStrip } from "@/pages/QueuedMessagesStrip";
-import { attachmentKey, validateAttachments } from "@/lib/attachments";
+import { ATTACHMENT_ACCEPT, attachmentKey, validateAttachments } from "@/lib/attachments";
 import {
   serverSwitcherHiddenForSurface,
   useSurfaceFrontmost,
@@ -3067,7 +3067,7 @@ function ComposerImpl({
   const recallingRef = useRef(false);
 
   const addFiles = (incoming: File[]) => {
-    // Reject unsupported types (only images, PDF, and text/code) and
+    // Reject unsupported types (only images, PDF, text/code and zip) and
     // oversized files up front — before the upload — with a friendly
     // message. The server enforces the same limits authoritatively.
     const { accepted, errors } = validateAttachments(incoming);
@@ -3367,7 +3367,7 @@ function ComposerImpl({
         ref={fileInputRef}
         type="file"
         multiple
-        accept="image/*,application/pdf,text/*,application/json"
+        accept={ATTACHMENT_ACCEPT}
         className="hidden"
         onChange={(e) => {
           if (e.target.files) {

@@ -3369,19 +3369,32 @@ describe("NewChatLandingScreen attachments", () => {
     expect(screen.queryByText("Drop files here")).toBeNull();
   });
 
+  // A zip is attachable (native chats get it as a file); a slide deck is not.
+  const PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+
+  it("attaches a zip archive", () => {
+    renderLanding();
+    const zip = new File([new Uint8Array(10)], "photos.zip", { type: "application/zip" });
+    fireEvent.change(screen.getByTestId("new-chat-landing-file-input"), {
+      target: { files: [zip] },
+    });
+    expect(screen.getByText("photos.zip")).toBeTruthy();
+    expect(screen.queryByTestId("new-chat-landing-attachment-error")).toBeNull();
+  });
+
   // An unsupported attachment has to be caught HERE, before the session
   // exists. Letting it through means the upload only 415s after the session
   // is created and navigated into — stranding the typed message in a session
   // the user never wanted.
   it("rejects an unsupported attachment instead of attaching it", () => {
     renderLanding();
-    const zip = new File([new Uint8Array(10)], "photos.zip", { type: "application/zip" });
+    const deck = new File([new Uint8Array(10)], "deck.pptx", { type: PPTX });
     fireEvent.change(screen.getByTestId("new-chat-landing-file-input"), {
-      target: { files: [zip] },
+      target: { files: [deck] },
     });
-    expect(screen.queryByText("photos.zip")).toBeNull();
+    expect(screen.queryByText("deck.pptx")).toBeNull();
     expect(screen.getByTestId("new-chat-landing-attachment-error").textContent).toContain(
-      "only images, PDF, and text/code files are supported",
+      "only images, PDF, text/code files and zip archives are supported",
     );
   });
 
@@ -3389,12 +3402,12 @@ describe("NewChatLandingScreen attachments", () => {
     renderLanding();
     const composer = screen.getByTestId("new-chat-landing-composer");
     const ok = new File(["hello"], "notes.txt", { type: "text/plain" });
-    const zip = new File([new Uint8Array(10)], "photos.zip", { type: "application/zip" });
-    fireEvent.drop(composer, { dataTransfer: fileDrag([ok, zip]) });
+    const deck = new File([new Uint8Array(10)], "deck.pptx", { type: PPTX });
+    fireEvent.drop(composer, { dataTransfer: fileDrag([ok, deck]) });
     expect(screen.getByText("notes.txt")).toBeTruthy();
-    expect(screen.queryByText("photos.zip")).toBeNull();
+    expect(screen.queryByText("deck.pptx")).toBeNull();
     expect(screen.getByTestId("new-chat-landing-attachment-error").textContent).toContain(
-      "photos.zip",
+      "deck.pptx",
     );
     // Removing the accepted chip clears the stale rejection notice too.
     fireEvent.click(screen.getByRole("button", { name: "Remove notes.txt" }));
@@ -3406,9 +3419,9 @@ describe("NewChatLandingScreen attachments", () => {
     // nothing else clears the notice. Left sticky it reads as a blocker on a
     // composer that can actually be submitted.
     renderLanding();
-    const zip = new File([new Uint8Array(10)], "photos.zip", { type: "application/zip" });
+    const deck = new File([new Uint8Array(10)], "deck.pptx", { type: PPTX });
     fireEvent.change(screen.getByTestId("new-chat-landing-file-input"), {
-      target: { files: [zip] },
+      target: { files: [deck] },
     });
     expect(screen.getByTestId("new-chat-landing-attachment-error")).toBeTruthy();
 

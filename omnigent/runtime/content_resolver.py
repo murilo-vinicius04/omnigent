@@ -103,7 +103,40 @@ _EXTRA_MIME_TYPES: dict[str, str] = {
 MAX_IMAGE_UPLOAD_BYTES: int = 5 * 1024 * 1024
 MAX_PDF_UPLOAD_BYTES: int = 20 * 1024 * 1024
 MAX_TEXT_UPLOAD_BYTES: int = 10 * 1024 * 1024
+MAX_ARCHIVE_UPLOAD_BYTES: int = 25 * 1024 * 1024
 MAX_ATTACHMENT_UPLOAD_BYTES: int = 25 * 1024 * 1024
+
+#: A zip archive, by the types browsers and systems give it; stored as
+#: :data:`ZIP_MIME`. A native CLI chat gets it as a file on disk to unzip; a
+#: model that reads attachments inline gets a note instead of its bytes.
+ZIP_MIME: str = "application/zip"
+_ZIP_MIMES: frozenset[str] = frozenset(
+    {ZIP_MIME, "application/x-zip-compressed", "application/x-zip", "multipart/x-zip"}
+)
+
+
+def is_archive(content_type: str) -> bool:
+    """Whether *content_type* is a zip archive, e.g. ``"application/zip"``."""
+    return content_type.split(";", 1)[0].strip().lower() in _ZIP_MIMES
+
+
+def archive_type_for_extension(filename: str | None) -> str | None:
+    """:data:`ZIP_MIME` for a ``.zip`` *filename* whatever type it was declared with."""
+    return ZIP_MIME if filename and filename.lower().endswith(".zip") else None
+
+
+def archive_note(filename: str | None, size_bytes: int | None = None) -> str:
+    """What a model that cannot open an archive is told about one, e.g.
+
+    ``"[Attached archive data.zip (2.1 MB): a zip the model cannot open inline]"``.
+    """
+    name = filename or "archive.zip"
+    size = f" ({size_bytes / (1024 * 1024):.1f} MB)" if size_bytes else ""
+    return (
+        f"[Attached archive {name}{size}: a zip the model cannot open inline; "
+        "ask for the files inside it if they are needed]"
+    )
+
 
 # Copy-at-spawn limits (see the ``files:copy`` endpoint). A parent forwarding
 # files to a subagent copies them through the server, which reads each source
@@ -137,11 +170,13 @@ def attachment_upload_limit(content_type: str) -> int | None:
     Max upload size (bytes) for *content_type*, or ``None`` if the type is
     not an allowed attachment.
 
-    Allowed: images, PDF, and text-like files (``text/*`` plus a few
-    text-bearing ``application/*`` types — JSON, JS, JSONL, notebooks).
-    Office / binary formats (pptx, docx, xlsx, zip, …) return ``None`` and
-    are rejected at upload: the model can't read their raw bytes
-    (Anthropic's base64 ``document`` source accepts only PDF), so inlining
+    Allowed: images, PDF, text-like files (``text/*`` plus a few
+    text-bearing ``application/*`` types — JSON, JS, JSONL, notebooks), and
+    zip archives, which native CLI chats receive as a file on disk (models
+    that read attachments inline get :func:`archive_note`). Office / binary
+    formats (pptx, docx, xlsx, …) return ``None`` and are rejected at upload:
+    the model can't read their raw bytes (Anthropic's base64 ``document``
+    source accepts only PDF), so inlining
     them only produces garbled UTF-8 or — for large files — an oversized,
     context-blowing request. Callers reject ``None`` with HTTP 415.
 
@@ -158,6 +193,8 @@ def attachment_upload_limit(content_type: str) -> int | None:
         return MAX_PDF_UPLOAD_BYTES
     if content_type.startswith("text/") or content_type in _TEXT_LIKE_APPLICATION_MIMES:
         return MAX_TEXT_UPLOAD_BYTES
+    if is_archive(content_type):
+        return MAX_ARCHIVE_UPLOAD_BYTES
     return None
 
 
@@ -519,6 +556,10 @@ def _resolve_file_id_block(
             f"Referenced file '{file_id}' no longer exists — "
             f"it may have been deleted after the request was accepted"
         )
+
+    if is_archive(_resolve_content_type(file_meta.content_type, file_meta.filename)):
+        # No model reads a zip inline; its bytes would arrive as garbled text.
+        return {"type": "input_text", "text": archive_note(file_meta.filename, file_meta.bytes)}
 
     # Use cached base64 if available; otherwise fetch, encode, and cache.
     if cache is not None and file_id in cache:

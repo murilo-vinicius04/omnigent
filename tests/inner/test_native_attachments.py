@@ -93,6 +93,20 @@ def test_materialize_attachment_uses_block_filename(tmp_path: Path) -> None:
     assert path.parent == tmp_path / "uploads"
 
 
+def test_a_zip_lands_on_disk_as_the_zip_it_was(tmp_path: Path) -> None:
+    """A native chat gets a zip as the file itself, to unzip; unnamed, it still ends in .zip."""
+    raw = b"PK\x03\x04 zipped bytes"
+    data_uri = f"data:application/zip;base64,{base64.b64encode(raw).decode()}"
+
+    named = materialize_attachment(
+        {"type": "input_file", "file_data": data_uri, "filename": "logs.zip"}, tmp_path
+    )
+    unnamed = materialize_attachment({"type": "input_file", "file_data": data_uri}, tmp_path)
+
+    assert named is not None and named.name == "logs.zip" and named.read_bytes() == raw
+    assert unnamed is not None and unnamed.suffix == ".zip"
+
+
 def test_materialize_attachment_ignores_non_string_filename(tmp_path: Path) -> None:
     block = {
         "type": "input_image",

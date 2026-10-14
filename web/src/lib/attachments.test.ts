@@ -45,10 +45,17 @@ describe("classifyAttachment", () => {
     expect(classifyAttachment(makeFile("data.csv", "application/vnd.ms-excel"))).toBe("text");
   });
 
+  it("classifies zip archives by MIME or extension", () => {
+    expect(classifyAttachment(makeFile("a.zip", "application/zip"))).toBe("archive");
+    // Windows reports application/x-zip-compressed; some browsers nothing.
+    expect(classifyAttachment(makeFile("a.zip", "application/x-zip-compressed"))).toBe("archive");
+    expect(classifyAttachment(makeFile("a.zip", ""))).toBe("archive");
+    expect(classifyAttachment(makeFile("a.zip", "application/octet-stream"))).toBe("archive");
+  });
+
   it("rejects office/binary types", () => {
     const pptx = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
     expect(classifyAttachment(makeFile("deck.pptx", pptx))).toBeNull();
-    expect(classifyAttachment(makeFile("a.zip", "application/zip"))).toBeNull();
     expect(classifyAttachment(makeFile("a.bin", "application/octet-stream"))).toBeNull();
     expect(classifyAttachment(makeFile("a.mp4", "video/mp4"))).toBeNull();
   });
@@ -70,6 +77,16 @@ describe("validateAttachments", () => {
     expect(errors[0]).toContain("deck.pptx");
   });
 
+  it("accepts a zip up to the archive limit and rejects a larger one", () => {
+    const limit = ATTACHMENT_SIZE_LIMITS_MB.archive * MB;
+    const { accepted, errors } = validateAttachments([
+      makeFile("ok.zip", "application/zip", limit),
+      makeFile("big.zip", "application/zip", limit + 1),
+    ]);
+    expect(accepted.map((f) => f.name)).toEqual(["ok.zip"]);
+    expect(errors[0]).toContain("big.zip");
+  });
+
   it("rejects files over their per-type size limit", () => {
     const bigImage = makeFile("huge.png", "image/png", ATTACHMENT_SIZE_LIMITS_MB.image * MB + 1);
     const { accepted, errors } = validateAttachments([bigImage]);
@@ -79,7 +96,7 @@ describe("validateAttachments", () => {
 
   it("partitions a mixed batch into accepted + errors", () => {
     const ok = makeFile("a.png", "image/png");
-    const badType = makeFile("a.zip", "application/zip");
+    const badType = makeFile("a.bin", "application/octet-stream");
     const tooBig = makeFile("big.pdf", "application/pdf", ATTACHMENT_SIZE_LIMITS_MB.pdf * MB + 1);
     const { accepted, errors } = validateAttachments([ok, badType, tooBig]);
     expect(accepted).toEqual([ok]);

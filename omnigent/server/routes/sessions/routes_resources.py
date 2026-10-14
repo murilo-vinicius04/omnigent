@@ -1428,17 +1428,21 @@ def register_resources_routes(
             )
         from omnigent.runtime.content_resolver import (
             MAX_ATTACHMENT_UPLOAD_BYTES,
+            ZIP_MIME,
             _resolve_content_type,
+            archive_type_for_extension,
             attachment_text_type_for_extension,
             attachment_upload_limit,
+            is_archive,
         )
 
         # Resolve the type from the declared MIME + filename BEFORE reading
         # the body, so an unsupported or oversized upload is rejected without
         # buffering it. Attachments are inlined into the model context as
         # base64 (see content_resolver.resolve_content_references); only
-        # images, PDF, and text/code files are usable — others (pptx, docx,
-        # zip, …) would be garbled or blow the request size, so reject them.
+        # images, PDF, text/code files and zip archives are usable — others
+        # (pptx, docx, …) would be garbled or blow the request size, so reject
+        # them.
         content_type = _resolve_content_type(
             file.content_type,
             file.filename,
@@ -1449,7 +1453,9 @@ def register_resources_routes(
             # .csv reported as application/vnd.ms-excel on Windows). Fall back
             # to the extension — matching the web client's allowlist — and
             # normalize the type so the resolver inlines it as text.
-            ext_type = attachment_text_type_for_extension(file.filename)
+            ext_type = attachment_text_type_for_extension(
+                file.filename
+            ) or archive_type_for_extension(file.filename)
             if ext_type is not None:
                 content_type = ext_type
                 type_limit = attachment_upload_limit(content_type)
@@ -1458,9 +1464,11 @@ def register_resources_routes(
                 status_code=415,
                 detail=(
                     f"Unsupported attachment type '{content_type}'. Only images, "
-                    "PDF, and text/code files can be attached."
+                    "PDF, text/code files and zip archives can be attached."
                 ),
             )
+        if is_archive(content_type):
+            content_type = ZIP_MIME
         content = await _read_upload_capped(
             file,
             min(type_limit, MAX_ATTACHMENT_UPLOAD_BYTES),

@@ -3745,6 +3745,25 @@ def test_to_anthropic_content_blocks_pdf_uses_base64_source() -> None:
     assert doc["source"]["data"] == pdf_data
 
 
+def test_to_anthropic_content_blocks_zip_becomes_a_note() -> None:
+    """A zip decoded as text would be garbled bytes; the model is told it was attached."""
+    zip_b64 = base64.b64encode(b"PK\x03\x04\x00\xff binary").decode()
+    blocks = [
+        {
+            "type": "input_file",
+            "file_data": f"data:application/zip;base64,{zip_b64}",
+            "filename": "logs.zip",
+        }
+    ]
+    assert _to_anthropic_content_blocks(blocks) == [
+        {
+            "type": "text",
+            "text": "[Attached archive logs.zip: a zip the model cannot open inline; "
+            "ask for the files inside it if they are needed]",
+        }
+    ]
+
+
 def test_to_anthropic_content_blocks_markdown_uses_text_source() -> None:
     """Markdown input_file blocks must use ``source.type = "text"`` —
     Anthropic rejects ``base64`` source with non-PDF media types."""

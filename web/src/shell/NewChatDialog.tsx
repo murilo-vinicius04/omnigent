@@ -72,7 +72,7 @@ import { authenticatedFetch } from "@/lib/identity";
 import { fetchGithubBranches, fetchGithubRepos, type GithubRepo } from "@/lib/githubIntegration";
 import { isImeCompositionKeyEvent } from "@/lib/ime";
 import { isComposerSendKey, readSubmitWithModEnter } from "@/lib/composerSendShortcutPreferences";
-import { attachmentKey, validateAttachments } from "@/lib/attachments";
+import { ATTACHMENT_ACCEPT, attachmentKey, validateAttachments } from "@/lib/attachments";
 import { recordOptimisticTitle } from "@/lib/optimisticTitles";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -2845,7 +2845,7 @@ export function NewChatLandingScreen() {
   const [files, setFiles] = useState<File[]>(() => restoredDraft?.files ?? []);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  // Reject unsupported types (only images, PDF, and text/code) and oversized
+  // Reject unsupported types (only images, PDF, text/code and zip) and oversized
   // files here, before the session exists. Without this the upload only fails
   // after the session is created and navigated into, where the first turn's
   // 415 strands the typed message in a session the user never wanted.
@@ -5479,7 +5479,7 @@ export function NewChatLandingScreen() {
               ref={fileInputRef}
               type="file"
               multiple
-              accept="image/*,application/pdf,text/*,application/json"
+              accept={ATTACHMENT_ACCEPT}
               className="hidden"
               data-testid="new-chat-landing-file-input"
               onChange={(e) => {

@@ -946,6 +946,8 @@ def test_resolve_image_file_keeps_specific_mime(
         ("text/typescript", 10),
         ("application/json", 10),
         ("application/x-ipynb+json", 10),
+        ("application/zip", 25),
+        ("application/x-zip-compressed", 25),
     ],
 )
 def test_attachment_upload_limit_allowed_types(content_type: str, expected_mb: int) -> None:
@@ -961,7 +963,7 @@ def test_attachment_upload_limit_allowed_types(content_type: str, expected_mb: i
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # pptx
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # docx
         "application/vnd.ms-excel",
-        "application/zip",
+        "application/x-tar",
         "application/octet-stream",
         "audio/mpeg",
         "video/mp4",
@@ -977,12 +979,14 @@ def test_attachment_upload_limit_rejects_unsupported_types(content_type: str) ->
 def test_attachment_upload_limits_are_under_global_ceiling() -> None:
     """Every per-type limit stays within the global request-size backstop."""
     from omnigent.runtime.content_resolver import (
+        MAX_ARCHIVE_UPLOAD_BYTES,
         MAX_ATTACHMENT_UPLOAD_BYTES,
         MAX_IMAGE_UPLOAD_BYTES,
         MAX_PDF_UPLOAD_BYTES,
         MAX_TEXT_UPLOAD_BYTES,
     )
 
+    assert MAX_ARCHIVE_UPLOAD_BYTES <= MAX_ATTACHMENT_UPLOAD_BYTES
     assert MAX_IMAGE_UPLOAD_BYTES <= MAX_ATTACHMENT_UPLOAD_BYTES
     assert MAX_PDF_UPLOAD_BYTES <= MAX_ATTACHMENT_UPLOAD_BYTES
     assert MAX_TEXT_UPLOAD_BYTES <= MAX_ATTACHMENT_UPLOAD_BYTES
@@ -1164,3 +1168,32 @@ def test_skips_foreign_session_file() -> None:
     content = [{"type": "input_file", "file_id": "file_csv"}]
     out = extract_text_attachments(content, fs, arts, session_id="mine")  # type: ignore[arg-type]
     assert out == []
+
+
+def test_a_zip_reaches_an_inline_model_as_a_note_not_its_bytes(
+    artifact_store: FakeArtifactStore,
+) -> None:
+    """No model reads a zip inline; decoded as text it would be garbage."""
+    zipped = FakeFileStore(
+        files={
+            "file_zip": StoredFile(
+                id="file_zip",
+                created_at=1000,
+                filename="logs.zip",
+                bytes=3 * 1024 * 1024,
+                content_type="application/zip",
+            )
+        }
+    )
+    item = _make_conversation_item(
+        [{"type": "input_file", "file_id": "file_zip", "filename": "logs.zip"}]
+    )
+    (resolved,) = resolve_content_references([item], zipped, artifact_store)  # type: ignore[arg-type]
+    assert isinstance(resolved.data, MessageData)
+    assert resolved.data.content == [
+        {
+            "type": "input_text",
+            "text": "[Attached archive logs.zip (3.0 MB): a zip the model cannot open inline; "
+            "ask for the files inside it if they are needed]",
+        }
+    ]
