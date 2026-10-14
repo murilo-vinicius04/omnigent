@@ -39,6 +39,16 @@ the sim Franka MPC (`~/spot-teleop/isaac-sim_ws/franka_mpc/`).
   awaits the user's go and four decisions (listed at the end of the plan). Upstream Smart Routing
   (`smart_routing.py`) is an LLM fast/balanced/powerful judge, the approach our routing report rejects.
   Reuse its plumbing only.
+- **Router premises from the user (11:10), now in the plan:**
+  - The router decides on its own, with weekly ceilings so all 3 providers end the week with a buffer
+    (proposed 15%). Claude Max -> Pro at the reset Fri 10-16 08:59.
+  - Best model whenever possible; economical tiers only to save quota on simple tasks.
+  - The router is a fine-tuned model that learns from mistakes (bug -> next similar task one tier up).
+    Laya (open, local) is trainable; Jev is hosted only and out of credit since 10-06.
+  - Tiers: Claude Opus/Sonnet/Haiku 5.5; Codex GPT-6.1 Sol / GPT-6 Luna; Gemini 4 Argon / Flash.
+    Argon is not in `agy models` yet (announced 09-30, limited access).
+  - agy also offers Opus/Sonnet 5.5 on a separate Google "Claude/GPT week" pool.
+  - Meters at 11:07: Claude Max week 43% (pace line 62%), Codex week 0% (resets Tue 10-20).
 
 ## 2026-10-13 20:10 — READ FIRST (Hub evening; session d9653808, conversation 247c77f5 = project "omnigent")
 

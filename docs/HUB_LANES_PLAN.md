@@ -1,4 +1,4 @@
-# Hub: several agents per project, and automatic model choice
+# Hub: several agents per project, and a model router with a weekly budget
 
 Status: proposal, nothing built (2026-10-14). Each phase ends with something
 you can open and try before the next one starts.
@@ -8,8 +8,22 @@ you can open and try before the next one starts.
 - Run more than one agent in the same project. For example, Opus keeps working
   on the sim Franka in RAL while a second agent plans today's experiment and
   the joystick work, and the Hub knows which agent is which.
-- Have the Hub pick the agent for each task, spreading the work across
-  Claude, Codex and Gemini, not only Claude.
+- Spread the work across Claude, Codex and Gemini, not only Claude.
+- **The router decides on its own**, watching spending, with a weekly ceiling
+  per provider so all three end the week with quota left over. On Friday 10-16
+  Claude drops from Max to Pro at its weekly reset.
+- **Use the best model whenever possible.** Cheaper models only save quota on
+  simple tasks.
+- **The router is a model** (Laya or Jev), fine-tuned to learn from mistakes:
+  when a model's work caused a bug and needed another round, the next similar
+  task goes one tier up.
+- **Tiers by provider:**
+
+  | Provider | Top | Middle | Economical |
+  |---|---|---|---|
+  | Claude | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
+  | OpenAI (Codex) | GPT-6.1 Sol | — | GPT-6 Luna |
+  | Google (Gemini) | Gemini 4 Argon | — | Gemini Flash |
 
 ## What exists today (checked in the code)
 
@@ -25,6 +39,11 @@ you can open and try before the next one starts.
 | The three vendors' CLIs | `hub_models.py` `PROVIDERS` | Omnigent already runs Claude Code, Codex and Antigravity (agy, Gemini) chats |
 | Upstream Smart Routing | `smart_routing.py`, `routing_backend.py` | Picks the harness and model when a chat is created, using an LLM judge that rates each request fast/balanced/powerful |
 | Reports back to the Hub | watches per chat id | Work, and survive restarts |
+| Spending ledgers | `~/.omnigent/`: `claude-token-ledger.jsonl`, `openai-token-ledger.json`, `agy-quota-history.csv`, `usage-history.jsonl` | Tokens per call, and meter readings over time |
+| Meters at 11:07 today | `plan-limits-*.json` | Claude Max: 43% of the week (resets Fri 10-16 08:59), 9% of the 5h window. Codex Plus: 0% of the week (resets Tue 10-20 12:02). Gemini: last read 10-08 (13% of the week), because it only reads while an agy runs |
+| Models each CLI offers today | catalogs and `agy models` | Claude: Opus, Sonnet and Haiku 5.5 (and Fable 5.1). Codex: GPT-6.1 Sol and GPT-6 Luna (also GPT-6 Astra and GPT-6 Sol). agy: Gemini 3.8 Flash (low/medium/high), GPT-OSS 120B, and Claude Opus and Sonnet 5.5 billed to a separate Google pool. **Gemini 4 Argon is not in agy**: announced 09-30, limited access so far |
+| Laya | `~/laya-test`, model `convaiinnovations/laya` | Open weights, runs here on the GPU in ~16–20 ms per decision. Untuned AUC on our 62 routing decisions (09-23): 0.50 |
+| Jev | OpenRouter Decisions API, `typesafe/jev-1.13` | Hosted; we can call it but I found no way to train it. Untuned AUC 0.66. The account has had no credit since 10-06 |
 
 ## Rules the design follows (from the evidence)
 
@@ -34,13 +53,14 @@ you can open and try before the next one starts.
    mid-session.
 2. **One writer per folder.** A second agent that edits code in the same
    repository gets its own git worktree. A planning agent writes only new files.
-3. **Choose by task category and remaining quota, not by a guess at
-   difficulty.** Routers that read only the prompt score AUC 0.55–0.63 on
-   repository tasks. LLMs used as routers score below a simple lookup table.
-   Our own routers scored 0.43–0.66. That rules out upstream's fast/balanced/
-   powerful judge; its plumbing can still be reused.
-4. **Escalate on evidence, not prediction.** Opus comes in when a check shows
-   the cheaper model failed, and the Hub asks you first.
+3. **Unused quota is lost at reset.** While a provider is under its weekly pace,
+   its top tier costs nothing extra in the end. Saving matters only when
+   spending runs ahead of pace.
+4. **Calling a task "simple" will often be wrong, so correct it cheaply.**
+   Routers that read only the prompt score AUC 0.55–0.63 on repository tasks;
+   ours scored 0.43–0.66 untuned. Every wrong call is caught (a failed check, a
+   fix request, a revert), pushes the next similar task up a tier, and becomes
+   training data for the router.
 5. **Start new agents from a short brief**: the task plus the project's handoff
    file, never the busy chat's transcript.
 
@@ -77,83 +97,176 @@ working)" and "RAL · joystick (Sonnet 5.5, idle)". Hub chips name the lane.
    - the panel.
    Then a scratch-server run, then live on RAL once you say go.
 
-## Phase 2: choosing the agent for each lane (Claude, Codex or Gemini)
+## Phase 2: the weekly budget and the model router
 
-Each lane runs one whole task on one vendor's own CLI:
-- Claude Code: Sonnet 5.5 or Opus 5.5;
-- Codex: GPT-6 Luna or Sol;
-- Antigravity (agy): Gemini 3.8.
+### 2.1 Tier ladder
 
-The Hub spreads the work across the three quota pools lane by lane. A single
-task is not split between vendors. In our runs, a Claude brain directing a
-cheaper worker shipped real bugs in 8 of 34 runs, against 0 of 27 for one
-agent doing the whole task.
+| Provider (its own CLI) | Top | Middle | Economical |
+|---|---|---|---|
+| Claude (Claude Code) | Opus 5.5 | Sonnet 5.5 | Haiku 5.5 |
+| OpenAI (Codex) | GPT-6.1 Sol | — | GPT-6 Luna |
+| Google (agy) | Gemini 4 Argon, once agy lists it | — | Gemini 3.8 Flash |
 
-1. **Category table**, editable in `~/.omnigent/hub/routing.yaml`. The Hub's
-   Gemini router already decides once per message; it would also name a
-   category from this list in that same decision, so no extra call. This
-   follows Arch-Router: matching a request to categories you wrote is the part
-   routers do well (93%).
+- **Gemini until Argon arrives:** Google has no top tier here. Gemini 3.8 Flash
+  High is the best Gemini agy offers, so top-tier work goes to Claude or
+  Codex, and Flash takes Google's share of the simple tasks. The day
+  `agy models` lists Argon, it becomes Google's top tier with no code change.
+- **GPT-6 Astra:** the Codex catalog also lists it, as its frontier model. Sol
+  stays at the top as you said; tell me if Astra belongs above it.
+- **An extra Claude pool:** agy also offers Opus and Sonnet 5.5 billed to a
+  separate Google pool ("Claude/GPT week"). It could add Claude-tier capacity
+  after Friday. Untested.
 
-   | Category | First choice | Next, if that pool is low | What we know |
-   |---|---|---|---|
-   | Plan, write docs, research, explain | Gemini 3.8 (agy) | Sonnet 5.5 high | Text work on a separate pool. No quality data yet; the shadow week measures it |
-   | Code the lane can test (the project has tests, or a check is written first) | Codex GPT-6 Luna high | Sonnet 5.5, then Gemini | As a worker under a Claude brain: 12/17 solved, 2 runs with a real bug, about 0.3% of the Plus week per run. On its own it is untested (report test 1) |
-   | Code with nothing to test it, or the project's core | Sonnet 5.5 high | Codex Luna high | Plain Sonnet: 0 runs with a real bug in 17 |
-   | Code after a failed check, or when you ask for the best | Opus 5.5 high, in a fresh lane with the brief | — | Asks you first |
-   | A quick fact about the machine | The companion's read-only check | — | No agent at all |
+### 2.2 Budget governor (plain code, not a model)
 
-2. **A check before code goes to Codex or Gemini.** When a code task has no
-   tests, a short Sonnet lane first writes acceptance tests from your request.
-   It reads only the request, not any code. Then the Codex or Gemini lane
-   builds, and the Hub runs the check on the result. Claude's part is the
-   check, not the code: in our runs, writing acceptance tests first turned two
-   misses into solves (kombu-sac at 9.5% Pro, langchain at 20.2%). The report
-   found the strong model most useful as the author of the check.
-3. **Quota rule across the three pools.** When a lane starts, the Hub reads the
-   three meters the rings already show. It takes the first choice unless that
-   pool is at or above 80% of its 5-hour window or 85% of its week; then it
-   moves to the next choice. When all are low, it tells you and asks. Prior
-   art:
-   - GPT-5's fallback to a smaller model at usage limits;
-   - LiteLLM `budget_fallbacks`;
-   - PILOT, a budgeted routing policy.
+- **Reads** the three meters the usage rings show, at each decision, and the
+  ledgers for what each lane spent. Gemini is read only while an agy is
+  already running: Google has suspended accounts for background quota
+  polling, so the Hub never adds any.
+- **Weekly pace line** per provider: allowed = (100% − buffer) × the share of
+  its week that has passed. Proposed buffer: 15%.
+  - **Under pace:** top tier for every task.
+  - **Ahead of pace:** simple tasks go to an economical tier. Other tasks keep
+    a top tier on the provider furthest under its own pace.
+  - **At the ceiling** (100% − buffer): no new lanes on that provider until its
+    reset.
+  - **5-hour window at 85% or more:** that provider waits, or another takes the
+    task.
+- **Plan changes.** Claude moves from Max to Pro at Friday's reset (10-16
+  08:59). The meter's percentage already counts against the current plan.
+  The router's cost estimates are kept in tokens and converted per plan. Our
+  ledger ratios say the same task takes about 3.3–5.5 times more of the week
+  on Pro. So after Friday Claude's share drops, and Codex and Gemini take
+  more.
+- **Today, as an example:**
+  - Claude Max is at 43% with 73% of its week gone, against a pace line of 62%
+    at a 15% buffer. That is 19 points under pace, so Opus is free to use until
+    Friday: whatever is left disappears at the reset.
+  - Codex is at 0% with its week ending Tuesday, so Sol is underused.
+- **You see it:** each provider's pace line sits next to its ring in the Hub
+  panel. The sent chip names the model and why, e.g. "Opus 5.5 · Claude under
+  pace" or "Luna · simple, Codex ahead of pace".
 
-   Gemini runs only through agy, and its meter is read only while an agy is
-   already running. Google has suspended accounts for background quota
-   polling, so the Hub never adds any.
-4. **It tells you what it picked.** The sent chip shows, for example, "Codex ·
-   GPT-6 Luna high · code" and a one-line reason. Saying "use Claude" or "use
-   Gemini" overrides it.
-5. **Shadow week first.** For a week the Hub only logs what it would have
-   chosen next to what you actually used. Nothing switches.
-6. **Outcome log** per task:
-   - category;
-   - vendor, model and effort;
-   - quota used in each pool;
-   - minutes;
-   - check result;
-   - whether the change was kept.
+### 2.3 Choosing the model for a task
 
-   After a few weeks, this shows which vendor does which category best on your
-   work. CodeRouterBench found that a plain lookup or nearest-neighbour router
-   over such outcomes matches a fine-tuned one.
-7. **Escalation.** When a lane finishes and its check fails, the Hub proposes
-   the next step: another vendor, or Opus in a fresh lane started from the
-   brief. It waits for your yes.
+1. The Hub's Gemini router, in the call it already makes, also names the
+   task's category and whether it is simple. No extra call.
+2. The providers whose top tier fits the category are the candidates. These
+   defaults are learned over from the outcome log:
 
-## Later (not planned now)
+   | Category | Fits |
+   |---|---|
+   | Code | Claude (Opus), Codex (Sol); Gemini once Argon arrives |
+   | Plan, docs, research, explain | All three (Gemini Flash High counts here until Argon) |
+   | Small edits, renames, short scripts (simple) | Any economical tier: Haiku, Luna, Flash |
+   | A quick fact about the machine | The companion's read-only check, no agent |
 
-- A learned router, once about 1,500 outcomes are logged.
-- Best-of-2 across quota pools, with the winner picked by differential tests.
+3. Among the candidates, take the top tier of the provider furthest under its
+   pace. The best model goes where there is room, so the load spreads across
+   the three.
+4. A task marked simple drops to an economical tier only when the chosen
+   provider is ahead of pace.
+5. The mistake memory (2.4) and later the router model (2.5) can raise the
+   tier. Saying "use Opus" or "use Codex" always overrides the choice.
+
+It decides on its own, as you asked; the ceilings in 2.2 are the safety net.
+Each choice starts in a fresh lane (Phase 1), never mid-chat.
+
+### 2.4 Learning from mistakes (from the first day)
+
+- **A mistake** is any of these:
+  - the lane's check failed;
+  - your next message to that lane asks to fix what it just did (the Hub router
+    labels it);
+  - its change was reverted within 7 days;
+  - the task was escalated.
+- **Fixing it.** The fix runs one tier above the one that made the mistake.
+  At the top tier, it goes to another provider's top.
+- **The next 5 tasks** of that project and category also start one tier
+  higher. Two clean tasks in a row bring it back down one tier.
+- **Every decision and its outcome** go to `~/.omnigent/hub/outcomes.jsonl`:
+  - request, project, lane, category, and whether it was marked simple;
+  - provider, model, effort and tier;
+  - pace state and quota before and after;
+  - minutes;
+  - check result, fix request, revert, escalation.
+
+### 2.5 The router model: Laya, fine-tuned on our outcomes
+
+- **Why Laya:** its weights are open and run on this machine, so it can be
+  trained on our own outcomes. Jev is a hosted API we can only call.
+- **What it learns:** for a request, project, category and the lane's recent
+  history, the chance that the economical or middle tier needs another round.
+  The governor turns that into a tier:
+  - **under pace:** top;
+  - **ahead of pace:** the cheapest tier whose risk is below a threshold that
+    rises with pace pressure.
+- **How it takes over:**
+  - From the first day of the outcome log, it runs in shadow next to the rules.
+  - Each week it is retrained, and scored on outcomes it did not train on.
+  - It replaces the rules only when it beats them there.
+
+  Published coding routers trained on about 1,500 or more labelled tasks; at
+  our pace that is a few months. Until then the rules and the mistake memory
+  decide, and every one of their decisions becomes a label.
+- **First step:** confirm the `laya` package can be fine-tuned. If not, use the
+  same setup on reflex (Qwen3.5-4B, open, already tried here), or a small
+  classifier on Laya's embeddings.
+
+## Architecture
+
+```
+ you (typed or voice)
+        |
+        v
+ Hub router (Gemini Flash, warm agy)     project, lane, category, simple?   [exists; gains fields]
+        |
+        v
+ Model router  -------------------------------------------------------------- reads
+   tier ladder + category fit (rules)                        <- routing.yaml
+   mistake memory (tier bumps per project and category)      <- outcomes.jsonl
+   Laya scorer (shadow, then live once it beats the rules)   <- trained weekly
+        |   proposal
+        v
+ Budget governor   pace lines, ceilings, 5h windows,         <- 3 meters + ledgers
+                   plan changes (Claude Pro from 10-16)
+        |   provider, model, effort
+        v
+ Lane launcher     POST /v1/sessions: CLI, model, effort, worktree, brief
+        |
+        v
+ Lane runs ... finishes
+        |
+        +--> report to the Hub (exists)
+        +--> Outcome tracker: check, fix request, revert, minutes, quota spent
+                    |
+                    v
+             outcomes.jsonl --> mistake memory (now) --> Laya training (weekly)
+```
+
+| Piece | Where | New or existing |
+|---|---|---|
+| Hub router fields: lane, category, simple | `omnigent/server/hub.py` | Existing call, new fields |
+| Lanes | `omnigent/server/hub_lanes.py` | New (Phase 1) |
+| Model router, mistake memory, Laya scorer | `omnigent/server/model_router.py` | New |
+| Budget governor | `omnigent/server/budget.py`, reading `routes/plan_limits.py` and the ledgers | New |
+| Outcome tracker | `omnigent/server/outcomes.py`, fed by the Hub's watches | New |
+| Settings: tiers, fit, buffer, plan schedule | `~/.omnigent/hub/routing.yaml` | New |
+| Weekly training and evaluation | `tools/train_router.py` | New |
 
 ## Order and checkpoints
 
 1. Phase 1 steps 1–3 and 6: lanes visible, and the busy guard. Show you.
 2. Phase 1 steps 4–5: the Hub opens lanes, with worktrees. Scratch-server test,
    then live on RAL with your go.
-3. Phase 2 steps 1–4 in shadow mode for a week. Show you the log.
-4. Turn the chooser on.
+3. Budget governor and pace lines in the panel, read-only. You see each
+   provider's pace before anything is decided by it.
+4. Model router rules, mistake memory and outcome log in shadow for a week.
+   They log what they would have chosen. Show you the log against what you
+   used.
+5. The router decides on its own, inside the governor's ceilings.
+6. Laya: confirm it can be fine-tuned, score it in shadow, promote it when it
+   beats the rules.
 
 Building it spends no agent quota, because tests use fakes. Live trials use one
 real lane each, and only after you say go.
@@ -164,16 +277,10 @@ real lane each, and only after you say go.
    or paste it into the running task.
 2. **A second writer in the same repository:** its own worktree (recommended),
    or the same folder.
-3. **When the Hub picks the agent for a new lane, may it start it on its own?**
-   Recommended: yes for Codex, Gemini and Sonnet; ask you first only before
-   Opus, the most expensive.
-4. **The default split:**
-   - Gemini for planning, docs and research;
-   - Codex for code that can be tested;
-   - Sonnet for the rest;
-   - Opus only on escalation.
-
-   Change any line if you see the split differently.
+3. **Buffer left at the end of each week:** 15% per provider (recommended), or
+   another number.
+4. **Google's top tier until Argon reaches agy:** send top-tier work to Claude
+   or Codex (recommended), or try agy's Opus and Sonnet 5.5 on the Google pool.
 
 ## References
 
@@ -228,6 +335,11 @@ real lane each, and only after you say go.
 - Claude Code prompt caching: https://code.claude.com/docs/en/prompt-caching
 - Omnigent's own Smart Routing: `omnigent/server/smart_routing.py`,
   `omnigent/server/routing_backend.py`
+- Gemini 4 Argon announced, limited access:
+  https://inc42.com/?p=574374 ·
+  https://www.khaleejtimes.com/business/google-announces-gemini-4-flagship-ai-model-after-months-of-delays-2
+- Laya: `convaiinnovations/laya` on Hugging Face; our untuned test in
+  `~/laya-test`
 
 ### Our own data
 
