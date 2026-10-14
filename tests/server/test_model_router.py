@@ -21,9 +21,17 @@ def _answers(questions: dict) -> dict:
             "choice": "top",
             "probabilities": {"economical": 0.1, "middle": 0.2, "top": 0.7},
         },
-        "effort": {
-            "choice": "high",
-            "probabilities": {"low": 0.05, "medium": 0.15, "high": 0.6, "xhigh": 0.2},
+        "effort_economical": {
+            "choice": "xhigh",
+            "probabilities": {"low": 0.05, "medium": 0.05, "high": 0.2, "xhigh": 0.7},
+        },
+        "effort_middle": {
+            "choice": "medium",
+            "probabilities": {"low": 0.1, "medium": 0.45, "high": 0.3, "xhigh": 0.15},
+        },
+        "effort_top": {
+            "choice": "low",
+            "probabilities": {"low": 0.65, "medium": 0.2, "high": 0.1, "xhigh": 0.05},
         },
         "cheap_redo": {"noul": 0.81},
         "difficulty": {"score": 3.2, "probabilities": {"3": 0.6, "4": 0.3}},
@@ -56,14 +64,26 @@ async def test_a_request_is_judged_on_tier_effort_redo_risk_difficulty_and_kind(
     decision = await model_router.judge(task, BACKEND)
 
     assert decision.tier == "top" and decision.tier_probs["top"] == 0.7
-    assert decision.effort == "high" and decision.effort_probs["xhigh"] == 0.2
+    # Each tier's effort is its own; the chosen tier's is the one used. Effort
+    # leaves high only when the model is sure: medium at 45% stays high.
+    assert decision.effort == "low" and decision.effort_probs["low"] == 0.65
+    assert decision.efforts_by_tier == {"economical": "xhigh", "middle": "high", "top": "low"}
     assert (decision.p_cheap_redo, decision.difficulty, decision.category) == (0.81, 3.2, "debug")
     # No previous request: nothing to call a fix.
     assert decision.p_fixes_previous is None and decision.error == ""
     body = reflex[0]
-    assert set(body["questions"]) == {"tier", "effort", "cheap_redo", "difficulty", "category"}
+    assert set(body["questions"]) == {
+        "tier",
+        "effort_economical",
+        "effort_middle",
+        "effort_top",
+        "cheap_redo",
+        "difficulty",
+        "category",
+    }
     assert set(body["questions"]["tier"]["criteria"]) == {"economical", "middle", "top"}
-    assert set(body["questions"]["effort"]["criteria"]) == {"low", "medium", "high", "xhigh"}
+    assert set(body["questions"]["effort_top"]["criteria"]) == {"low", "medium", "high", "xhigh"}
+    assert "Haiku 5.5" in body["questions"]["effort_economical"]["instructions"]
     assert body["state"].startswith("## Request sent to the project\nFind why the gripper")
     assert "## Project\nRAL" in body["state"]
 
