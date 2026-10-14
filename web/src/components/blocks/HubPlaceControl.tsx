@@ -19,14 +19,24 @@ const PLACES: { place: HubPlace; label: string; detail: string }[] = [
   { place: "new", label: "A new lane", detail: "a different task, in parallel" },
 ];
 
-/** What a place link names: its placement and where it went. */
-export function readPlaceLink(href: string): { id: string; picked: HubPlace } | null {
+/** Where the hub put it, or `"ask"` when it asked them instead. */
+export type HubPicked = HubPlace | "ask";
+
+function isPlace(value: string | null): value is HubPlace {
+  return PLACES.some((p) => p.place === value);
+}
+
+/** What a place link names: its placement, where it went, and the router's guess. */
+export function readPlaceLink(
+  href: string,
+): { id: string; picked: HubPicked; guess: HubPlace | null } | null {
   try {
     const url = new URL(href, window.location.href);
     const id = decodeURIComponent(url.pathname.split("/").pop() ?? "");
     const picked = url.searchParams.get("picked");
-    if (!id || !PLACES.some((p) => p.place === picked)) return null;
-    return { id, picked: picked as HubPlace };
+    const guess = url.searchParams.get("guess");
+    if (!id || !(picked === "ask" || isPlace(picked))) return null;
+    return { id, picked, guess: isPlace(guess) ? guess : null };
   } catch {
     return null;
   }
@@ -35,7 +45,7 @@ export function readPlaceLink(href: string): { id: string; picked: HubPlace } | 
 function rememberedAnswer(id: string): HubPlace | null {
   try {
     const kept = window.localStorage.getItem(`hub-place:${id}`);
-    return PLACES.some((p) => p.place === kept) ? (kept as HubPlace) : null;
+    return isPlace(kept) ? kept : null;
   } catch {
     return null;
   }
@@ -52,9 +62,18 @@ function rememberAnswer(id: string, place: HubPlace): void {
 /**
  * Where the hub put a message for a busy lane, beside the project's chip. A
  * click lets them say where it belonged; the hub fixes what it still can and
- * learns from it.
+ * learns from it. When the hub asked instead, the three places are buttons,
+ * the router's guess marked, until they pick one.
  */
-export function HubPlaceControl({ id, picked }: { id: string; picked: HubPlace }) {
+export function HubPlaceControl({
+  id,
+  picked,
+  guess = null,
+}: {
+  id: string;
+  picked: HubPicked;
+  guess?: HubPlace | null;
+}) {
   const [answered, setAnswered] = useState<HubPlace | null>(() => rememberedAnswer(id));
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState("");
@@ -75,6 +94,40 @@ export function HubPlaceControl({ id, picked }: { id: string; picked: HubPlace }
     }
   }
 
+  if (picked === "ask" && !answered) {
+    return (
+      <span
+        className="inline-flex flex-wrap items-center gap-1 align-middle"
+        data-testid="hub-place-ask"
+      >
+        <span className="text-xs text-muted-foreground">Where should this go?</span>
+        {PLACES.map((p) => (
+          <button
+            key={p.place}
+            type="button"
+            disabled={busy}
+            title={p.detail}
+            onClick={() => void answer(p.place)}
+            className={
+              "rounded-full border px-2 py-0.5 text-xs transition-colors hover:bg-muted " +
+              (p.place === guess
+                ? "border-primary text-foreground"
+                : "border-border text-muted-foreground")
+            }
+          >
+            {p.label}
+            {p.place === guess && <span className="ml-1 text-muted-foreground">(suggested)</span>}
+          </button>
+        ))}
+        {said && (
+          <span className="text-xs text-muted-foreground" role="status">
+            {said}
+          </span>
+        )}
+      </span>
+    );
+  }
+
   return (
     <span className="inline-flex flex-wrap items-center gap-1 align-middle">
       <DropdownMenu>
@@ -84,7 +137,9 @@ export function HubPlaceControl({ id, picked }: { id: string; picked: HubPlace }
           title="Where the hub put it. Click if it belonged elsewhere."
           className="inline-flex items-center gap-0.5 rounded-full border border-dashed border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
-          {answered && answered !== picked ? `Moved: ${label.toLowerCase()}` : label}
+          {answered && answered !== picked && picked !== "ask"
+            ? `Moved: ${label.toLowerCase()}`
+            : label}
           <ChevronDownIcon className="size-3" aria-hidden="true" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start">

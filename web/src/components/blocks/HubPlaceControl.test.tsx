@@ -73,4 +73,26 @@ describe("where the hub put a message for a busy lane", () => {
     expect(correctHubPlace).toHaveBeenCalledWith("ab12", "after");
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Thanks, noted."));
   });
+
+  it("asks with the three places when the hub could not tell, its guess marked", async () => {
+    correctHubPlace.mockResolvedValue({ right: "new", text: "New lane: joystick plan." });
+    renderMarkdown(
+      '[RAL](http://localhost:6767/c/4a18 "omnigent-project") ' +
+        "[where should this go?](http://localhost:6767/hub/placements/cd34?picked=ask&guess=steer" +
+        ' "omnigent-hub-place")\n\nOnde vai?',
+    );
+
+    const ask = screen.getByTestId("hub-place-ask");
+    expect(ask).toHaveTextContent("Where should this go?");
+    expect(screen.getByRole("button", { name: /into its work now/i })).toHaveTextContent(
+      "(suggested)",
+    );
+    fireEvent.click(screen.getByRole("button", { name: /a new lane/i }));
+
+    expect(correctHubPlace).toHaveBeenCalledWith("cd34", "new");
+    await waitFor(() =>
+      expect(screen.getByTestId("hub-place-control")).toHaveTextContent("A new lane"),
+    );
+    expect(screen.queryByTestId("hub-place-ask")).toBeNull();
+  });
 });

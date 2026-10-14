@@ -118,6 +118,12 @@ ROUTE_RETRY_MIN_S: Final[float] = 20.0
 #: The least a second try gets after an empty reply, however late it is.
 EMPTY_RETRY_MIN_S: Final[float] = 20.0
 
+#: What the hub asks when it cannot place a message for a busy lane yet.
+ASK_PLACE: Final[str] = (
+    "Where should this go: into {lane}'s work now, after it finishes, or to a new lane? "
+    "If you don't pick, it goes when {lane} finishes."
+)
+
 #: A correction they say refers to their newest placement only this recent.
 CORRECT_PLACE_WITHIN_S: Final[float] = 2 * 3600
 
@@ -183,6 +189,8 @@ that does not need what the lane is doing. A new lane starts it in parallel; \
 "topic" names that work in two to four words, and "use" goes with it only when \
 they name a model or provider for it. If another lane of that project is idle \
 and its topic fits, "send" it to that lane instead, without "place".
+  "ask" -- you cannot tell which of these it is. The hub asks them, and their \
+answer teaches you; "say" is that question, naming the lane.
 "say" tells them what happens: that it went into the lane's work, that it goes \
 when the lane finishes, or that a new lane takes it. Add "now": true only when \
 they ask to tell it now; that also delivers what is held for it, so when they \
@@ -192,11 +200,12 @@ only say "tell it now", "message" is empty.
 "topic" names the work in two to four words. "message" as for "send". "use" \
 only when they name a model or provider for it (e.g. "Sonnet", "Codex"); \
 otherwise leave it out and the hub picks. "say" names the project and the topic.
-{{"correct_place": "steer" | "after" | "new", "say": "..."}} -- they say the \
-hub put their last message for a busy lane in the wrong place: it was for that \
-lane's work now ("steer"), it should wait until the lane finishes ("after"), or \
-it was a different task for a new lane ("new"). The hub fixes what it still can \
-and keeps it as a lesson; "say" is empty, the hub says what it did.
+{{"correct_place": "steer" | "after" | "new", "say": "..."}} -- they say where \
+their last message for a busy lane belongs, answering the hub's question about \
+it or correcting where the hub put it: that lane's work now ("steer"), after the \
+lane finishes ("after"), or a different task for a new lane ("new"). The hub \
+moves it if it still can and keeps it as a lesson; "say" is empty, the hub says \
+what it did.
 {{"status": "<handle>"}} -- they ask what a project is doing now or whether it \
 finished, and its line above does not say enough.
 {{"check": "<handle>", "question": "..."}} -- a fact on their machine (disk, \
@@ -863,7 +872,7 @@ def parse_decision(reply: str) -> HubDecision:
             text=text("say"),
             lane=text("lane"),
             now=parsed.get("now") is True,
-            place=text("place") if text("place") in hub_place.PLACES else "",
+            place=text("place") if text("place") in hub_place.ROUTER_PLACES else "",
             topic=text("topic"),
             use=text("use"),
         )
@@ -1876,7 +1885,12 @@ class Hub:
         Without a place from the router it is held, which never steers the
         lane off its task. Every placement is logged for correcting it later.
         """
-        picked = decision.place or "after"
+        path = self.state.folder / hub_place.LOG_NAME
+        guess = decision.place if decision.place in hub_place.PLACES else ""
+        if decision.place == hub_place.ASK or not hub_place.trusted(path):
+            picked = hub_place.ASK
+        else:
+            picked = decision.place or "after"
         message = decision.message or said
         placement = hub_place.Placement(
             id=hub_place.new_id(),
@@ -1892,9 +1906,16 @@ class Hub:
             topic=decision.topic,
             via=via,
             by="router" if decision.place else "default",
+            guess=guess,
         )
-        tag = {"id": placement.id, "picked": picked}
-        if picked == "steer":
+        tag = {"id": placement.id, "picked": picked, "guess": guess}
+        if picked == hub_place.ASK:
+            # Until it has learned where their messages go, the hub asks.
+            asked = decision.text if decision.place == hub_place.ASK else ""
+            entry = await self.hold(
+                lane, message, via=via, say=asked or ASK_PLACE.format(lane=lane.name), place=tag
+            )
+        elif picked == "steer":
             entry = await self.send_to(lane, message, via=via, say=decision.text, place=tag)
         elif picked == "new":
             entry = await self.open_lane(
@@ -1910,7 +1931,6 @@ class Hub:
                 placement = replace(placement, opened=entry.session_id or "")
         else:
             entry = await self.hold(lane, message, via=via, say=decision.text, place=tag)
-        path = self.state.folder / hub_place.LOG_NAME
         hub_place.log_placement(path, placement)
         backend = model_router.configured(HUB_DIR) if self._judge_tiers else None
         if backend is not None:
@@ -1948,7 +1968,19 @@ class Hub:
         tag = {"id": p.id, "picked": right}
         about = {"session_id": p.lane_id, "session_name": p.lane}
         project, lane = await self._lane_by_id(p.project_id, p.lane_id)
-        if p.picked == "after":
+        if p.picked in ("after", hub_place.ASK):
+            if right == "after":
+                waiting = any(
+                    i.get("place") == p.id
+                    for i in (self.state.held.get(p.lane_id) or {}).get("items") or ()
+                )
+                return self.say(
+                    f"Ok: it goes to {p.lane} when it finishes."
+                    if waiting
+                    else f"Ok. It had already gone to {p.lane} when it finished.",
+                    kind="attention",
+                    **about,
+                )
             item = self.state.take_held(p.lane_id, p.id)
             if item is None:
                 return self.say(
@@ -2144,6 +2176,11 @@ class Hub:
         Taken off the queue, so nothing goes twice once the lane finishes.
         """
         held = self.state.release(session.id)
+        path = self.state.folder / hub_place.LOG_NAME
+        for item in held:
+            # Telling it now says where these belonged.
+            if item.get("place"):
+                hub_place.log_feedback(path, str(item["place"]), "steer", via="now")
         texts = [str(h["message"]) for h in held]
         if message.strip() and not any(_same_request(message, t) for t in texts):
             texts.append(message.strip())

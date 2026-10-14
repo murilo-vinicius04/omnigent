@@ -230,7 +230,7 @@ function WorkspaceFileLink({
   const place = !path && title === HUB_PLACE_TITLE && typeof href === "string";
   const placed = place ? readPlaceLink(href) : null;
   if (placed) {
-    return <HubPlaceControl id={placed.id} picked={placed.picked} />;
+    return <HubPlaceControl id={placed.id} picked={placed.picked} guess={placed.guess} />;
   }
 
   const chip = title === PROJECT_CHIP_TITLE || title === PROJECT_SENT_CHIP_TITLE;

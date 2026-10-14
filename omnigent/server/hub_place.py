@@ -3,11 +3,14 @@
 The hub's router places each message it sends to a WORKING lane, from what the
 message says and what the lane is doing: a direction or correction for that
 work goes in now ("steer"), more work that needs the lane's result waits for
-it ("after"), and a different task opens a new lane ("new"). They can correct
-a placement from the hub chat; each correction is shown to the router as a
-lesson from then on, and every placement with its correction is kept as a
-label for training the decision model (reflex), which answers the same
-question in shadow.
+it ("after"), and a different task opens a new lane ("new"). Until the
+router's places agree with theirs, and whenever it is unsure, the hub asks
+them instead ("ask"): the message waits, with the three places to pick from
+in the hub chat, and goes when the lane finishes if they pick none. They can
+also correct any placement there. Each answer is shown to the router as a
+lesson from then on, and every placement with its answer is kept as a label
+for training the decision model (reflex), which answers the same question in
+shadow.
 """
 
 from __future__ import annotations
@@ -28,12 +31,24 @@ _logger = logging.getLogger(__name__)
 
 PLACES: Final[tuple[str, ...]] = ("steer", "after", "new")
 
+#: Not a place: the hub asks them where it goes.
+ASK: Final[str] = "ask"
+
+#: What the router may answer.
+ROUTER_PLACES: Final[tuple[str, ...]] = (*PLACES, ASK)
+
 #: Each place as the hub chat names it.
 PLACE_LABELS: Final[dict[str, str]] = {
     "steer": "into its work now",
     "after": "after it finishes",
     "new": "a new lane",
+    ASK: "where should this go?",
 }
+
+#: The router decides alone once its own place matched their answer at least
+#: :data:`TRUST_AGREE` times in their newest :data:`TRUST_WINDOW` answers.
+TRUST_WINDOW: Final[int] = 10
+TRUST_AGREE: Final[int] = 9
 
 #: Each user's placements and their corrections, one JSON object per line.
 LOG_NAME: Final[str] = "placements.jsonl"
@@ -55,7 +70,8 @@ class Placement:
 
     :param lane_id: The working lane it was judged against.
     :param task: What that lane was last asked, the work it was doing.
-    :param picked: The place the router gave it.
+    :param picked: What the hub did: a place, or :data:`ASK`.
+    :param guess: The router's own place, when it gave one.
     :param opened: For ``"new"``, the lane opened for it.
     :param by: ``"router"``, or ``"default"`` when the router gave no place.
     """
@@ -74,6 +90,7 @@ class Placement:
     opened: str = ""
     via: str = ""
     by: str = "router"
+    guess: str = ""
 
 
 def new_id() -> str:
@@ -160,25 +177,43 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def trusted(path: pathlib.Path) -> bool:
+    """Whether the router's own places have matched their answers enough to decide alone."""
+    answered = sorted(
+        (r for r in read_log(path).values() if r.right and r.placement.guess),
+        key=lambda r: r.placement.at,
+        reverse=True,
+    )[:TRUST_WINDOW]
+    agreed = sum(r.right == r.placement.guess for r in answered)
+    return len(answered) >= TRUST_WINDOW and agreed >= TRUST_AGREE
+
+
 def lessons(path: pathlib.Path, limit: int = MAX_LESSONS) -> str:
-    """Their corrections, newest first, as the router reads them; empty when none."""
-    corrected = sorted(
+    """Their answers and corrections, newest first, as the router reads them; empty when none."""
+    taught = sorted(
         (r for r in read_log(path).values() if r.right and r.right != r.placement.picked),
         key=lambda r: r.placement.at,
         reverse=True,
     )[:limit]
-    if not corrected:
+    if not taught:
         return ""
     lines = [
-        "[Messages for busy lanes that the hub placed wrong earlier, and where they "
-        "said each belonged. Place messages like these the same way.]"
+        "[Messages for busy lanes and where they said each belonged, newest first: when "
+        "the hub asked them, and when it placed one wrong. Place messages like these the "
+        "same way.]"
     ]
-    for record in corrected:
+    for record in taught:
         p = record.placement
+        if p.picked != ASK:
+            how = f'not "{p.picked}"'
+        elif p.guess:
+            how = f'the hub asked; it had guessed "{p.guess}"'
+        else:
+            how = "the hub asked"
         lines.append(
             f'- While {p.lane} worked on "{_clip(p.task, _QUOTE_CHARS)}", they said '
-            f'"{_clip(p.said or p.message, _QUOTE_CHARS)}": it belonged "{record.right}", '
-            f'not "{p.picked}".'
+            f'"{_clip(p.said or p.message, _QUOTE_CHARS)}": it belonged "{record.right}" '
+            f"({how})."
         )
     return "\n".join(lines)
 

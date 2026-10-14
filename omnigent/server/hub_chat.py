@@ -201,6 +201,8 @@ def _chip(entry: hub_module.HubEntry, base_url: str) -> str:
     if place.get("id") and picked in hub_place.PLACE_LABELS:
         # Where it went, beside the chip; the page lets them say it was wrong.
         href = f"{base_url}/hub/placements/{quote(str(place['id']), safe='')}?picked={picked}"
+        if place.get("guess") in hub_place.PLACES:
+            href += f"&guess={place['guess']}"
         chip += f' [{hub_place.PLACE_LABELS[picked]}]({href} "{PLACE_TITLE}")'
     return chip
 

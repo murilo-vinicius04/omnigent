@@ -1,9 +1,11 @@
-"""Messages for a busy lane: placed by the router, corrected by them, kept as lessons."""
+"""Messages for a busy lane: placed by the router, or asked, and every answer kept."""
 
 from __future__ import annotations
 
 import json
 import time
+
+import pytest
 
 from omnigent.server import hub as hub_module
 from omnigent.server import hub_chat, hub_place, model_router
@@ -16,6 +18,12 @@ def _placements(tmp_path) -> list[dict]:
     path = tmp_path / "u1" / hub_place.LOG_NAME
     lines = path.read_text().splitlines() if path.exists() else []
     return [json.loads(line) for line in lines]
+
+
+@pytest.fixture
+def trusted(monkeypatch):
+    """The router has earned deciding alone: its places matched their answers."""
+    monkeypatch.setattr(hub_place, "trusted", lambda path: True)
 
 
 def _busy(tmp_path, *replies: str):
@@ -37,7 +45,7 @@ def test_a_send_carries_its_place_and_a_correction_is_read() -> None:
     assert (fixed.action, fixed.place) == ("correct_place", "steer")
 
 
-async def test_a_direction_for_the_busy_lane_goes_into_its_work_now(tmp_path) -> None:
+async def test_a_direction_for_the_busy_lane_goes_into_its_work_now(tmp_path, trusted) -> None:
     router, server, hub = _busy(
         tmp_path,
         '{"send": "5151", "message": "Pause the tuning; the lanes come first.", "place": "steer",'
@@ -59,7 +67,7 @@ async def test_a_direction_for_the_busy_lane_goes_into_its_work_now(tmp_path) ->
     assert '"steer" -- it is about the task the lane is doing now' in router.prompts[0]
 
 
-async def test_a_next_step_waits_for_the_busy_lane(tmp_path) -> None:
+async def test_a_next_step_waits_for_the_busy_lane(tmp_path, trusted) -> None:
     _router, server, hub = _busy(
         tmp_path,
         '{"send": "5151", "message": "Then plot the gains.", "place": "after",'
@@ -75,7 +83,7 @@ async def test_a_next_step_waits_for_the_busy_lane(tmp_path) -> None:
     assert hub.state.held[SIM]["items"][0]["place"] == held.place["id"]
 
 
-async def test_a_different_task_opens_a_new_lane(tmp_path) -> None:
+async def test_a_different_task_opens_a_new_lane(tmp_path, trusted) -> None:
     _router, server, hub = _busy(
         tmp_path,
         '{"send": "5151", "message": "Plan the joystick experiment.", "place": "new",'
@@ -94,7 +102,7 @@ async def test_a_different_task_opens_a_new_lane(tmp_path) -> None:
     assert _placements(tmp_path)[0]["placement"]["opened"] == NEW
 
 
-async def test_without_a_place_a_message_for_a_busy_lane_waits(tmp_path) -> None:
+async def test_without_a_place_a_message_for_a_busy_lane_waits(tmp_path, trusted) -> None:
     _router, server, hub = _busy(tmp_path, '{"send": "5151", "message": "Log them."}')
     hub.submit("loga os ganhos")
     await _settle(hub, until=lambda: any(e.kind == "held" for e in hub.state.entries))
@@ -104,7 +112,9 @@ async def test_without_a_place_a_message_for_a_busy_lane_waits(tmp_path) -> None
     assert _placements(tmp_path)[0]["placement"]["by"] == "default"
 
 
-async def test_a_held_message_they_correct_goes_in_now_and_becomes_a_lesson(tmp_path) -> None:
+async def test_a_held_message_they_correct_goes_in_now_and_becomes_a_lesson(
+    tmp_path, trusted
+) -> None:
     router, server, hub = _busy(
         tmp_path,
         '{"send": "5151", "message": "Use the right bench only.", "place": "after"}',
@@ -123,7 +133,7 @@ async def test_a_held_message_they_correct_goes_in_now_and_becomes_a_lesson(tmp_
     hub.submit("oi")
     await _settle(hub, until=lambda: len(router.prompts) == 2)
     await hub.close()
-    assert '"usa só a bancada da direita": it belonged "steer", not "after".' in router.prompts[1]
+    assert '"usa só a bancada da direita": it belonged "steer" (not "after").' in router.prompts[1]
     assert _placements(tmp_path)[-1] == {
         "feedback": place_id,
         "right": "steer",
@@ -132,7 +142,7 @@ async def test_a_held_message_they_correct_goes_in_now_and_becomes_a_lesson(tmp_
     }
 
 
-async def test_a_held_message_that_was_a_new_task_opens_its_lane(tmp_path) -> None:
+async def test_a_held_message_that_was_a_new_task_opens_its_lane(tmp_path, trusted) -> None:
     _router, server, hub = _busy(
         tmp_path,
         '{"send": "5151", "message": "Plan the joystick.", "place": "after",'
@@ -149,7 +159,7 @@ async def test_a_held_message_that_was_a_new_task_opens_its_lane(tmp_path) -> No
     assert server.sent[0][0] == NEW and hub.state.held == {}
 
 
-async def test_a_message_already_in_a_lanes_work_stays_there(tmp_path) -> None:
+async def test_a_message_already_in_a_lanes_work_stays_there(tmp_path, trusted) -> None:
     _router, server, hub = _busy(
         tmp_path, '{"send": "5151", "message": "Also check the logs.", "place": "steer"}'
     )
@@ -165,7 +175,7 @@ async def test_a_message_already_in_a_lanes_work_stays_there(tmp_path) -> None:
 
 
 async def test_a_lane_opened_by_mistake_is_closed_and_the_message_goes_to_the_busy_lane(
-    tmp_path,
+    tmp_path, trusted
 ) -> None:
     _router, server, hub = _busy(
         tmp_path,
@@ -185,7 +195,7 @@ async def test_a_lane_opened_by_mistake_is_closed_and_the_message_goes_to_the_bu
     assert hub.state.entries[-1].text == "Closed the new lane and sent this to amarras · sim."
 
 
-async def test_an_old_lane_opened_by_mistake_is_left_open(tmp_path, monkeypatch) -> None:
+async def test_an_old_lane_opened_by_mistake_is_left_open(tmp_path, trusted, monkeypatch) -> None:
     _router, server, hub = _busy(
         tmp_path,
         '{"send": "5151", "message": "Plan it.", "place": "new", "topic": "plan"}',
@@ -201,7 +211,7 @@ async def test_an_old_lane_opened_by_mistake_is_left_open(tmp_path, monkeypatch)
     assert entry is not None and "left it open" in entry.text
 
 
-async def test_a_right_placement_is_kept_as_a_label_but_not_a_lesson(tmp_path) -> None:
+async def test_a_right_placement_is_kept_as_a_label_but_not_a_lesson(tmp_path, trusted) -> None:
     _router, server, hub = _busy(
         tmp_path, '{"send": "5151", "message": "Stop.", "place": "steer"}'
     )
@@ -219,7 +229,7 @@ async def test_a_right_placement_is_kept_as_a_label_but_not_a_lesson(tmp_path) -
 
 
 async def test_the_decision_model_answers_the_same_question_in_shadow(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, trusted
 ) -> None:
     async def post_questions(backend, state, questions):
         assert "## The busy lane\namarras · sim, working on this task:\ntune the MPC" in state
@@ -263,7 +273,9 @@ def test_the_hub_chat_shows_where_a_message_went_beside_its_chip() -> None:
     assert hub_chat.speech_text(entry) == "Vai quando terminar."
 
 
-async def test_a_correction_from_the_page_goes_through_the_route(tmp_path, monkeypatch) -> None:
+async def test_a_correction_from_the_page_goes_through_the_route(
+    tmp_path, trusted, monkeypatch
+) -> None:
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
 
@@ -298,3 +310,119 @@ async def test_a_correction_from_the_page_goes_through_the_route(tmp_path, monke
     assert fixed.json()["right"] == "steer"
     assert server.sent == [(SIM, "Then plot.")]
     assert hub_module.HubState("u1", root=tmp_path).held == {}
+
+
+# -- asking them, until the router has learned ---------------------------------------
+
+
+async def test_until_the_router_has_learned_the_hub_asks_and_the_message_waits(tmp_path) -> None:
+    _router, server, hub = _busy(
+        tmp_path,
+        '{"send": "5151", "message": "Plan the joystick.", "place": "new", "topic": "joystick",'
+        ' "say": "Abri uma lane."}',
+    )
+    hub.submit("planeja o joystick")
+    await _settle(hub, until=lambda: any(e.kind == "held" for e in hub.state.entries))
+    await hub.close()
+
+    asked = hub.state.entries[-1]
+    assert server.sent == [] and server.opened == []
+    assert asked.place == {"id": asked.place["id"], "picked": "ask", "guess": "new"}
+    # Not the router's words: they described a lane that was not opened.
+    assert asked.text.startswith("Where should this go: into amarras · sim's work now")
+    assert hub.state.held[SIM]["items"][0]["place"] == asked.place["id"]
+    shown = hub_chat.render(asked, "http://test")
+    assert f"/hub/placements/{asked.place['id']}?picked=ask&guess=new" in shown
+
+
+@pytest.mark.parametrize(
+    ("right", "sent_to", "still_held"),
+    [("steer", SIM, False), ("new", NEW, False), ("after", None, True)],
+)
+async def test_their_answer_moves_the_message_and_teaches_the_router(
+    tmp_path, right, sent_to, still_held
+) -> None:
+    router, server, hub = _busy(
+        tmp_path,
+        '{"send": "5151", "message": "Use the right bench.", "place": "steer",'
+        ' "topic": "right bench"}',
+        '{"answer": "ok"}',
+    )
+    hub.submit("usa só a bancada da direita")
+    await _settle(hub, until=lambda: any(e.kind == "held" for e in hub.state.entries))
+
+    entry = await hub.correct_place(hub.state.entries[-1].place["id"], right, via="button")
+    hub.submit("oi")
+    await _settle(hub, until=lambda: len(router.prompts) == 2)
+    await hub.close()
+
+    assert entry is not None
+    assert [to for to, _ in server.sent] == ([sent_to] if sent_to else [])
+    assert bool(hub.state.held) is still_held
+    if right == "after":
+        assert entry.text == "Ok: it goes to amarras · sim when it finishes."
+    assert (
+        f'"usa só a bancada da direita": it belonged "{right}" '
+        '(the hub asked; it had guessed "steer").'
+    ) in router.prompts[1]
+
+
+async def test_a_router_that_cannot_tell_asks_even_once_trusted(tmp_path, trusted) -> None:
+    _router, _server, hub = _busy(
+        tmp_path,
+        '{"send": "5151", "message": "Check the scene.", "place": "ask",'
+        ' "say": "Isso é pro que o sim tá fazendo ou uma lane nova?"}',
+    )
+    hub.submit("e a cena?")
+    await _settle(hub, until=lambda: any(e.kind == "held" for e in hub.state.entries))
+    await hub.close()
+
+    asked = hub.state.entries[-1]
+    assert (asked.place["picked"], asked.place["guess"]) == ("ask", "")
+    assert asked.text == "Isso é pro que o sim tá fazendo ou uma lane nova?"
+
+
+def test_the_router_decides_alone_once_nine_of_its_last_ten_guesses_matched(tmp_path) -> None:
+    path = tmp_path / hub_place.LOG_NAME
+
+    def answered(n: int, guess: str, right: str) -> None:
+        placement = hub_place.Placement(
+            id=f"p{n}",
+            at=1000.0 + n,
+            project="RAL",
+            project_id="r",
+            lane="RAL",
+            lane_id="l",
+            task="t",
+            message="m",
+            said="s",
+            picked="ask",
+            guess=guess,
+        )
+        hub_place.log_placement(path, placement)
+        hub_place.log_feedback(path, placement.id, right, via="button")
+
+    for n in range(9):
+        answered(n, "steer", "steer")
+    assert not hub_place.trusted(path)  # nine answers are not enough
+    answered(9, "new", "after")
+    assert hub_place.trusted(path)  # 9 of 10 matched
+    answered(10, "new", "steer")
+    assert not hub_place.trusted(path)  # 8 of the newest 10
+
+
+async def test_tell_it_now_says_the_held_messages_belonged_in_its_work(tmp_path) -> None:
+    _router, server, hub = _busy(
+        tmp_path,
+        '{"send": "5151", "message": "Use the right bench.", "place": "after"}',
+        '{"send": "5151", "message": "", "now": true}',
+    )
+    hub.submit("usa a bancada da direita")
+    await _settle(hub, until=lambda: any(e.kind == "held" for e in hub.state.entries))
+    place_id = hub.state.entries[-1].place["id"]
+    hub.submit("fala agora")
+    await _settle(hub, until=lambda: server.sent)
+    await hub.close()
+
+    assert server.sent == [(SIM, "Use the right bench.")]
+    assert hub_place.find(tmp_path / "u1" / hub_place.LOG_NAME, place_id).right == "steer"

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI
 
-from omnigent.server import budget, hub_lanes, model_router
+from omnigent.server import budget, hub_lanes, hub_place, model_router
 from omnigent.server import hub as hub_module
 from omnigent.server.discussion import DiscussionRegistry
 from omnigent.server.hub import HubProject, HubSession, HubState, TurnState, project_line
@@ -206,7 +206,9 @@ async def test_a_send_naming_a_lane_goes_to_that_lane(tmp_path) -> None:
     assert (sent.kind, sent.session_name) == ("sent", "amarras · Project Analysis")
 
 
-async def test_a_message_for_a_busy_lane_waits_until_it_finishes(tmp_path) -> None:
+async def test_a_message_for_a_busy_lane_waits_until_it_finishes(tmp_path, monkeypatch) -> None:
+    # The router decides alone (it has learned where their messages go).
+    monkeypatch.setattr(hub_place, "trusted", lambda path: True)
     router = _Router(
         '{"send": "5151", "message": "Also log the gains.", "say": "Vai quando terminar."}',
         '{"send": "5151", "message": "And plot them.", "say": "Vai quando terminar."}',
