@@ -378,3 +378,24 @@ export async function closeHubLane(
 export function projectChatLink(name: string): string {
   return `/?project=${encodeURIComponent(name)}`;
 }
+
+/** Where the hub can put a message for a busy lane. */
+export type HubPlace = "steer" | "after" | "new";
+
+/**
+ * Tell the hub where a message it placed beside a busy lane should have gone.
+ * It is kept as a lesson either way, and fixed where it still can be (a held
+ * message goes in now or to a new lane). `text` is what the hub did about it.
+ */
+export async function correctHubPlace(
+  placementId: string,
+  right: HubPlace,
+): Promise<{ right: HubPlace; text: string }> {
+  return readJson<{ right: HubPlace; text: string }>(
+    await authenticatedFetch(`/v1/hub/placements/${encodeURIComponent(placementId)}/feedback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ right }),
+    }),
+  );
+}

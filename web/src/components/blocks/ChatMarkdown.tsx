@@ -19,6 +19,7 @@ import { normalizeExplicitMathDelimiters } from "@/components/ai-elements/mathMa
 import { MessageResponse } from "@/components/ai-elements/message";
 import { WORKSPACE_FILE_LINK_ATTR } from "@/components/ai-elements/streamdown-security";
 import { ZoomableImage } from "@/components/ImageLightbox";
+import { HUB_PLACE_TITLE, HubPlaceControl, readPlaceLink } from "./HubPlaceControl";
 import { useThrottledValue } from "@/hooks/useThrottledValue";
 import { cn } from "@/lib/utils";
 import { Link } from "@/lib/routing";
@@ -225,6 +226,12 @@ function WorkspaceFileLink({
   const path = typeof marked === "string" ? marked : "";
   const openWorkspaceFile = useWorkspaceFileOpener(path);
   const openAppFileLink = useOpenAppFileLink();
+
+  const place = !path && title === HUB_PLACE_TITLE && typeof href === "string";
+  const placed = place ? readPlaceLink(href) : null;
+  if (placed) {
+    return <HubPlaceControl id={placed.id} picked={placed.picked} />;
+  }
 
   const chip = title === PROJECT_CHIP_TITLE || title === PROJECT_SENT_CHIP_TITLE;
   if (!path && chip && typeof href === "string") {

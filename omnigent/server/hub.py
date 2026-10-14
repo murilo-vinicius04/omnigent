@@ -32,7 +32,7 @@ from typing import Any, Final, Literal
 from omnigent.antigravity_native_catalog import _probe_agy_models
 from omnigent.model_fallbacks import SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
 from omnigent.process_logging import data_dir
-from omnigent.server import budget, hub_lanes, hub_models, model_router, voice_hub
+from omnigent.server import budget, hub_lanes, hub_models, hub_place, model_router, voice_hub
 from omnigent.server.discussion import GOOGLE_REFUSED, DiscussionSession, DiscussionUnavailable
 from omnigent.server.hub_models import SessionRun
 
@@ -118,6 +118,9 @@ ROUTE_RETRY_MIN_S: Final[float] = 20.0
 #: The least a second try gets after an empty reply, however late it is.
 EMPTY_RETRY_MIN_S: Final[float] = 20.0
 
+#: A correction they say refers to their newest placement only this recent.
+CORRECT_PLACE_WITHIN_S: Final[float] = 2 * 3600
+
 #: Wait before asking again when Google turns the router away. Its outages so
 #: far lasted about a minute (10-13 16:38 and 17:13), inside one routing budget.
 ROUTE_REFUSED_WAIT_S: Final[float] = 10.0
@@ -153,34 +156,47 @@ brackets; wherever "<handle>" appears below, that code or the project's name \
 both work. A project with several lanes (agents working side by side, each on \
 its own topic) lists each lane under its own handle.]
 {projects}
-{context}{files}
+{lessons}{context}{files}
 [They {how}]
 {message}
 
 Reply with ONE line of JSON and nothing else, exactly one of:
 {{"answer": "..."}} -- you reply yourself: greetings, small talk, and anything \
 the list above or this chat already answers.
-{{"send": "<handle>", "lane": "<lane handle>", "message": "...", "say": "..."}} \
--- a project's Claude has to do or answer it. "message" is their request in \
-{language} for that Claude, faithful and complete: Claude cannot see this chat, \
-so carry what the request depends on from earlier here, and keep code, paths and \
-names exactly. "lane" is the lane it goes to, for a project with lanes; leave it \
-out otherwise. "say" is a short confirmation for them that names the project. \
-To a WORKING lane, "send" only what adds to or changes the task it is doing now \
-(a correction, one more step for that task, something that needs its result): \
-the hub holds it until that lane finishes, and "say" tells them it goes when \
-the lane finishes, not that it went. Add "now": true when they ask to tell it \
-now, interrupting its work; that also delivers what is held for it, so when \
-they only say "tell it now", "message" is empty.
+{{"send": "<handle>", "lane": "<lane handle>", "message": "...", "say": "...", \
+"place": "...", "topic": "..."}} -- a project's Claude has to do or answer it. \
+"message" is their request in {language} for that Claude, faithful and complete: \
+Claude cannot see this chat, so carry what the request depends on from earlier \
+here, and keep code, paths and names exactly. "lane" is the lane it goes to, for \
+a project with lanes; leave it out otherwise. "say" is a short confirmation for \
+them that names the project.
+When that lane is WORKING, "place" says where the message goes, judged from what \
+it says and what the lane is doing; leave it out for an idle lane:
+  "steer" -- it is about the task the lane is doing now: a direction, a \
+correction, more detail, a change of priority, stop or pause, an answer it \
+needs, or a question about how that work is going. It goes into the lane's work \
+now.
+  "after" -- more work for that lane that needs it to finish first, such as a \
+next step that uses its result. The hub sends it when the lane finishes.
+  "new" -- a different task, even in the same project or on a related subject, \
+that does not need what the lane is doing. A new lane starts it in parallel; \
+"topic" names that work in two to four words, and "use" goes with it only when \
+they name a model or provider for it. If another lane of that project is idle \
+and its topic fits, "send" it to that lane instead, without "place".
+"say" tells them what happens: that it went into the lane's work, that it goes \
+when the lane finishes, or that a new lane takes it. Add "now": true only when \
+they ask to tell it now; that also delivers what is held for it, so when they \
+only say "tell it now", "message" is empty.
 {{"new_lane": "<handle>", "topic": "...", "message": "...", "say": "...", \
-"use": "..."}} -- a new agent in that project, working beside the others. Use \
-it for any new question or task for a project whose lane is WORKING, even on \
-the same subject, so it is answered in parallel instead of waiting; but if \
-another lane of that project is idle and its topic fits, "send" it there \
-instead. Use it too when they ask for a separate or parallel agent. "topic" \
-names the work in two to four words. "message" as for "send". "use" only when \
-they name a model or provider for it (e.g. "Sonnet", "Codex"); otherwise leave \
-it out and the hub picks. "say" names the project and the topic.
+"use": "..."}} -- they ask for a separate or parallel agent in that project. \
+"topic" names the work in two to four words. "message" as for "send". "use" \
+only when they name a model or provider for it (e.g. "Sonnet", "Codex"); \
+otherwise leave it out and the hub picks. "say" names the project and the topic.
+{{"correct_place": "steer" | "after" | "new", "say": "..."}} -- they say the \
+hub put their last message for a busy lane in the wrong place: it was for that \
+lane's work now ("steer"), it should wait until the lane finishes ("after"), or \
+it was a different task for a new lane ("new"). The hub fixes what it still can \
+and keeps it as a lesson; "say" is empty, the hub says what it did.
 {{"status": "<handle>"}} -- they ask what a project is doing now or whether it \
 finished, and its line above does not say enough.
 {{"check": "<handle>", "question": "..."}} -- a fact on their machine (disk, \
@@ -560,6 +576,9 @@ class HubEntry:
     #: What the project's chat shows under its summary of the reply: tables,
     #: images, links, output (its spoken summary's ``show`` list).
     show: list[dict[str, Any]] | None = None
+    #: For a message placed beside a working lane: ``{"id", "picked"}``, so
+    #: they can correct where it went.
+    place: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """The JSON shape the page and the voice relay read."""
@@ -607,7 +626,16 @@ class HubDecision:
     """What the router decided about one message."""
 
     action: Literal[
-        "answer", "send", "status", "check", "model", "new_project", "new_lane", "ask", "none"
+        "answer",
+        "send",
+        "status",
+        "check",
+        "model",
+        "new_project",
+        "new_lane",
+        "correct_place",
+        "ask",
+        "none",
     ]
     text: str = ""
     handle: str | None = None
@@ -619,7 +647,11 @@ class HubDecision:
     lane: str = ""
     #: For ``send``: deliver into a busy lane instead of holding it.
     now: bool = False
-    #: For ``new_lane``: what it works on, and a model or provider they named.
+    #: For ``send`` to a working lane, where it goes (:data:`hub_place.PLACES`);
+    #: for ``correct_place``, where their last such message should have gone.
+    place: str = ""
+    #: For ``new_lane`` (and a send placed ``"new"``): what it works on, and
+    #: a model or provider they named.
     topic: str = ""
     use: str = ""
 
@@ -831,7 +863,12 @@ def parse_decision(reply: str) -> HubDecision:
             text=text("say"),
             lane=text("lane"),
             now=parsed.get("now") is True,
+            place=text("place") if text("place") in hub_place.PLACES else "",
+            topic=text("topic"),
+            use=text("use"),
         )
+    if text("correct_place") in hub_place.PLACES:
+        return HubDecision(action="correct_place", place=text("correct_place"), text=text("say"))
     if text("new_lane"):
         return HubDecision(
             action="new_lane",
@@ -1148,6 +1185,21 @@ class HubState:
         if kept is not None:
             self._write("held.json", self.held)
         return list((kept or {}).get("items") or [])
+
+    def take_held(self, session_id: str, place_id: str) -> dict[str, Any] | None:
+        """One held message, by the placement that held it, forgotten once taken."""
+        kept = self.held.get(session_id)
+        items = list((kept or {}).get("items") or [])
+        found = next((i for i in items if i.get("place") == place_id), None)
+        if kept is None or found is None:
+            return None
+        items.remove(found)
+        if items:
+            kept["items"] = items
+        else:
+            self.held.pop(session_id, None)
+        self._write("held.json", self.held)
+        return found
 
     def keep_files(self, files: Sequence[dict[str, Any]], at: float) -> None:
         """Remember the files waiting for a send; an empty list forgets them."""
@@ -1617,8 +1669,10 @@ class Hub:
         router = await self._router_factory()
         how = "said, aloud, on a voice call" if via == "voice" else "wrote"
         held = self.held_files()
+        lessons = hub_place.lessons(self.state.folder / hub_place.LOG_NAME)
         prompt = _DECIDE_PROMPT.format(
             projects=projects_block(projects),
+            lessons=f"\n{lessons}\n" if lessons else "",
             context=(
                 f"\n[The voice call so far, oldest first]\n{context.strip()}\n"
                 if context.strip()
@@ -1664,6 +1718,10 @@ class Hub:
                 entry = self.say(f"I didn't make it: {exc}.")
             router.remember(entry.text)
             return
+        if decision.action == "correct_place":
+            entry = await self.correct_latest_place(decision.place, via=via)
+            router.remember(entry.text)
+            return
         project, target = resolve_target(projects, decision.handle or "", decision.lane)
         if decision.action in ("send", "status", "check", "model", "new_lane") and project is None:
             names = ", ".join(p.name for p in projects) or "none yet"
@@ -1690,10 +1748,10 @@ class Hub:
             router.remember(entry.text)
             return
         if decision.action == "send" and target is not None:
-            if target.working and not decision.now:
-                await self.hold(target, decision.message or text, via=via, say=decision.text)
-            elif decision.now and self.state.held.get(target.id):
+            if decision.now and self.state.held.get(target.id):
                 await self.send_held_now(target, decision.message, via=via, say=decision.text)
+            elif target.working and not decision.now and project is not None:
+                await self.place(project, target, decision, said=text, via=via)
             else:
                 await self.send_to(target, decision.message or text, via=via, say=decision.text)
             return
@@ -1809,6 +1867,167 @@ class Hub:
             **fields,
         )
 
+    async def place(
+        self, project: HubProject, lane: HubSession, decision: HubDecision, *, said: str, via: str
+    ) -> HubEntry:
+        """Send a message for a working lane where the router placed it.
+
+        Into the lane's work now, held until it finishes, or to a new lane.
+        Without a place from the router it is held, which never steers the
+        lane off its task. Every placement is logged for correcting it later.
+        """
+        picked = decision.place or "after"
+        message = decision.message or said
+        placement = hub_place.Placement(
+            id=hub_place.new_id(),
+            at=time.time(),
+            project=project.name,
+            project_id=project.id,
+            lane=lane.name,
+            lane_id=lane.id,
+            task=lane.last_ask or lane.first_ask,
+            message=message,
+            said=said,
+            picked=picked,
+            topic=decision.topic,
+            via=via,
+            by="router" if decision.place else "default",
+        )
+        tag = {"id": placement.id, "picked": picked}
+        if picked == "steer":
+            entry = await self.send_to(lane, message, via=via, say=decision.text, place=tag)
+        elif picked == "new":
+            entry = await self.open_lane(
+                project,
+                decision.topic,
+                message,
+                via=via,
+                say=decision.text,
+                use=decision.use,
+                place=tag,
+            )
+            if entry.kind == "sent":
+                placement = replace(placement, opened=entry.session_id or "")
+        else:
+            entry = await self.hold(lane, message, via=via, say=decision.text, place=tag)
+        path = self.state.folder / hub_place.LOG_NAME
+        hub_place.log_placement(path, placement)
+        backend = model_router.configured(HUB_DIR) if self._judge_tiers else None
+        if backend is not None:
+            self._spawn(self._shadow_place(path, placement, backend))
+        return entry
+
+    async def _shadow_place(
+        self, path: pathlib.Path, placement: hub_place.Placement, backend: Any
+    ) -> None:
+        hub_place.log_shadow(path, placement.id, await hub_place.shadow_judge(placement, backend))
+
+    async def correct_place(self, placement_id: str, right: str, *, via: str) -> HubEntry | None:
+        """Their word on where a message for a busy lane should have gone.
+
+        Kept as a lesson either way; fixed where that can still be done: a
+        held message goes in now or to a new lane, and a lane opened for it a
+        few minutes ago is closed again and the message goes to the busy lane.
+        A message already in a lane's work stays there.
+
+        :returns: What the hub said about it; ``None`` when it was right.
+        :raises KeyError: No such placement.
+        :raises ValueError: *right* is not a place.
+        """
+        if right not in hub_place.PLACES:
+            raise ValueError(f"not a place: {right!r}")
+        path = self.state.folder / hub_place.LOG_NAME
+        record = hub_place.find(path, placement_id)
+        if record is None:
+            raise KeyError(placement_id)
+        p = record.placement
+        hub_place.log_feedback(path, p.id, right, via=via)
+        if right == p.picked:
+            return None
+        label = hub_place.PLACE_LABELS[right]
+        tag = {"id": p.id, "picked": right}
+        about = {"session_id": p.lane_id, "session_name": p.lane}
+        project, lane = await self._lane_by_id(p.project_id, p.lane_id)
+        if p.picked == "after":
+            item = self.state.take_held(p.lane_id, p.id)
+            if item is None:
+                return self.say(
+                    f"Noted: that belonged {label}. It had already gone to {p.lane} when it "
+                    "finished.",
+                    kind="attention",
+                    **about,
+                )
+            files = [HubFile(**f) for f in item.get("files") or []]
+            if right == "new" and project is not None:
+                return await self.open_lane(
+                    project, p.topic, str(item["message"]), via=via, place=tag
+                )
+            target = lane or HubSession(id=p.lane_id, title=p.lane, nickname=p.lane)
+            return await self.send_to(
+                target, str(item["message"]), via=via, files=files, place=tag
+            )
+        if p.picked == "new":
+            backend = self.require_backend()
+            fresh = time.time() - p.at <= hub_place.CLOSE_FRESH_LANE_S
+            if not (p.opened and fresh and backend.close_chat is not None and lane is not None):
+                return self.say(
+                    f"Noted: that belonged {label}. The new lane has been at it for a while, "
+                    "so I left it open: close it in the Projects panel if you don't need it.",
+                    kind="attention",
+                    **about,
+                )
+            watch = self._watches.pop(p.opened, None)
+            if watch is not None:
+                watch.cancel()
+            self.state.drop_watch(p.opened)
+            await backend.close_chat(p.opened)
+            if right == "after" and lane.working:
+                return await self.hold(
+                    lane,
+                    p.message,
+                    via=via,
+                    say=f"Closed the new lane; this goes to {p.lane} when it finishes.",
+                    place=tag,
+                )
+            return await self.send_to(
+                lane,
+                p.message,
+                via=via,
+                say=f"Closed the new lane and sent this to {p.lane}.",
+                place=tag,
+            )
+        return self.say(
+            f"Noted: that belonged {label}. It had already gone into {p.lane}'s work, so I "
+            "left it there.",
+            kind="attention",
+            **about,
+        )
+
+    async def correct_latest_place(self, right: str, *, via: str) -> HubEntry:
+        """A correction they said aloud or typed: about their newest placement."""
+        path = self.state.folder / hub_place.LOG_NAME
+        record = hub_place.latest(path, within_s=CORRECT_PLACE_WITHIN_S)
+        if record is None:
+            return self.say("I have no recent message for a busy lane to move.")
+        entry = await self.correct_place(record.placement.id, right, via=via)
+        if entry is None:
+            return self.say(
+                f"That's where it went: {hub_place.PLACE_LABELS[right]}. Noted.",
+                kind="attention",
+                session_id=record.placement.lane_id,
+                session_name=record.placement.lane,
+            )
+        return entry
+
+    async def _lane_by_id(
+        self, project_id: str, lane_id: str
+    ) -> tuple[HubProject | None, HubSession | None]:
+        """A project and one of its lanes as they are now."""
+        for project in await self.projects(shown=CHATS_SHOWN):
+            if project.id == project_id:
+                return project, next((s for s in project.lanes if s.id == lane_id), None)
+        return None, None
+
     async def send_to(
         self,
         session: HubSession,
@@ -1819,6 +2038,7 @@ class Hub:
         files: Sequence[HubFile] | None = None,
         brief: str = "",
         judge: bool = True,
+        place: dict[str, Any] | None = None,
     ) -> HubEntry:
         """Post into a chat, log it here, and watch for its answer.
 
@@ -1827,6 +2047,7 @@ class Hub:
         :param brief: Context for the agent after the request, kept out of the
             hub chat's quote of what was sent.
         :param judge: Log the decision model's judgement of it (shadow mode).
+        :param place: The placement it was sent by, for correcting it later.
         """
         sent_at = time.time()
         attached_here = files is None
@@ -1861,6 +2082,7 @@ class Hub:
             session_id=session.id,
             session_name=session.name,
             detail=message + (f"\n\nAttached: {names}" if files else ""),
+            place=place,
         )
         router = await self._router_factory()
         router.remember(
@@ -1872,7 +2094,13 @@ class Hub:
         return entry
 
     async def hold(
-        self, session: HubSession, message: str, *, via: str, say: str = ""
+        self,
+        session: HubSession,
+        message: str,
+        *,
+        via: str,
+        say: str = "",
+        place: dict[str, Any] | None = None,
     ) -> HubEntry:
         """Keep a message for a busy lane and send it once that lane finishes.
 
@@ -1890,6 +2118,7 @@ class Hub:
                 "via": via,
                 "files": [asdict(f) for f in files],
                 "at": time.time(),
+                **({"place": place["id"]} if place else {}),
             },
         )
         names = ", ".join(f.filename for f in files)
@@ -1900,6 +2129,7 @@ class Hub:
             session_id=session.id,
             session_name=session.name,
             detail=message + (f"\n\nAttached: {names}" if files else ""),
+            place=place,
         )
         router = await self._router_factory()
         router.remember(f"holding for {session.name}, which is busy: {message}")
@@ -1999,6 +2229,7 @@ class Hub:
         via: str,
         say: str = "",
         use: str = "",
+        place: dict[str, Any] | None = None,
     ) -> HubEntry:
         """Open a new chat in the project for this request, and send it there.
 
@@ -2079,6 +2310,7 @@ class Hub:
             say=say,
             brief=hub_lanes.brief(project.name, topic, in_use),
             judge=False,
+            place=place,
         )
         if pick.decision is not None:
             task = replace(

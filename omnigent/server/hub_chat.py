@@ -25,6 +25,7 @@ from typing import Any, Final
 from urllib.parse import quote
 
 from omnigent.server import hub as hub_module
+from omnigent.server import hub_place
 
 _logger = logging.getLogger(__name__)
 
@@ -169,6 +170,10 @@ PROJECT_CHIP_TITLE: Final[str] = "omnigent-project"
 #: The chip on a message that went to a project: it shows the send, in no words.
 PROJECT_SENT_CHIP_TITLE: Final[str] = "omnigent-project-sent"
 
+#: The link title that marks where a message for a busy lane went: the page
+#: draws it as a small control for correcting that.
+PLACE_TITLE: Final[str] = "omnigent-hub-place"
+
 #: Entries about one project: they open with its chip.
 _PROJECT_KINDS: Final[frozenset[str]] = frozenset(
     {"sent", "held", "lane", "finished", "attention", "status", "check", "model", "project"}
@@ -190,7 +195,14 @@ def _chip(entry: hub_module.HubEntry, base_url: str) -> str:
     if not base_url:
         return f"**{name}**"
     title = PROJECT_SENT_CHIP_TITLE if entry.kind == "sent" else PROJECT_CHIP_TITLE
-    return f'[{name}]({base_url}/c/{entry.session_id} "{title}")'
+    chip = f'[{name}]({base_url}/c/{entry.session_id} "{title}")'
+    place = entry.place or {}
+    picked = str(place.get("picked") or "")
+    if place.get("id") and picked in hub_place.PLACE_LABELS:
+        # Where it went, beside the chip; the page lets them say it was wrong.
+        href = f"{base_url}/hub/placements/{quote(str(place['id']), safe='')}?picked={picked}"
+        chip += f' [{hub_place.PLACE_LABELS[picked]}]({href} "{PLACE_TITLE}")'
+    return chip
 
 
 def render(

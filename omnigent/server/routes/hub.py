@@ -88,6 +88,12 @@ class HubCloseLaneIn(BaseModel):
     handoff: bool = True
 
 
+class HubPlaceIn(BaseModel):
+    """Where a message the hub placed beside a busy lane should have gone."""
+
+    right: str = Field(pattern="^(steer|after|new)$")
+
+
 def create_hub_router(
     *,
     auth_provider: AuthProvider | None = None,
@@ -261,6 +267,18 @@ def create_hub_router(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"text": entry.text, "closing": entry.kind == "sent"}
+
+    @router.post("/hub/placements/{placement_id}/feedback")
+    async def hub_place_feedback(
+        request: Request, placement_id: str, body: HubPlaceIn
+    ) -> dict[str, Any]:
+        """Their word on a placement: kept as a lesson, and fixed where it still can be."""
+        hub, _ = await _bound(request)
+        try:
+            entry = await hub.correct_place(placement_id, body.right, via="button")
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="no such placement") from exc
+        return {"right": body.right, "text": entry.text if entry is not None else "Noted."}
 
     @router.post("/hub/model")
     async def hub_model(request: Request, body: HubModelIn) -> dict[str, Any]:
