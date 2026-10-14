@@ -303,6 +303,28 @@ def test_without_a_summary_the_report_lifts_only_the_replys_tables(tmp_path) -> 
     assert f"[`RA-L/reviews/REVISION_PLAN.md`]({PLAN})" in text
 
 
+def test_a_report_carries_the_web_links_the_reply_gave(tmp_path) -> None:
+    detail = (
+        "Open **https://nexus.tail0994ab.ts.net/micdiag.html** inside the app.\n\n"
+        "Sources:\n- [Enabling HTTPS](https://tailscale.com/kb/1153/enabling-https)\n"
+        "```\ncurl https://inside.a.fence/skip\n```\n"
+        "Again: https://nexus.tail0994ab.ts.net/micdiag.html."
+    )
+    text = hub_chat.render(_finished(tmp_path, detail=detail), "http://h:6767")
+    assert text.endswith(
+        "[nexus.tail0994ab.ts.net/micdiag.html](https://nexus.tail0994ab.ts.net/micdiag.html)"
+        " · [Enabling HTTPS](https://tailscale.com/kb/1153/enabling-https)"
+    )
+    assert "inside.a.fence" not in text and "inside the app" not in text
+
+
+def test_a_link_the_summary_shows_is_not_listed_twice(tmp_path) -> None:
+    url = "https://tailscale.com/kb/1153/enabling-https"
+    shown = [{"kind": "link", "label": "Enabling HTTPS", "content": url}]
+    entry = _finished(tmp_path, detail=f"See [Enabling HTTPS]({url}).", show=shown)
+    assert hub_chat.render(entry, "http://h:6767").count(url) == 1
+
+
 def test_without_the_apps_address_a_report_makes_no_links(tmp_path) -> None:
     text = hub_chat.render(_finished(tmp_path), "")
     assert "](http" not in text and "?file=" not in text

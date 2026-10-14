@@ -61,6 +61,15 @@ _NAMED_FILE: Final[re.Pattern[str]] = re.compile(
 #: How many of the latest reports the hub looks in for the files projects named.
 _KNOWN_FILE_REPORTS: Final[int] = 40
 
+#: A web link in a reply: a markdown link, or a bare address (also in a code span).
+_WEB_LINK: Final[re.Pattern[str]] = re.compile(
+    r"(!?)\[([^\]\n]*)\]\((https?://[^)\s]+)\)"
+    r"|(?<![\w/])(https?://[^\s<>()\[\]`*\"']+[^\s<>()\[\]`*\"'.,;:!?])"
+)
+
+#: At most this many of a reply's web links ride along on its report.
+_MAX_WEB_LINKS: Final[int] = 8
+
 #: A cited position after a path, e.g. ``src/app.ts:42:7``.
 _POSITION_SUFFIX: Final[re.Pattern[str]] = re.compile(r":\d+(?::\d+)?$")
 
@@ -233,7 +242,12 @@ def render(
             f"[`{label}`]({url_for(rel)})" if "/" in label else f"[{label}]({url_for(rel)})"
             for label, rel in named_files(entry.detail or "", workspace)
         )
-        parts = [chip, entry.text, shown, file_links, link]
+        web_links = " · ".join(
+            f"[{label}]({url})"
+            for label, url in web_links_of(entry.detail or "")
+            if url not in shown
+        )
+        parts = [chip, entry.text, shown, file_links, web_links, link]
         return "\n\n".join(part for part in parts if part)
     if entry.kind in _PROJECT_KINDS:
         return "\n\n".join(part for part in (chip, entry.text, link) if part)
@@ -360,6 +374,32 @@ def reply_tables(markdown: str) -> list[str]:
             tables.append("\n".join(current))
         current = []
     return tables
+
+
+def web_links_of(markdown: str) -> list[tuple[str, str]]:
+    """``(label, url)`` of each web address a reply gives, outside code fences.
+
+    A summary seldom picks a link to show, so the report carries them all: a
+    link the project handed over is something to open, not to read about.
+    """
+    found: list[tuple[str, str]] = []
+    fenced = False
+    for line in markdown.splitlines():
+        if _FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        for match in _WEB_LINK.finditer(line):
+            bang, title, target, bare = match.groups()
+            if bang:
+                continue
+            url = target or bare
+            if any(url == seen for _, seen in found):
+                continue
+            label = (title or "").strip() or url.split("://", 1)[1].rstrip("/")
+            found.append((label.replace("[", "\\[").replace("]", "\\]"), url))
+    return found[:_MAX_WEB_LINKS]
 
 
 def named_files(markdown: str, workspace: str | None) -> list[tuple[str, str]]:
