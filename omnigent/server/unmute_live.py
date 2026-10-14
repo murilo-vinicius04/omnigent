@@ -19,7 +19,7 @@ import logging
 import os
 import re
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -132,8 +132,27 @@ CHECK_MACHINE_TOOL: Final[dict[str, Any]] = {
 PAGE_TOOLS: Final[frozenset[str]] = frozenset({"ask_claude", "check_machine"})
 
 
-async def run_hub_tool(call: UnmuteCall, tool_call: dict[str, str]) -> str:
-    """Run one of the hub's tools on the server, showing it on the page meanwhile."""
+#: Placeholders Unmute and this module put in the reader's turn when no words came.
+_NOT_SPEECH: Final[frozenset[str]] = frozenset({"", "...", "(listening)"})
+
+
+def reader_lines(messages: Sequence[dict[str, Any]]) -> list[str]:
+    """What the reader said on the call, one line per turn, oldest first."""
+    return [
+        str(m.get("content") or "").strip()
+        for m in messages
+        if m.get("role") == "user" and str(m.get("content") or "").strip() not in _NOT_SPEECH
+    ]
+
+
+async def run_hub_tool(
+    call: UnmuteCall, tool_call: dict[str, str], heard: Sequence[str] = ()
+) -> str:
+    """Run one of the hub's tools on the server, showing it on the page meanwhile.
+
+    :param heard: The reader's lines so far; an ``ask_claude`` carries the ones
+        no earlier send did.
+    """
     try:
         args = json.loads(tool_call["arguments"] or "{}")
     except ValueError:
@@ -144,7 +163,11 @@ async def run_hub_tool(call: UnmuteCall, tool_call: dict[str, str]) -> str:
     name = tool_call["name"]
     shown = {"id": tool_call["id"], "name": name, "args": args}
     await call.outbox.put({"toolCall": {"functionCalls": [shown]}})
-    session, output = await voice_hub.run_hub_tool(call.hub, name, args)
+    session, output = await voice_hub.run_hub_tool(
+        call.hub, name, args, heard=" ".join(heard[call.sent_upto :])
+    )
+    if name == "ask_claude" and output.startswith(voice_hub.SENT_PREFIX):
+        call.sent_upto = len(heard)
     await call.outbox.put(
         {
             "omnigentToolDone": {
@@ -225,6 +248,8 @@ class UnmuteCall:
     #: Their results, carried into the next reply instead of being lost.
     late_results: list[str] = field(default_factory=list)
     tool_calls: int = 0
+    #: The reader's lines a send already carried.
+    sent_upto: int = 0
     closed: bool = False
     #: The hub this call is the voice of; its tools then run on the server.
     hub: Any = None
@@ -470,7 +495,7 @@ async def speak(
         )
         for c in calls:
             if call.hub is not None:
-                result = await run_hub_tool(call, c)
+                result = await run_hub_tool(call, c, reader_lines(messages))
             elif c["name"] not in PAGE_TOOLS:
                 result = f"Tool '{c['name']}' is not available."
             else:

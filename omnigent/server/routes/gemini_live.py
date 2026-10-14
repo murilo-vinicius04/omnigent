@@ -206,6 +206,8 @@ class _TurnLog:
         self.recent: list[str] = []
         self.speech_end: float | None = None
         self.replied_at = -1.0
+        #: Turns whose words a send already carried.
+        self.sent_upto = 0
 
     def _open_turn(self) -> _HeardTurn | None:
         if self.turns and self.turns[-1].reply is None:
@@ -240,6 +242,7 @@ class _TurnLog:
                 self.turns.append(turn)
             turn.end = at
             turn.chars += len(text)
+            turn.text += text
         model_turn = content.get("modelTurn")
         parts = model_turn.get("parts") if isinstance(model_turn, dict) else None
         audio = isinstance(parts, list) and any(
@@ -258,6 +261,14 @@ class _TurnLog:
             body = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
             self.recent.append(f"{at:.1f}s {body[:240]}")
             del self.recent[:-12]
+
+    def heard_since_send(self) -> str:
+        """Everything the reader said since the last send, as Google transcribed it."""
+        return " ".join(t.text.strip() for t in self.turns[self.sent_upto :] if t.text.strip())
+
+    def mark_sent(self) -> None:
+        """The words heard so far went with a send; the next one starts after them."""
+        self.sent_upto = len(self.turns)
 
     def unanswered(self) -> bool:
         """Whether the last thing Google heard got no reply at all."""
@@ -285,6 +296,7 @@ class _HeardTurn:
     start: float
     end: float = 0.0
     chars: int = 0
+    text: str = ""
     reply: str | None = None
     after: float = 0.0
     #: From Google's own end-of-speech mark to the reply. The transcript can
@@ -436,7 +448,7 @@ def create_gemini_live_router(
             except Exception:  # noqa: BLE001 - a hub with no list still routes
                 _logger.warning("voice hub briefing failed", exc_info=True)
                 hub_sessions = []
-            system_instruction = voice_hub.hub_briefing(hub_sessions)
+            system_instruction = voice_hub.hub_briefing(hub_sessions, recent=the_hub.state.entries)
             briefed = True
             _logger.info(
                 "voice hub briefed | sessions=%s",
@@ -722,7 +734,11 @@ def create_gemini_live_router(
                 project = ""
                 try:
                     if hub and the_hub is not None:
-                        project, output = await voice_hub.run_hub_tool(the_hub, name, args)
+                        project, output = await voice_hub.run_hub_tool(
+                            the_hub, name, args, heard=turn_log.heard_since_send()
+                        )
+                        if name == "ask_claude" and output.startswith(voice_hub.SENT_PREFIX):
+                            turn_log.mark_sent()
                     else:
                         output = await _live_activity(session_id_clean)
                 except Exception as exc:  # noqa: BLE001 - the model must get an answer

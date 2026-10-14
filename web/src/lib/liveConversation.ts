@@ -16,7 +16,7 @@ import {
   type CompanionActivity,
 } from "./companionApi";
 import { askHubByVoice, hubLastId, hubUpdates } from "./hubApi";
-import { claimSpeechChannel, isNarrating, setConversationSpeaking } from "./speechPlayback";
+import { claimSpeechChannel, setConversationSpeaking } from "./speechPlayback";
 import type { LiveVoiceEngine } from "./liveVoiceEngine";
 import { conversationVolume } from "./sessionNarrationVolume";
 import { getLiveEngineAdapter, USD_PER_MINUTE, type LiveEngineHandle } from "./liveEngineAdapters";
@@ -143,16 +143,6 @@ interface ConversationStoreState {
 let activeHandle: LiveEngineHandle | null = null;
 let ticker: ReturnType<typeof setInterval> | undefined;
 
-/** Whether a summary is being read aloud, false where playback is mocked out. */
-function narrationPlaying(): boolean {
-  try {
-    return isNarrating();
-  } catch {
-    // Mocked in tests without isNarrating
-    return false;
-  }
-}
-
 /** Tear down everything owned here. Safe to call when nothing is open. */
 function teardown(set: (partial: Partial<ConversationStoreState>) => void): void {
   try {
@@ -256,13 +246,6 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
     void prewarmCompanion(sessionId).catch(() => {
       // Delegation still works against a cold companion, only slower.
     });
-
-    // Pressed mid-reading: the reading carries on under the open mic until the
-    // reader talks over it, the way they would interrupt a person.
-    const overNarration = narrationPlaying();
-    // Set once either side is heard; until then the reading keeps the channel.
-    let heard = false;
-    let takeOver: (() => void) | null = null;
 
     let handedOff = false;
     // The reader's last finished sentence, for a delegation that arrives before
@@ -522,10 +505,6 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
         onCheck: (callId, asked) => void answerCheck(callId, asked),
         onSpeech: (who) => {
           if (who === "reader") readerHeardAt = Date.now();
-          heard = true;
-          const claim = takeOver;
-          takeOver = null;
-          claim?.();
         },
         onError: (error) => {
           set({ error });
@@ -547,23 +526,11 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
     }
 
     activeHandle = handle;
-    const claim = (): void => {
-      claimSpeechChannel(handle.audioElement, sessionId);
-      // The narration level, except that a muted session's call still plays.
-      if (handle.audioElement) handle.audioElement.volume = conversationVolume(sessionId);
-    };
-    // Either side speaking hands the channel over: the reader interrupting,
-    // or the voice starting to answer, which must not play over the reading.
-    if (overNarration && !heard && narrationPlaying()) {
-      takeOver = () => {
-        claim();
-        // A reading that connected after the call paused its audio on the way in.
-        const el = handle.audioElement;
-        if (el?.paused && activeHandle === handle) void el.play().catch(() => {});
-      };
-    } else {
-      claim();
-    }
+    // Opening the mic over a reading is the interruption: the reading stops
+    // now, since the voice cannot hear the reader over it.
+    claimSpeechChannel(handle.audioElement, sessionId);
+    // The narration level, except that a muted session's call still plays.
+    if (handle.audioElement) handle.audioElement.volume = conversationVolume(sessionId);
     try {
       setConversationSpeaking(true, () => get().stop());
     } catch {

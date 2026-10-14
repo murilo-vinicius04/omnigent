@@ -251,7 +251,8 @@ def create_unmute_live_router(
             except Exception:  # noqa: BLE001 - a hub with no list still routes
                 _logger.warning("unmute hub briefing failed", exc_info=True)
                 hub_sessions = []
-            instructions = f"{voice_hub.hub_briefing(hub_sessions)}\n\n{unmute_live.SPOKEN_RULES}"
+            briefing = voice_hub.hub_briefing(hub_sessions, recent=the_hub.state.entries)
+            instructions = f"{briefing}\n\n{unmute_live.SPOKEN_RULES}"
             briefed = True
             _logger.info(
                 "unmute hub briefed | sessions=%s", [(s.handle, s.name) for s in hub_sessions]

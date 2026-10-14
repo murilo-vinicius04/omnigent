@@ -159,7 +159,9 @@ def create_live_voice_router(
             _logger.warning("hub voice briefing failed", exc_info=True)
             sessions = []
         _logger.info("gpt live hub briefed | sessions=%s", [(s.handle, s.name) for s in sessions])
-        return voice_hub.hub_briefing(sessions, role=voice_hub.DELEGATING_HUB_ROLE)
+        return voice_hub.hub_briefing(
+            sessions, role=voice_hub.DELEGATING_HUB_ROLE, recent=hub.state.entries
+        )
 
     @router.post("/live/offer", response_model=LiveOfferResponse)
     async def live_offer(request: Request, body: LiveOfferRequest) -> LiveOfferResponse:

@@ -495,7 +495,12 @@ async def test_the_hubs_voice_runs_the_hubs_tools_on_the_server(tmp_path) -> Non
         await hub.close()
 
     assert said == "Sent it to brasa."
-    assert sent == [("s-brasa", "run tests")]
+    # The send carries the reader's own words under the voice's message.
+    [(session, text)] = sent
+    assert session == "s-brasa"
+    assert text.startswith("run tests\n\nTranscript of what was said")
+    assert text.endswith("> send brasa the tests")
+    assert call.sent_upto == 1
     first, second = model.requests
     names = [t["function"]["name"] for t in first["tools"]]
     assert names == ["session_status", "ask_claude", "check_machine", "set_model"]
@@ -510,6 +515,18 @@ async def test_the_hubs_voice_runs_the_hubs_tools_on_the_server(tmp_path) -> Non
     assert shown[1]["omnigentToolDone"]["sent"] is True  # the page ends the call
     # Sent from the call, it lands in the hub conversation like a typed send.
     assert [(e.kind, e.via) for e in hub.state.entries] == [("sent", "voice")]
+
+
+def test_the_readers_lines_skip_unmutes_placeholders() -> None:
+    messages = [
+        {"role": "system", "content": "brief"},
+        {"role": "user", "content": "manda pro brasa"},
+        {"role": "assistant", "content": "Mando?"},
+        {"role": "user", "content": "..."},
+        {"role": "user", "content": "(listening)"},
+        {"role": "user", "content": "sim, e o fim também"},
+    ]
+    assert unmute_live.reader_lines(messages) == ["manda pro brasa", "sim, e o fim também"]
 
 
 def test_news_during_the_call_is_told_in_the_next_reply() -> None:

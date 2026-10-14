@@ -107,6 +107,53 @@ def test_the_briefing_lists_every_session_with_its_handle() -> None:
     assert "[audi]" in briefing and "WORKING (now: Bash: pytest)" in briefing
 
 
+def test_the_briefing_carries_the_hub_chat_a_call_opens_on(tmp_path) -> None:
+    state = HubState("u1", root=tmp_path)
+    state.append(role="hub", kind="project", text="Made project x.")
+    state.append(role="you", kind="message", text="pode começar então", via="typed")
+    state.append(
+        role="hub",
+        kind="sent",
+        text="Sent to RAL.",
+        session_name="RAL",
+        detail="Comece o marco 1.",
+    )
+    report = "RAL finished: " + "o MPC segue o alvo. " * 40
+    state.append(role="hub", kind="finished", text=report, session_name="RAL")
+    briefing = voice_hub.hub_briefing(SESSIONS, recent=state.entries)
+    chat = briefing.split("[The hub chat just before this call")[1]
+    assert "They: pode começar então" in chat
+    assert "Hub sent to RAL: Comece o marco 1." in chat
+    # The report being read aloud when the mic opened, long enough to carry on from.
+    assert "Report from RAL: RAL finished: o MPC segue o alvo." in chat
+    assert len(chat.split("Report from RAL: ")[1]) > 600
+    assert "Made project" not in chat
+    assert chat.index("They:") < chat.index("Report from RAL")  # oldest first
+    assert "[The hub chat" not in voice_hub.hub_briefing(SESSIONS)
+
+
+def test_the_briefing_keeps_only_the_newest_lines(tmp_path) -> None:
+    state = HubState("u1", root=tmp_path)
+    for n in range(10):
+        state.append(role="you", kind="message", text=f"message {n}", via="typed")
+    chat = voice_hub.recent_block(state.entries)
+    assert chat.splitlines() == [f"They: message {n}" for n in range(4, 10)]
+
+
+def test_words_the_message_already_carries_are_not_repeated() -> None:
+    message = "Manda pro brasa: roda os testes de pedidos."
+    assert voice_hub.with_their_words(message, "roda os testes de pedidos", "pt-BR") == message
+    assert voice_hub.with_their_words(message, "  ", "pt-BR") == message
+
+
+def test_their_words_are_labelled_in_the_chats_language_and_keep_the_end() -> None:
+    said = "começo " + "x" * voice_hub.MAX_HEARD_CHARS + " fim do pedido"
+    out = voice_hub.with_their_words("Plano?", said, "pt-BR")
+    assert "Transcrição do que foi dito na chamada de voz" in out
+    assert out.endswith("fim do pedido") and "começo" not in out
+    assert "Transcript of what was said" in voice_hub.with_their_words("Plan?", "and audio", "")
+
+
 class _Router:
     async def perform(self, task, *, timeout_s=None):
         return "done"
@@ -195,6 +242,21 @@ async def test_tools_route_to_the_named_session_and_land_in_the_hub_chat(tmp_pat
     logged = [(e.kind, e.via, e.session_name) for e in hub.state.entries]
     assert logged == [("sent", "voice", "brasa"), ("check", "voice", "amarras")]
     assert "s-brasa" in hub._watches  # its answer will be reported back
+    await hub.close()
+
+
+async def test_a_voice_send_carries_their_own_words(tmp_path) -> None:
+    fake = _FakeServer()
+    hub = fake.hub(tmp_path)
+    heard = "pergunta o plano dos agentes. E o áudio corta quando falo por cima da leitura"
+    _, out = await voice_hub.run_hub_tool(
+        hub, "ask_claude", {"session": "brasa", "message": "What is the plan?"}, heard=heard
+    )
+    assert out.startswith(voice_hub.SENT_PREFIX)
+    [(_, text)] = fake.sent
+    assert text.startswith("What is the plan?\n\nTranscript of what was said")
+    assert text.endswith("> " + heard)  # the part the voice left out is there
+    assert hub.state.entries[0].detail == text  # and the hub shows what went
     await hub.close()
 
 
@@ -350,10 +412,12 @@ def test_the_hub_is_briefed_on_every_session_and_answers_its_own_tools(
     monkeypatch, tmp_path
 ) -> None:
     run_hub_tool = voice_hub.run_hub_tool
+    heard: list[str] = []
 
-    async def run(hub, name, args):
+    async def run(hub, name, args, **kwargs):
         # This app cannot deliver a send; the relay's flag is what is tested here.
         if name == "ask_claude":
+            heard.append(kwargs.get("heard", ""))
             return "orders", f"{voice_hub.SENT_PREFIX}orders. The call ends right after."
         return await run_hub_tool(hub, name, args)
 
@@ -379,6 +443,10 @@ def test_the_hub_is_briefed_on_every_session_and_answers_its_own_tools(
             assert "Bash: make scan (running now)" in done["output"]
             assert done["sent"] is False  # a look keeps the call open
 
+            for words in ("manda pro orders", " e o fim também"):
+                said = {"serverContent": {"inputTranscription": {"text": words}}}
+                upstream.push(json.dumps(said))
+                assert "inputTranscription" in ws.receive_text()
             send = {
                 "id": "t4",
                 "name": "ask_claude",
@@ -388,6 +456,18 @@ def test_the_hub_is_briefed_on_every_session_and_answers_its_own_tools(
             assert "toolCall" in ws.receive_text()
             done = json.loads(ws.receive_text())["omnigentToolDone"]
             assert done["sent"] is True  # the page ends the call after the goodbye
+            # The send carries their own words, not only the voice's summary of them.
+            assert heard == ["manda pro orders e o fim também"]
+
+            # A second send carries only what was said after the first.
+            upstream.push(
+                json.dumps({"serverContent": {"inputTranscription": {"text": "agora o brasa"}}})
+            )
+            assert "inputTranscription" in ws.receive_text()
+            upstream.push(json.dumps({"toolCall": {"functionCalls": [{**send, "id": "t5"}]}}))
+            assert "toolCall" in ws.receive_text()
+            assert json.loads(ws.receive_text())["omnigentToolDone"]["sent"] is True
+            assert heard[1] == "agora o brasa"
             _wait_for(lambda: any("toolResponse" in str(m) for m in upstream.sent))
     response = next(json.loads(m) for m in upstream.sent if "toolResponse" in str(m))
     reply = response["toolResponse"]["functionResponses"][0]

@@ -134,22 +134,21 @@ describe("the open spoken conversation", () => {
     expect(setConversationSpeaking).toHaveBeenCalledWith(false);
   });
 
-  it("opened over a reading, leaves it playing until someone on the call speaks", async () => {
+  it("opened over a reading, stops the reading as soon as the call connects", async () => {
     narrating = true;
     try {
       openLiveConversation.mockResolvedValue(fakeConversation());
       await useLiveConversationStore.getState().start("conv_a");
-      // The mic is open and the reading carries on underneath it.
+      // The voice cannot hear the reader over a reading, so the mic takes over at once.
       expect(useLiveConversationStore.getState().sessionId).toBe("conv_a");
-      expect(claimSpeechChannel).not.toHaveBeenCalled();
+      expect(claimSpeechChannel).toHaveBeenCalledTimes(1);
+      expect(claimSpeechChannel).toHaveBeenCalledWith(expect.anything(), "conv_a");
 
       const options = openLiveConversation.mock.calls[0]?.[1] as {
         onSpeech?: (who: "reader" | "voice") => void;
       };
+      // Speech on the call changes nothing more.
       options.onSpeech?.("reader");
-      expect(claimSpeechChannel).toHaveBeenCalledTimes(1);
-      expect(claimSpeechChannel).toHaveBeenCalledWith(expect.anything(), "conv_a");
-      // Only the first voice on the call hands over; later speech changes nothing.
       options.onSpeech?.("voice");
       expect(claimSpeechChannel).toHaveBeenCalledTimes(1);
     } finally {
