@@ -1,7 +1,10 @@
 # Hub: several agents per project, and a model router with a daily budget
 
-Status: proposal, nothing built (2026-10-14). Each phase ends with something
-you can open and try before the next one starts.
+Status (2026-10-14 14:10): Phase 1 (lanes) built and live; the budget governor
+and reflex's tier and effort are built. New lanes run on reflex's tier and effort
+and the quota rules' provider; sends to existing chats are still judged in shadow
+only. Each phase ends with something you can open and try before the next one
+starts.
 
 ## What you asked for
 
@@ -100,6 +103,42 @@ working)" and "RAL · joystick (Sonnet 5.5, idle)". Hub chips name the lane.
    - the create request the Hub sends;
    - the panel.
    Then a scratch-server run, then live on RAL once you say go.
+
+**Built 10-14** (`ca2852f90` server, `01bf04703` panel; live since the 14:02
+restart):
+- `omnigent/server/hub_lanes.py`: lane label, provider ↔ CLI wrapper and agent,
+  the catalog lookup that turns a tier word into a model id (newest version,
+  agy's effort in the id), the words that name a model ("use Sonnet"), the
+  checkouts a lane writes in, and the brief.
+- The router lists each project's newest 4 chats as lanes, each under its own
+  handle. `send` takes `"lane"` and `"now"`; `new_lane` takes `topic` and
+  `use`.
+- **Busy guard (decision 1: hold).** A send to a WORKING lane is held in
+  `~/.omnigent/hub/<user>/held.json` and delivered once the lane is idle twice
+  in a row and its last report is in; several held messages go as one. A
+  closed lane or 6 h busy is reported, never dropped silently. A restart
+  resumes the delivery.
+- **Opening a lane.** `POST /v1/sessions` with the project, the newest chat's
+  machine and folder, the provider's built-in agent and wrapper labels, the
+  lane label and title, model and effort; the CLI keeps the machine's own
+  permission settings. Checked live: a chat made only through the API starts
+  its runner and terminal (`claude --effort low --model haiku`); archiving it
+  stops them. The run is reflex's tier and effort plus the quota rules'
+  provider; a model they name wins; without reflex it copies the newest chat.
+  When no provider has budget for the tier, nothing opens and the Hub asks.
+- **Isolation (decision 2: own worktree), adapted.** All four projects run in
+  `/home/nexus`, which is not a repository, so a session-level worktree cannot
+  apply. The brief names each busy lane's task and the checkouts its tool
+  calls touched, and tells the new lane to make its own worktree (branch
+  `hub/<topic>`) before editing one of them. A project whose folder is itself
+  a checkout a busy lane writes in gets `git: {branch_name: "hub/<topic>"}`.
+- Panel: lanes under each project; New lane (topic, first request, model or
+  "let the Hub pick"); per lane, Rename and Close (after its handoff note by
+  default; never while it works).
+- Real router check (Gemini 3.8 Flash Low, fake server, real reflex and
+  budgets): follow-up for the busy lane → held; new topic → new lane
+  (economical/high → Claude Haiku high); "fala agora" → sent at once;
+  "agente separado com o Sonnet" → new lane on Sonnet high. 4/4.
 
 ## Phase 2: the daily budget and the model router
 
@@ -388,10 +427,10 @@ real lane each, and only after you say go.
 
 ## Decisions for you
 
-1. **A message for a busy lane:** hold it until the lane is idle (recommended),
-   or paste it into the running task.
-2. **A second writer in the same repository:** its own worktree (recommended),
-   or the same folder.
+1. ~~A message for a busy lane~~ **Decided 10-14: hold it** until the lane is
+   idle; "tell it now" still pastes it in.
+2. ~~A second writer in the same repository~~ **Decided 10-14: its own
+   worktree** (see Built 10-14 for how, since the projects run in `/home/nexus`).
 3. **Buffer left at the end of each week:** 15% per provider (recommended), or
    another number.
 4. **Unused daily budget:** carry it forward, capped at one extra day

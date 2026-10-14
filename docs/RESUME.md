@@ -14,6 +14,28 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-14 14:10 — READ FIRST (lanes live; session d9653808, conversation 247c77f5)
+
+**State:** all committed and live. Last code commits ca2852f90 (server) + 01bf04703 (panel). Server
+restarted 14:02 (resumed 2 watches). Page = clean-archive build of 01bf04703. Nothing running, no benchmark.
+The 13:40 block below still holds for the router, quota rules and reflex.
+**Lanes (Phase 1 of docs/HUB_LANES_PLAN.md, user said "continue as structured" = decisions 1 hold, 2 worktree):**
+- A project's newest 4 chats are its lanes; the router sees each under its own handle (`project_line`).
+- `send` + `"lane"`; busy lane → held (`held.json`, delivered when idle x2 and its report is in; restart
+  resumes); `"now": true` steers it. `new_lane` (+ `topic`, `use`) → `Hub.open_lane` → POST /v1/sessions
+  beside the newest chat (same host/folder, built-in agent per provider, lane label + title, model/effort).
+- New lanes RUN on reflex's tier/effort + the quota rules' provider (`_lane_run`); sends to existing chats
+  are still shadow-judged only. No reflex → copy the newest chat's run. No budget → nothing opens, Hub asks.
+- Projects run in /home/nexus (not a repo): isolation = brief tells the new lane the busy lanes' checkouts
+  and to make its own worktree (branch hub/<topic>); `git:` option only when the folder itself is a checkout.
+- Routes: POST /v1/hub/projects/{id}/lanes, PATCH /v1/hub/lanes/{sid}, POST /v1/hub/lanes/{sid}/close
+  (handoff note first by default; refused while working). Panel: New lane / Rename lane / Close lane.
+- Verified: 23 lane tests + 208 hub tests + 16 panel tests; API-only chat launches its terminal (made and
+  archived a059a576…); real Flash Low router 4/4 on hold / new lane / now / named model (scratch, fake server).
+**Not yet tried by the user:** a real lane from the Hub or the panel (spends quota on the picked model).
+**Next:** outcome log (plan 2.4); show the user; then a week of logs before reflex also decides sends to
+existing chats. Local CLI token: use `omnigent.cli_auth.load_token/refresh_stored_token` (it expires).
+
 ## 2026-10-14 13:40 — READ FIRST (router + quota + panel; session d9653808, conversation 247c77f5)
 
 **State:** all committed and live. Last commit 21a7de2a1. Server restarted 13:32. Page = clean-archive
