@@ -14,47 +14,50 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
-## 2026-10-14 10:50 — READ FIRST (voice fixes + lanes plan; session d9653808, conversation 247c77f5)
+## 2026-10-14 12:05 — READ FIRST (session d9653808, conversation 247c77f5 = project "omnigent")
 
-**State:** 14d16fc3c live (server restarted 10:46:30, 2 watches resumed; page = clean archive build of it).
-The user was on a Windows PC browser this morning, not the phone app. RAL's Opus chat (4a186787) was busy on
-the sim Franka MPC (`~/spot-teleop/isaac-sim_ws/franka_mpc/`).
-- **Voice send dropped the end (10:36 call), reworked 10:57 (f4a7d8a73, 172a5b93b):** the user wants a
-  SUMMARY that has everything they asked, never the raw transcript. The relay keeps the transcript
-  (`_TurnLog` turn text, `heard_since_send`/`mark_sent`; Unmute `reader_lines`). `Hub.complete_spoken` has
-  the hub router (Flash Low, ~5 s) keep the voice's message and add what it left out (`_COMPLETE_TASK`).
-  Only when the router fails, or returns less than the voice wrote, does the transcript go under the
-  message (`voice_hub.with_their_words`). Checked on the real 10:51 send: 300 -> 410 chars, all points.
-  The 10:51 send also fired 0.7 s after a mid-thought pause, and 38 chars said after it were lost. Sends
-  now wait for 2.5 s of silence (cap 12 s; `SEND_QUIET_S`), go one at a time, and a repeat with nothing
-  new is answered "already sent".
-- **Mic over a reading:** the 09-21 rule (3f058a8a2) let the reading play on until the voice heard the caller.
-  Over the reading Gemini heard nothing for ~43 s. Now opening the mic stops the reading when the call connects
-  (`liveConversation.ts`). Every hub call (Gemini, Unmute, GPT-Live) is briefed with the hub chat's newest 6
-  lines (`voice_hub.recent_block`), so it carries on from the report instead of starting over.
-- Not yet tried by the user on a real call. Their browser had NOT reloaded since the 10:46 deploy (no GET /
-  in the log), so the 10:50 call still ran the old mic rule.
-- **Plan for several agents per project + agent chooser across Claude/Codex/Gemini** (user: "not only
-  Claude"): `docs/HUB_LANES_PLAN.md`. Nothing built; it
-  awaits the user's go and four decisions (listed at the end of the plan). Upstream Smart Routing
-  (`smart_routing.py`) is an LLM fast/balanced/powerful judge, the approach our routing report rejects.
-  Reuse its plumbing only.
-- **Hub file links (663e09e5e, live 11:32):** project folders are all /home/nexus, while agents write
-  repo-relative paths, so 0 of 51 backticked report paths resolved. Reports now keep `anchors` (folders
-  the turn's tool calls read, wrote or cd'd into; `hub.touched_paths`/`anchor_dirs`). `workspace_file`
-  also tries them, still inside the workspace. `link_known_files` links a short path to the one known
-  file ending in it. Replay of the last 25 reports: 5 -> 23 links, all correct. Old messages are not
-  re-rendered. Write absolute paths in replies.
-- **Router premises from the user (11:10), now in the plan:**
-  - The router decides on its own, with weekly ceilings so all 3 providers end the week with a buffer
-    (proposed 15%). Claude Max -> Pro at the reset Fri 10-16 08:59.
-  - Best model whenever possible; economical tiers only to save quota on simple tasks.
-  - The router is a fine-tuned model that learns from mistakes (bug -> next similar task one tier up).
-    Laya (open, local) is trainable; Jev is hosted only and out of credit since 10-06.
-  - Tiers: Claude Opus/Sonnet/Haiku 5.5; Codex GPT-6.1 Sol / GPT-6 Luna; Gemini 4 Argon / Flash.
-    Argon is not in `agy models` yet (announced 09-30, limited access).
-  - agy also offers Opus/Sonnet 5.5 on a separate Google "Claude/GPT week" pool.
-  - Meters at 11:07: Claude Max week 43% (pace line 62%), Codex week 0% (resets Tue 10-20).
+**State:** everything is committed and live. Last code: 663e09e5e. Server restarted 11:32:53, 2 watches
+resumed. Page = clean-archive build of 14d16fc3c (later commits are server or docs only). Nothing is
+running and no benchmark is on. The user drives this chat from the Hub (pt-BR); answer in English and
+keep the final reply short (the Hub reads it out). RAL's Opus chat (4a186787) works on the sim Franka MPC.
+**Shipped today (commit -> what):**
+- 14d16fc3c **Mic over a reading:**
+  - Opening the mic stops the reading when the call connects (it used to play on; Gemini then heard
+    nothing for ~43 s).
+  - Every hub call (Gemini, Unmute, GPT-Live) is briefed with the hub chat's newest 6 lines
+    (`voice_hub.recent_block`).
+  - The user's browser had not reloaded by 10:50; not yet confirmed on a real call.
+- f4a7d8a73 + 172a5b93b **Voice send = a COMPLETE SUMMARY, never the raw transcript (user's rule):**
+  - `Hub.complete_spoken` (`_COMPLETE_TASK`, Flash Low ~5 s) keeps the voice's message and adds what it
+    left out. Raw words (`with_their_words`) are only a fallback.
+  - The relay waits for 2.5 s of silence before a send (`SEND_QUIET_S`, cap 12 s). Sends run one at a
+    time, and a repeat with nothing new is answered "already sent".
+  - Checked on the real 10:51 send: 300 -> 410 chars, nothing missing.
+- 663e09e5e **Hub file links:**
+  - Problem: projects' folder is /home/nexus but agents write repo-relative paths; 0 of 51 resolved.
+  - Fix: reports keep `anchors` (folders the turn touched: `hub.touched_paths`/`anchor_dirs`), and
+    `workspace_file` also tries them.
+  - Replay of 25 reports: 5 -> 23 links, all to the right file. ALWAYS write absolute paths in replies.
+- Restarted the dead `claude-history-archive.timer` (the token ledger stopped 09-27..10-14).
+  `agy-quota-sample.timer` is still off (decision 8).
+**Measured (expensive to redo):**
+- Claude 5h window on Max 5x is 2.1x bigger since 09-22, from ledger + meter 09-17..09-27; Anthropic gave
+  no figures. Pro estimate per 1% of the 5h window ~97k cache-write / ~10k output.
+- Plan tier `default_claude_max_5x` the whole time. Max -> Pro at the reset Fri 10-16 08:59.
+- Meters 11:07: Claude week 43%; Codex Plus week 0% (resets Tue 10-20 12:02); Gemini last read 10-08
+  (resets Tue ~23:35).
+- `agy` 1.3.5 is the latest; Gemini 4 Argon is not offered to this account (Ultra only); agy lists
+  Flash 3.8 + Opus/Sonnet 5.5 (separate Google pool) + GPT-OSS.
+- Laya multilingual = mmBERT-base 322M, Apache 2.0, fine-tunable; untuned AUC on our 62 routing decisions:
+  Jev 0.66 / reflex 0.62 / Laya 0.50.
+**Open (nothing built): `/home/nexus/wt/friendly-layer/docs/HUB_LANES_PLAN.md`** — lanes per project and a
+model router.
+- A Jev-style decision model judges each task's tier. Rules pick the provider within a DAILY budget per
+  provider, on its own reset day, in Pro terms.
+- Jev first, with past outcomes in its state; later fine-tune reflex or Laya on the outcome log.
+- 8 decisions await the user (end of the plan): busy lane, worktree, 15% buffer, carry-over, Max leftover
+  until Friday, 1-in-10 exploration, top up Jev's OpenRouter credit (empty since 10-06), agy sampler.
+- Don't build until they answer. Memory: `hub-model-router-premises`, `link-files-by-absolute-path`.
 
 ## 2026-10-13 20:10 — READ FIRST (Hub evening; session d9653808, conversation 247c77f5 = project "omnigent")
 
