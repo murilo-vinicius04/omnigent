@@ -615,7 +615,9 @@ function RouteLine({ row }: { row: HubProjectRow }) {
     outcome =
       `${route.tier} · ${route.effort} → ${providerLabel(route.proposal.provider)} ` +
       `${route.proposal.model} · ${route.proposal.effort}`;
-  else outcome = `${route.tier} · ${route.effort} → ${route.proposal?.reason || "no provider"}`;
+  else if (route.proposal) outcome = `${route.tier} · ${route.effort} → ${route.proposal.reason}`;
+  // Logged before the quota rules picked a provider.
+  else outcome = `${route.tier} · ${route.effort}`;
   const ran = route.ran_on?.model ? `It ran on ${route.ran_on.model}.` : "";
   return (
     <p

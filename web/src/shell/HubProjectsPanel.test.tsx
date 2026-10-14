@@ -187,6 +187,17 @@ const NESSIE: HubProjectRow = {
   },
 };
 
+NESSIE.route = {
+  at: 0,
+  session_id: "s_agent",
+  request: "Check the logs.",
+  tier: "economical",
+  effort: "xhigh",
+  proposal: null,
+  ran_on: null,
+  error: "",
+};
+
 const EMPTY: HubProjectRow = {
   id: "p_arm",
   name: "robot arm",
@@ -283,7 +294,11 @@ describe("HubProjectsPanel", () => {
     expect(screen.getByTestId("hub-project-route-p_amarras").textContent).toBe(
       "Router, logged only: middle · high → Claude Sonnet · high",
     );
-    expect(screen.queryByTestId("hub-project-route-p_nessie")).toBeNull();
+    // A decision logged before providers were picked shows only its tier and effort.
+    expect(screen.getByTestId("hub-project-route-p_nessie").textContent).toBe(
+      "Router, logged only: economical · xhigh",
+    );
+    expect(screen.queryByTestId("hub-project-route-p_arm")).toBeNull();
     expect((await screen.findByTestId("hub-budget-claude")).textContent).toBe(
       "Claude · 21.3% left today",
     );
