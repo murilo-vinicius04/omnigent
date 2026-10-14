@@ -14,6 +14,60 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-14 13:40 — READ FIRST (router + quota + panel; session d9653808, conversation 247c77f5)
+
+**State:** all committed and live. Last commit 21a7de2a1. Server restarted 13:32. Page = clean-archive
+build of 9dffb694a. Nothing running, no benchmark. The user drives this chat from the Hub (pt-BR); answer in
+English, short. Don't touch the other session's uncommitted files (acp_*, runner/app.py, schemas.py,
+routes_core.py, common.py, openapi.json, ChatPage.tsx, chatStore.ts, acpPermissionMode.ts).
+**User's rules for the router (10-14, memory `hub-model-router-premises`):**
+- reflex decides each task's TIER and EFFORT, even when quota has room. Hard-coded rules pick only the
+  PROVIDER, from quota balance. reflex is fine-tuned on outcomes later.
+- Effort is NOT tied to tier: it is asked per tier and leans high. Another level only at >= 60% confidence.
+- The quota rules can be tuned later from real consumption.
+**Built today (all shadow: logs only, nothing switches models):**
+- reflex = Qwen3.5-4B `stable`, user service `reflex.service` (enabled at boot), 127.0.0.1:8008, ~5-7 GB GPU.
+  - Code at ~/laya-test/reflex (venv rebuilt, 5.6 GB). Weights in the shared HF cache (9.3 GB).
+  - Stop with `systemctl --user stop reflex`.
+- `omnigent/server/model_router.py` (1e69a0851, 5768b4c72, 577d92499): on each Hub send, reflex is asked:
+  - tier, effort for each tier, redo risk, difficulty, kind of work, and "fixes the previous result?";
+  - it logs to `~/.omnigent/hub/morys5/router.jsonl`, on while `~/.omnigent/hub/router-url` exists.
+- `omnigent/server/budget.py` (3f31dfbb2): each provider's day from its own reset.
+  - Daily = (100-15)/7 % of the week; carry-over capped at 1 day; today's spend from usage-history.jsonl.
+  - 5h guard at 85%; stale meters used only last.
+  - Settings in `~/.omnigent/hub/budget.json`: Claude spends the Max leftover freely until Fri 10-16 11:59Z.
+  - `pick()` = the provider with the most of today's budget left that has reflex's tier. It is logged as
+    `proposal`; `GET /v1/hub/budgets` returns the budgets.
+- Projects panel (7db7a4f6f, 9dffb694a):
+  - each project lists up to 4 newest chats, each with its own provider/model/effort and a Change button;
+  - the newest chat is marked "Hub sends here";
+  - a budget strip, plus a "Router, logged only" line;
+  - `/hub/model` takes `session_id`.
+- `pro_equivalent.py` scaled 2.1x (11.55M per 5h, 84M per week). Bench constants too: ~/nexus-bench/account.py
+  and ~/deepswe/{phase_split,adv_compare}.py are now 97k/10.3k/0.8M per 1% of a Pro 5h window.
+- Disk cleanup: the user removed the root xet cache. Chatterbox and TripoSR deleted with their OK. 14-19 GB free.
+**Measured:**
+- Replay of 97 real Hub sends (scratchpad router/replay_hub.json, labels in fix_labels.json):
+  - tier: economical 38 / middle 27 / top 32;
+  - effort: high 78 / low 18;
+  - p50 latency 256 ms.
+- "Fix request" detection vs my labels: AUC 0.65, weak.
+- 12 DeepSWE tasks: all judged top; the difficulty score did not follow solve rate.
+- The first live decision (the user's 3-part design request) came out economical: too low.
+- Live 13:32: Claude Max week 46% = 230% of a Pro week; its 5h window = 160% of Pro. After Friday the
+  current habit (several Opus xhigh chats) does NOT fit Pro.
+- Codex 0% (resets Tue 10-20 12:02). Gemini unread since its Tue reset.
+- reflex-27b beats Jev on JevBench hard (75.9 vs 74.1) but needs ~27 GB.
+**Next (asked the user, awaiting "go"): Phase 1 lanes.** The Hub opens a new chat in the project on the
+picked provider/model/effort, with a busy guard and a worktree for a second writer. Ideally before Friday.
+- Needs decisions 1 (busy chat: hold [rec] or paste) and 2 (own worktree [rec]).
+- Then: outcome log (2.4) for fine-tuning; calibrate Pro from Fri 08:59 with the ledger.
+- Live check: verify router.jsonl rows with `proposal` after the next Hub send.
+- Local API: CLI token in ~/.omnigent/auth_tokens.json (Bearer; never print it).
+- Headless screenshot: `vite --port 5199` with OMNIGENT_AUTH_TOKEN + `google-chrome --headless=new
+  --screenshot`, then attach with `~/deepswe/attach_luna6_chart.py conv resp png caption`.
+  conversation_items ids are bytes.
+
 ## 2026-10-14 12:05 — READ FIRST (session d9653808, conversation 247c77f5 = project "omnigent")
 
 **State:** everything is committed and live. Last code: 663e09e5e. Server restarted 11:32:53, 2 watches
