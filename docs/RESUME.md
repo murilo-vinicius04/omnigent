@@ -47,7 +47,10 @@ narrations still ran the old page: log `gemini live language | mode=narrate lang
 - Phone: `sudo tailscale serve --bg 6767` (user ran it) -> https://nexus.tail0994ab.ts.net. Official Android app
   connects; its WebView mic fails `NotReadableError: Could not start audio source` even on bare getUserMedia
   (test page omnigent/server/static/web-ui/micdiag.html, untracked, reports via GET /micdiag-report?d= in the
-  access log). Likely app manifest lacks MODIFY_AUDIO_SETTINGS; awaiting the user's Chrome run of the same page.
+  access log). Chrome on the same phone passes -> app bug (manifest lacked MODIFY_AUDIO_SETTINGS).
+- 28a23905d personal Android build "Omnigent Nexus" (ai.omnigent.android.nexus): mic fix + KeepAliveService
+  (foreground, mic|mediaPlayback) so calls/replies survive the lock screen. APK served at /omnigent-nexus.apk;
+  rebuild steps in memory omnigent-android-personal-build. NOT yet tried on the phone.
 **Not yet seen live:** the chip (sent and finished); full narration of a finished report; language rule after reload; a real Gemini
 Hub call ("send to RAL" hangs up once, no duplicate; "check on RAL" shows "Checking on RAL (read-only)…").
 **Offered, not built:** retry a timed-out spoken summary; backup router off Google for >90 s outages; double
