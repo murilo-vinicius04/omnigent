@@ -14,6 +14,32 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-14 15:25 — READ FIRST (lane fix live; benchmark PAUSED; session d9653808, chat 247c77f5)
+
+**Priority (user 15:15): multi-lane behaviour first; omni-bench paused until they say.**
+**Lanes:** fix f64f1b6d2 live since the 15:03 restart (details in the 14:10 block below). Not yet tried
+by the user after the fix: ask them to send a NEW question to a busy project in the Hub and expect a
+"New lane" line + a new chat in the panel (spends quota on reflex + quota pick). Real Flash router 5/5 on
+scratch (`scratchpad/lanecheck/check.py`, fake server, `OMNIGENT_DATA_DIR` copy). Hub log
+`~/.omnigent/hub/morys5/log.jsonl`, held queue `held.json` (was empty at 15:03).
+**User rules this session:** no hand rules over reflex's tier/effort ("you're boxing the agent in");
+lanes only when a lane is busy / asked (not one per topic). Kill processes by PID in a separate command
+(memory `kill-by-pid-separately`): a pattern in the same command line killed my shell twice.
+**Measured (expensive):**
+- Frozen reflex vs 51 DeepSWE tasks (`scratchpad/router/deepswe_eval.{py,json}`, chart attached): Sonnet
+  solved 39, only Opus 4, neither 8; reflex said top for 29/39 Sonnet-solved; AUC 0.48. Where both ran (20):
+  Sonnet 10/20, Opus 11/20; "Sonnet then Opus on failure" = same solves at ~60% of always-Opus cost.
+- reflex on the 22 omni-bench requests: 14 economical / 8 top / 0 middle (`omni-bench/tasks/reflex_picks.json`).
+- Claude Max week 48% used at 15:12 (resets Fri 10-16 09:00 local).
+**omni-bench (`/home/nexus/omni-bench`, README.md):** 22 tasks = user's real requests (chat.db) + the commits
+that answered them, hidden tests from those commits. Tools: `mine.py`, `select_spans.py`, `build_tasks.py`
+(PICKED + hand-read KEEP of messages), `validate.py` (3 parallel clones; was still running at 15:25, log
+`validate.log`), `rescore.py`, `summary.py`, `bench.py run|oracle|null|probe`, `reflex_picks.py`. Sandbox
+verified (bwrap; gh logged out, no remote, no ~/.ssh, no writes outside the run dir). Oracle/null checked on
+task 03. 8/8 validated so far valid. To resume: wait for `exit` in validate.log, then
+`python3 tools/build_tasks.py` (applies KEEP, keeps validation keys), `tools/rescore.py`, `tools/summary.py`,
+show the user; pilot (Haiku 5.5 + Sonnet 5.5, high effort) needs their go and GitHub-publish check (#112).
+
 ## 2026-10-14 14:10 — READ FIRST (lanes live; session d9653808, conversation 247c77f5)
 
 **State:** all committed and live. Last code commits ca2852f90 (server) + 01bf04703 (panel). Server
