@@ -223,6 +223,29 @@ with the translation only.
 {summary}\
 """
 
+#: A voice send, rewritten so it carries everything they asked. The call's voice
+#: writes its own summary, and on a long request it left questions out.
+_COMPLETE_TASK: Final[str] = """\
+On a voice call they asked for a message to go to {name}'s Claude. The call's \
+voice wrote the message below; the transcript of what they said is under it. \
+Rewrite the message so it carries every question, request and detail they gave \
+for {name}, in the order they said them. It stays a summary for Claude: not the \
+transcript, no filler, and nothing they did not say. Leave out only what was \
+for the call itself (greetings, asking what a project is doing). Keep names, \
+paths, numbers and code exactly. Write it in {language}. Reply with the message \
+only.
+
+[The voice's message]
+{message}
+
+[What they said, transcribed; it may have errors]
+{heard}\
+"""
+
+#: Budget for that rewrite. Flash Low answers in 2-13 s; past this the send goes
+#: out with their words under the voice's message instead.
+COMPLETE_TIMEOUT_S: Final[float] = 25.0
+
 EntryKind = Literal[
     "message",
     "sent",
@@ -1680,6 +1703,37 @@ class Hub:
             translated = ""
         # Untranslated beats lost.
         return translated or summary
+
+    async def complete_spoken(self, name: str, message: str, heard: str) -> str:
+        """A voice's message for a project, rewritten to carry everything they said.
+
+        Falls back to the message with their words under it when the router
+        cannot answer in time, or answers with less than the voice wrote: a
+        long message beats a lost question.
+        """
+        words = " ".join(heard.split())
+        if not words or voice_hub.normalize(words) in voice_hub.normalize(message):
+            return message
+        lang = await self.language()
+        router = await self._router_factory()
+        try:
+            rewritten = (
+                await router.perform(
+                    _COMPLETE_TASK.format(
+                        name=name,
+                        language=language_phrase(lang),
+                        message=message,
+                        heard=words,
+                    ),
+                    timeout_s=COMPLETE_TIMEOUT_S,
+                )
+            ).strip()
+        except DiscussionUnavailable:
+            rewritten = ""
+        if len(rewritten) < len(message):
+            _logger.info("hub voice send kept their words | rewrite=%d chars", len(rewritten))
+            return voice_hub.with_their_words(message, words, lang)
+        return rewritten
 
     async def _import_files(
         self, session: HubSession, files: Sequence[ReplyFile]

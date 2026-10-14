@@ -58,6 +58,15 @@ MAX_SESSION_S: Final[float] = 30 * 60
 #: The hub is meant to stay on while they work, so its guard is a working day.
 MAX_HUB_SESSION_S: Final[float] = 8 * 3600
 
+
+#: Before a hub send, how long the reader must have been silent. Google closes
+#: a turn on a short pause, and a send then went out mid-sentence; what they
+#: said next was lost when the call hung up.
+SEND_QUIET_S: Final[float] = 2.5
+
+#: The longest a send waits for that silence.
+SEND_QUIET_CAP_S: Final[float] = 12.0
+
 #: New connections one session may resume onto before the relay gives up.
 MAX_RESUMES: Final[int] = 100
 
@@ -208,6 +217,11 @@ class _TurnLog:
         self.replied_at = -1.0
         #: Turns whose words a send already carried.
         self.sent_upto = 0
+        self.sends = 0
+        #: When Google last transcribed the reader (monotonic), and whether
+        #: its speech detection has them mid-utterance.
+        self.heard_at = 0.0
+        self.speaking = False
 
     def _open_turn(self) -> _HeardTurn | None:
         if self.turns and self.turns[-1].reply is None:
@@ -230,6 +244,10 @@ class _TurnLog:
         activity = parsed.get("voiceActivity")
         if isinstance(activity, dict) and activity.get("type") == "ACTIVITY_END":
             self.speech_end = at
+            self.speaking = False
+        elif isinstance(activity, dict) and activity.get("type") == "ACTIVITY_START":
+            self.speaking = True
+            self.heard_at = now
         usage = parsed.get("usageMetadata")
         if isinstance(usage, dict):
             self.usage = {k: v for k, v in usage.items() if isinstance(v, int)}
@@ -243,6 +261,7 @@ class _TurnLog:
             turn.end = at
             turn.chars += len(text)
             turn.text += text
+            self.heard_at = now
         model_turn = content.get("modelTurn")
         parts = model_turn.get("parts") if isinstance(model_turn, dict) else None
         audio = isinstance(parts, list) and any(
@@ -269,6 +288,15 @@ class _TurnLog:
     def mark_sent(self) -> None:
         """The words heard so far went with a send; the next one starts after them."""
         self.sent_upto = len(self.turns)
+        self.sends += 1
+
+    async def reader_quiet(self, quiet_s: float, cap_s: float) -> None:
+        """Return once the reader has been silent for *quiet_s*, or after *cap_s*."""
+        give_up = time.monotonic() + cap_s
+        while time.monotonic() < give_up:
+            if not self.speaking and time.monotonic() - self.heard_at >= quiet_s:
+                return
+            await asyncio.sleep(0.2)
 
     def unanswered(self) -> bool:
         """Whether the last thing Google heard got no reply at all."""
@@ -726,6 +754,32 @@ def create_gemini_live_router(
                     and bool(session_id_clean)
                 )
 
+            send_lock = asyncio.Lock()
+
+            async def _send_from_call(
+                the_hub: hub_module.Hub, args: dict[str, Any]
+            ) -> tuple[str, str]:
+                """Send once the reader has finished, carrying everything they said.
+
+                One send at a time: a voice that asks again for words the last
+                send already carried is told it went, and nothing is sent twice.
+                """
+                async with send_lock:
+                    await turn_log.reader_quiet(SEND_QUIET_S, SEND_QUIET_CAP_S)
+                    heard = turn_log.heard_since_send()
+                    if turn_log.sends and not heard:
+                        spoken = str(args.get("session") or args.get("project") or "")
+                        return spoken, (
+                            f"{voice_hub.SENT_PREFIX}{spoken} already, with everything they "
+                            "said. Say so in one short sentence: the call ends right after."
+                        )
+                    project, output = await voice_hub.run_hub_tool(
+                        the_hub, "ask_claude", args, heard=heard
+                    )
+                    if output.startswith(voice_hub.SENT_PREFIX):
+                        turn_log.mark_sent()
+                    return project, output
+
             async def _answer_server_tool(call: dict[str, Any]) -> None:
                 """Run a server tool, answer Google, and tell the page it is done."""
                 name = str(call.get("name", ""))
@@ -733,12 +787,10 @@ def create_gemini_live_router(
                 started = time.monotonic()
                 project = ""
                 try:
-                    if hub and the_hub is not None:
-                        project, output = await voice_hub.run_hub_tool(
-                            the_hub, name, args, heard=turn_log.heard_since_send()
-                        )
-                        if name == "ask_claude" and output.startswith(voice_hub.SENT_PREFIX):
-                            turn_log.mark_sent()
+                    if hub and the_hub is not None and name == "ask_claude":
+                        project, output = await _send_from_call(the_hub, args)
+                    elif hub and the_hub is not None:
+                        project, output = await voice_hub.run_hub_tool(the_hub, name, args)
                     else:
                         output = await _live_activity(session_id_clean)
                 except Exception as exc:  # noqa: BLE001 - the model must get an answer

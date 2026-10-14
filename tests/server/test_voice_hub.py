@@ -23,6 +23,7 @@ from omnigent.server.hub import (
     ProjectRecord,
     TurnState,
 )
+from omnigent.server.routes import gemini_live as gemini_live_route
 from omnigent.server.routes.gemini_live import create_gemini_live_router
 from omnigent.server.voice_hub import render_activity
 
@@ -155,8 +156,16 @@ def test_their_words_are_labelled_in_the_chats_language_and_keep_the_end() -> No
 
 
 class _Router:
+    def __init__(self) -> None:
+        self.rewrite = "done"
+        self.down = False
+        self.tasks: list[str] = []
+
     async def perform(self, task, *, timeout_s=None):
-        return "done"
+        if self.down:
+            raise discussion.DiscussionUnavailable("no answer within 25s")
+        self.tasks.append(task)
+        return self.rewrite
 
     def remember(self, text):
         pass
@@ -168,6 +177,7 @@ class _FakeServer:
         self.checked: list[tuple[str, str]] = []
         self.sessions = list(SESSIONS)
         self.fail = False
+        self.router = _Router()
 
     def hub(self, tmp_path) -> Hub:
         async def sessions(ids):
@@ -192,7 +202,7 @@ class _FakeServer:
             return TurnState(status="running")
 
         async def router():
-            return _Router()
+            return self.router
 
         async def projects():
             return list(PROJECTS)
@@ -245,18 +255,51 @@ async def test_tools_route_to_the_named_session_and_land_in_the_hub_chat(tmp_pat
     await hub.close()
 
 
-async def test_a_voice_send_carries_their_own_words(tmp_path) -> None:
+HEARD = "pergunta o plano dos agentes. E o áudio corta quando falo por cima da leitura"
+
+
+async def test_a_voice_send_is_rewritten_to_carry_everything_they_asked(tmp_path) -> None:
     fake = _FakeServer()
+    complete = "Qual é o plano dos agentes? E o áudio corta quando falo por cima da leitura."
+    fake.router.rewrite = complete
     hub = fake.hub(tmp_path)
-    heard = "pergunta o plano dos agentes. E o áudio corta quando falo por cima da leitura"
     _, out = await voice_hub.run_hub_tool(
-        hub, "ask_claude", {"session": "brasa", "message": "What is the plan?"}, heard=heard
+        hub, "ask_claude", {"session": "brasa", "message": "Qual é o plano?"}, heard=HEARD
     )
     assert out.startswith(voice_hub.SENT_PREFIX)
-    [(_, text)] = fake.sent
-    assert text.startswith("What is the plan?\n\nTranscript of what was said")
-    assert text.endswith("> " + heard)  # the part the voice left out is there
-    assert hub.state.entries[0].detail == text  # and the hub shows what went
+    # A summary that has the question the voice left out, not the transcript.
+    assert fake.sent == [("s-brasa", complete)]
+    [task] = fake.router.tasks
+    assert "Qual é o plano?" in task and HEARD in task and "brasa" in task
+    assert hub.state.entries[0].detail == complete  # the hub shows what went
+    await hub.close()
+
+
+async def test_a_failed_rewrite_sends_their_words_rather_than_lose_them(tmp_path) -> None:
+    for broken in ("down", "short"):
+        fake = _FakeServer()
+        fake.router.down = broken == "down"
+        fake.router.rewrite = "ok"  # less than the voice wrote
+        hub = fake.hub(tmp_path / broken)
+        await voice_hub.run_hub_tool(
+            hub, "ask_claude", {"session": "brasa", "message": "Qual é o plano?"}, heard=HEARD
+        )
+        [(_, text)] = fake.sent
+        assert text.startswith("Qual é o plano?\n\nTranscript of what was said")
+        assert text.endswith("> " + HEARD)
+        await hub.close()
+
+
+async def test_words_the_voice_already_sent_need_no_rewrite(tmp_path) -> None:
+    fake = _FakeServer()
+    hub = fake.hub(tmp_path)
+    await voice_hub.run_hub_tool(
+        hub,
+        "ask_claude",
+        {"session": "brasa", "message": "roda os testes"},
+        heard="roda os testes",
+    )
+    assert fake.sent == [("s-brasa", "roda os testes")] and fake.router.tasks == []
     await hub.close()
 
 
@@ -422,6 +465,7 @@ def test_the_hub_is_briefed_on_every_session_and_answers_its_own_tools(
         return await run_hub_tool(hub, name, args)
 
     monkeypatch.setattr(voice_hub, "run_hub_tool", run)
+    monkeypatch.setattr(gemini_live_route, "SEND_QUIET_S", 0.0)
     upstream = _FakeUpstream()
     with TestClient(_hub_app(monkeypatch, tmp_path, upstream)) as tc:
         with tc.websocket_connect("/v1/live/gemini/ws?mode=hub") as ws:
@@ -468,6 +512,13 @@ def test_the_hub_is_briefed_on_every_session_and_answers_its_own_tools(
             assert "toolCall" in ws.receive_text()
             assert json.loads(ws.receive_text())["omnigentToolDone"]["sent"] is True
             assert heard[1] == "agora o brasa"
+
+            # Asked again with nothing new said: told it went, and nothing is sent twice.
+            upstream.push(json.dumps({"toolCall": {"functionCalls": [{**send, "id": "t6"}]}}))
+            assert "toolCall" in ws.receive_text()
+            again = json.loads(ws.receive_text())["omnigentToolDone"]
+            assert again["sent"] is True and "already" in again["output"]
+            assert len(heard) == 2
             _wait_for(lambda: any("toolResponse" in str(m) for m in upstream.sent))
     response = next(json.loads(m) for m in upstream.sent if "toolResponse" in str(m))
     reply = response["toolResponse"]["functionResponses"][0]
@@ -571,3 +622,20 @@ def test_the_voice_button_inside_the_hub_chat_is_the_hub(monkeypatch, tmp_path) 
     assert names == ["session_status", "ask_claude", "check_machine", "set_model"]
     # What the hub says on this call is written into the hub conversation.
     assert hub_module._HUBS["local"].chat.session_id == "s-hubchat"
+
+
+async def test_a_send_waits_for_the_reader_to_finish() -> None:
+    log = gemini_live_route._TurnLog(time.monotonic())
+    log.frame(time.monotonic(), {"voiceActivity": {"type": "ACTIVITY_START"}}, "")
+    started = time.monotonic()
+    # Mid-utterance: it waits, up to the cap.
+    await log.reader_quiet(0.1, 0.5)
+    assert time.monotonic() - started >= 0.45
+    log.frame(time.monotonic(), {"voiceActivity": {"type": "ACTIVITY_END"}}, "")
+    words = {"serverContent": {"inputTranscription": {"text": "e o fim"}}}
+    log.frame(time.monotonic(), words, "")
+    started = time.monotonic()
+    await log.reader_quiet(0.3, 2.0)
+    waited = time.monotonic() - started
+    assert 0.25 <= waited < 1.0  # quiet long enough, then it goes
+    assert log.heard_since_send() == "e o fim"

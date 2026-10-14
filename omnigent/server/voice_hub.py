@@ -428,9 +428,9 @@ def hub_briefing(
 def with_their_words(message: str, heard: str, language: str = "") -> str:
     """A voice send with the reader's own words under it.
 
-    The voice writes ``message`` itself and can drop the end of a long request;
-    the transcript is what they actually said. Left off when the message
-    already carries it word for word.
+    The fallback when the hub cannot rewrite the voice's message from the
+    transcript: their words go along rather than being lost. Left off when the
+    message already carries them word for word.
     """
     words = " ".join(heard.split())
     if not words or normalize(words) in normalize(message):
@@ -455,7 +455,8 @@ async def run_hub_tool(
     say out loud.
 
     :param heard: What the reader said on the call since its last send, as
-        transcribed; an ``ask_claude`` carries it under the voice's message.
+        transcribed; an ``ask_claude`` is rewritten from it so the message
+        carries everything they asked.
     """
     from omnigent.server.hub import find_session
 
@@ -476,7 +477,7 @@ async def run_hub_tool(
             message = str(args.get("message", "")).strip()
             if not message:
                 return session.name, "Nothing to send: the message was empty."
-            message = with_their_words(message, heard, await hub.language())
+            message = await hub.complete_spoken(session.name, message, heard)
             entry = await hub.send_to(session, message, via="voice")
             if entry.kind != "sent":
                 return session.name, entry.text
