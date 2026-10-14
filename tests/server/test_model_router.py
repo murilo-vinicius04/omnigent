@@ -163,3 +163,28 @@ def test_the_log_keeps_the_decision_beside_the_model_that_ran_it(tmp_path) -> No
     assert line["ran_on"] == {"provider": "Claude", "model": "claude-opus-5-5", "effort": "high"}
     assert (line["tier"], line["p_cheap_redo"], line["latency_ms"]) == ("middle", 0.4, 120)
     assert len(line["request"]) == 2000 and line["had_previous"] is False
+
+
+@pytest.mark.parametrize(
+    ("probs", "tier", "close"),
+    [
+        # 10-14 18:00: Haiku by five points locked a lane to it.
+        ({"economical": 0.37, "middle": 0.32, "top": 0.31}, "middle", True),
+        ({"economical": 0.30, "middle": 0.31, "top": 0.39}, "middle", True),
+        ({"economical": 0.35, "middle": 0.1, "top": 0.4}, "middle", True),
+        # A clear call stands.
+        ({"economical": 0.55, "middle": 0.26, "top": 0.19}, "economical", False),
+        ({"economical": 0.07, "middle": 0.18, "top": 0.76}, "top", False),
+        ({"economical": 0.3, "middle": 0.36, "top": 0.34}, "middle", False),
+    ],
+)
+def test_a_close_call_between_tiers_goes_to_the_middle(probs, tier, close) -> None:
+    assert model_router.pick_tier(probs) == (tier, close)
+
+
+def test_a_close_call_takes_the_middle_tiers_effort() -> None:
+    answers = _answers({})
+    answers["tier"]["probabilities"] = {"economical": 0.37, "middle": 0.32, "top": 0.31}
+    decision = model_router.read_decision(answers)
+    assert (decision.tier, decision.close_call) == ("middle", True)
+    assert decision.effort == decision.efforts_by_tier["middle"] == "high"

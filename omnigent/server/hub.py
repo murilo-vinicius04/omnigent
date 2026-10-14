@@ -2419,9 +2419,13 @@ class Hub:
                     extra=extra,
                 )
             provider, word, effort = proposal.provider, proposal.model, proposal.effort
+            judged_as = (
+                f"a close call, so {decision.tier} tier"
+                if decision.close_call
+                else f"{decision.tier} tier"
+            )
             reason = (
-                f"The router judged it {decision.tier} tier, {decision.effort} effort; "
-                f"{proposal.reason}."
+                f"The router judged it {judged_as}, {decision.effort} effort; {proposal.reason}."
             )
         else:
             # No decision model: the same run as the chat it opens beside, or

@@ -43,6 +43,12 @@ LOG_NAME: Final[str] = "router.jsonl"
 
 TIERS: Final[tuple[str, ...]] = ("economical", "middle", "top")
 
+#: The tier a close call goes to.
+MIDDLE_TIER: Final[str] = "middle"
+
+#: Top two tiers closer than this (in probability) are a close call.
+CLOSE_CALL_MARGIN: Final[float] = 0.10
+
 #: What each tier means to the model, by name so the request can be weighed
 #: against the work each tier is good for.
 _TIER_CRITERIA: Final[dict[str, str]] = {
@@ -140,6 +146,8 @@ class TierDecision:
     effort: str = ""
     effort_probs: dict[str, float] = field(default_factory=dict)
     efforts_by_tier: dict[str, str] = field(default_factory=dict)
+    #: The top two tiers were within :data:`CLOSE_CALL_MARGIN`, so it went to the middle.
+    close_call: bool = False
     #: Probability that an economical model would get it wrong or need a redo.
     p_cheap_redo: float | None = None
     #: 0 (trivial) to 4 (very hard), probability-weighted.
@@ -252,6 +260,24 @@ def pick_effort(probs: dict[str, float]) -> str:
     return best if probs.get(best, 0.0) >= EFFORT_MOVE_BAR else DEFAULT_EFFORT
 
 
+def pick_tier(probs: dict[str, float]) -> tuple[str, bool]:
+    """The likeliest tier, or the middle one when the top two are a close call.
+
+    A lane keeps its model, so a near-tie should not lock it to the cheapest
+    or the dearest. :returns: The tier, and whether it was a close call.
+    """
+    ranked = sorted(probs, key=lambda t: probs[t], reverse=True)
+    best = ranked[0]
+    if (
+        best != MIDDLE_TIER
+        and MIDDLE_TIER in probs
+        and len(ranked) > 1
+        and probs[best] - probs[ranked[1]] < CLOSE_CALL_MARGIN
+    ):
+        return MIDDLE_TIER, True
+    return best, False
+
+
 def read_decision(answers: dict[str, Any]) -> TierDecision:
     """Turn the backend's answers into a decision.
 
@@ -266,7 +292,7 @@ def read_decision(answers: dict[str, Any]) -> TierDecision:
         if not probs:
             raise ValueError(f"no effort probabilities for {tier}: {answers[f'effort_{tier}']!r}")
         by_tier[tier] = probs
-    tier = max(tier_probs, key=lambda t: tier_probs[t])
+    tier, close_call = pick_tier(tier_probs)
     category = _probs(answers["category"])
     fixes = answers.get("fixes_previous")
     return TierDecision(
@@ -275,6 +301,7 @@ def read_decision(answers: dict[str, Any]) -> TierDecision:
         effort=pick_effort(by_tier[tier]),
         effort_probs=by_tier[tier],
         efforts_by_tier={t: pick_effort(p) for t, p in by_tier.items()},
+        close_call=close_call,
         p_cheap_redo=round(float(answers["cheap_redo"]["noul"]), 4),
         difficulty=round(float(answers["difficulty"]["score"]), 3),
         category=max(category, key=lambda c: category[c]) if category else "",
