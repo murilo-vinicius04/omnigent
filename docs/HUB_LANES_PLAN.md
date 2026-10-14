@@ -136,15 +136,27 @@ on each provider's own week.
   - ChatGPT Plus;
   - your Google plan.
 
-  The meters already report a percentage of the plan you are on. Before
-  Friday, Claude's Max reading is converted to Pro terms at the measured ratio
-  (one Max point is about 4–5 Pro points). Our numbers on Pro:
-  - a Pro week is about 10 Pro 5-hour windows;
-  - a hard coding task cost 14.7% of a window on plain Sonnet and 27.2% on
-    Opus, so about 1.5% and 2.7% of the week.
+  The meters already report a percentage of the plan you are on, so the
+  budget follows any change Anthropic makes without new numbers.
+- **Claude Pro reference values (updated 10-14).**
+  - **What changed:** on 09-22 Anthropic raised the 5-hour limits of Pro, Max
+    and Team, without publishing figures.
+  - **What we measured:** on your Max 5x plan, from our own token ledger and
+    meter readings (09-17 to 09-27), 1% of the 5-hour window buys **2.1× more
+    tokens** after 09-22 than before. The factor is the same on cache writes,
+    output and cache reads. The weekly limit grew too, but there are too few
+    weekly points after 09-22 to say by how much.
+  - **For Pro:** applying the same factor to our Pro calibration (09-14 to
+    09-16), 1% of the Pro 5-hour window is now about 97k cache-write or 10k
+    output tokens (it was 46k and 4.9k). The benchmark costs quoted in Pro
+    terms (a hard Sonnet task at 14.7% of a window, Opus at 27.2%) date from
+    before the change, so they are now roughly halved.
+  - **Next step:** we measure Pro directly from Friday's reset. The token
+    ledger that does it had stopped on 09-27 and was restarted on 10-14.
 - **Daily budget** = (100% − buffer) ÷ 7 of the week. At a 15% buffer that is
-  about 12% of the week per day. For Claude Pro that is roughly 8 hard Sonnet
-  tasks or 4–5 hard Opus tasks a day.
+  about 12% of the week per day. How many tasks that buys on Claude Pro is
+  measured from Friday. Before the 09-22 increase it was roughly 8 hard
+  Sonnet tasks or 4–5 hard Opus tasks a day; now it should be more.
 - **Unused budget carries forward, capped.** By the end of day d a provider
   may have used (d + 1) × the daily budget. A quiet day leaves room for the
   next, and a heavy day takes it from the next. The carry-over is capped at
@@ -170,30 +182,34 @@ on each provider's own week.
   e.g. "Opus 5.5 · Claude within today's budget" or "Luna · simple, Codex
   over today's budget".
 
-### 2.3 Choosing the model for a task
+### 2.3 Choosing the model for a task: the model judges the tier, rules pick the provider
 
-1. The Hub's Gemini router, in the call it already makes, also names the
-   task's category and whether it is simple. No extra call.
-2. The providers whose top tier fits the category are the candidates. These
-   defaults are learned over from the outcome log:
+1. **The Hub router** (Gemini Flash, in the call it already makes) reads the
+   request: project, lane, category, and whether it fixes earlier work.
+2. **The decision model** (2.5) judges how much model the task needs:
+   economical, middle or top tier. This is the complexity judgement that code
+   cannot make.
+3. **Rules pick the provider and apply the budget.** Among the providers whose
+   tier fits the category (table below), take the one with the most of
+   today's budget left.
+   - **While that budget has room:** the top tier anyway, since you want the
+     best model whenever possible.
+   - **When the budget is tight:** the tier the decision model judged
+     sufficient. This is where the saving on simple tasks happens.
+   - **When no provider can afford it:** the Hub tells you and asks.
 
    | Category | Fits |
    |---|---|
-   | Code | Claude (Opus), Codex (Sol); Gemini once Argon arrives |
+   | Code | Claude (Opus, Sonnet), Codex (Sol); Gemini once Argon arrives |
    | Plan, docs, research, explain | All three (Gemini Flash High counts here until Argon) |
-   | Small edits, renames, short scripts (simple) | Any economical tier: Haiku, Luna, Flash |
+   | Economical tier | Haiku, Luna, Flash |
    | A quick fact about the machine | The companion's read-only check, no agent |
 
-3. Among the candidates, take the top tier of the provider with the most of
-   today's budget left. The best model goes where there is room, so the load
-   spreads across the three.
-4. A task marked simple drops to an economical tier only when the chosen
-   provider is over today's budget.
-5. The mistake memory (2.4) and later the router model (2.5) can raise the
-   tier. Saying "use Opus" or "use Codex" always overrides the choice.
+4. **A redo always goes one tier up**: a fixed rule, not a judgement.
+5. Saying "use Opus" or "use Codex" always overrides the choice.
 
-It decides on its own, as you asked; the ceilings in 2.2 are the safety net.
-Each choice starts in a fresh lane (Phase 1), never mid-chat.
+It decides on its own, as you asked, and each choice starts in a fresh lane
+(Phase 1), never mid-chat.
 
 ### 2.4 Learning from mistakes (from the first day)
 
@@ -214,72 +230,79 @@ Each choice starts in a fresh lane (Phase 1), never mid-chat.
   - minutes;
   - check result, fix request, revert, escalation.
 
-### 2.5 The router model and how it learns
+### 2.5 The decision model (Jev style) and how it learns
 
-**What it decides.** Not what the task is: the Hub router already says that.
-It decides one thing: for this request and this tier, the chance that the work
-needs another round (a mistake as defined in 2.4). The governor then chooses:
-- **Inside today's budget:** the top tier.
-- **Budget tight:** the cheapest tier whose chance of a mistake is below a bar
-  that rises as today's budget runs out. Roughly, it minimises expected cost:
-  the tier's price, plus the chance of a redo times the price of the redo.
+**What it is asked.** A Jev-style model reads a *state* and answers typed
+questions with probabilities, never free text.
+- **The state:**
+  - the request, as the brief the lane will get;
+  - project, lane and category;
+  - the files the request concerns;
+  - **the outcomes of the most similar past tasks**, e.g. "Luna, RAL, code,
+    'add a ROS parameter': needed a redo, wrong QoS".
+- **The questions:**
+  - `choice` — which tier does this task need to be done right the first time:
+    economical, middle or top?
+  - `noul` — would an economical model need a redo?
+  - `score` — difficulty from 1 to 5, kept for the logs.
 
-**Which model.**
+**Which model.** The three candidates answer the same typed questions, so
+they can be swapped behind one interface:
 
-| Candidate | Size | Runs on | Labels it needs | Verdict |
+| Model | Where it runs | On our 62 past routing decisions, untuned (AUC) | Can be trained on our outcomes | Cost |
 |---|---|---|---|---|
-| Multilingual sentence embeddings (e.g. `multilingual-e5-small`, 118M) plus logistic regression or nearest neighbours over past outcomes | ~0.5 GB | CPU, a few ms; retrains in seconds | Tens | **Start here** |
-| Laya multilingual (mmBERT-base, 322M, Apache 2.0), fine-tuned with a yes/no head | ~650 MB | GPU to train; GPU or a slower CPU to run | Hundreds | Second stage, if it beats the first in shadow |
-| Arch-Router (1.5B) | ~3 GB | GPU | — | Not needed: it matches requests to categories, which the Hub router already does |
-| reflex (Qwen3.5-4B) | ~9 GB of GPU | GPU | — | Too heavy for this job |
+| **Jev 1.13** (TypeSafe, via OpenRouter) | Hosted | 0.66, the best | No public way. It learns through the state: past outcomes are part of what it reads | Input tokens only: ~$0.042 per million tokens on its model page, a few cents a day at our volume |
+| **reflex** (Qwen3.5-4B, open, same API as Jev) | This machine, ~9 GB of GPU | 0.62 | Yes (LoRA) | Free, but the GPU is shared with Isaac Sim and cuRobo |
+| **Laya multilingual** (322M, open, same kind of questions) | This machine; light on the GPU | 0.50 | Yes (documented notebook) | Free |
 
-Why embeddings first:
-- With few labels, a simple classifier over embeddings matches fine-tuned
-  small models on routing (CodeRouterBench). Nearest neighbours degrade least
-  when the work changes.
-- It runs on the CPU, so it never competes with Isaac Sim, cuRobo and the ZED
-  for the GPU in RA-L experiments.
-- It retrains in seconds every night.
+Proposal:
+- **Start with Jev:** it is the best untuned, needs no GPU, and starts
+  learning on day one through the outcomes in its state.
+- **Log every decision and outcome.**
+- **Long term:** fine-tune an open Jev-style model (reflex, or Laya if GPU time
+  is short) on that log. Switch only when it beats Jev in shadow.
 
-Laya is the upgrade once there are a few hundred labelled outcomes. Its
-authors say fine-tuning is where its accuracy comes from. Its base model is
-near chance, which matches our untuned AUC of 0.50.
+Jev's OpenRouter account has had no credit since 10-06 (decision 7).
 
 **How it learns, in practice:**
-1. Every task leaves one row in `outcomes.jsonl`:
-   - the request text;
-   - project, category, simple or not;
-   - provider and tier;
-   - spend;
-   - whether it needed another round.
-2. Every night a script embeds the new requests and refits the classifier on
-   all rows, one per tier.
-3. It is scored on the last two weeks' rows it did not train on.
-4. It runs in shadow until it predicts mistakes better than the plain rules of
-   2.4. Only then does its choice count.
-5. The mistake memory of 2.4 keeps working on top: a fresh mistake moves the
-   next similar tasks up a tier at once, without waiting for the night's
-   retraining.
+1. **Right away, through the state.** Each new task is shown the outcomes of
+   its nearest past tasks, so a model that caused a bug on a similar task
+   last week weighs on the next decision immediately. No training needed.
+2. **Weekly calibration.** The probability thresholds (how sure it must be
+   that a cheaper tier suffices) are refitted on the logged outcomes. This is
+   TypeSafe's own documented practice.
+3. **The fixed rules stay on top:**
+   - a redo goes one tier up;
+   - a fresh mistake moves the next similar tasks up a tier at once.
+4. **Later, fine-tuning** of the open model on the accumulated log, promoted
+   only when it beats what is live on outcomes it never saw.
 
 **One catch: it learns only from what it tried.** If every task runs on the
-top tier, it never learns which ones a cheaper model would have handled. So
-it needs a little exploration. The proposal: on at most 1 in 10 tasks it marks
-simple, outside the project's core files, it tries one tier lower. A mistake
-there costs one redo and teaches it the most.
+top tier, it never learns which ones a cheaper model would have handled. The
+proposal: on at most 1 in 10 tasks it judged economical, outside the project's
+core files, the economical tier is actually used even when the budget has
+room.
 
-## Who does what: plain code, LLMs, and the small learned model
+**Prior art.** TypeSafe's own Jev Router (on OpenRouter since 09-25) does this
+for API models: Jev "assesses the task, its difficulty, and the potential
+benefit of a stronger model", and policy rules and restrictions are applied
+on top. It runs the request itself on OpenRouter's paid models, so it cannot
+drive our subscription CLIs. The design here is the same split, on our own
+lanes.
+
+## Who does what: plain code, LLMs, and the decision model
 
 | Part | Done by | Why |
 |---|---|---|
 | Lanes, busy guard, opening chats, worktrees | Plain code (Python), with tests | Deterministic plumbing |
 | Budget governor: meters, daily budgets, reset days, ceilings, the Friday plan change | Plain code | Money rules must be exact and testable, never guessed |
 | Tier ladder, category table, buffer, reset schedule | A settings file you can edit | Your choices, not the model's |
-| Mistake memory: tier bumps after a mistake | Plain code | A simple, predictable rule |
+| Provider choice, budget, and the redo-one-tier-up rule | Plain code | Exact rules where exactness matters |
 | Outcome log and tracker | Plain code | Records facts |
 | Understanding your message: project, lane, category, simple or not, is it a fix request | The Hub's existing Gemini Flash router, in the call it already makes | Language understanding; no extra call |
 | Writing the brief a new lane starts from | The Hub's router, or the lane that is handing over | Summarising text |
 | The work itself | The lanes: Claude, Codex or Gemini | — |
-| The chance that a tier needs a redo | The small local model of 2.5, trained on our outcomes | Learned from your own history |
+| Which tier each task needs (its complexity) | The Jev-style decision model of 2.5 | A judgement code cannot make |
 | Building all of the above | Me, in this chat, with tests. Once lanes exist, parts can be handed to a Codex lane as a first real test | — |
 
 ## Architecture
@@ -294,7 +317,7 @@ there costs one redo and teaches it the most.
  Model router  -------------------------------------------------------------- reads
    tier ladder + category fit (rules)                        <- routing.yaml
    mistake memory (tier bumps per project and category)      <- outcomes.jsonl
-   learned scorer (shadow, then live once it beats the rules) <- retrained nightly
+   decision model: Jev (tier needed), past outcomes in its state <- outcomes.jsonl
         |   proposal
         v
  Budget governor   daily budgets per reset day, ceilings,    <- 3 meters + ledgers
@@ -310,14 +333,14 @@ there costs one redo and teaches it the most.
         +--> Outcome tracker: check, fix request, revert, minutes, quota spent
                     |
                     v
-             outcomes.jsonl --> mistake memory (now) --> scorer retraining (nightly)
+             outcomes.jsonl --> Jev's state (now) --> calibration (weekly) --> open model fine-tune (later)
 ```
 
 | Piece | Where | New or existing |
 |---|---|---|
 | Hub router fields: lane, category, simple | `omnigent/server/hub.py` | Existing call, new fields |
 | Lanes | `omnigent/server/hub_lanes.py` | New (Phase 1) |
-| Model router, mistake memory, learned scorer | `omnigent/server/model_router.py` | New |
+| Model router: decision model client, provider rules, mistake memory | `omnigent/server/model_router.py` | New |
 | Budget governor | `omnigent/server/budget.py`, reading `routes/plan_limits.py` and the ledgers | New |
 | Outcome tracker | `omnigent/server/outcomes.py`, fed by the Hub's watches | New |
 | Settings: tiers, fit, buffer, plan schedule | `~/.omnigent/hub/routing.yaml` | New |
@@ -334,9 +357,9 @@ there costs one redo and teaches it the most.
    They log what they would have chosen. Show you the log against what you
    used.
 5. The router decides on its own, inside the governor's ceilings.
-6. The learned model: embeddings + classifier from the first labels, in shadow;
-   Laya fine-tuned once there are a few hundred; each promoted only when it
-   beats what is live.
+6. The decision model: Jev with past outcomes in its state, in shadow first;
+   weekly calibration; later an open Jev-style model fine-tuned on the log,
+   promoted only when it beats Jev.
 
 Building it spends no agent quota, because tests use fakes. Live trials use one
 real lane each, and only after you say go.
@@ -355,6 +378,13 @@ real lane each, and only after you say go.
    (recommended), or hold it to the Pro daily budget from today.
 6. **Exploration:** let the router try one tier lower on at most 1 in 10
    simple tasks, so it learns (recommended), or never.
+7. **Jev needs OpenRouter credit:** about $5 lasts months at a few cents a day.
+   Top it up (recommended), or start on reflex locally, which uses ~9 GB of
+   GPU.
+8. **Gemini quota sampler:** the `agy-quota-sample` timer stopped on 09-27.
+   Leave it off and read Gemini's quota only while an agy is already running
+   (recommended), since Google has suspended accounts for background quota
+   polling; or turn it back on.
 
 Settled: Gemini 4 Argon is for Ultra only for now, so Google has no top tier.
 Top-tier work goes to Claude or Codex, and Argon goes in automatically the day
@@ -418,6 +448,12 @@ Top-tier work goes to Claude or Codex, and Argon goes in automatically the day
   https://www.khaleejtimes.com/business/google-announces-gemini-4-flagship-ai-model-after-months-of-delays-2
 - Laya: `convaiinnovations/laya` on Hugging Face; our untuned test in
   `~/laya-test`
+- Jev on OpenRouter (Decisions API, typed questions, input-only pricing):
+  https://openrouter.ai/docs/guides/community/jev · Jev Router, which picks a
+  model and effort per request: https://openrouter.ai/docs/guides/routing/routers/jev-router
+- Claude limits: Anthropic's 09-22 post raising 5-hour limits on Pro, Max and
+  Team: https://x.com/claudeai/status/2102435538120691886 · dated timeline
+  (third party): https://explainx.ai/blog/claude-usage-limits-2026-timeline-explained
 
 ### Our own data
 
