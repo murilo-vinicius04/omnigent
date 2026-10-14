@@ -14,24 +14,42 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
-## 2026-10-14 15:55 — READ FIRST (placement by the model + asking; session d9653808, chat 247c77f5)
+## 2026-10-14 17:05 — READ FIRST (session d9653808, this chat 247c77f5; all below is live)
 
-**User 15:30 (Hub):** lanes are not a 0/1 busy switch: directions/corrections go to the running task,
-different tasks (joystick plan) to a new lane; a model decides and learns from their feedback. **15:40
-(held for this chat):** if the model is not reliable, ask them directly in the chat; their choice is
-training data. **Built and live (15:50 restart, web deployed 15:53):** `bd83b5885`, `a2c69d7dc`,
-`b1b07ea2b` — see HUB_LANES_PLAN.md "Placement by the model". Router places steer/after/new/ask; asked
-until 9 of its last 10 guesses match (no answers yet, so every busy-lane message is asked now); answers
-fix what they can, become lessons (newest 8 in the router prompt) and labels; reflex answers in shadow.
-Measured (chart attached in chat): reflex 13/22 and 16/22; router 15/22 no lessons, 18/19 with 3.
-Tests: `tests/server/test_hub_place.py` (21), web `HubPlaceControl.test.tsx` (4). Pre-existing,
-unrelated failure: `tests/server/test_live_voice.py::test_the_voice_is_told_when_to_delegate`.
-**Next:** the user's first real answers; once there are ~30+ labels, fine-tune reflex on them and
-compare against the router on the same log before letting it decide.
-**16:12 file links (6dedf2b2c, live):** user: "o link do chat não tá aparecendo… toda conversa nova volta". New chats wrote paths bare; the chat, its summary view and the Hub only linked backticked/markdown paths, and the speech cleanup ate underscores. Fixed all four (web `codeBareFilePaths`/`extractFilePathMentions`, `hub_chat.named_files`, `strip_markdown_for_speech`).
-**17:00 zip attachments (938408915, live):** .zip accepted in chat + Hub (25 MB, stored application/zip); native CLI chats get the file on disk, inline-model paths a one-line note. ChatPage.tsx hunk committed via `git apply --cached` (the other session's edits in that file stay uncommitted). Pre-existing: 2 order-dependent failures in `tests/llms` (same on clean HEAD).
-**omni-bench:** still PAUSED. Validation finished: 19/22 valid (01, 04, 22 have tests that fail after
-the reference change). Resume steps unchanged (block below).
+**Done since 15:25** (each committed, web built from `git archive HEAD web`, server restarted, live):
+- **Placement of messages for a busy lane** (`bd83b5885`, `a2c69d7dc`, `b1b07ea2b`). User rule (15:30):
+  not a busy/idle switch; directions/corrections go into the running task, a different task (e.g. the
+  joystick plan) gets a new lane; a model decides and learns from their feedback. 15:40: while it is not
+  reliable, ASK them in the chat; their pick is training data. Hub router (Gemini 3.8 Flash Low) gives
+  `place` steer/after/new/ask; asked until 9 of its last 10 guesses match their answers (buttons beside
+  the chip, guess marked "suggested"; no pick → goes when the lane finishes); answers move the message,
+  become router lessons (newest 8) and labels. Code `omnigent/server/hub_place.py` + `hub.py` `place` /
+  `correct_place`; route `POST /v1/hub/placements/{id}/feedback`; web `HubPlaceControl.tsx`. Log
+  `~/.omnigent/hub/morys5/placements.jsonl` (placement / feedback / reflex shadow rows).
+  **Real answers so far: 4, router guess matched 2.** Both misses: it guessed "steer" for a related but
+  separate task (disk cleanup for RAL, the link bug for omnigent); user picked "new".
+  Offline (22 Hub messages, my labels, scratch `place/`): reflex 13/22 and 16/22 (says steer for almost
+  everything; lessons don't help a 4B model); router 15/22 zero-shot, 18/19 with 3 lessons. So the router
+  decides and reflex stays shadow until fine-tuned on their labels and beats the router on the same log.
+- **File links** (`6dedf2b2c`): user "toda conversa nova volta". New chats wrote paths bare; chat, its
+  summary view and the Hub only linked backticked/markdown paths; speech cleanup ate underscores. Fixed
+  (web `codeBareFilePaths` / `extractFilePathMentions` in `streamdown-security.ts`, `hub_chat.named_files`,
+  `spoken_summary.strip_markdown_for_speech`). Hub log replay: 52 → 54 links, no false ones.
+- **Zip attachments** (`938408915`): accepted in chat + Hub (25 MB, stored `application/zip`); native CLI
+  chats get the file on disk; inline-model paths (in-process adapters, Claude SDK) get `archive_note`.
+
+**How to commit when a file holds the other session's work** (ChatPage.tsx did): build a patch of only
+your lines against `git show HEAD:<file>`, `git apply --cached patch`, `git add -- <your files>`, then
+`git commit` with no pathspec; their edits stay uncommitted in the tree.
+
+**Open / next:**
+- Placement: collect answers; at ~30+ labels fine-tune reflex and compare on the same log. The feedback
+  route takes ~3 s (it re-reads projects). Hub messages already posted keep their old rendering.
+- omni-bench PAUSED (user, 15:15). Validation finished 19/22 valid (01, 04, 22 fail after the reference
+  change). Resume steps in the 15:25 block below; pilot run needs the user's go.
+- Pre-existing failures, not ours: `tests/server/test_live_voice.py::test_the_voice_is_told_when_to_delegate`;
+  2 order-dependent in `tests/llms` (pass alone, fail in the full dir, same on clean HEAD).
+- Older open items: 15:25 block and below.
 
 ## 2026-10-14 15:25 — READ FIRST (lane fix live; benchmark PAUSED; session d9653808, chat 247c77f5)
 
