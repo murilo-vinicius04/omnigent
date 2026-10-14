@@ -228,12 +228,12 @@ with the translation only.
 _COMPLETE_TASK: Final[str] = """\
 On a voice call they asked for a message to go to {name}'s Claude. The call's \
 voice wrote the message below; the transcript of what they said is under it. \
-Rewrite the message so it carries every question, request and detail they gave \
-for {name}, in the order they said them. It stays a summary for Claude: not the \
-transcript, no filler, and nothing they did not say. Leave out only what was \
-for the call itself (greetings, asking what a project is doing). Keep names, \
-paths, numbers and code exactly. Write it in {language}. Reply with the message \
-only.
+Keep everything the message says, and add every question, request and detail \
+from the transcript that it leaves out, in the order they said them. It stays \
+a summary for Claude: not the transcript, no filler, nothing they did not say. \
+Leave out only what was for the call itself (greetings, asking what a project \
+is doing). Keep names, paths, numbers and code exactly. Write it in \
+{language}. Reply with the message only.
 
 [The voice's message]
 {message}
