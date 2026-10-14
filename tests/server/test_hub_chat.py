@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -278,11 +280,21 @@ def _finished(tmp_path, **fields) -> HubEntry:
             "Not files: `/etc/hosts`, `npm test`, `missing/notes.md`.\n"
             "```\n| not | a table |\n|---|---|\ncat RA-L/reviews/REVISION_PLAN.md\n```\n"
         ),
+        # The turn wrote the plan: found when the report came in.
+        "links": [["RA-L/reviews/REVISION_PLAN.md", "RA-L/reviews/REVISION_PLAN.md"]],
     }
     return HubEntry(**{**base, **fields})
 
 
 PLAN = "http://h:6767/c/s1?file=RA-L/reviews/REVISION_PLAN.md"
+
+
+def _handed(entry: HubEntry, *, since: float | None) -> list[list[str]]:
+    """The links a report gets when it comes in, its turn having started at *since*."""
+    found = hub_chat.handed_files(
+        entry.detail or "", entry.workspace, entry.anchors or (), since=since
+    )
+    return [[label, relative] for label, relative in found]
 
 
 def test_a_report_shows_what_the_projects_summary_shows_never_the_reply(tmp_path) -> None:
@@ -342,7 +354,9 @@ def test_a_report_links_a_file_its_reply_gave_as_a_plain_path(tmp_path) -> None:
             f"{tmp_path}/RA-L/reviews/JOYSTICK_EXPERIMENT_PLAN.md\n\n"
             "Not files: /etc/hosts.conf, read/write.md, https://x.dev/a/b.md, missing/notes.md."
         ),
+        links=None,
     )
+    entry = replace(entry, links=_handed(entry, since=0))
     plan = "http://h:6767/c/s1?file=RA-L/reviews/JOYSTICK_EXPERIMENT_PLAN.md"
     assert hub_chat.render(entry, "http://h:6767") == (
         '[RAL](http://h:6767/c/s1 "omnigent-project")\n\n'
@@ -836,8 +850,10 @@ def test_a_path_given_from_the_repository_the_turn_worked_in_is_linked(tmp_path)
     (repo / "docs" / "HUB_LANES_PLAN.md").write_text("# plan\n")
     detail = "The plan is in `docs/HUB_LANES_PLAN.md`; nothing in `docs/missing.md`."
     # Without the folders the turn worked in, the path names nothing under the workspace.
-    assert "?file=" not in hub_chat.render(_finished(tmp_path, detail=detail), "http://h:6767")
+    entry = _finished(tmp_path, detail=detail, links=None)
+    assert "?file=" not in hub_chat.render(replace(entry, links=_handed(entry, since=0)), "h")
     entry = _finished(tmp_path, detail=detail, anchors=[str(repo / "docs"), str(repo)])
+    entry = replace(entry, links=_handed(entry, since=0))
     link = "http://h:6767/c/s1?file=wt/friendly-layer/docs/HUB_LANES_PLAN.md"
     text = hub_chat.render(entry, "http://h:6767")
     assert text.endswith(f"[`docs/HUB_LANES_PLAN.md`]({link})")
@@ -891,3 +907,63 @@ def test_a_turns_tool_calls_give_the_folders_it_worked_in(tmp_path) -> None:
         str(tmp_path / "wt"),
         str(tmp_path / "elsewhere"),
     ]
+
+
+def _file(path: Path, mtime: float) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x")
+    os.utime(path, (mtime, mtime))
+
+
+def test_a_report_links_only_the_files_it_handed_over(tmp_path) -> None:
+    _file(tmp_path / "RA-L" / "plan.md", 2000)  # written by the turn
+    _file(tmp_path / "RA-L" / "fr3_lab.yaml", 10)  # linked to: handed over
+    _file(tmp_path / "wt" / "repo" / "hub.py", 10)  # code it only cited
+    _file(tmp_path / ".ollama" / "id_ed25519", 10)  # a key it left alone
+    _file(tmp_path / ".omnigent" / "hub" / "log.jsonl", 2000)  # app state, always changing
+    detail = (
+        f"Plan: {tmp_path}/RA-L/plan.md. Config: [fr3_lab.yaml]({tmp_path}/RA-L/fr3_lab.yaml).\n"
+        "The bug is in `wt/repo/hub.py`; kept `~/.ollama/id_ed25519` and "
+        f"`{tmp_path}/.omnigent/hub/log.jsonl`."
+    )
+    handed = hub_chat.handed_files(detail, str(tmp_path), since=1000)
+    assert [relative for _, relative in handed] == ["RA-L/fr3_lab.yaml", "RA-L/plan.md"]
+    entry = _finished(tmp_path, detail=detail, links=[[a, b] for a, b in handed])
+    text = hub_chat.render(entry, "http://h:6767")
+    assert text.count("?file=") == 2 and "hub.py?" not in text and "id_ed25519" not in text
+    # Without knowing when the turn began, only a link counts.
+    assert [r for _, r in hub_chat.handed_files(detail, str(tmp_path))] == ["RA-L/fr3_lab.yaml"]
+
+
+def test_an_old_report_is_judged_from_when_the_hub_sent_the_work(tmp_path) -> None:
+    _file(tmp_path / "RA-L" / "plan.md", 2000)
+    _file(tmp_path / "RA-L" / "old_notes.md", 10)
+    sent = HubEntry(id=1, at=1000, role="hub", kind="sent", text="x", session_id="s1")
+    report = _finished(
+        tmp_path,
+        at=3000,
+        links=None,
+        detail=f"Wrote {tmp_path}/RA-L/plan.md, based on {tmp_path}/RA-L/old_notes.md.",
+    )
+    files = hub_chat.known_files([sent, report], lambda sid: str(tmp_path))
+    assert files["plan.md"] == ("s1", "RA-L/plan.md")
+    assert "old_notes.md" not in files
+
+
+def test_a_name_a_model_retold_without_its_underscores_still_links() -> None:
+    plan = ("s1", "RA-L/reviews/JOYSTICK_EXPERIMENT_PLAN.md")
+    files = {
+        "RA-L/reviews/JOYSTICK_EXPERIMENT_PLAN.md": plan,
+        "JOYSTICK_EXPERIMENT_PLAN.md": plan,
+        "JOYSTICK_EXPERIMENT_PLAN_v4.md": ("s1", "RA-L/reviews/JOYSTICK_EXPERIMENT_PLAN_v4.md"),
+    }
+    text = hub_chat.link_known_files(
+        "O arquivo está salvo em `reviews/JOYSTICKEXPERIMENTPLAN.md`.", files, "http://h"
+    )
+    assert text == (
+        "O arquivo está salvo em [`reviews/JOYSTICKEXPERIMENTPLAN.md`]"
+        "(http://h/c/s1?file=RA-L/reviews/JOYSTICK_EXPERIMENT_PLAN.md)."
+    )
+    # Two files that spell alike: nothing is guessed.
+    files["joystick-experiment-plan.md"] = ("s2", "x/joystick-experiment-plan.md")
+    assert "](" not in hub_chat.link_known_files("`JOYSTICKEXPERIMENTPLAN.md`", files, "http://h")

@@ -201,6 +201,7 @@ class _Router:
         self.replies = list(replies)
         self.prompts: list[str] = []
         self.remembered: list[str] = []
+        self.told: list[str] = []
         self.performed: list[str] = []
         self.down = False
         self.why_down = "no answer within 90s"
@@ -222,6 +223,9 @@ class _Router:
 
     def remember(self, text: str) -> None:
         self.remembered.append(text)
+
+    def tell(self, text: str) -> None:
+        self.told.append(text)
 
 
 class _Server:
@@ -652,7 +656,7 @@ async def test_a_report_is_the_projects_own_summary_word_for_word(tmp_path, lang
     # A summary of the summary lost the details: the reader gets the first one.
     assert text == f"amarras finished: {SUMMARY}"
     assert router.performed == []
-    assert router.remembered[-1] == text
+    assert router.told[-1] == text
 
 
 async def test_a_summary_in_another_language_is_translated_whole(tmp_path) -> None:
@@ -1489,3 +1493,13 @@ async def test_a_router_that_stays_empty_is_unavailable(router, monkeypatch) -> 
     with pytest.raises(DiscussionUnavailable, match="empty answer"):
         await router.decide("REACH_FOR_A_TOOL", said="was it the audio?", timeout_s=10)
     assert not router.running
+
+
+async def test_a_report_between_two_messages_reaches_the_routers_next_turn(router) -> None:
+    await router.decide("hello", said="hello", timeout_s=10)
+    router.tell("RAL disk finished: Omnigent's Cursor usage hook is gone with ~/.cursor.")
+    router.remember("I answered that myself.")  # its own words: it already knows them
+    reply = json.loads(await router.decide("q", said="what Cursor hook?", timeout_s=10))
+    await router.close()
+    assert "Omnigent's Cursor usage hook is gone" in reply["told"]
+    assert "I answered that myself." not in reply["told"]

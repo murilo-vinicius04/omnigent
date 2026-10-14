@@ -170,6 +170,9 @@ class _Router:
     def remember(self, text):
         pass
 
+    def tell(self, text):
+        pass
+
 
 class _FakeServer:
     def __init__(self) -> None:

@@ -398,6 +398,9 @@ class _HubRouter:
     def remember(self, text):
         pass
 
+    def tell(self, text):
+        pass
+
 
 def _hub(tmp_path, sent: list[tuple[str, str]]):
     from omnigent.server.hub import (

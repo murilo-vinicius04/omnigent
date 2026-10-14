@@ -19,7 +19,7 @@ import pathlib
 import re
 import tarfile
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import replace
 from typing import Any, Final
 from urllib.parse import quote
@@ -264,10 +264,14 @@ def render(
             if entry.show
             else "\n\n".join(reply_tables(entry.detail or ""))
         )
-        shown = link_workspace_files(shown, workspace, url_for, anchors)
+        handed = entry_files(entry, workspace) if workspace else []
+        shown = link_workspace_files(
+            shown, workspace, url_for, anchors, only={rel for _, rel in handed}
+        )
         file_links = " · ".join(
             f"[`{label}`]({url_for(rel)})" if "/" in label else f"[{label}]({url_for(rel)})"
-            for label, rel in named_files(entry.detail or "", workspace, anchors)
+            for label, rel in handed
+            if f"({url_for(rel)})" not in shown + entry.text
         )
         web_links = " · ".join(
             f"[{label}]({url})"
@@ -325,6 +329,8 @@ def link_known_files(text: str, files: dict[str, tuple[str, str]], base_url: str
         if known is None and "/" in named_path:
             known = _known_tail(named_path, files)
         if known is None:
+            known = _known_spelling(named_path, files)
+        if known is None:
             return match.group(0)
         url = file_url(base_url, *known)
         return f"[`{named}`]({url})" if code is not None else f"[{named}]({url})"
@@ -345,6 +351,23 @@ def _known_tail(named: str, files: dict[str, tuple[str, str]]) -> tuple[str, str
     return targets.pop() if len(targets) == 1 else None
 
 
+def _spelling(name: str) -> str:
+    """A file name without case, separators or folders: ``a/B_c-d.md`` -> ``bcdmd``."""
+    return re.sub(r"[^a-z0-9]", "", name.rsplit("/", 1)[-1].lower())
+
+
+def _known_spelling(named: str, files: dict[str, tuple[str, str]]) -> tuple[str, str] | None:
+    """The one known file whose name differs from *named* only in case or separators.
+
+    A model retelling a report can drop a name's underscores or folders.
+    """
+    wanted = _spelling(named)
+    if not wanted:
+        return None
+    targets = {target for key, target in files.items() if _spelling(key) == wanted}
+    return targets.pop() if len(targets) == 1 else None
+
+
 def _known_host_path(path: str, files: dict[str, tuple[str, str]]) -> tuple[str, str] | None:
     """The known file a host path ends in, matched on its longest known relative path."""
     path = _POSITION_SUFFIX.sub("", path)
@@ -355,7 +378,7 @@ def _known_host_path(path: str, files: dict[str, tuple[str, str]]) -> tuple[str,
 def known_files(
     entries: list[hub_module.HubEntry], workspace_of: Callable[[str], str | None]
 ) -> dict[str, tuple[str, str]]:
-    """The files the latest reports' replies named: by path, as written, and by name.
+    """The files the latest reports handed over: by path, as written, and by name.
 
     The newest report wins a name two of them share.
     """
@@ -364,7 +387,8 @@ def known_files(
     for entry in reports[:_KNOWN_FILE_REPORTS]:
         assert entry.session_id is not None
         workspace = entry.workspace or workspace_of(entry.session_id)
-        for label, relative in named_files(entry.detail or "", workspace, entry.anchors or ()):
+        since = _sent_before(entries, entry) if entry.links is None else None
+        for label, relative in entry_files(entry, workspace, since=since):
             for key in (relative, label, relative.rsplit("/", 1)[-1]):
                 found.setdefault(key, (entry.session_id, relative))
     return found
@@ -443,16 +467,11 @@ def web_links_of(markdown: str) -> list[tuple[str, str]]:
     return found[:_MAX_WEB_LINKS]
 
 
-def named_files(
+def _named(
     markdown: str, workspace: str | None, anchors: Sequence[str] = ()
-) -> list[tuple[str, str]]:
-    """``(label, workspace path)`` of each file a reply links or names as a path.
-
-    As the chat's friendly view lifts them: markdown links to files,
-    inline-code paths with a folder in them, and paths written as plain text;
-    only files that exist.
-    """
-    found: list[tuple[str, str]] = []
+) -> list[tuple[str, str, bool]]:
+    """``(label, workspace path, linked)`` of each file a reply names; *linked* when as a link."""
+    found: list[tuple[str, str, bool]] = []
     fenced = False
     for line in markdown.splitlines():
         if _FENCE.match(line):
@@ -465,14 +484,83 @@ def named_files(
             if bang or (code is not None and "/" not in code):
                 continue
             relative = workspace_file(code if code is not None else target, workspace, anchors)
-            if relative is not None and all(relative != r for _, r in found):
-                found.append((code if code is not None else label or relative, relative))
+            if relative is not None and all(relative != r for _, r, _l in found):
+                found.append(
+                    (code if code is not None else label or relative, relative, code is None)
+                )
         prose = _NOT_BARE.sub(lambda m: " " * len(m.group(0)), line)
         for match in _BARE_PATH.finditer(prose):
             relative = workspace_file(match.group(1), workspace, anchors)
-            if relative is not None and all(relative != r for _, r in found):
-                found.append((relative, relative))
+            if relative is not None and all(relative != r for _, r, _l in found):
+                found.append((relative, relative, False))
     return found
+
+
+def named_files(
+    markdown: str, workspace: str | None, anchors: Sequence[str] = ()
+) -> list[tuple[str, str]]:
+    """``(label, workspace path)`` of each file a reply links or names as a path.
+
+    As the chat's friendly view lifts them: markdown links to files,
+    inline-code paths with a folder in them, and paths written as plain text;
+    only files that exist.
+    """
+    return [(label, relative) for label, relative, _linked in _named(markdown, workspace, anchors)]
+
+
+#: A file changed this long before the send still counts as the turn's work (clock skew).
+_CHANGED_SLACK_S: Final[float] = 5.0
+
+
+def handed_files(
+    markdown: str,
+    workspace: str | None,
+    anchors: Sequence[str] = (),
+    *,
+    since: float | None = None,
+) -> list[tuple[str, str]]:
+    """``(label, workspace path)`` of the files a reply hands over, not every one it names.
+
+    A file counts when the reply links to it, or names it and the turn that
+    began at *since* changed it. A path only cited (code it read, a key it
+    left alone) does not, nor app state in a hidden folder that changes on its
+    own (logs, transcripts) unless linked. Without *since*, only links count.
+    """
+    handed: list[tuple[str, str]] = []
+    root = pathlib.Path(workspace).expanduser() if workspace else None
+    for label, relative, linked in _named(markdown, workspace, anchors):
+        changed = False
+        hidden = any(part.startswith(".") for part in relative.split("/")[:-1])
+        if not linked and not hidden and since is not None and root is not None:
+            try:
+                changed = (root / relative).stat().st_mtime >= since - _CHANGED_SLACK_S
+            except OSError:
+                changed = False
+        if linked or changed:
+            handed.append((label, relative))
+    return handed
+
+
+def entry_files(
+    entry: hub_module.HubEntry, workspace: str | None, *, since: float | None = None
+) -> list[tuple[str, str]]:
+    """The files a report handed over, as found when it came in.
+
+    A report from before that was kept is judged now, its turn starting at *since*.
+    """
+    if entry.links is not None:
+        return [(str(label), str(relative)) for label, relative in entry.links]
+    return handed_files(entry.detail or "", workspace, entry.anchors or (), since=since)
+
+
+def _sent_before(entries: list[hub_module.HubEntry], report: hub_module.HubEntry) -> float | None:
+    """When the hub last sent work to the report's chat before it came in."""
+    sends = [
+        e.at
+        for e in entries
+        if e.kind == "sent" and e.session_id == report.session_id and e.at <= report.at
+    ]
+    return max(sends) if sends else None
 
 
 def workspace_file(target: str, workspace: str | None, anchors: Sequence[str] = ()) -> str | None:
@@ -507,10 +595,12 @@ def link_workspace_files(
     workspace: str | None,
     url_for: Callable[[str], str],
     anchors: Sequence[str] = (),
+    only: Collection[str] | None = None,
 ) -> str:
     """The reply with each file it names linked to that file in its project's chat.
 
     Paths in code fences stay as written, as the chat page leaves them.
+    :param only: When given, the workspace paths that may be linked; others stay text.
     """
     if not workspace:
         return markdown
@@ -518,7 +608,7 @@ def link_workspace_files(
     def linked(match: re.Match[str]) -> str:
         _bang, label, target, code = match.groups()
         relative = workspace_file(code if code is not None else target, workspace, anchors)
-        if relative is None:
+        if relative is None or (only is not None and relative not in only):
             return match.group(0)
         if code is not None:
             return f"[`{code}`]({url_for(relative)})"

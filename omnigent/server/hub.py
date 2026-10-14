@@ -588,6 +588,9 @@ class HubEntry:
     #: For a message placed beside a working lane: ``{"id", "picked"}``, so
     #: they can correct where it went.
     place: dict[str, Any] | None = None
+    #: The files a report's reply handed over, ``[label, workspace path]``:
+    #: linked to, or changed by its turn. Only these are linked.
+    links: list[list[str]] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """The JSON shape the page and the voice relay read."""
@@ -624,6 +627,8 @@ class TurnState:
     summary_lang: str = ""
     #: The project writes spoken summaries and this reply's has not landed yet.
     summary_due: bool = False
+    #: When the hub sent the work: files changed since are the turn's.
+    since: float | None = None
 
     @property
     def working(self) -> bool:
@@ -1086,8 +1091,12 @@ class HubRouter(DiscussionSession):
             return reply
 
     def remember(self, text: str) -> None:
-        """Note what the hub said or did, for the router's memory."""
+        """Note what the hub said in answer to its last turn, which the process already knows."""
         self._record("answer", text[:2000])
+
+    def tell(self, text: str) -> None:
+        """Note what happened between its turns (a report, a send): the next turn carries it."""
+        self.note("note", text)
 
 
 def _wake(waiter: asyncio.Future[None]) -> None:
@@ -2117,7 +2126,7 @@ class Hub:
             place=place,
         )
         router = await self._router_factory()
-        router.remember(
+        router.tell(
             f"sent to {session.name}: {message}" + (f" (attached: {names})" if files else "")
         )
         self.watch(session, sent_at)
@@ -2164,7 +2173,7 @@ class Hub:
             place=place,
         )
         router = await self._router_factory()
-        router.remember(f"holding for {session.name}, which is busy: {message}")
+        router.tell(f"holding for {session.name}, which is busy: {message}")
         self._deliver_when_idle(session)
         return entry
 
@@ -2669,6 +2678,10 @@ class Hub:
             except DiscussionUnavailable:
                 told = _short(reply, 300)
         told = _without_label(told, f"{session.name} finished:")
+        from omnigent.server.hub_chat import handed_files
+
+        anchors = anchor_dirs(state.touched, state.workspace)
+        handed = handed_files(reply, state.workspace, anchors, since=state.since)
         self.say(
             f"{session.name} finished: {told}",
             kind="finished",
@@ -2676,11 +2689,16 @@ class Hub:
             session_name=session.name,
             detail=reply[:MAX_REPLY_CHARS],
             workspace=state.workspace,
-            anchors=anchor_dirs(state.touched, state.workspace) or None,
+            anchors=anchors or None,
             files=await self._import_files(session, _files_to_copy(state)) or None,
             show=[b for b in state.show if b.get("kind") not in ("file", None)] or None,
+            links=[[label, relative] for label, relative in handed],
         )
-        router.remember(f"{session.name} finished: {told}")
+        root = pathlib.Path(state.workspace or "/")
+        router.tell(
+            f"{session.name} finished: {told}"
+            + "".join(f"\n  file it handed over: {root / relative}" for _, relative in handed)
+        )
 
     async def _in_hub_language(
         self, router: HubRouter, session: HubSession, state: TurnState
@@ -3405,6 +3423,7 @@ def store_backend(
             summary=str((chosen or {}).get("text") or "").strip(),
             summary_lang=str((chosen or {}).get("lang") or ""),
             summary_due=bool(reply) and chosen is None and await _summaries_on(session_id),
+            since=since,
         )
 
     async def _summaries_on(session_id: str) -> bool:

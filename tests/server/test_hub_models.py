@@ -178,6 +178,7 @@ class _Router:
         self.replies = list(replies)
         self.prompts: list[str] = []
         self.remembered: list[str] = []
+        self.told: list[str] = []
 
     async def decide(self, prompt: str, *, said: str, timeout_s: float) -> str:
         self.prompts.append(prompt)
@@ -188,6 +189,9 @@ class _Router:
 
     def remember(self, text: str) -> None:
         self.remembered.append(text)
+
+    def tell(self, text: str) -> None:
+        self.told.append(text)
 
 
 class _Server:
