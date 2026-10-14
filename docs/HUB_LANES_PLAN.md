@@ -176,8 +176,14 @@ on each provider's own week.
 - **5-hour windows stay a separate guard:** a provider at 85% of its 5-hour
   window waits, or another provider takes the task.
 - **Until Friday**, Claude still has Max's leftover (43% of the Max week
-  used). That quota is lost at the reset, so the proposal is to let Claude
-  spend it freely until Friday and start the Pro daily budget at the reset.
+  used). That quota is lost at the reset, so Claude may spend it freely until
+  Friday's reset; the Pro daily budget starts then. Set in
+  `~/.omnigent/hub/budget.json` (`spend_freely_until`), with the buffer,
+  carry and 5-hour guard.
+- **Built 10-14** (`omnigent/server/budget.py`): the budgets above, read from
+  the plan meters and `usage-history.jsonl`; a meter that is old or from
+  before its provider's reset is used only when nothing current can take the
+  task. Each logged decision carries the provider the rules would pick.
 - **You see it:** each provider's ring in the Hub panel shows today's budget,
   what is spent, and the reset day. The sent chip names the model and why,
   e.g. "Opus 5.5 · Claude within today's budget" or "Luna · simple, Codex
@@ -188,10 +194,13 @@ on each provider's own week.
 1. **The Hub router** (Gemini Flash, in the call it already makes) reads the
    request: project, lane, category, and whether it fixes earlier work.
 2. **reflex (2.5) decides the tier and the reasoning effort**: the least
-   capable tier (economical, middle, top) and the lowest effort (low, medium,
-   high, xhigh) that will do the task right the first time. This holds even
-   when quota has plenty of room (your rule, 10-14). It is the judgement code
-   cannot make, and the part that is fine-tuned on the outcome log.
+   capable tier (economical, middle, top) that will do the task right the
+   first time, and the effort *within that tier*. Effort is asked separately
+   for each tier, since a cheaper model may need more thought, not less, and
+   it leans high: another level is taken only when reflex is at least 60%
+   sure of it (your rule, 10-14). This holds even when quota has plenty of
+   room. It is the judgement code cannot make, and the part fine-tuned on the
+   outcome log.
 3. **Rules pick only the provider**, from quota balance: among the providers
    that have reflex's tier for this category (table below), the one with the
    most of today's budget left. The effort is matched to that provider's own
@@ -362,7 +371,10 @@ lanes.
 2. Phase 1 steps 4–5: the Hub opens lanes, with worktrees. Scratch-server test,
    then live on RAL with your go.
 3. Budget governor and daily budgets in the panel, read-only. You see each
-   provider's budget for today before anything is decided by it.
+   provider's budget for today before anything is decided by it. **Done
+   10-14**: the Projects panel shows each provider's budget, each project's
+   chats on their own provider, model and effort, and the router's newest
+   decision.
 4. Model router rules, mistake memory and outcome log in shadow for a week.
    They log what they would have chosen. Show you the log against what you
    used.
