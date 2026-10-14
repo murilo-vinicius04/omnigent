@@ -28,6 +28,7 @@ Tests: `tests/server/test_hub_place.py` (21), web `HubPlaceControl.test.tsx` (4)
 unrelated failure: `tests/server/test_live_voice.py::test_the_voice_is_told_when_to_delegate`.
 **Next:** the user's first real answers; once there are ~30+ labels, fine-tune reflex on them and
 compare against the router on the same log before letting it decide.
+**16:12 file links (6dedf2b2c, live):** user: "o link do chat não tá aparecendo… toda conversa nova volta". New chats wrote paths bare; the chat, its summary view and the Hub only linked backticked/markdown paths, and the speech cleanup ate underscores. Fixed all four (web `codeBareFilePaths`/`extractFilePathMentions`, `hub_chat.named_files`, `strip_markdown_for_speech`).
 **omni-bench:** still PAUSED. Validation finished: 19/22 valid (01, 04, 22 have tests that fail after
 the reference change). Resume steps unchanged (block below).
 
