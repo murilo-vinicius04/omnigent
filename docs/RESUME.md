@@ -29,6 +29,7 @@ unrelated failure: `tests/server/test_live_voice.py::test_the_voice_is_told_when
 **Next:** the user's first real answers; once there are ~30+ labels, fine-tune reflex on them and
 compare against the router on the same log before letting it decide.
 **16:12 file links (6dedf2b2c, live):** user: "o link do chat não tá aparecendo… toda conversa nova volta". New chats wrote paths bare; the chat, its summary view and the Hub only linked backticked/markdown paths, and the speech cleanup ate underscores. Fixed all four (web `codeBareFilePaths`/`extractFilePathMentions`, `hub_chat.named_files`, `strip_markdown_for_speech`).
+**17:00 zip attachments (938408915, live):** .zip accepted in chat + Hub (25 MB, stored application/zip); native CLI chats get the file on disk, inline-model paths a one-line note. ChatPage.tsx hunk committed via `git apply --cached` (the other session's edits in that file stay uncommitted). Pre-existing: 2 order-dependent failures in `tests/llms` (same on clean HEAD).
 **omni-bench:** still PAUSED. Validation finished: 19/22 valid (01, 04, 22 have tests that fail after
 the reference change). Resume steps unchanged (block below).
 
