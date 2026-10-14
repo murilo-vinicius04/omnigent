@@ -14,6 +14,25 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-14 10:50 — READ FIRST (voice fixes + lanes plan; session d9653808, conversation 247c77f5)
+
+**State:** 14d16fc3c live (server restarted 10:46:30, 2 watches resumed; page = clean archive build of it).
+The user was on a Windows PC browser this morning, not the phone app. RAL's Opus chat (4a186787) was busy on
+the sim Franka MPC (`~/spot-teleop/isaac-sim_ws/franka_mpc/`).
+- **Voice send dropped the end (10:36 call):** Gemini heard 727 chars and ask_claude forwarded a ~190-char
+  paraphrase; the audio complaint at the end was lost. Now the relay keeps the transcript (`_TurnLog` turn
+  text, `heard_since_send`/`mark_sent`; Unmute `reader_lines`/`call.sent_upto`). `voice_hub.with_their_words`
+  appends it under the message with a label in the hub chat's language, unless it is already in the message.
+- **Mic over a reading:** the 09-21 rule (3f058a8a2) let the reading play on until the voice heard the caller.
+  Over the reading Gemini heard nothing for ~43 s. Now opening the mic stops the reading when the call connects
+  (`liveConversation.ts`). Every hub call (Gemini, Unmute, GPT-Live) is briefed with the hub chat's newest 6
+  lines (`voice_hub.recent_block`), so it carries on from the report instead of starting over.
+- Not yet tried by the user on a real call.
+- **Plan for several agents per project + model chooser:** `docs/HUB_LANES_PLAN.md`. Nothing built; it
+  awaits the user's go and three decisions (listed at the end of the plan). Upstream Smart Routing
+  (`smart_routing.py`) is an LLM fast/balanced/powerful judge, the approach our routing report rejects.
+  Reuse its plumbing only.
+
 ## 2026-10-13 20:10 — READ FIRST (Hub evening; session d9653808, conversation 247c77f5 = project "omnigent")
 
 **State:** all committed and live. Server restarted 20:07:53; page = clean `git archive HEAD web` build of
