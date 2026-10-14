@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
+  ArchiveIcon,
   ArrowUpRightIcon,
+  Columns2Icon,
   FolderIcon,
   MessageSquarePlusIcon,
   MoreHorizontalIcon,
@@ -13,6 +15,8 @@ import {
 import { Link, useNavigate } from "@/lib/routing";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { PlanLimitPills } from "@/components/PlanLimitPills";
 import { RunningDot } from "@/components/RunningDot";
 import {
@@ -52,12 +56,15 @@ import {
 } from "@/components/HarnessConfigControls";
 import {
   addHubProjectChat,
+  closeHubLane,
   createHubProject,
   deleteHubProject,
   listHubBudgets,
   listHubChats,
   listHubProjects,
+  openHubLane,
   projectChatLink,
+  renameHubLane,
   renameHubProject,
   setHubProjectModel,
   type HubCandidate,
@@ -528,8 +535,8 @@ function AddChatDialog({
         <DialogHeader>
           <DialogTitle>Move a chat into {row.name}</DialogTitle>
           <DialogDescription>
-            Only chats outside every project are listed. The newest chat in a project is the one the
-            Hub sends to.
+            Only chats outside every project are listed. A project's newest chats are its lanes,
+            which the Hub sends to.
           </DialogDescription>
         </DialogHeader>
         <ChatPicker open={open} onPick={(chat) => void add(chat)} />
@@ -636,14 +643,15 @@ function HubProjectCard({ row }: { row: HubProjectRow }) {
   const [renaming, setRenaming] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [openingLane, setOpeningLane] = useState(false);
   // The menu traps focus until it has closed, then hands it back to its
   // button; after Rename it goes to the name field instead.
   const keepFocus = useRef(false);
   const renameInput = useRef<HTMLInputElement>(null);
   const { chat } = row;
   const newChat = projectChatLink(row.name);
-  const recent = row.recent && row.recent.length > 0 ? row.recent : chat ? [chat] : [];
-  const older = row.chats - recent.length;
+  const lanes = row.lanes && row.lanes.length > 0 ? row.lanes : chat ? [chat] : [];
+  const older = row.chats - lanes.length;
 
   function said(text: string): void {
     setNote({ text, ok: true });
@@ -683,14 +691,31 @@ function HubProjectCard({ row }: { row: HubProjectRow }) {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <Link
-            to={newChat}
-            className="flex items-center gap-0.5 text-xs text-primary hover:underline"
-            aria-label={`Start a chat in ${row.name}`}
-          >
-            {chat ? "New chat" : "Start chat"}
-            <ArrowUpRightIcon className="size-3" aria-hidden />
-          </Link>
+          {chat ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 gap-1 px-2 text-xs text-primary"
+              onClick={() => {
+                setNote(null);
+                setOpeningLane(true);
+              }}
+              aria-label={`New lane in ${row.name}`}
+              data-testid={`hub-project-new-lane-${row.id}`}
+            >
+              <Columns2Icon className="size-3" aria-hidden />
+              New lane
+            </Button>
+          ) : (
+            <Link
+              to={newChat}
+              className="flex items-center gap-0.5 text-xs text-primary hover:underline"
+              aria-label={`Start a chat in ${row.name}`}
+            >
+              Start chat
+              <ArrowUpRightIcon className="size-3" aria-hidden />
+            </Link>
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -753,20 +778,21 @@ function HubProjectCard({ row }: { row: HubProjectRow }) {
         </div>
       </header>
 
-      {recent.length === 0 ? (
+      {lanes.length === 0 ? (
         <p className="text-xs text-muted-foreground">No chat yet</p>
       ) : (
-        <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
-          {recent.map((c) => (
-            <ChatItem
-              key={c.id}
-              row={row}
-              chat={c}
-              sendsHere={chat?.id === c.id}
-              onNote={setNote}
-            />
-          ))}
-        </ul>
+        <>
+          {lanes.length > 1 && (
+            <p className="text-xs text-muted-foreground">
+              {lanes.length} lanes: agents working side by side, each on its own topic
+            </p>
+          )}
+          <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
+            {lanes.map((c) => (
+              <ChatItem key={c.id} row={row} chat={c} several={lanes.length > 1} onNote={setNote} />
+            ))}
+          </ul>
+        </>
       )}
       {older > 0 && (
         <p className="text-xs text-muted-foreground" data-testid={`hub-project-older-${row.id}`}>
@@ -785,8 +811,294 @@ function HubProjectCard({ row }: { row: HubProjectRow }) {
       )}
 
       <DeleteDialog row={row} open={deleting} onOpenChange={setDeleting} onDeleted={said} />
+      <NewLaneDialog
+        row={row}
+        open={openingLane}
+        onOpenChange={setOpeningLane}
+        onOpened={(text, ok) => {
+          setNote({ text, ok });
+          void refreshAll(queryClient);
+        }}
+      />
       <AddChatDialog row={row} open={adding} onOpenChange={setAdding} onAdded={said} />
     </section>
+  );
+}
+
+/** Models a new lane can be put on by name; the first lets the Hub pick. */
+const LANE_MODELS: { value: string; label: string }[] = [
+  { value: "", label: "Let the Hub pick (router + quota)" },
+  { value: "Opus", label: "Claude Opus" },
+  { value: "Sonnet", label: "Claude Sonnet" },
+  { value: "Haiku", label: "Claude Haiku" },
+  { value: "Sol", label: "Codex · GPT Sol" },
+  { value: "Luna", label: "Codex · GPT Luna" },
+  { value: "Flash", label: "Gemini Flash (agy)" },
+];
+const LANE_PICK_HUB = "hub";
+
+/** Open a new lane in a project: a topic and its first request. */
+function NewLaneDialog({
+  row,
+  open,
+  onOpenChange,
+  onOpened,
+}: {
+  row: HubProjectRow;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onOpened: (said: string, ok: boolean) => void;
+}) {
+  const [topic, setTopic] = useState("");
+  const [request, setRequest] = useState("");
+  const [use, setUse] = useState(LANE_PICK_HUB);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+
+  async function start(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    if (!request.trim()) return;
+    setBusy(true);
+    setFailed(null);
+    try {
+      const result = await openHubLane(row.id, {
+        topic: topic.trim(),
+        message: request.trim(),
+        use: use === LANE_PICK_HUB ? "" : use,
+      });
+      onOpened(result.text, result.opened);
+      if (result.opened) {
+        setTopic("");
+        setRequest("");
+        setUse(LANE_PICK_HUB);
+        onOpenChange(false);
+      } else {
+        setFailed(result.text);
+      }
+    } catch (err) {
+      setFailed(`Couldn't open it: ${message(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <form className="flex flex-col gap-3" onSubmit={(event) => void start(event)}>
+          <DialogHeader>
+            <DialogTitle>New lane in {row.name}</DialogTitle>
+            <DialogDescription>
+              A second agent in this project, beside its other lanes. It starts on its first request
+              right away, so it spends quota. It is told which checkouts the busy lanes are writing
+              in.
+            </DialogDescription>
+          </DialogHeader>
+          <Row label="Topic">
+            <Input
+              value={topic}
+              maxLength={60}
+              placeholder="e.g. joystick plan"
+              onChange={(event) => setTopic(event.target.value)}
+              className="h-8 text-sm"
+              aria-label="Topic"
+              data-testid={`hub-lane-topic-${row.id}`}
+            />
+          </Row>
+          <Textarea
+            value={request}
+            onChange={(event) => setRequest(event.target.value)}
+            placeholder="Its first request"
+            rows={4}
+            aria-label="First request"
+            data-testid={`hub-lane-request-${row.id}`}
+          />
+          <Row label="Model">
+            <Select value={use} onValueChange={setUse}>
+              <SelectTrigger
+                className="h-8 w-full text-sm"
+                aria-label="Model"
+                data-testid={`hub-lane-model-${row.id}`}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper" align="start">
+                {LANE_MODELS.map((m) => (
+                  <SelectItem key={m.label} value={m.value || LANE_PICK_HUB}>
+                    {m.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Row>
+          {failed && <p className="text-xs text-destructive">{failed}</p>}
+          <DialogFooter className="border-t-0 bg-transparent">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => onOpenChange(false)}
+              disabled={busy}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={busy || !request.trim()}
+              data-testid={`hub-lane-open-${row.id}`}
+            >
+              {busy ? "Opening…" : "Open lane"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function LaneRenameForm({
+  chat,
+  name,
+  input,
+  onDone,
+}: {
+  chat: HubSessionRow;
+  name: string;
+  input: RefObject<HTMLInputElement | null>;
+  onDone: (said: string | null) => void;
+}) {
+  const [value, setValue] = useState(name);
+  const [saving, setSaving] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+
+  useEffect(() => {
+    input.current?.focus();
+    input.current?.select();
+  }, [input]);
+
+  async function save(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    const next = value.trim();
+    if (!next || next === name) {
+      onDone(null);
+      return;
+    }
+    setSaving(true);
+    setFailed(null);
+    try {
+      onDone(await renameHubLane(chat.id, next));
+    } catch (err) {
+      setFailed(`Couldn't rename it: ${message(err)}`);
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form className="flex flex-col gap-1" onSubmit={(event) => void save(event)}>
+      <div className="flex items-center gap-1">
+        <Input
+          ref={input}
+          value={value}
+          maxLength={60}
+          onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") onDone(null);
+          }}
+          aria-label={`New name for the lane ${name}`}
+          className="h-7 text-sm"
+          data-testid={`hub-lane-rename-${chat.id}`}
+        />
+        <Button type="submit" size="xs" className="text-xs" disabled={saving}>
+          Save
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          className="text-xs"
+          onClick={() => onDone(null)}
+        >
+          Cancel
+        </Button>
+      </div>
+      {failed && <p className="text-xs text-destructive">{failed}</p>}
+    </form>
+  );
+}
+
+/** Ask before closing a lane; by default it writes its handoff note first. */
+function CloseLaneDialog({
+  chat,
+  name,
+  open,
+  onOpenChange,
+  onClosed,
+}: {
+  chat: HubSessionRow;
+  name: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onClosed: (said: string) => void;
+}) {
+  const [handoff, setHandoff] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+
+  async function close(): Promise<void> {
+    setBusy(true);
+    setFailed(null);
+    try {
+      const result = await closeHubLane(chat.id, handoff);
+      onClosed(
+        result.closing
+          ? `${name} is writing its handoff note; it closes once that is done.`
+          : result.text,
+      );
+      onOpenChange(false);
+    } catch (err) {
+      setFailed(`Couldn't close it: ${message(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Close the lane {name}?</DialogTitle>
+          <DialogDescription>
+            Its chat is archived, not deleted: you can still open it from the sidebar's archive.
+          </DialogDescription>
+        </DialogHeader>
+        <label className="flex items-center justify-between gap-3 text-sm">
+          <span>
+            Write its handoff note first
+            <span className="block text-xs text-muted-foreground">
+              One more turn on its model, so the next agent can carry on.
+            </span>
+          </span>
+          <Switch
+            checked={handoff}
+            onCheckedChange={setHandoff}
+            aria-label="Write its handoff note first"
+            data-testid={`hub-lane-handoff-${chat.id}`}
+          />
+        </label>
+        {failed && <p className="text-xs text-destructive">{failed}</p>}
+        <DialogFooter className="border-t-0 bg-transparent">
+          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => void close()}
+            disabled={busy || chat.working}
+            data-testid={`hub-lane-close-confirm-${chat.id}`}
+          >
+            Close lane
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -804,18 +1116,24 @@ function runSummary(chat: HubSessionRow): string {
 function ChatItem({
   row,
   chat,
-  sendsHere,
+  several,
   onNote,
 }: {
   row: HubProjectRow;
   chat: HubSessionRow;
-  sendsHere: boolean;
+  /** The project runs several lanes: the hub picks one by its topic. */
+  several: boolean;
   onNote: (note: { text: string; ok: boolean } | null) => void;
 }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [switchOpen, setSwitchOpen] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const keepFocus = useRef(false);
+  const renameInput = useRef<HTMLInputElement>(null);
+  const laneName = chat.lane || chat.title || "Untitled chat";
 
   async function change(pick: { model?: string; effort?: string }): Promise<void> {
     setSaving(true);
@@ -837,19 +1155,38 @@ function ChatItem({
     <li className="flex flex-col gap-1.5 px-2 py-1.5" data-testid={`hub-chat-row-${chat.id}`}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          <p className="flex min-w-0 items-center gap-1.5 text-sm">
-            <span className="truncate" title={chat.title}>
-              {chat.title || "Untitled chat"}
-            </span>
-            {sendsHere && (
+          {renaming ? (
+            <LaneRenameForm
+              chat={chat}
+              name={laneName}
+              input={renameInput}
+              onDone={(text) => {
+                setRenaming(false);
+                if (text) {
+                  onNote({ text, ok: true });
+                  void queryClient.invalidateQueries({ queryKey: HUB_PROJECTS_QUERY_KEY });
+                }
+              }}
+            />
+          ) : (
+            <p className="flex min-w-0 items-center gap-1.5 text-sm">
               <span
-                className="shrink-0 rounded-full bg-muted px-1.5 text-[10px] text-muted-foreground"
-                title="The Hub sends this project's requests to its newest chat"
+                className="truncate"
+                title={chat.title}
+                data-testid={`hub-lane-name-${chat.id}`}
               >
-                Hub sends here
+                {laneName}
               </span>
-            )}
-          </p>
+              {!several && (
+                <span
+                  className="shrink-0 rounded-full bg-muted px-1.5 text-[10px] text-muted-foreground"
+                  title="The project's only lane: the Hub sends its requests here"
+                >
+                  Hub sends here
+                </span>
+              )}
+            </p>
+          )}
           <p
             className="truncate text-xs text-muted-foreground"
             data-testid={`hub-chat-run-${chat.id}`}
@@ -879,6 +1216,49 @@ function ChatItem({
             Open
             <ArrowUpRightIcon className="size-3" aria-hidden />
           </Link>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label={`More for the lane ${laneName}`}
+                data-testid={`hub-lane-menu-${chat.id}`}
+              >
+                <MoreHorizontalIcon className="size-3.5" aria-hidden />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              onCloseAutoFocus={(event) => {
+                if (!keepFocus.current) return;
+                keepFocus.current = false;
+                event.preventDefault();
+                renameInput.current?.focus();
+                renameInput.current?.select();
+              }}
+            >
+              <DropdownMenuItem
+                onSelect={() => {
+                  keepFocus.current = true;
+                  onNote(null);
+                  setRenaming(true);
+                }}
+              >
+                <PencilIcon aria-hidden />
+                Rename lane
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={chat.working}
+                onSelect={() => {
+                  onNote(null);
+                  setClosing(true);
+                }}
+              >
+                <ArchiveIcon aria-hidden />
+                {chat.working ? "Close lane (wait until it finishes)" : "Close lane…"}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
       {open && (
@@ -887,6 +1267,16 @@ function ChatItem({
           {saving && <p className="text-xs text-muted-foreground">Saving…</p>}
         </div>
       )}
+      <CloseLaneDialog
+        chat={chat}
+        name={laneName}
+        open={closing}
+        onOpenChange={setClosing}
+        onClosed={(text) => {
+          onNote({ text, ok: true });
+          void queryClient.invalidateQueries({ queryKey: HUB_PROJECTS_QUERY_KEY });
+        }}
+      />
       <SwitchAgentDialog
         sessionId={chat.id}
         open={switchOpen}

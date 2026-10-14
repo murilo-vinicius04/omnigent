@@ -111,11 +111,13 @@ export interface HubSessionRun {
   efforts: string[];
 }
 
-/** One of a project's chats; its newest is the one the hub sends to. */
+/** One of a project's chats, a lane: an agent on its own topic. */
 export interface HubSessionRow {
   id: string;
-  /** What the hub calls it: its project's name. */
+  /** What the hub calls it: its project's name, and its lane's when it has several. */
   name: string;
+  /** Its lane's name: the topic the hub opened it for, else its title. */
+  lane?: string;
   title: string;
   nickname: string | null;
   status: string | null;
@@ -144,8 +146,8 @@ export interface HubProjectRow {
   updated_at: number;
   /** Its newest chat, the one the hub sends to; `null` until it has one. */
   chat: HubSessionRow | null;
-  /** Its newest chats, newest first, each on its own provider, model and effort. */
-  recent?: HubSessionRow[];
+  /** Its newest chats, its lanes, newest first, each on its own provider, model and effort. */
+  lanes?: HubSessionRow[];
   /** The router's newest decision for one of its chats, logged only for now. */
   route?: HubRoute | null;
 }
@@ -313,6 +315,63 @@ export async function addHubProjectChat(projectId: string, sessionId: string): P
     }),
   );
   return body.text;
+}
+
+/** What opening a lane gave back. */
+export interface OpenedHubLane {
+  /** Whether its first request went out; `false` when no lane was opened. */
+  opened: boolean;
+  /** What the hub chat says about it, or why it did not open one. */
+  text: string;
+  session_id: string | null;
+}
+
+/**
+ * Open a new lane in a project with its first request. The hub picks its
+ * model (or runs it on `use`, e.g. "Sonnet") and tells it which checkouts the
+ * busy lanes are writing in. This starts an agent, so it spends quota.
+ */
+export async function openHubLane(
+  projectId: string,
+  lane: { topic: string; message: string; use?: string },
+): Promise<OpenedHubLane> {
+  return readJson<OpenedHubLane>(
+    await authenticatedFetch(`/v1/hub/projects/${encodeURIComponent(projectId)}/lanes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ topic: lane.topic, message: lane.message, use: lane.use ?? "" }),
+    }),
+  );
+}
+
+/** Give a lane another name: its chat's title too. */
+export async function renameHubLane(sessionId: string, name: string): Promise<string> {
+  const body = await readJson<{ text: string }>(
+    await authenticatedFetch(`/v1/hub/lanes/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+  );
+  return body.text;
+}
+
+/**
+ * Close a lane. With `handoff`, it first writes its handoff note (one more
+ * turn) and is archived once that is reported; otherwise it is archived now.
+ * Rejects while it is working.
+ */
+export async function closeHubLane(
+  sessionId: string,
+  handoff: boolean,
+): Promise<{ text: string; closing: boolean }> {
+  return readJson<{ text: string; closing: boolean }>(
+    await authenticatedFetch(`/v1/hub/lanes/${encodeURIComponent(sessionId)}/close`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ handoff }),
+    }),
+  );
 }
 
 /** The new-chat page, with its chat filed in this project. */

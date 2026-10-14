@@ -7,11 +7,14 @@ import { HubProjectsPanel } from "./HubProjectsPanel";
 import type * as HubApiModule from "@/lib/hubApi";
 import {
   addHubProjectChat,
+  closeHubLane,
   createHubProject,
   deleteHubProject,
   listHubBudgets,
   listHubChats,
   listHubProjects,
+  openHubLane,
+  renameHubLane,
   renameHubProject,
   setHubProjectModel,
   type HubBudget,
@@ -22,6 +25,9 @@ import {
 vi.mock("@/lib/hubApi", async (importOriginal) => ({
   ...(await importOriginal<typeof HubApiModule>()),
   addHubProjectChat: vi.fn(),
+  closeHubLane: vi.fn(),
+  openHubLane: vi.fn(),
+  renameHubLane: vi.fn(),
   createHubProject: vi.fn(),
   deleteHubProject: vi.fn(),
   listHubBudgets: vi.fn(),
@@ -43,6 +49,9 @@ const deleteMock = vi.mocked(deleteHubProject);
 const renameMock = vi.mocked(renameHubProject);
 const addMock = vi.mocked(addHubProjectChat);
 const budgetsMock = vi.mocked(listHubBudgets);
+const openLaneMock = vi.mocked(openHubLane);
+const renameLaneMock = vi.mocked(renameHubLane);
+const closeLaneMock = vi.mocked(closeHubLane);
 
 const CLAUDE_CHAT: HubSessionRow = {
   id: "s_claude",
@@ -75,9 +84,10 @@ const CLAUDE_CHAT: HubSessionRow = {
 const CODEX_CHAT: HubSessionRow = {
   ...CLAUDE_CHAT,
   id: "s_codex",
-  name: "Joystick plan",
+  name: "amarras · joystick",
+  lane: "joystick",
   title: "Joystick plan",
-  nickname: null,
+  nickname: "amarras · joystick",
   status: "idle",
   working: false,
   now: "",
@@ -103,7 +113,7 @@ const AMARRAS: HubProjectRow = {
   chats: 3,
   updated_at: 0,
   chat: CLAUDE_CHAT,
-  recent: [CLAUDE_CHAT, CODEX_CHAT],
+  lanes: [CLAUDE_CHAT, CODEX_CHAT],
   route: {
     at: 0,
     session_id: "s_claude",
@@ -247,6 +257,7 @@ beforeEach(() => {
   for (const mock of [listMock, setMock, createMock, chatsMock, deleteMock, renameMock, addMock]) {
     mock.mockReset();
   }
+  for (const mock of [openLaneMock, renameLaneMock, closeLaneMock]) mock.mockReset();
   listMock.mockResolvedValue([AMARRAS, NESSIE, EMPTY]);
   budgetsMock.mockReset();
   budgetsMock.mockResolvedValue(BUDGETS);
@@ -269,9 +280,15 @@ describe("HubProjectsPanel", () => {
       "Codex · GPT-6 Luna · high",
     );
     expect(within(claude).getByText("Working · Bash: pytest -q")).toBeTruthy();
-    // Only the newest chat is where the Hub sends.
-    expect(within(claude).getByText("Hub sends here")).toBeTruthy();
+    // Two lanes, each under its own name: the Hub picks one by topic.
+    expect(within(card).getByText(/2 lanes: agents working side by side/)).toBeTruthy();
+    expect(screen.getByTestId("hub-lane-name-s_codex").textContent).toBe("joystick");
+    expect(within(claude).queryByText("Hub sends here")).toBeNull();
     expect(within(codex).queryByText("Hub sends here")).toBeNull();
+    // A project's only lane is where the Hub sends.
+    expect(
+      within(screen.getByTestId("hub-chat-row-s_agent")).getByText("Hub sends here"),
+    ).toBeTruthy();
     expect(screen.getByTestId("hub-project-older-p_amarras").textContent).toBe("1 older chat");
     expect(
       within(claude).getByRole("link", { name: "Open Project Analysis" }).getAttribute("href"),
@@ -464,6 +481,83 @@ describe("HubProjectsPanel", () => {
     fireEvent.click(await screen.findByTestId("hub-chat-s_notes"));
     await waitFor(() => expect(addMock).toHaveBeenCalledWith("p_arm", "s_notes"));
     expect(await screen.findByText("Moved “Notes” into robot arm.")).toBeTruthy();
+  });
+
+  it("opens a new lane with its topic, first request and model", async () => {
+    openLaneMock.mockResolvedValueOnce({
+      opened: false,
+      text: "I didn't open a lane in amarras: it needs the top tier and no provider can take it now.",
+      session_id: null,
+    });
+    openLaneMock.mockResolvedValueOnce({
+      opened: true,
+      text: "Sent.",
+      session_id: "s_new",
+    });
+    renderPanel();
+    await screen.findByTestId("hub-project-p_amarras");
+    // A project without a chat has nothing to open a lane beside.
+    expect(screen.queryByTestId("hub-project-new-lane-p_arm")).toBeNull();
+    fireEvent.click(screen.getByTestId("hub-project-new-lane-p_amarras"));
+    expect(await screen.findByText(/so it spends quota/)).toBeTruthy();
+    const open = screen.getByTestId("hub-lane-open-p_amarras") as HTMLButtonElement;
+    expect(open.disabled).toBe(true);
+    fireEvent.change(screen.getByTestId("hub-lane-topic-p_amarras"), {
+      target: { value: "joystick plan" },
+    });
+    fireEvent.change(screen.getByTestId("hub-lane-request-p_amarras"), {
+      target: { value: "Plan the joystick work." },
+    });
+    openSelect("hub-lane-model-p_amarras");
+    fireEvent.click(await screen.findByRole("option", { name: "Claude Sonnet" }));
+    fireEvent.click(open);
+    await waitFor(() =>
+      expect(openLaneMock).toHaveBeenCalledWith("p_amarras", {
+        topic: "joystick plan",
+        message: "Plan the joystick work.",
+        use: "Sonnet",
+      }),
+    );
+    // Not opened: the reason shows and the dialog stays.
+    expect(await screen.findAllByText(/no provider can take it now/)).toHaveLength(2);
+    expect(screen.getByTestId("hub-lane-request-p_amarras")).toBeTruthy();
+    fireEvent.click(open);
+    await waitFor(() => expect(screen.queryByTestId("hub-lane-request-p_amarras")).toBeNull());
+    expect(await screen.findByText("Sent.")).toBeTruthy();
+  });
+
+  it("renames a lane and closes it after its handoff note, never while it works", async () => {
+    renameLaneMock.mockResolvedValue("Renamed the lane joystick to joystick plan.");
+    closeLaneMock.mockResolvedValue({ text: "Sent.", closing: true });
+    renderPanel();
+    await screen.findByTestId("hub-project-p_amarras");
+
+    const lanesMenu = (id: string) => {
+      const trigger = screen.getByTestId(`hub-lane-menu-${id}`);
+      fireEvent.pointerDown(trigger, new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+    };
+    lanesMenu("s_claude");
+    const busyClose = await screen.findByRole("menuitem", {
+      name: "Close lane (wait until it finishes)",
+    });
+    expect(busyClose.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.keyDown(busyClose, { key: "Escape" });
+
+    lanesMenu("s_codex");
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rename lane" }));
+    const field = await screen.findByTestId("hub-lane-rename-s_codex");
+    fireEvent.change(field, { target: { value: "joystick plan" } });
+    fireEvent.submit(field.closest("form") as HTMLFormElement);
+    await waitFor(() => expect(renameLaneMock).toHaveBeenCalledWith("s_codex", "joystick plan"));
+
+    lanesMenu("s_codex");
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Close lane…" }));
+    expect(await screen.findByText(/archived, not deleted/)).toBeTruthy();
+    fireEvent.click(screen.getByTestId("hub-lane-close-confirm-s_codex"));
+    await waitFor(() => expect(closeLaneMock).toHaveBeenCalledWith("s_codex", true));
+    expect(
+      await screen.findByText("joystick is writing its handoff note; it closes once that is done."),
+    ).toBeTruthy();
   });
 
   it("starts a new chat in a project from its menu", async () => {
