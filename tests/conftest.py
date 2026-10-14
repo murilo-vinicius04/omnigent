@@ -21,6 +21,8 @@ except ImportError:
 # deliberately replaces ambient state; subprocesses inherit the safe override.
 _TEST_OMNIGENT_DATA_DIR = Path(tempfile.mkdtemp(prefix="omnigent-pytest-")).resolve()
 os.environ["OMNIGENT_DATA_DIR"] = str(_TEST_OMNIGENT_DATA_DIR)
+# No idle agy or live plan-meter reads from a test server.
+os.environ["OMNIGENT_METER_KEEPER"] = "0"
 
 # Skip the synchronous api.litellm.ai/model_catalog HTTP fallback during
 # tests. Hardened CI runners can't reach the public internet, so every

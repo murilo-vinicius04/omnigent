@@ -1538,6 +1538,13 @@ def create_app(
         # the reader comes back.
         companion_sweep_task = asyncio.create_task(sweep_idle_companions())
 
+        # Plan meters read on a timer, with one idle agy kept up for Gemini's.
+        from omnigent.server import meter_keeper
+
+        meter_task = (
+            asyncio.create_task(meter_keeper.keep_meters()) if meter_keeper.enabled() else None
+        )
+
         # Report-backs the hub owed when the server last stopped.
         try:
             from omnigent.server import hub_chat
@@ -1557,6 +1564,10 @@ def create_app(
             companion_sweep_task.cancel()
             with suppress(asyncio.CancelledError):
                 await companion_sweep_task
+            if meter_task is not None:
+                meter_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await meter_task
             # Never leave an agy subprocess behind a server restart.
             await hub_module.close_all()
             await discussion.registry().close_all()
