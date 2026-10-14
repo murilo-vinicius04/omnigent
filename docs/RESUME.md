@@ -32,6 +32,13 @@ The 13:40 block below still holds for the router, quota rules and reflex.
   (handoff note first by default; refused while working). Panel: New lane / Rename lane / Close lane.
 - Verified: 23 lane tests + 208 hub tests + 16 panel tests; API-only chat launches its terminal (made and
   archived a059a576…); real Flash Low router 4/4 on hold / new lane / now / named model (scratch, fake server).
+**15:03 fix (f64f1b6d2, live):** a new question for a BUSY project opens a lane (or goes to an idle lane
+whose topic fits); only additions to the busy lane's current task are held. "now" delivers what is held and
+clears it (before, a "now" send was delivered again at finish: RAL got the ZED question twice, 15:01).
+**Router labels without tests -> `/home/nexus/omni-bench`** (README there): 22 tasks mined from the user's
+real requests (chat.db) + the commits that answered them, graded by those commits' tests; per-task clone +
+venv, bubblewrap sandbox like DeepSWE. User's rule: no hand rules over reflex's tier ("let the model
+decide"); the bench gives it labels. Model runs (Haiku/Sonnet pilot) await the user's go.
 **Not yet tried by the user:** a real lane from the Hub or the panel (spends quota on the picked model).
 **Next:** outcome log (plan 2.4); show the user; then a week of logs before reflex also decides sends to
 existing chats. Local CLI token: use `omnigent.cli_auth.load_token/refresh_stored_token` (it expires).
