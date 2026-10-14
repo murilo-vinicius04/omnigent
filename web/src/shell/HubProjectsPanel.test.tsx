@@ -9,10 +9,12 @@ import {
   addHubProjectChat,
   createHubProject,
   deleteHubProject,
+  listHubBudgets,
   listHubChats,
   listHubProjects,
   renameHubProject,
   setHubProjectModel,
+  type HubBudget,
   type HubProjectRow,
   type HubSessionRow,
 } from "@/lib/hubApi";
@@ -22,6 +24,7 @@ vi.mock("@/lib/hubApi", async (importOriginal) => ({
   addHubProjectChat: vi.fn(),
   createHubProject: vi.fn(),
   deleteHubProject: vi.fn(),
+  listHubBudgets: vi.fn(),
   listHubChats: vi.fn(),
   listHubProjects: vi.fn(),
   renameHubProject: vi.fn(),
@@ -39,6 +42,7 @@ const chatsMock = vi.mocked(listHubChats);
 const deleteMock = vi.mocked(deleteHubProject);
 const renameMock = vi.mocked(renameHubProject);
 const addMock = vi.mocked(addHubProjectChat);
+const budgetsMock = vi.mocked(listHubBudgets);
 
 const CLAUDE_CHAT: HubSessionRow = {
   id: "s_claude",
@@ -67,6 +71,29 @@ const CLAUDE_CHAT: HubSessionRow = {
   },
 };
 
+/** An older chat of the same project, on another provider. */
+const CODEX_CHAT: HubSessionRow = {
+  ...CLAUDE_CHAT,
+  id: "s_codex",
+  name: "Joystick plan",
+  title: "Joystick plan",
+  nickname: null,
+  status: "idle",
+  working: false,
+  now: "",
+  run: {
+    provider: "Codex",
+    model: "gpt-6-luna",
+    model_label: "GPT-6 Luna",
+    requested: "",
+    requested_label: "",
+    effort: "high",
+    selected: "gpt-6-luna",
+    models: [{ id: "gpt-6-luna", label: "GPT-6 Luna", efforts: ["low", "high"] }],
+    efforts: ["low", "high"],
+  },
+};
+
 const AMARRAS: HubProjectRow = {
   id: "p_amarras",
   name: "amarras",
@@ -76,7 +103,56 @@ const AMARRAS: HubProjectRow = {
   chats: 3,
   updated_at: 0,
   chat: CLAUDE_CHAT,
+  recent: [CLAUDE_CHAT, CODEX_CHAT],
+  route: {
+    at: 0,
+    session_id: "s_claude",
+    request: "Advance to the obstacle-avoidance milestone.",
+    tier: "middle",
+    effort: "high",
+    proposal: {
+      provider: "claude",
+      model: "Sonnet",
+      effort: "high",
+      reason: "Claude: 21.3% of its week left today",
+    },
+    ran_on: { provider: "Claude Code", model: "claude-opus-5-5", effort: "xhigh" },
+    error: "",
+  },
 };
+
+const BUDGETS: HubBudget[] = [
+  {
+    provider: "claude",
+    label: "Claude",
+    week_used: 45,
+    resets_at: "2026-10-16T11:59:59Z",
+    day: 5,
+    daily: 12.14,
+    allowed: 24.29,
+    spent: 3,
+    remaining: 21.29,
+    five_hour: 27,
+    stale: false,
+    free_until: null,
+    blocked: "",
+  },
+  {
+    provider: "gemini",
+    label: "Gemini",
+    week_used: 13,
+    resets_at: "2026-10-14T02:35:11Z",
+    day: 0,
+    daily: 12.14,
+    allowed: 0,
+    spent: 0,
+    remaining: 0,
+    five_hour: 12,
+    stale: true,
+    free_until: null,
+    blocked: "no reading since its reset",
+  },
+];
 
 const NESSIE: HubProjectRow = {
   id: "p_nessie",
@@ -147,6 +223,10 @@ function openSelect(testId: string): void {
   fireEvent.click(trigger);
 }
 
+function openChanges(chatId: string): void {
+  fireEvent.click(screen.getByTestId(`hub-chat-change-${chatId}`));
+}
+
 function openMenu(projectId: string): void {
   const trigger = screen.getByTestId(`hub-project-menu-${projectId}`);
   fireEvent.pointerDown(trigger, new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
@@ -157,30 +237,62 @@ beforeEach(() => {
     mock.mockReset();
   }
   listMock.mockResolvedValue([AMARRAS, NESSIE, EMPTY]);
+  budgetsMock.mockReset();
+  budgetsMock.mockResolvedValue(BUDGETS);
 });
 
 afterEach(cleanup);
 
 describe("HubProjectsPanel", () => {
-  it("shows each project's chat, state, folder, provider, model and effort", async () => {
+  it("lists a project's chats, each with its own provider, model, effort and state", async () => {
     renderPanel();
     const card = await screen.findByTestId("hub-project-p_amarras");
     expect(within(card).getByText("amarras")).toBeTruthy();
-    expect(within(card).getByText("Working · Bash: pytest -q")).toBeTruthy();
-    expect(screen.getByTestId("hub-project-chat-p_amarras").textContent).toBe(
-      "Project Analysis · newest of 3 chats",
-    );
     expect(within(card).getByText("/home/nexus/petrobras")).toBeTruthy();
-    expect(within(card).getByText("Claude Code")).toBeTruthy();
-    expect(screen.getByTestId("hub-project-model-p_amarras").textContent).toContain("Sonnet 5.5");
-    expect(screen.getByTestId("hub-project-pending-p_amarras").textContent).toBe(
+    const claude = screen.getByTestId("hub-chat-row-s_claude");
+    const codex = screen.getByTestId("hub-chat-row-s_codex");
+    expect(screen.getByTestId("hub-chat-run-s_claude").textContent).toBe(
+      "Claude Code · Opus 5.5 · xhigh",
+    );
+    expect(screen.getByTestId("hub-chat-run-s_codex").textContent).toBe(
+      "Codex · GPT-6 Luna · high",
+    );
+    expect(within(claude).getByText("Working · Bash: pytest -q")).toBeTruthy();
+    // Only the newest chat is where the Hub sends.
+    expect(within(claude).getByText("Hub sends here")).toBeTruthy();
+    expect(within(codex).queryByText("Hub sends here")).toBeNull();
+    expect(screen.getByTestId("hub-project-older-p_amarras").textContent).toBe("1 older chat");
+    expect(
+      within(claude).getByRole("link", { name: "Open Project Analysis" }).getAttribute("href"),
+    ).toBe("/c/s_claude");
+    // The controls open per chat.
+    expect(screen.queryByTestId("hub-chat-model-s_claude")).toBeNull();
+    openChanges("s_claude");
+    expect(screen.getByTestId("hub-chat-model-s_claude").textContent).toContain("Sonnet 5.5");
+    expect(screen.getByTestId("hub-chat-pending-s_claude").textContent).toBe(
       "Switching to Sonnet 5.5; it still reports Opus 5.5.",
     );
-    expect(screen.getByTestId("hub-project-effort-p_amarras").textContent).toContain("xhigh");
-    expect(within(card).getByRole("link", { name: "Open amarras" }).getAttribute("href")).toBe(
-      "/c/s_claude",
-    );
+    expect(screen.getByTestId("hub-chat-effort-s_claude").textContent).toContain("xhigh");
+    expect(screen.queryByTestId("hub-chat-model-s_codex")).toBeNull();
     expect(screen.getByText("3 projects")).toBeTruthy();
+  });
+
+  it("shows the router's newest decision and each provider's budget for today", async () => {
+    renderPanel();
+    await screen.findByTestId("hub-project-p_amarras");
+    expect(screen.getByTestId("hub-project-route-p_amarras").textContent).toBe(
+      "Router, logged only: middle · high → Claude Sonnet · high",
+    );
+    expect(screen.queryByTestId("hub-project-route-p_nessie")).toBeNull();
+    expect((await screen.findByTestId("hub-budget-claude")).textContent).toBe(
+      "Claude · 21.3% left today",
+    );
+    expect(screen.getByTestId("hub-budget-claude").getAttribute("title")).toContain(
+      "spent 3.0% of 24.3% today",
+    );
+    expect(screen.getByTestId("hub-budget-gemini").textContent).toBe(
+      "Gemini · no reading since its reset",
+    );
   });
 
   it("offers to start a chat in a project that has none", async () => {
@@ -190,41 +302,48 @@ describe("HubProjectsPanel", () => {
     expect(
       within(card).getByRole("link", { name: "Start a chat in robot arm" }).getAttribute("href"),
     ).toBe("/?project=robot%20arm");
-    expect(screen.queryByTestId("hub-project-model-p_arm")).toBeNull();
+    expect(within(card).queryByRole("button", { name: "Change" })).toBeNull();
   });
 
   it("shows a model it cannot change as plain text, and approvals it waits on", async () => {
     renderPanel();
     const card = await screen.findByTestId("hub-project-p_nessie");
     expect(within(card).getByText("Waiting for 2 approvals")).toBeTruthy();
-    expect(within(card).getByText("claude-sonnet-5-5")).toBeTruthy();
     expect(within(card).getByText("🦕")).toBeTruthy();
-    expect(screen.queryByTestId("hub-project-model-p_nessie")).toBeNull();
-    expect(screen.queryByTestId("hub-project-effort-p_nessie")).toBeNull();
+    openChanges("s_agent");
+    expect(within(card).getByText("claude-sonnet-5-5")).toBeTruthy();
+    expect(screen.queryByTestId("hub-chat-model-s_agent")).toBeNull();
+    expect(screen.queryByTestId("hub-chat-effort-s_agent")).toBeNull();
   });
 
-  it("sends a pick through the hub, by project, and shows what it said", async () => {
+  it("sends a pick through the hub for that one chat, and shows what it said", async () => {
     setMock.mockResolvedValue({
       changed: true,
       text: "Switched amarras to max effort; it applies from its next message.",
     });
     renderPanel();
     await screen.findByTestId("hub-project-p_amarras");
-    openSelect("hub-project-effort-p_amarras");
+    openChanges("s_claude");
+    openSelect("hub-chat-effort-s_claude");
     fireEvent.click(await screen.findByRole("option", { name: "max" }));
-    await waitFor(() => expect(setMock).toHaveBeenCalledWith("p_amarras", { effort: "max" }));
+    await waitFor(() =>
+      expect(setMock).toHaveBeenCalledWith("p_amarras", { effort: "max" }, "s_claude"),
+    );
     expect(
       await screen.findByText("Switched amarras to max effort; it applies from its next message."),
     ).toBeTruthy();
   });
 
-  it("opens the provider switch on the project's chat when it is idle", async () => {
+  it("opens the provider switch on a chat when it is idle", async () => {
     renderPanel();
-    const busy = await screen.findByTestId("hub-project-p_amarras");
+    await screen.findByTestId("hub-project-p_amarras");
+    openChanges("s_claude");
+    openChanges("s_codex");
+    const busy = screen.getByTestId("hub-chat-row-s_claude");
     expect(within(busy).getByRole("button", { name: "Switch…" })).toHaveProperty("disabled", true);
-    const idle = screen.getByTestId("hub-project-p_nessie");
+    const idle = screen.getByTestId("hub-chat-row-s_codex");
     fireEvent.click(within(idle).getByRole("button", { name: "Switch…" }));
-    expect(screen.getByTestId("switch-dialog-s_agent")).toBeTruthy();
+    expect(screen.getByTestId("switch-dialog-s_codex")).toBeTruthy();
   });
 
   it("says so when there are no projects", async () => {

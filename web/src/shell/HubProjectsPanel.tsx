@@ -54,6 +54,7 @@ import {
   addHubProjectChat,
   createHubProject,
   deleteHubProject,
+  listHubBudgets,
   listHubChats,
   listHubProjects,
   projectChatLink,
@@ -89,10 +90,11 @@ async function refreshAll(queryClient: QueryClient): Promise<void> {
 }
 
 /**
- * Every project the hub runs, each kept separate with its own chat, and the
- * controls to manage it: make a project, rename or delete one, start a new
- * chat in it or move an existing chat in, and change the model, effort and
- * provider its chat runs on.
+ * Every project the hub runs, each kept separate, and the controls to manage
+ * it: make a project, rename or delete one, start a new chat in it or move an
+ * existing chat in. A project's chats each run on their own provider, model
+ * and effort, changed per chat; the router's newest decision and each
+ * provider's budget for today are shown while the router only logs.
  *
  * Model and effort picks go through the hub (`POST /v1/hub/model`), so they
  * are checked like a typed or spoken request and show up in the hub chat.
@@ -128,6 +130,7 @@ export function HubProjectsPanel() {
         </span>
         <NewProjectDialog />
       </div>
+      <BudgetStrip />
       {rows.length === 0 ? (
         <p className="px-1 text-sm text-muted-foreground">
           No projects yet. Make one to run it from here.
@@ -536,11 +539,98 @@ function AddChatDialog({
   );
 }
 
+const PROVIDER_LABELS: Record<string, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  gemini: "Gemini",
+};
+
+function providerLabel(provider: string): string {
+  return PROVIDER_LABELS[provider] ?? provider;
+}
+
+/** "Fri 08:59" in their own time zone. */
+function shortWhen(iso: string | null): string {
+  if (!iso) return "";
+  const when = new Date(iso);
+  if (Number.isNaN(when.getTime())) return "";
+  return when.toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+const HUB_BUDGETS_QUERY_KEY = ["hub-budgets"] as const;
+
+/**
+ * Each provider's budget for today, on its own week: what the quota rules
+ * read when they pick which provider runs a request.
+ */
+function BudgetStrip() {
+  const { data } = useQuery({
+    queryKey: HUB_BUDGETS_QUERY_KEY,
+    queryFn: listHubBudgets,
+    refetchInterval: 30_000,
+  });
+  if (!data || data.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 px-1" data-testid="hub-budgets">
+      {data.map((b) => {
+        let text: string;
+        if (b.free_until) text = `${b.remaining.toFixed(0)}% left until ${shortWhen(b.free_until)}`;
+        else if (b.blocked) text = b.blocked;
+        else text = `${b.remaining.toFixed(1)}% left today`;
+        const detail = [
+          b.week_used !== null ? `${b.week_used.toFixed(0)}% of the week used` : "",
+          b.free_until ? "" : `day ${b.day + 1} of 7`,
+          b.free_until || b.week_used === null
+            ? ""
+            : `spent ${b.spent.toFixed(1)}% of ${b.allowed.toFixed(1)}% today`,
+          b.resets_at ? `resets ${shortWhen(b.resets_at)}` : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        return (
+          <span
+            key={b.provider}
+            title={detail}
+            className={cn(
+              "rounded-full border border-border px-2 py-0.5 text-[11px]",
+              b.blocked ? "text-muted-foreground" : "text-foreground",
+            )}
+            data-testid={`hub-budget-${b.provider}`}
+          >
+            <span className="font-medium">{b.label}</span> · {text}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/** The router's newest decision for the project, while it only logs. */
+function RouteLine({ row }: { row: HubProjectRow }) {
+  const route = row.route;
+  if (!route) return null;
+  let outcome: string;
+  if (route.error) outcome = `reflex didn't answer (${route.error})`;
+  else if (route.proposal?.provider)
+    outcome =
+      `${route.tier} · ${route.effort} → ${providerLabel(route.proposal.provider)} ` +
+      `${route.proposal.model} · ${route.proposal.effort}`;
+  else outcome = `${route.tier} · ${route.effort} → ${route.proposal?.reason || "no provider"}`;
+  const ran = route.ran_on?.model ? `It ran on ${route.ran_on.model}.` : "";
+  return (
+    <p
+      className="truncate text-xs text-muted-foreground"
+      title={[route.request, route.proposal?.reason, ran].filter(Boolean).join("\n")}
+      data-testid={`hub-project-route-${row.id}`}
+    >
+      Router, logged only: {outcome}
+    </p>
+  );
+}
+
 function HubProjectCard({ row }: { row: HubProjectRow }) {
   const queryClient = useQueryClient();
-  const [saving, setSaving] = useState(false);
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
-  const [switchOpen, setSwitchOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -550,22 +640,8 @@ function HubProjectCard({ row }: { row: HubProjectRow }) {
   const renameInput = useRef<HTMLInputElement>(null);
   const { chat } = row;
   const newChat = projectChatLink(row.name);
-
-  async function change(pick: { model?: string; effort?: string }): Promise<void> {
-    setSaving(true);
-    setNote(null);
-    try {
-      const result = await setHubProjectModel(row.id, pick);
-      setNote({ text: result.text, ok: result.changed });
-    } catch (err) {
-      setNote({ text: `Couldn't change it: ${message(err)}`, ok: false });
-    } finally {
-      setSaving(false);
-      // The chat's own page reads its snapshot; refresh it too.
-      if (chat) await queryClient.invalidateQueries({ queryKey: ["session", chat.id] });
-      await queryClient.invalidateQueries({ queryKey: HUB_PROJECTS_QUERY_KEY });
-    }
-  }
+  const recent = row.recent && row.recent.length > 0 ? row.recent : chat ? [chat] : [];
+  const older = row.chats - recent.length;
 
   function said(text: string): void {
     setNote({ text, ok: true });
@@ -598,19 +674,6 @@ function HubProjectCard({ row }: { row: HubProjectRow }) {
               <span className="truncate">{row.name}</span>
             </h3>
           )}
-          <div className="text-xs">
-            <StatusLine chat={chat} />
-          </div>
-          {chat && (
-            <p
-              className="truncate text-xs text-muted-foreground"
-              title={chat.title}
-              data-testid={`hub-project-chat-${row.id}`}
-            >
-              {chat.title || "Untitled chat"}
-              {row.chats > 1 ? ` · newest of ${row.chats} chats` : ""}
-            </p>
-          )}
           {row.folder && (
             <p className="truncate font-mono text-[11px] text-muted-foreground" title={row.folder}>
               {row.folder}
@@ -618,25 +681,14 @@ function HubProjectCard({ row }: { row: HubProjectRow }) {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {chat ? (
-            <Link
-              to={`/c/${chat.id}`}
-              className="flex items-center gap-0.5 text-xs text-muted-foreground hover:text-foreground"
-              aria-label={`Open ${row.name}`}
-            >
-              Open
-              <ArrowUpRightIcon className="size-3" aria-hidden />
-            </Link>
-          ) : (
-            <Link
-              to={newChat}
-              className="flex items-center gap-0.5 text-xs text-primary hover:underline"
-              aria-label={`Start a chat in ${row.name}`}
-            >
-              Start chat
-              <ArrowUpRightIcon className="size-3" aria-hidden />
-            </Link>
-          )}
+          <Link
+            to={newChat}
+            className="flex items-center gap-0.5 text-xs text-primary hover:underline"
+            aria-label={`Start a chat in ${row.name}`}
+          >
+            {chat ? "New chat" : "Start chat"}
+            <ArrowUpRightIcon className="size-3" aria-hidden />
+          </Link>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -699,41 +751,158 @@ function HubProjectCard({ row }: { row: HubProjectRow }) {
         </div>
       </header>
 
-      {chat && <ChatControls row={row} chat={chat} onChange={change} onSwitch={setSwitchOpen} />}
+      {recent.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No chat yet</p>
+      ) : (
+        <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
+          {recent.map((c) => (
+            <ChatItem
+              key={c.id}
+              row={row}
+              chat={c}
+              sendsHere={chat?.id === c.id}
+              onNote={setNote}
+            />
+          ))}
+        </ul>
+      )}
+      {older > 0 && (
+        <p className="text-xs text-muted-foreground" data-testid={`hub-project-older-${row.id}`}>
+          {older === 1 ? "1 older chat" : `${older} older chats`}
+        </p>
+      )}
+      <RouteLine row={row} />
 
-      {(saving || note) && (
+      {note && (
         <p
-          className={cn("text-xs", note && !note.ok ? "text-destructive" : "text-muted-foreground")}
+          className={cn("text-xs", note.ok ? "text-muted-foreground" : "text-destructive")}
           role="status"
         >
-          {saving ? "Saving…" : note?.text}
+          {note.text}
         </p>
       )}
 
-      {chat && (
-        <SwitchAgentDialog
-          sessionId={chat.id}
-          open={switchOpen}
-          onOpenChange={(open) => {
-            setSwitchOpen(open);
-            if (!open) void queryClient.invalidateQueries({ queryKey: HUB_PROJECTS_QUERY_KEY });
-          }}
-        />
-      )}
       <DeleteDialog row={row} open={deleting} onOpenChange={setDeleting} onDeleted={said} />
       <AddChatDialog row={row} open={adding} onOpenChange={setAdding} onAdded={said} />
     </section>
   );
 }
 
-/** Provider, model and effort of a project's chat, and the controls to change them. */
-function ChatControls({
+/** "Claude Code · Opus 5.5 · high": what one chat runs on. */
+function runSummary(chat: HubSessionRow): string {
+  const { run } = chat;
+  const model = run.model_label || run.model || "its default model";
+  return [run.provider || "Unknown agent", model, run.effort].filter(Boolean).join(" · ");
+}
+
+/**
+ * One chat of a project: its state and what it runs on, each chat on its own
+ * provider, model and effort, with the controls to change them.
+ */
+function ChatItem({
   row,
+  chat,
+  sendsHere,
+  onNote,
+}: {
+  row: HubProjectRow;
+  chat: HubSessionRow;
+  sendsHere: boolean;
+  onNote: (note: { text: string; ok: boolean } | null) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [switchOpen, setSwitchOpen] = useState(false);
+
+  async function change(pick: { model?: string; effort?: string }): Promise<void> {
+    setSaving(true);
+    onNote(null);
+    try {
+      const result = await setHubProjectModel(row.id, pick, chat.id);
+      onNote({ text: result.text, ok: result.changed });
+    } catch (err) {
+      onNote({ text: `Couldn't change it: ${message(err)}`, ok: false });
+    } finally {
+      setSaving(false);
+      // The chat's own page reads its snapshot; refresh it too.
+      await queryClient.invalidateQueries({ queryKey: ["session", chat.id] });
+      await queryClient.invalidateQueries({ queryKey: HUB_PROJECTS_QUERY_KEY });
+    }
+  }
+
+  return (
+    <li className="flex flex-col gap-1.5 px-2 py-1.5" data-testid={`hub-chat-row-${chat.id}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="flex min-w-0 items-center gap-1.5 text-sm">
+            <span className="truncate" title={chat.title}>
+              {chat.title || "Untitled chat"}
+            </span>
+            {sendsHere && (
+              <span
+                className="shrink-0 rounded-full bg-muted px-1.5 text-[10px] text-muted-foreground"
+                title="The Hub sends this project's requests to its newest chat"
+              >
+                Hub sends here
+              </span>
+            )}
+          </p>
+          <p
+            className="truncate text-xs text-muted-foreground"
+            data-testid={`hub-chat-run-${chat.id}`}
+          >
+            {runSummary(chat)}
+          </p>
+          <div className="text-xs">
+            <StatusLine chat={chat} />
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-xs"
+            aria-expanded={open}
+            onClick={() => setOpen((was) => !was)}
+            data-testid={`hub-chat-change-${chat.id}`}
+          >
+            {open ? "Done" : "Change"}
+          </Button>
+          <Link
+            to={`/c/${chat.id}`}
+            className="flex items-center gap-0.5 text-xs text-muted-foreground hover:text-foreground"
+            aria-label={`Open ${chat.title || row.name}`}
+          >
+            Open
+            <ArrowUpRightIcon className="size-3" aria-hidden />
+          </Link>
+        </div>
+      </div>
+      {open && (
+        <div className="flex flex-col gap-2 pb-1">
+          <ChatControls chat={chat} onChange={change} onSwitch={setSwitchOpen} />
+          {saving && <p className="text-xs text-muted-foreground">Saving…</p>}
+        </div>
+      )}
+      <SwitchAgentDialog
+        sessionId={chat.id}
+        open={switchOpen}
+        onOpenChange={(next) => {
+          setSwitchOpen(next);
+          if (!next) void queryClient.invalidateQueries({ queryKey: HUB_PROJECTS_QUERY_KEY });
+        }}
+      />
+    </li>
+  );
+}
+
+/** Provider, model and effort of one chat, and the controls to change them. */
+function ChatControls({
   chat,
   onChange,
   onSwitch,
 }: {
-  row: HubProjectRow;
   chat: HubSessionRow;
   onChange: (pick: { model?: string; effort?: string }) => Promise<void>;
   onSwitch: (open: boolean) => void;
@@ -772,7 +941,7 @@ function ChatControls({
               void onChange({ model: value === MODEL_SELECT_DEFAULT ? "default" : value })
             }
             offerSmartRouting={false}
-            testId={`hub-project-model-${row.id}`}
+            testId={`hub-chat-model-${chat.id}`}
             models={models}
             activeModelId={run.selected || null}
           />
@@ -783,7 +952,7 @@ function ChatControls({
         )}
       </Row>
       {run.requested && (
-        <p className="text-xs text-muted-foreground" data-testid={`hub-project-pending-${row.id}`}>
+        <p className="text-xs text-muted-foreground" data-testid={`hub-chat-pending-${chat.id}`}>
           Switching to {run.requested_label || run.requested}; it still reports{" "}
           {run.model_label || run.model}.
         </p>
@@ -799,7 +968,7 @@ function ChatControls({
           >
             <SelectTrigger
               className="h-8 w-full text-sm"
-              data-testid={`hub-project-effort-${row.id}`}
+              data-testid={`hub-chat-effort-${chat.id}`}
               aria-label="Effort"
             >
               <SelectValue />

@@ -111,7 +111,7 @@ export interface HubSessionRun {
   efforts: string[];
 }
 
-/** A project's newest chat, the one the hub sends to. */
+/** One of a project's chats; its newest is the one the hub sends to. */
 export interface HubSessionRow {
   id: string;
   /** What the hub calls it: its project's name. */
@@ -142,8 +142,64 @@ export interface HubProjectRow {
   chats: number;
   /** Seconds since the epoch. */
   updated_at: number;
-  /** Its newest chat; `null` until it has one. */
+  /** Its newest chat, the one the hub sends to; `null` until it has one. */
   chat: HubSessionRow | null;
+  /** Its newest chats, newest first, each on its own provider, model and effort. */
+  recent?: HubSessionRow[];
+  /** The router's newest decision for one of its chats, logged only for now. */
+  route?: HubRoute | null;
+}
+
+/** Which provider, model and effort the quota rules would run a request on. */
+export interface HubProposal {
+  /** "claude", "codex" or "gemini"; "" when none could take it. */
+  provider: string;
+  /** The tier's model as its picker names it, e.g. "Sonnet". */
+  model: string;
+  effort: string;
+  reason: string;
+}
+
+/** A decision the router logged for a request the hub sent. */
+export interface HubRoute {
+  /** Seconds since the epoch. */
+  at: number | null;
+  session_id: string | null;
+  request: string;
+  /** "economical", "middle" or "top", as reflex judged it. */
+  tier: string;
+  effort: string;
+  proposal: HubProposal | null;
+  ran_on: { provider: string; model: string; effort: string } | null;
+  error: string;
+}
+
+/** One provider's budget today, in percent of its own week. */
+export interface HubBudget {
+  provider: string;
+  label: string;
+  week_used: number | null;
+  resets_at: string | null;
+  /** Days since its week began, 0 to 6. */
+  day: number;
+  daily: number;
+  allowed: number;
+  spent: number;
+  remaining: number;
+  five_hour: number | null;
+  stale: boolean;
+  /** Set while its week's whole leftover may be spent. */
+  free_until: string | null;
+  /** Why it cannot take work now; "" when it can. */
+  blocked: string;
+}
+
+/** Each provider's budget for today. */
+export async function listHubBudgets(): Promise<HubBudget[]> {
+  const body = await readJson<{ providers?: HubBudget[] }>(
+    await authenticatedFetch("/v1/hub/budgets"),
+  );
+  return body.providers ?? [];
 }
 
 /** Their projects, most recently active first, each with its newest chat. */
@@ -155,13 +211,15 @@ export async function listHubProjects(): Promise<HubProjectRow[]> {
 }
 
 /**
- * Put a project on another model and/or effort, by the same rules as asking
- * the hub: only what its chat offers, and the change is written into the
- * hub chat. `""` keeps a setting, `"default"` clears it.
+ * Put one of a project's chats on another model and/or effort, by the same
+ * rules as asking the hub: only what that chat offers, and the change is
+ * written into the hub chat. `""` keeps a setting, `"default"` clears it.
+ * Without `sessionId` it is the project's newest chat.
  */
 export async function setHubProjectModel(
   projectId: string,
   change: { model?: string; effort?: string },
+  sessionId?: string,
 ): Promise<{ changed: boolean; text: string }> {
   return readJson<{ changed: boolean; text: string }>(
     await authenticatedFetch("/v1/hub/model", {
@@ -169,6 +227,7 @@ export async function setHubProjectModel(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         project_id: projectId,
+        session_id: sessionId ?? "",
         model: change.model ?? "",
         effort: change.effort ?? "",
       }),
