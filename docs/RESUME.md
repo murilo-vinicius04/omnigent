@@ -41,6 +41,13 @@ narrations still ran the old page: log `gemini live language | mode=narrate lang
 - 348b32fa8 "Sent to RAL." / "Mandei para o RAL…" neither read nor shown: sent chip (title "omnigent-project-sent",
   folder + name + send arrow, aria "Sent to RAL") above the quoted request; speech_text("sent") = "". Without
   base_url the words stay. Server restarted 20:16:25, page = archive build of 348b32fa8.
+- 9cbddd782 Hub reports drop no web links: summaries seldom pick a link to SHOW (show=null) and bare URLs are
+  never show candidates (summary_blocks only takes `[t](url)`), so hub_chat.web_links_of lifts the reply's
+  http(s) links (md + bare + code span, not fences, max 8) onto the report. Server restarted 22:49:48.
+- Phone: `sudo tailscale serve --bg 6767` (user ran it) -> https://nexus.tail0994ab.ts.net. Official Android app
+  connects; its WebView mic fails `NotReadableError: Could not start audio source` even on bare getUserMedia
+  (test page omnigent/server/static/web-ui/micdiag.html, untracked, reports via GET /micdiag-report?d= in the
+  access log). Likely app manifest lacks MODIFY_AUDIO_SETTINGS; awaiting the user's Chrome run of the same page.
 **Not yet seen live:** the chip (sent and finished); full narration of a finished report; language rule after reload; a real Gemini
 Hub call ("send to RAL" hangs up once, no duplicate; "check on RAL" shows "Checking on RAL (read-only)…").
 **Offered, not built:** retry a timed-out spoken summary; backup router off Google for >90 s outages; double
