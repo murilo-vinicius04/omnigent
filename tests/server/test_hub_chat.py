@@ -532,6 +532,45 @@ async def test_a_pick_in_the_projects_panel_is_checked_and_logged_in_the_hub(
     assert missing.status_code == 404
 
 
+async def test_each_chat_of_a_project_has_its_own_model_in_the_panel(client, _hub_home) -> None:
+    from tests.server.helpers import create_test_session
+
+    first = await _project_with(
+        client, "Amarras", title="Chains", labels={"omnigent.wrapper": "claude-code-native-ui"}
+    )
+    second = await create_test_session(
+        client, title="Joystick plan", labels={"omnigent.wrapper": "claude-code-native-ui"}
+    )
+    added = await client.post(
+        f"/v1/hub/projects/{first['project_id']}/chats", json={"session_id": second["id"]}
+    )
+    assert added.status_code == 200, added.text
+
+    listed = (await client.get("/v1/hub/projects")).json()["projects"]
+    project = next(p for p in listed if p["id"] == first["project_id"])
+    assert sorted(c["id"] for c in project["recent"]) == sorted([first["id"], second["id"]])
+    other = next(c for c in project["recent"] if c["id"] != project["chat"]["id"])
+
+    # A pick names the chat it is for; the project's other chat keeps its own.
+    done = await client.post(
+        "/v1/hub/model",
+        json={"project_id": first["project_id"], "session_id": other["id"], "effort": "low"},
+    )
+    assert done.json()["changed"] is True, done.text
+    stored = (await client.get(f"/v1/sessions/{other['id']}")).json()
+    newest = (await client.get(f"/v1/sessions/{project['chat']['id']}")).json()
+    assert stored["reasoning_effort"] == "low" and newest["reasoning_effort"] != "low"
+    stranger = await client.post(
+        "/v1/hub/model",
+        json={"project_id": first["project_id"], "session_id": "nope", "effort": "low"},
+    )
+    assert stranger.status_code == 404
+
+    budgets = (await client.get("/v1/hub/budgets")).json()["providers"]
+    assert [b["provider"] for b in budgets] == ["claude", "codex", "gemini"]
+    assert all(b["blocked"] == "no reading" for b in budgets)  # no meters in a test home
+
+
 async def test_projects_are_made_renamed_given_chats_and_deleted_from_the_panel(
     client, _hub_home
 ) -> None:

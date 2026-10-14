@@ -14,8 +14,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from omnigent.server import budget, hub_chat
 from omnigent.server import hub as hub_module
-from omnigent.server import hub_chat
 from omnigent.server.auth import AuthProvider
 from omnigent.server.discussion import DiscussionRegistry, registry
 
@@ -44,6 +44,8 @@ class HubModelIn(BaseModel):
     """A model or effort picked for a project in the hub's Projects panel."""
 
     project_id: str = Field(min_length=1, max_length=200)
+    #: Which of its chats; empty for the newest, the one the hub sends to.
+    session_id: str = Field(default="", max_length=200)
     #: A model id its chat offers, ``"default"``, or empty to keep the model.
     model: str = Field(default="", max_length=256)
     #: An effort its chat offers, ``"default"``, or empty to keep the effort.
@@ -128,9 +130,20 @@ def create_hub_router(
 
     @router.get("/hub/projects")
     async def hub_projects(request: Request) -> dict[str, Any]:
-        """Their projects, with each one's newest chat and its live status."""
+        """Their projects, each with its newest chats, their models and live status."""
         hub, _ = await _bound(request)
-        return {"projects": [p.as_dict() for p in await hub.projects()]}
+        projects = await hub.projects(shown=hub_module.CHATS_SHOWN)
+        return {"projects": [p.as_dict() for p in projects]}
+
+    @router.get("/hub/budgets")
+    async def hub_budgets(request: Request) -> dict[str, Any]:
+        """Each provider's budget for today, on its own week."""
+        await _bound(request)
+        return {
+            "providers": [
+                b.as_dict() for b in await asyncio.to_thread(budget.today, hub_module.HUB_DIR)
+            ]
+        }
 
     async def _project(hub: hub_module.Hub, project_id: str) -> hub_module.HubProject:
         project = next((p for p in await hub.projects() if p.id == project_id), None)
@@ -193,10 +206,20 @@ def create_hub_router(
         written into the hub chat, so a pick made here reads like one asked for.
         """
         hub, _ = await _bound(request)
-        project = await _project(hub, body.project_id)
-        if project.chat is None:
+        if body.session_id:
+            projects = await hub.projects(shown=hub_module.CHATS_SHOWN)
+            project = next((p for p in projects if p.id == body.project_id), None)
+            if project is None:
+                raise HTTPException(status_code=404, detail="not one of your projects")
+            chat = next((c for c in project.recent if c.id == body.session_id), None)
+            if chat is None:
+                raise HTTPException(status_code=404, detail=f"not a recent chat of {project.name}")
+        else:
+            project = await _project(hub, body.project_id)
+            chat = project.chat
+        if chat is None:
             raise HTTPException(status_code=409, detail=f"{project.name} has no chat yet")
-        entry = await hub.set_model(project.chat, body.model, body.effort, via="panel")
+        entry = await hub.set_model(chat, body.model, body.effort, via="panel")
         return {"changed": entry.kind == "model", "text": entry.text}
 
     @router.post("/hub/voice")

@@ -295,8 +295,17 @@ async def judge(task: RouterTask, backend: Backend) -> TierDecision:
     return TierDecision(**{**asdict(decision), "latency_ms": elapsed})
 
 
-def log_decision(path: pathlib.Path, task: RouterTask, decision: TierDecision) -> None:
-    """Append one decision, with the model that actually ran the request."""
+def log_decision(
+    path: pathlib.Path,
+    task: RouterTask,
+    decision: TierDecision,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Append one decision, with the model that actually ran the request.
+
+    :param extra: More to keep with it, e.g. the provider the rules would pick.
+    """
     line = {
         "at": round(time.time(), 3),
         "session_id": task.session_id,
@@ -305,6 +314,7 @@ def log_decision(path: pathlib.Path, task: RouterTask, decision: TierDecision) -
         "request": _clip(task.request, _LOGGED_REQUEST_CHARS),
         "had_previous": bool(task.previous),
         **asdict(decision),
+        **(extra or {}),
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -312,3 +322,28 @@ def log_decision(path: pathlib.Path, task: RouterTask, decision: TierDecision) -
             fh.write(json.dumps(line, ensure_ascii=False) + "\n")
     except OSError:
         _logger.warning("could not write the hub's router log %s", path, exc_info=True)
+
+
+#: How much of the log's end is read for the newest decision per chat.
+_TAIL_BYTES: Final[int] = 512 * 1024
+
+
+def last_by_session(path: pathlib.Path) -> dict[str, dict[str, Any]]:
+    """The newest decision logged for each chat, read from the log's end."""
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - _TAIL_BYTES))
+            tail = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return {}
+    newest: dict[str, dict[str, Any]] = {}
+    for line in tail.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("session_id"):
+            newest[str(row["session_id"])] = row
+    return newest

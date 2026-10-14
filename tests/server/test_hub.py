@@ -389,12 +389,21 @@ async def test_each_send_is_judged_in_shadow_with_the_projects_previous_request(
 
     judged: list[model_router.RouterTask] = []
 
+    from omnigent.server import budget
+
     async def judge(task, backend):
         judged.append(task)
-        return model_router.TierDecision(tier="top", tier_probs={"top": 0.8}, latency_ms=5)
+        return model_router.TierDecision(
+            tier="top", tier_probs={"top": 0.8}, effort="high", latency_ms=5
+        )
 
+    budgets = [
+        budget.ProviderBudget("claude", 45.0, None, daily=12.1, remaining=3.0),
+        budget.ProviderBudget("codex", 0.0, None, daily=12.1, remaining=24.0),
+    ]
     monkeypatch.setattr(model_router, "judge", judge)
     monkeypatch.setattr(model_router, "configured", lambda hub_dir: object())
+    monkeypatch.setattr(budget, "today", lambda hub_dir: budgets)
     router = _Router(
         '{"send": "aaaa", "message": "Summarize the mean error.", "say": "Sent."}',
         '{"send": "aaaa", "message": "That number is wrong, redo it.", "say": "Sent."}',
@@ -419,8 +428,48 @@ async def test_each_send_is_judged_in_shadow_with_the_projects_previous_request(
     assert (first.project, first.model, first.effort) == ("amarras", "claude-opus-5-5", "high")
     assert second.previous == "Summarize the mean error."
     assert second.previous_result == "It fixed the scanner and all tests pass."
-    lines = (tmp_path / "u1" / model_router.LOG_NAME).read_text().splitlines()
-    assert [json.loads(line)["tier"] for line in lines] == ["top", "top"]
+    lines = [
+        json.loads(line)
+        for line in (tmp_path / "u1" / model_router.LOG_NAME).read_text().splitlines()
+    ]
+    assert [line["tier"] for line in lines] == ["top", "top"]
+    # The rules' pick is logged beside it: Codex has the most of today's budget left.
+    assert lines[0]["proposal"]["provider"] == "codex"
+    assert lines[0]["proposal"]["model"] == "Sol" and lines[0]["proposal"]["effort"] == "high"
+    assert lines[0]["budgets"]["claude"]["remaining"] == 3.0
+    # The Projects panel shows the newest decision with the project.
+    projects = await hub.projects(shown=hub_module.CHATS_SHOWN)
+    amarras = next(p for p in projects if p.name == "amarras")
+    assert amarras.route is not None
+    assert amarras.route["request"] == "That number is wrong, redo it."
+    assert amarras.route["proposal"]["provider"] == "codex"
+
+
+async def test_the_panel_lists_each_projects_newest_chats_with_their_own_models(tmp_path) -> None:
+    server = _Server()
+    older = HubSession(
+        id="old1",
+        title="Joystick plan",
+        project_id=P_AMARRAS,
+        run=hub_module.SessionRun(provider="Codex", model="gpt-6-luna", effort="high"),
+    )
+    server.sessions.append(older)
+    server.sessions[0] = replace(
+        server.sessions[0], run=hub_module.SessionRun(provider="Claude", model="claude-opus-5-5")
+    )
+    server.projects[0] = replace(server.projects[0], chat_ids=(AMARRAS, "old1"))
+    hub = _hub(tmp_path, _Router(), server)
+
+    projects = await hub.projects(shown=hub_module.CHATS_SHOWN)
+    routed = await hub.projects()
+
+    amarras = next(p for p in projects if p.name == "amarras")
+    assert [c.id for c in amarras.recent] == [AMARRAS, "old1"]
+    assert amarras.recent[0].name == "amarras" and amarras.recent[1].name == "Joystick plan"
+    assert [c.run.provider for c in amarras.recent] == ["Claude", "Codex"]
+    assert amarras.as_dict()["recent"][1]["run"]["effort"] == "high"
+    # Routing reads only the newest chat, as before.
+    assert next(p for p in routed if p.name == "amarras").recent == ()
 
 
 async def test_a_hub_made_for_tests_judges_nothing(tmp_path, monkeypatch) -> None:

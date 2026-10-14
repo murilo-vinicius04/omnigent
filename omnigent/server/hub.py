@@ -30,7 +30,7 @@ from typing import Any, Final, Literal
 from omnigent.antigravity_native_catalog import _probe_agy_models
 from omnigent.model_fallbacks import SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
 from omnigent.process_logging import data_dir
-from omnigent.server import hub_models, model_router, voice_hub
+from omnigent.server import budget, hub_models, model_router, voice_hub
 from omnigent.server.discussion import GOOGLE_REFUSED, DiscussionSession, DiscussionUnavailable
 from omnigent.server.hub_models import SessionRun
 
@@ -51,6 +51,9 @@ LISTING_LIMIT: Final[int] = 100
 
 #: A project's chats read per listing; the newest is the one the hub sends to.
 CHATS_PER_PROJECT: Final[int] = 50
+
+#: A project's newest chats the Projects panel shows, each with its own model.
+CHATS_SHOWN: Final[int] = 4
 
 #: Longest project name the hub takes (the projects API allows 100).
 MAX_PROJECT_NAME_CHARS: Final[int] = 80
@@ -461,6 +464,9 @@ class HubProject:
     :param chats: How many chats it has, up to :data:`CHATS_PER_PROJECT`.
     :param chat: Its newest chat, which the hub sends to; ``None`` while it
         has none yet.
+    :param recent: Its newest chats, newest first, each on its own provider,
+        model and effort; read only for the Projects panel.
+    :param route: The newest tier decision logged for one of its chats.
     """
 
     id: str
@@ -471,6 +477,8 @@ class HubProject:
     chats: int = 0
     updated_at: float = 0.0
     chat: HubSession | None = None
+    recent: tuple[HubSession, ...] = ()
+    route: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """The shape the Projects panel reads."""
@@ -483,6 +491,8 @@ class HubProject:
             "chats": self.chats,
             "updated_at": self.updated_at,
             "chat": self.chat.as_dict() if self.chat is not None else None,
+            "recent": [s.as_dict() for s in self.recent],
+            "route": self.route,
         }
 
 
@@ -586,6 +596,8 @@ def use_file_stores(file_store: Any, artifact_store: Any) -> None:
 
 #: The Flash model ``agy models`` offered, once asked; ``None`` until then.
 _listed_model: str | None = None
+#: Every model agy listed, for the tiers Google offers (Argon or not).
+_agy_models: tuple[str, ...] = ()
 
 
 def pick_router_model(model_ids: Sequence[str]) -> str | None:
@@ -603,12 +615,13 @@ def pick_router_model(model_ids: Sequence[str]) -> str | None:
 
 async def resolve_hub_model() -> str:
     """Ask agy which Flash it offers, once; agy drops old versions."""
-    global _listed_model
+    global _listed_model, _agy_models
     if _listed_model is None and not os.environ.get("OMNIGENT_HUB_MODEL", "").strip():
         from omnigent.server.discussion import _binary
 
         rows = await _probe_agy_models(_binary())
-        _listed_model = pick_router_model([str(r["id"]) for r in rows or []])
+        _agy_models = tuple(str(r["id"]) for r in rows or [])
+        _listed_model = pick_router_model(list(_agy_models))
         if _listed_model is None:
             _logger.warning("agy lists no Gemini Flash (Low); the hub router uses its fallback")
     return hub_model()
@@ -714,6 +727,20 @@ def project_line(project: HubProject) -> str:
     if project.chats > 1:
         line += f" · {project.chats} chats, this is the newest"
     return line
+
+
+def route_summary(row: dict[str, Any]) -> dict[str, Any]:
+    """What the Projects panel shows of a logged tier decision."""
+    return {
+        "at": row.get("at"),
+        "session_id": row.get("session_id"),
+        "request": _short(str(row.get("request") or ""), 160),
+        "tier": row.get("tier") or "",
+        "effort": row.get("effort") or "",
+        "proposal": row.get("proposal") or None,
+        "ran_on": row.get("ran_on") or None,
+        "error": row.get("error") or "",
+    }
 
 
 def projects_block(projects: Sequence[HubProject]) -> str:
@@ -1193,13 +1220,18 @@ class Hub:
             name, n = f"{base} {n}", n + 1
         return name
 
-    async def projects(self) -> list[HubProject]:
-        """Their projects, most recently active first, each with its newest chat."""
+    async def projects(self, *, shown: int = 1) -> list[HubProject]:
+        """Their projects, most recently active first, each with its newest chat.
+
+        :param shown: How many of each project's newest chats to read; more
+            than one also reads each project's newest tier decision.
+        """
         await self._move_sessions_to_projects()
         backend = self.require_backend()
         records = await backend.projects()
-        newest = [r.chat_ids[0] for r in records if r.chat_ids]
-        chats = {s.id: s for s in await backend.sessions(newest)} if newest else {}
+        wanted = [c for r in records for c in r.chat_ids[: max(1, shown)]]
+        chats = {s.id: s for s in await backend.sessions(wanted)} if wanted else {}
+        routes = self.last_routes() if shown > 1 else {}
         handles = assign_handles([r.id for r in records])
         out: list[HubProject] = []
         for record in records:
@@ -1208,6 +1240,18 @@ class Hub:
                 chat = replace(
                     chat, nickname=record.name, handle=handles[record.id], project_id=record.id
                 )
+            recent = (
+                tuple(
+                    chat
+                    if chat is not None and c == chat.id
+                    else replace(chats[c], project_id=record.id)
+                    for c in record.chat_ids[:shown]
+                    if c in chats
+                )
+                if shown > 1
+                else ()
+            )
+            logged = [routes[c] for c in record.chat_ids if c in routes]
             out.append(
                 HubProject(
                     id=record.id,
@@ -1218,6 +1262,10 @@ class Hub:
                     chats=len(record.chat_ids),
                     updated_at=max(chat.updated_at if chat else 0.0, record.created_at),
                     chat=chat,
+                    recent=recent,
+                    route=route_summary(max(logged, key=lambda r: r.get("at") or 0))
+                    if logged
+                    else None,
                 )
             )
         out.sort(key=lambda p: p.updated_at, reverse=True)
@@ -1659,7 +1707,22 @@ class Hub:
             previous_result=result,
         )
         decision = await model_router.judge(task, backend)
-        model_router.log_decision(self.state.folder / model_router.LOG_NAME, task, decision)
+        extra: dict[str, Any] = {}
+        if decision.tier:
+            budgets = budget.today(HUB_DIR)
+            extra = {
+                "proposal": budget.pick(
+                    decision.tier, decision.effort, budgets, agy_models=_agy_models
+                ).as_dict(),
+                "budgets": budget.snapshot(budgets),
+            }
+        model_router.log_decision(
+            self.state.folder / model_router.LOG_NAME, task, decision, extra=extra
+        )
+
+    def last_routes(self) -> dict[str, dict[str, Any]]:
+        """The newest logged decision for each chat: what the router would pick."""
+        return model_router.last_by_session(self.state.folder / model_router.LOG_NAME)
 
     def watch(self, session: HubSession, sent_at: float) -> None:
         """Report back when the session finishes; one watch per session.
