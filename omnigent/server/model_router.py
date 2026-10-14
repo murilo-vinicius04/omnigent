@@ -1,0 +1,258 @@
+"""The hub's tier judge: how much model a request needs, asked of a decision model.
+
+A Jev-style decision model (reflex, served on this machine) reads what the
+hub sends a project, which project it is and how the project's previous
+request went, and answers typed questions with probabilities: which tier the
+request needs to be done right the first time, whether an economical model
+would need a redo, how hard it is, and whether the request is fixing the
+previous result. It never writes prose.
+
+For now nothing acts on the answer: every decision is logged next to the
+model that actually ran the request (shadow mode), so the judgement can be
+checked against real outcomes before it picks anyone's model.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import pathlib
+import time
+from dataclasses import asdict, dataclass, field
+from typing import Any, Final
+
+import httpx
+
+from omnigent.supervisor import Backend, post_questions
+
+_logger = logging.getLogger(__name__)
+
+#: reflex's ``reflex-serve`` default port, TypeSafe's wire format.
+DEFAULT_URL: Final[str] = "http://127.0.0.1:8008/v1/systemone"
+
+#: The flag file under the hub's folder that turns shadow decisions on; it
+#: holds the endpoint's URL, or nothing for :data:`DEFAULT_URL`.
+FLAG_NAME: Final[str] = "router-url"
+
+#: Each user's decisions, one JSON object per line, beside their hub log.
+LOG_NAME: Final[str] = "router.jsonl"
+
+TIERS: Final[tuple[str, ...]] = ("economical", "middle", "top")
+
+#: What each tier means to the model, by name so the request can be weighed
+#: against the work each tier is good for.
+_TIER_CRITERIA: Final[dict[str, str]] = {
+    "economical": (
+        "Haiku 5.5, GPT-6 Luna or Gemini Flash is enough: a status question, a lookup, "
+        "a small change whose exact steps are given, a routine command"
+    ),
+    "middle": (
+        "Sonnet 5.5: an ordinary coding, writing or analysis task with a clear goal, "
+        "touching a few files"
+    ),
+    "top": (
+        "Opus 5.5 or GPT-6.1 Sol is needed: ambiguous or cross-cutting work, design or "
+        "planning, research, debugging an unknown cause, a paper, or anything where a "
+        "mistake is costly"
+    ),
+}
+
+_DIFFICULTY: Final[list[str]] = [
+    "trivial: a lookup or a one-line change",
+    "easy: a small, fully specified change",
+    "moderate: several steps or files with a clear goal",
+    "hard: ambiguous, cross-cutting, or needs debugging",
+    "very hard: research, design, or a subtle bug in unfamiliar code",
+]
+
+_CATEGORIES: Final[dict[str, str]] = {
+    "code": "write or change code",
+    "debug": "find and fix a bug or a failure",
+    "research": "find out, compare or measure something",
+    "writing": "write or revise a document, paper or plan",
+    "question": "answer a question or report status, no change made",
+    "operations": "run, restart, deploy or configure something",
+}
+
+#: A hung decision must not hold anything; the shadow log just says so.
+REQUEST_TIMEOUT_S: Final[float] = 20.0
+
+#: Characters of each part of the state the model reads.
+_REQUEST_CHARS: Final[int] = 6_000
+_PREVIOUS_CHARS: Final[int] = 3_000
+_LOGGED_REQUEST_CHARS: Final[int] = 2_000
+
+
+@dataclass(frozen=True)
+class RouterTask:
+    """One request the hub sent, as the decision model reads it.
+
+    :param request: What was sent to the project.
+    :param project: The project's name.
+    :param model: The model the project's chat runs, e.g. ``"claude-opus-5-5"``.
+    :param previous: The project's previous request from the hub, if any.
+    :param previous_result: What the hub reported back for it.
+    """
+
+    request: str
+    project: str
+    session_id: str = ""
+    provider: str = ""
+    model: str = ""
+    effort: str = ""
+    previous: str = ""
+    previous_result: str = ""
+
+
+@dataclass(frozen=True)
+class TierDecision:
+    """What the decision model judged, or why it could not."""
+
+    tier: str = ""
+    tier_probs: dict[str, float] = field(default_factory=dict)
+    #: Probability that an economical model would get it wrong or need a redo.
+    p_cheap_redo: float | None = None
+    #: 0 (trivial) to 4 (very hard), probability-weighted.
+    difficulty: float | None = None
+    category: str = ""
+    #: Probability the request is fixing or redoing the previous result;
+    #: ``None`` when the project had no previous request.
+    p_fixes_previous: float | None = None
+    latency_ms: int = 0
+    error: str = ""
+
+
+def configured(hub_dir: pathlib.Path) -> Backend | None:
+    """The decision model's endpoint while shadow decisions are on, else ``None``.
+
+    ``OMNIGENT_HUB_ROUTER_URL`` wins (``off`` turns it off); otherwise the
+    flag file ``<hub dir>/router-url`` turns it on, holding the URL or nothing.
+    """
+    raw = os.environ.get("OMNIGENT_HUB_ROUTER_URL", "").strip()
+    if raw.lower() in ("off", "0", "false", "no"):
+        return None
+    if not raw:
+        try:
+            raw = (hub_dir / FLAG_NAME).read_text(encoding="utf-8").strip() or DEFAULT_URL
+        except OSError:
+            return None
+    return Backend(name="reflex", url=raw, model="reflex")
+
+
+def _clip(text: str, limit: int) -> str:
+    text = text.strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def render_state(task: RouterTask) -> str:
+    """The text the decision model reads: the request first, then its context."""
+    parts = [
+        f"## Request sent to the project\n{_clip(task.request, _REQUEST_CHARS)}",
+        f"## Project\n{task.project}",
+    ]
+    if task.previous:
+        parts.append(f"## The project's previous request\n{_clip(task.previous, _PREVIOUS_CHARS)}")
+        if task.previous_result:
+            parts.append(
+                f"## What the project reported back for it\n"
+                f"{_clip(task.previous_result, _PREVIOUS_CHARS)}"
+            )
+    return "\n\n".join(parts)
+
+
+def questions(task: RouterTask) -> dict[str, dict[str, Any]]:
+    """The typed questions, in TypeSafe's format; one more when there is a previous request."""
+    asked: dict[str, dict[str, Any]] = {
+        "tier": {
+            "type": "choice",
+            "instructions": (
+                "Which model tier does the request sent to the project need so that it is "
+                "done right the first time, with no second round?"
+            ),
+            "criteria": dict(_TIER_CRITERIA),
+        },
+        "cheap_redo": {
+            "type": "noul",
+            "instructions": (
+                "Would an economical model (Haiku 5.5, GPT-6 Luna or Gemini Flash) likely get "
+                "this request wrong or leave it needing a second round?"
+            ),
+        },
+        "difficulty": {
+            "type": "score",
+            "instructions": "How hard is the request sent to the project?",
+            "criteria": list(_DIFFICULTY),
+        },
+        "category": {
+            "type": "choice",
+            "instructions": "What kind of work does the request ask for?",
+            "criteria": dict(_CATEGORIES),
+        },
+    }
+    if task.previous:
+        asked["fixes_previous"] = {
+            "type": "noul",
+            "instructions": (
+                "Does the new request say the project's previous result was wrong, incomplete "
+                "or broken, or ask it to fix or redo that work?"
+            ),
+        }
+    return asked
+
+
+def _probs(entry: dict[str, Any]) -> dict[str, float]:
+    raw = entry.get("probabilities") or {}
+    return {str(k): round(float(v), 4) for k, v in raw.items()}
+
+
+def read_decision(answers: dict[str, Any]) -> TierDecision:
+    """Turn the backend's answers into a decision.
+
+    :raises ValueError: If an answer is missing its numbers.
+    """
+    tier_probs = {t: p for t, p in _probs(answers["tier"]).items() if t in TIERS}
+    if not tier_probs:
+        raise ValueError(f"no tier probabilities: {answers['tier']!r}")
+    category = _probs(answers["category"])
+    fixes = answers.get("fixes_previous")
+    return TierDecision(
+        tier=max(tier_probs, key=lambda t: tier_probs[t]),
+        tier_probs=tier_probs,
+        p_cheap_redo=round(float(answers["cheap_redo"]["noul"]), 4),
+        difficulty=round(float(answers["difficulty"]["score"]), 3),
+        category=max(category, key=lambda c: category[c]) if category else "",
+        p_fixes_previous=round(float(fixes["noul"]), 4) if isinstance(fixes, dict) else None,
+    )
+
+
+async def judge(task: RouterTask, backend: Backend) -> TierDecision:
+    """Ask the decision model about one request; never raises for backend trouble."""
+    started = time.perf_counter()
+    try:
+        answers, _usage = await post_questions(backend, render_state(task), questions(task))
+        decision = read_decision(answers)
+    except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as exc:
+        _logger.info("hub tier judge failed: %s", exc)
+        decision = TierDecision(error=f"{type(exc).__name__}: {exc}"[:300])
+    elapsed = round((time.perf_counter() - started) * 1000)
+    return TierDecision(**{**asdict(decision), "latency_ms": elapsed})
+
+
+def log_decision(path: pathlib.Path, task: RouterTask, decision: TierDecision) -> None:
+    """Append one decision, with the model that actually ran the request."""
+    line = {
+        "at": round(time.time(), 3),
+        "session_id": task.session_id,
+        "project": task.project,
+        "ran_on": {"provider": task.provider, "model": task.model, "effort": task.effort},
+        "request": _clip(task.request, _LOGGED_REQUEST_CHARS),
+        "had_previous": bool(task.previous),
+        **asdict(decision),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, ensure_ascii=False) + "\n")
+    except OSError:
+        _logger.warning("could not write the hub's router log %s", path, exc_info=True)

@@ -382,6 +382,65 @@ async def test_a_message_goes_to_the_project_it_is_about_and_comes_back(tmp_path
     assert "Mean error is 3 mm across all 40 frets." in router.performed[0]
 
 
+async def test_each_send_is_judged_in_shadow_with_the_projects_previous_request(
+    tmp_path, monkeypatch
+) -> None:
+    from omnigent.server import model_router
+
+    judged: list[model_router.RouterTask] = []
+
+    async def judge(task, backend):
+        judged.append(task)
+        return model_router.TierDecision(tier="top", tier_probs={"top": 0.8}, latency_ms=5)
+
+    monkeypatch.setattr(model_router, "judge", judge)
+    monkeypatch.setattr(model_router, "configured", lambda hub_dir: object())
+    router = _Router(
+        '{"send": "aaaa", "message": "Summarize the mean error.", "say": "Sent."}',
+        '{"send": "aaaa", "message": "That number is wrong, redo it.", "say": "Sent."}',
+    )
+    server = _Server()
+    server.sessions[0] = replace(
+        server.sessions[0],
+        run=hub_module.SessionRun(provider="Claude", model="claude-opus-5-5", effort="high"),
+    )
+    server.turns = [TurnState(status="idle", reply="Mean error is 3 mm.")]
+    hub = _hub(tmp_path, router, server)
+    hub._judge_tiers = True
+
+    hub.submit("manda a amarras resumir o erro médio")
+    await _settle(hub, until=lambda: any(e.kind == "finished" for e in hub.state.entries))
+    hub.submit("tá errado, refaz")
+    await _settle(hub, until=lambda: len(judged) == 2)
+    await _settle(hub)
+
+    first, second = judged
+    assert (first.request, first.previous) == ("Summarize the mean error.", "")
+    assert (first.project, first.model, first.effort) == ("amarras", "claude-opus-5-5", "high")
+    assert second.previous == "Summarize the mean error."
+    assert second.previous_result == "It fixed the scanner and all tests pass."
+    lines = (tmp_path / "u1" / model_router.LOG_NAME).read_text().splitlines()
+    assert [json.loads(line)["tier"] for line in lines] == ["top", "top"]
+
+
+async def test_a_hub_made_for_tests_judges_nothing(tmp_path, monkeypatch) -> None:
+    from omnigent.server import model_router
+
+    def configured(hub_dir):
+        raise AssertionError("asked for the decision model")
+
+    monkeypatch.setattr(model_router, "configured", configured)
+    router = _Router('{"send": "aaaa", "message": "Run the tests.", "say": "Sent."}')
+    server = _Server()
+    server.turns = [TurnState(status="running")]
+    hub = _hub(tmp_path, router, server)
+
+    hub.submit("manda a amarras rodar os testes")
+    await _settle(hub, until=lambda: server.sent)
+
+    assert not (tmp_path / "u1" / model_router.LOG_NAME).exists()
+
+
 class _Chat:
     """Stands in for the hub's conversation: records what it is shown."""
 

@@ -255,14 +255,17 @@ they can be swapped behind one interface:
 | **reflex** (Qwen3.5-4B, open, same API as Jev) | This machine, ~9 GB of GPU | 0.62 | Yes (LoRA) | Free, but the GPU is shared with Isaac Sim and cuRobo |
 | **Laya multilingual** (322M, open, same kind of questions) | This machine; light on the GPU | 0.50 | Yes (documented notebook) | Free |
 
-Proposal:
-- **Start with Jev:** it is the best untuned, needs no GPU, and starts
-  learning on day one through the outcomes in its state.
-- **Log every decision and outcome.**
-- **Long term:** fine-tune an open Jev-style model (reflex, or Laya if GPU time
-  is short) on that log. Switch only when it beats Jev in shadow.
-
-Jev's OpenRouter account has had no credit since 10-06 (decision 7).
+**Chosen (you, 10-14): reflex from the start, no Jev.**
+- reflex `stable` (Qwen3.5-4B frozen, two option orders) runs here as a
+  user service on port 8008, ~9 GB of GPU.
+- It learns through its state first: past outcomes are part of what it reads.
+- Every decision and outcome is logged, then reflex is fine-tuned on that log
+  (LoRA). A tuned adapter goes live only when it beats the frozen model on
+  outcomes it never saw. reflex's own results warn that adapters trained on
+  narrow data lost accuracy elsewhere, so the frozen model stays the baseline.
+- Bigger option, if the 4B is not good enough: reflex-27b (Qwen3.8-27B) beat
+  Jev on the hard tier of JevBench v1.2 (75.9 vs 74.1), but needs ~27 GB of
+  GPU even in FP8.
 
 **How it learns, in practice:**
 1. **Right away, through the state.** Each new task is shown the outcomes of
@@ -357,9 +360,9 @@ lanes.
    They log what they would have chosen. Show you the log against what you
    used.
 5. The router decides on its own, inside the governor's ceilings.
-6. The decision model: Jev with past outcomes in its state, in shadow first;
-   weekly calibration; later an open Jev-style model fine-tuned on the log,
-   promoted only when it beats Jev.
+6. The decision model: reflex, in shadow first (started 10-14, see below);
+   weekly calibration; later a LoRA fine-tune on the log, promoted only when
+   it beats the frozen model.
 
 Building it spends no agent quota, because tests use fakes. Live trials use one
 real lane each, and only after you say go.
@@ -378,9 +381,8 @@ real lane each, and only after you say go.
    (recommended), or hold it to the Pro daily budget from today.
 6. **Exploration:** let the router try one tier lower on at most 1 in 10
    simple tasks, so it learns (recommended), or never.
-7. **Jev needs OpenRouter credit:** about $5 lasts months at a few cents a day.
-   Top it up (recommended), or start on reflex locally, which uses ~9 GB of
-   GPU.
+7. ~~Jev needs OpenRouter credit~~ **Decided 10-14: reflex locally from the
+   start**, ~9 GB of GPU.
 8. **Gemini quota sampler:** the `agy-quota-sample` timer stopped on 09-27.
    Leave it off and read Gemini's quota only while an agy is already running
    (recommended), since Google has suspended accounts for background quota

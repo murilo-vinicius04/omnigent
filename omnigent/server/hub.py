@@ -30,7 +30,7 @@ from typing import Any, Final, Literal
 from omnigent.antigravity_native_catalog import _probe_agy_models
 from omnigent.model_fallbacks import SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
 from omnigent.process_logging import data_dir
-from omnigent.server import hub_models, voice_hub
+from omnigent.server import hub_models, model_router, voice_hub
 from omnigent.server.discussion import GOOGLE_REFUSED, DiscussionSession, DiscussionUnavailable
 from omnigent.server.hub_models import SessionRun
 
@@ -940,6 +940,11 @@ class HubState:
         self._load()
 
     @property
+    def folder(self) -> pathlib.Path:
+        """This user's hub folder: the log, nicknames and watches."""
+        return self._dir
+
+    @property
     def moved_to_projects(self) -> bool:
         """Whether its old session list has been made into projects."""
         return (self._dir / "projects-moved.json").exists()
@@ -1117,9 +1122,13 @@ class Hub:
         state: HubState | None = None,
         poll_s: float = WATCH_POLL_S,
         user_id: str | None = None,
+        judge_tiers: bool = False,
     ) -> None:
         self.key = key
         self.user_id = user_id
+        #: Log the decision model's tier judgement of each send (shadow mode),
+        #: while ``model_router`` finds its endpoint switched on.
+        self._judge_tiers = judge_tiers
         self.state = state or HubState(key)
         self._router_factory = router_factory
         self._backend: HubBackend | None = None
@@ -1618,7 +1627,39 @@ class Hub:
             f"sent to {session.name}: {message}" + (f" (attached: {names})" if files else "")
         )
         self.watch(session, sent_at)
+        if self._judge_tiers:
+            self._spawn(self._judge_tier(session, message, before=entry.id))
         return entry
+
+    def previous_exchange(self, session_id: str, *, before: int) -> tuple[str, str]:
+        """The last request sent to a chat before entry ``before``, and its report."""
+        entries = [e for e in self.state.entries if e.id < before and e.session_id == session_id]
+        for index in range(len(entries) - 1, -1, -1):
+            if entries[index].kind != "sent":
+                continue
+            reports = [e for e in entries[index + 1 :] if e.kind == "finished"]
+            result = reports[0].text if reports else ""
+            name = entries[index].session_name or ""
+            return entries[index].detail or "", _without_label(result, f"{name} finished:")
+        return "", ""
+
+    async def _judge_tier(self, session: HubSession, message: str, *, before: int) -> None:
+        backend = model_router.configured(HUB_DIR)
+        if backend is None:
+            return
+        previous, result = self.previous_exchange(session.id, before=before)
+        task = model_router.RouterTask(
+            request=message,
+            project=session.name,
+            session_id=session.id,
+            provider=session.run.provider,
+            model=session.run.requested or session.run.model,
+            effort=session.run.effort,
+            previous=previous,
+            previous_result=result,
+        )
+        decision = await model_router.judge(task, backend)
+        model_router.log_decision(self.state.folder / model_router.LOG_NAME, task, decision)
 
     def watch(self, session: HubSession, sent_at: float) -> None:
         """Report back when the session finishes; one watch per session.
@@ -1858,7 +1899,7 @@ def hub_for(user_id: str | None) -> Hub:
             assert isinstance(made, HubRouter)
             return made
 
-        hub = Hub(key, router_factory=router, user_id=user_id)
+        hub = Hub(key, router_factory=router, user_id=user_id, judge_tiers=True)
         _HUBS[key] = hub
     return hub
 
