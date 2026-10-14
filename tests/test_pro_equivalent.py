@@ -21,9 +21,9 @@ def test_max_5x_reading_scales_to_five_pro_allowances() -> None:
     assert out is not None
     by_kind = {w["kind"]: w for w in out["windows"]}
     assert by_kind["session"]["used_pct"] == 100.0
-    assert by_kind["session"]["weighted_tokens_used"] == 5_500_000
+    assert by_kind["session"]["weighted_tokens_used"] == 11_550_000
     assert by_kind["weekly"]["used_pct"] == 15.0
-    assert by_kind["weekly"]["weighted_tokens_used"] == 6_000_000
+    assert by_kind["weekly"]["weighted_tokens_used"] == 12_600_000
 
 
 def test_over_the_pro_limit_is_shown_not_clipped() -> None:

@@ -12,9 +12,11 @@ input, output five times it. So the budgets are in *weighted* tokens -- fresh
 input x1, output x5, cache read x0.1, cache write x1.25, the same ratios as
 Opus list prices -- and were calibrated on 2026-09-18 from a Max 5x window
 where 5.7M weighted tokens moved the 5-hour reading 20% and the weekly 3%.
-Treat them as estimates: Anthropic does not publish the formula, and the
-calibration spans 5.3M-8.5M per 5-hour window depending on whether the
-long-context premium counts.
+Anthropic raised the 5-hour limits on 2026-09-22; the token ledger shows 1% of
+the window buying 2.1x what it did before, the same for every token kind. The
+weekly limit grew too, on too few readings to size, so it takes the same
+factor until a Pro week is measured. Treat them as estimates: Anthropic does
+not publish the formula.
 """
 
 from __future__ import annotations
@@ -23,8 +25,8 @@ from typing import Any
 
 #: Pro allowance, in weighted tokens, per window. See the module docstring.
 PRO_WEIGHTED_TOKEN_BUDGET: dict[str, int] = {
-    "session": 5_500_000,
-    "weekly": 40_000_000,
+    "session": 11_550_000,
+    "weekly": 84_000_000,
 }
 
 #: How many Pro allowances each plan tier is sold as.
