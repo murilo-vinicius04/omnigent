@@ -1,4 +1,4 @@
-# Hub: several agents per project, and a model router with a weekly budget
+# Hub: several agents per project, and a model router with a daily budget
 
 Status: proposal, nothing built (2026-10-14). Each phase ends with something
 you can open and try before the next one starts.
@@ -14,6 +14,8 @@ you can open and try before the next one starts.
   Claude drops from Max to Pro at its weekly reset.
 - **Use the best model whenever possible.** Cheaper models only save quota on
   simple tasks.
+- **Track it daily**: the week ÷ 7 per day, on each provider's own reset day,
+  in Pro plan terms, so no provider runs out mid-week.
 - **The router is a model** (Laya or Jev), fine-tuned to learn from mistakes:
   when a model's work caused a bug and needed another round, the next similar
   task goes one tier up.
@@ -53,9 +55,9 @@ you can open and try before the next one starts.
    mid-session.
 2. **One writer per folder.** A second agent that edits code in the same
    repository gets its own git worktree. A planning agent writes only new files.
-3. **Unused quota is lost at reset.** While a provider is under its weekly pace,
+3. **Unused quota is lost at reset.** While a provider is within its budget,
    its top tier costs nothing extra in the end. Saving matters only when
-   spending runs ahead of pace.
+   spending runs ahead of the budget.
 4. **Calling a task "simple" will often be wrong, so correct it cheaply.**
    Routers that read only the prompt score AUC 0.55–0.63 on repository tasks;
    ours scored 0.43–0.66 untuned. Every wrong call is caught (a failed check, a
@@ -97,7 +99,7 @@ working)" and "RAL · joystick (Sonnet 5.5, idle)". Hub chips name the lane.
    - the panel.
    Then a scratch-server run, then live on RAL once you say go.
 
-## Phase 2: the weekly budget and the model router
+## Phase 2: the daily budget and the model router
 
 ### 2.1 Tier ladder
 
@@ -117,35 +119,56 @@ working)" and "RAL · joystick (Sonnet 5.5, idle)". Hub chips name the lane.
   separate Google pool ("Claude/GPT week"). It could add Claude-tier capacity
   after Friday. Untested.
 
-### 2.2 Budget governor (plain code, not a model)
+### 2.2 Budget governor: a daily budget per provider (plain code, not a model)
 
-- **Reads** the three meters the usage rings show, at each decision, and the
-  ledgers for what each lane spent. Gemini is read only while an agy is
-  already running: Google has suspended accounts for background quota
-  polling, so the Hub never adds any.
-- **Weekly pace line** per provider: allowed = (100% − buffer) × the share of
-  its week that has passed. Proposed buffer: 15%.
-  - **Under pace:** top tier for every task.
-  - **Ahead of pace:** simple tasks go to an economical tier. Other tasks keep
-    a top tier on the provider furthest under its own pace.
-  - **At the ceiling** (100% − buffer): no new lanes on that provider until its
-    reset.
-  - **5-hour window at 85% or more:** that provider waits, or another takes the
-    task.
-- **Plan changes.** Claude moves from Max to Pro at Friday's reset (10-16
-  08:59). The meter's percentage already counts against the current plan.
-  The router's cost estimates are kept in tokens and converted per plan. Our
-  ledger ratios say the same task takes about 3.3–5.5 times more of the week
-  on Pro. So after Friday Claude's share drops, and Codex and Gemini take
-  more.
-- **Today, as an example:**
-  - Claude Max is at 43% with 73% of its week gone, against a pace line of 62%
-    at a 15% buffer. That is 19 points under pace, so Opus is free to use until
-    Friday: whatever is left disappears at the reset.
-  - Codex is at 0% with its week ending Tuesday, so Sol is underused.
-- **You see it:** each provider's pace line sits next to its ring in the Hub
-  panel. The sent chip names the model and why, e.g. "Opus 5.5 · Claude under
-  pace" or "Luna · simple, Codex ahead of pace".
+Weekly numbers are hard to follow, so the governor keeps a **daily** budget,
+on each provider's own week.
+
+- **Each provider's day starts at its own reset**, because they reset on
+  different days:
+  - Claude: Friday 08:59;
+  - Codex: Tuesday 12:02;
+  - Gemini: Tuesday 23:35 at the last reading (10-08); agy's meter keeps it current.
+
+  "Day 3" means three days after that provider's reset, not a calendar day.
+- **Pro plan basis.** Budgets are a share of each provider's own plan:
+  - Claude Pro, from Friday's reset;
+  - ChatGPT Plus;
+  - your Google plan.
+
+  The meters already report a percentage of the plan you are on. Before
+  Friday, Claude's Max reading is converted to Pro terms at the measured ratio
+  (one Max point is about 4–5 Pro points). Our numbers on Pro:
+  - a Pro week is about 10 Pro 5-hour windows;
+  - a hard coding task cost 14.7% of a window on plain Sonnet and 27.2% on
+    Opus, so about 1.5% and 2.7% of the week.
+- **Daily budget** = (100% − buffer) ÷ 7 of the week. At a 15% buffer that is
+  about 12% of the week per day. For Claude Pro that is roughly 8 hard Sonnet
+  tasks or 4–5 hard Opus tasks a day.
+- **Unused budget carries forward, capped.** By the end of day d a provider
+  may have used (d + 1) × the daily budget. A quiet day leaves room for the
+  next, and a heavy day takes it from the next. The carry-over is capped at
+  one extra day, so a quiet Monday cannot turn into a binge on Thursday.
+- **Today's spend** = the weekly meter now minus its reading at the start of
+  this provider-day. The readings are already saved every few minutes in
+  `~/.omnigent/usage-history.jsonl`. Gemini is read only while an agy runs, so
+  between readings its spend comes from agy's own ledger
+  (`agy-quota-history.csv`).
+- **Before a lane starts**, its cost is estimated: the average spend of that
+  category on that tier in the outcome log, or the benchmark numbers until
+  there is a log. If today's remaining budget cannot cover it:
+  1. the task moves to the next provider with room, at its top tier;
+  2. if none has room, it drops a tier;
+  3. if even that does not fit, the Hub tells you and asks.
+- **5-hour windows stay a separate guard:** a provider at 85% of its 5-hour
+  window waits, or another provider takes the task.
+- **Until Friday**, Claude still has Max's leftover (43% of the Max week
+  used). That quota is lost at the reset, so the proposal is to let Claude
+  spend it freely until Friday and start the Pro daily budget at the reset.
+- **You see it:** each provider's ring in the Hub panel shows today's budget,
+  what is spent, and the reset day. The sent chip names the model and why,
+  e.g. "Opus 5.5 · Claude within today's budget" or "Luna · simple, Codex
+  over today's budget".
 
 ### 2.3 Choosing the model for a task
 
@@ -161,11 +184,11 @@ working)" and "RAL · joystick (Sonnet 5.5, idle)". Hub chips name the lane.
    | Small edits, renames, short scripts (simple) | Any economical tier: Haiku, Luna, Flash |
    | A quick fact about the machine | The companion's read-only check, no agent |
 
-3. Among the candidates, take the top tier of the provider furthest under its
-   pace. The best model goes where there is room, so the load spreads across
-   the three.
+3. Among the candidates, take the top tier of the provider with the most of
+   today's budget left. The best model goes where there is room, so the load
+   spreads across the three.
 4. A task marked simple drops to an economical tier only when the chosen
-   provider is ahead of pace.
+   provider is over today's budget.
 5. The mistake memory (2.4) and later the router model (2.5) can raise the
    tier. Saying "use Opus" or "use Codex" always overrides the choice.
 
@@ -187,31 +210,77 @@ Each choice starts in a fresh lane (Phase 1), never mid-chat.
 - **Every decision and its outcome** go to `~/.omnigent/hub/outcomes.jsonl`:
   - request, project, lane, category, and whether it was marked simple;
   - provider, model, effort and tier;
-  - pace state and quota before and after;
+  - today's budget state, and quota before and after;
   - minutes;
   - check result, fix request, revert, escalation.
 
-### 2.5 The router model: Laya, fine-tuned on our outcomes
+### 2.5 The router model and how it learns
 
-- **Why Laya:** its weights are open and run on this machine, so it can be
-  trained on our own outcomes. Jev is a hosted API we can only call.
-- **What it learns:** for a request, project, category and the lane's recent
-  history, the chance that the economical or middle tier needs another round.
-  The governor turns that into a tier:
-  - **under pace:** top;
-  - **ahead of pace:** the cheapest tier whose risk is below a threshold that
-    rises with pace pressure.
-- **How it takes over:**
-  - From the first day of the outcome log, it runs in shadow next to the rules.
-  - Each week it is retrained, and scored on outcomes it did not train on.
-  - It replaces the rules only when it beats them there.
+**What it decides.** Not what the task is: the Hub router already says that.
+It decides one thing: for this request and this tier, the chance that the work
+needs another round (a mistake as defined in 2.4). The governor then chooses:
+- **Inside today's budget:** the top tier.
+- **Budget tight:** the cheapest tier whose chance of a mistake is below a bar
+  that rises as today's budget runs out. Roughly, it minimises expected cost:
+  the tier's price, plus the chance of a redo times the price of the redo.
 
-  Published coding routers trained on about 1,500 or more labelled tasks; at
-  our pace that is a few months. Until then the rules and the mistake memory
-  decide, and every one of their decisions becomes a label.
-- **First step:** confirm the `laya` package can be fine-tuned. If not, use the
-  same setup on reflex (Qwen3.5-4B, open, already tried here), or a small
-  classifier on Laya's embeddings.
+**Which model.**
+
+| Candidate | Size | Runs on | Labels it needs | Verdict |
+|---|---|---|---|---|
+| Multilingual sentence embeddings (e.g. `multilingual-e5-small`, 118M) plus logistic regression or nearest neighbours over past outcomes | ~0.5 GB | CPU, a few ms; retrains in seconds | Tens | **Start here** |
+| Laya multilingual (mmBERT-base, 322M, Apache 2.0), fine-tuned with a yes/no head | ~650 MB | GPU to train; GPU or a slower CPU to run | Hundreds | Second stage, if it beats the first in shadow |
+| Arch-Router (1.5B) | ~3 GB | GPU | — | Not needed: it matches requests to categories, which the Hub router already does |
+| reflex (Qwen3.5-4B) | ~9 GB of GPU | GPU | — | Too heavy for this job |
+
+Why embeddings first:
+- With few labels, a simple classifier over embeddings matches fine-tuned
+  small models on routing (CodeRouterBench). Nearest neighbours degrade least
+  when the work changes.
+- It runs on the CPU, so it never competes with Isaac Sim, cuRobo and the ZED
+  for the GPU in RA-L experiments.
+- It retrains in seconds every night.
+
+Laya is the upgrade once there are a few hundred labelled outcomes. Its
+authors say fine-tuning is where its accuracy comes from. Its base model is
+near chance, which matches our untuned AUC of 0.50.
+
+**How it learns, in practice:**
+1. Every task leaves one row in `outcomes.jsonl`:
+   - the request text;
+   - project, category, simple or not;
+   - provider and tier;
+   - spend;
+   - whether it needed another round.
+2. Every night a script embeds the new requests and refits the classifier on
+   all rows, one per tier.
+3. It is scored on the last two weeks' rows it did not train on.
+4. It runs in shadow until it predicts mistakes better than the plain rules of
+   2.4. Only then does its choice count.
+5. The mistake memory of 2.4 keeps working on top: a fresh mistake moves the
+   next similar tasks up a tier at once, without waiting for the night's
+   retraining.
+
+**One catch: it learns only from what it tried.** If every task runs on the
+top tier, it never learns which ones a cheaper model would have handled. So
+it needs a little exploration. The proposal: on at most 1 in 10 tasks it marks
+simple, outside the project's core files, it tries one tier lower. A mistake
+there costs one redo and teaches it the most.
+
+## Who does what: plain code, LLMs, and the small learned model
+
+| Part | Done by | Why |
+|---|---|---|
+| Lanes, busy guard, opening chats, worktrees | Plain code (Python), with tests | Deterministic plumbing |
+| Budget governor: meters, daily budgets, reset days, ceilings, the Friday plan change | Plain code | Money rules must be exact and testable, never guessed |
+| Tier ladder, category table, buffer, reset schedule | A settings file you can edit | Your choices, not the model's |
+| Mistake memory: tier bumps after a mistake | Plain code | A simple, predictable rule |
+| Outcome log and tracker | Plain code | Records facts |
+| Understanding your message: project, lane, category, simple or not, is it a fix request | The Hub's existing Gemini Flash router, in the call it already makes | Language understanding; no extra call |
+| Writing the brief a new lane starts from | The Hub's router, or the lane that is handing over | Summarising text |
+| The work itself | The lanes: Claude, Codex or Gemini | — |
+| The chance that a tier needs a redo | The small local model of 2.5, trained on our outcomes | Learned from your own history |
+| Building all of the above | Me, in this chat, with tests. Once lanes exist, parts can be handed to a Codex lane as a first real test | — |
 
 ## Architecture
 
@@ -225,10 +294,10 @@ Each choice starts in a fresh lane (Phase 1), never mid-chat.
  Model router  -------------------------------------------------------------- reads
    tier ladder + category fit (rules)                        <- routing.yaml
    mistake memory (tier bumps per project and category)      <- outcomes.jsonl
-   Laya scorer (shadow, then live once it beats the rules)   <- trained weekly
+   learned scorer (shadow, then live once it beats the rules) <- retrained nightly
         |   proposal
         v
- Budget governor   pace lines, ceilings, 5h windows,         <- 3 meters + ledgers
+ Budget governor   daily budgets per reset day, ceilings,    <- 3 meters + ledgers
                    plan changes (Claude Pro from 10-16)
         |   provider, model, effort
         v
@@ -241,32 +310,33 @@ Each choice starts in a fresh lane (Phase 1), never mid-chat.
         +--> Outcome tracker: check, fix request, revert, minutes, quota spent
                     |
                     v
-             outcomes.jsonl --> mistake memory (now) --> Laya training (weekly)
+             outcomes.jsonl --> mistake memory (now) --> scorer retraining (nightly)
 ```
 
 | Piece | Where | New or existing |
 |---|---|---|
 | Hub router fields: lane, category, simple | `omnigent/server/hub.py` | Existing call, new fields |
 | Lanes | `omnigent/server/hub_lanes.py` | New (Phase 1) |
-| Model router, mistake memory, Laya scorer | `omnigent/server/model_router.py` | New |
+| Model router, mistake memory, learned scorer | `omnigent/server/model_router.py` | New |
 | Budget governor | `omnigent/server/budget.py`, reading `routes/plan_limits.py` and the ledgers | New |
 | Outcome tracker | `omnigent/server/outcomes.py`, fed by the Hub's watches | New |
 | Settings: tiers, fit, buffer, plan schedule | `~/.omnigent/hub/routing.yaml` | New |
-| Weekly training and evaluation | `tools/train_router.py` | New |
+| Nightly training and evaluation | `tools/train_router.py` | New |
 
 ## Order and checkpoints
 
 1. Phase 1 steps 1–3 and 6: lanes visible, and the busy guard. Show you.
 2. Phase 1 steps 4–5: the Hub opens lanes, with worktrees. Scratch-server test,
    then live on RAL with your go.
-3. Budget governor and pace lines in the panel, read-only. You see each
-   provider's pace before anything is decided by it.
+3. Budget governor and daily budgets in the panel, read-only. You see each
+   provider's budget for today before anything is decided by it.
 4. Model router rules, mistake memory and outcome log in shadow for a week.
    They log what they would have chosen. Show you the log against what you
    used.
 5. The router decides on its own, inside the governor's ceilings.
-6. Laya: confirm it can be fine-tuned, score it in shadow, promote it when it
-   beats the rules.
+6. The learned model: embeddings + classifier from the first labels, in shadow;
+   Laya fine-tuned once there are a few hundred; each promoted only when it
+   beats what is live.
 
 Building it spends no agent quota, because tests use fakes. Live trials use one
 real lane each, and only after you say go.
@@ -279,8 +349,16 @@ real lane each, and only after you say go.
    or the same folder.
 3. **Buffer left at the end of each week:** 15% per provider (recommended), or
    another number.
-4. **Google's top tier until Argon reaches agy:** send top-tier work to Claude
-   or Codex (recommended), or try agy's Opus and Sonnet 5.5 on the Google pool.
+4. **Unused daily budget:** carry it forward, capped at one extra day
+   (recommended), or lose it at the end of each day.
+5. **Until Friday's reset:** let Claude spend Max's leftover freely
+   (recommended), or hold it to the Pro daily budget from today.
+6. **Exploration:** let the router try one tier lower on at most 1 in 10
+   simple tasks, so it learns (recommended), or never.
+
+Settled: Gemini 4 Argon is for Ultra only for now, so Google has no top tier.
+Top-tier work goes to Claude or Codex, and Argon goes in automatically the day
+`agy models` lists it.
 
 ## References
 
