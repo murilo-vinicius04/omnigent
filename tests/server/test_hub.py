@@ -915,8 +915,10 @@ async def test_a_send_still_waiting_is_reported_after_a_restart(tmp_path) -> Non
         BRASA,
     )
     await _settle(again, until=lambda: not again._watches)
-    assert HubState("u1", root=tmp_path).watches == {}  # reported, so forgotten
+    # Reported, so only followed now, in case it goes on by itself.
+    assert HubState("u1", root=tmp_path).watches[BRASA]["follow"] is True
     assert again.resume_watches() == 0
+    await again.close()
 
 
 async def test_a_watch_too_old_to_matter_is_dropped_on_resume(tmp_path) -> None:
@@ -1503,3 +1505,42 @@ async def test_a_report_between_two_messages_reaches_the_routers_next_turn(route
     await router.close()
     assert "Omnigent's Cursor usage hook is gone" in reply["told"]
     assert "I answered that myself." not in reply["told"]
+
+
+async def test_a_lane_that_goes_on_by_itself_is_reported_once_it_settles(tmp_path) -> None:
+    router = _Router('{"send": "bbbb", "message": "Build it.", "say": "Sent."}')
+    server = _Server()
+    first = TurnState(status="idle", reply="23 of 36 built; I'll keep watching.")
+    # Its own build monitor wakes it: progress pings, then the long last turn.
+    pinged = TurnState(status="running", woke_itself=True)
+    done = TurnState(status="idle", reply="All 36 built and it runs.", woke_itself=True)
+    server.turns = [TurnState(status="running"), first, first, pinged, pinged, done]
+    hub = _hub(tmp_path, router, server)
+    hub._follow_settle_s = 0.05
+    hub.submit("build it in brasa")
+    await _settle(hub, until=lambda: sum(e.kind == "finished" for e in hub.state.entries) == 2)
+    reports = [e.text for e in hub.state.entries if e.kind == "finished"]
+    await hub.close()
+    assert len(reports) == 2  # its answer, then what it did by itself: no ping in between
+    assert HubState("u1", root=tmp_path).watches[BRASA]["follow"] is True
+
+
+async def test_a_lane_someone_writes_in_directly_is_no_longer_followed(tmp_path) -> None:
+    router = _Router('{"send": "bbbb", "message": "Build it.", "say": "Sent."}')
+    server = _Server()
+    first = TurnState(status="idle", reply="Started the build.")
+    typed = TurnState(status="idle", reply="Sure.", woke_itself=True, typed=True)
+    server.turns = [TurnState(status="running"), first, first, typed]
+    hub = _hub(tmp_path, router, server)
+    hub.submit("build it in brasa")
+    await _settle(
+        hub,
+        until=lambda: (
+            any(e.kind == "finished" for e in hub.state.entries)
+            and not hub._follows
+            and not hub._watches
+        ),
+    )
+    await hub.close()
+    assert sum(e.kind == "finished" for e in hub.state.entries) == 1
+    assert HubState("u1", root=tmp_path).watches == {}

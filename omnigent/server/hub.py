@@ -72,6 +72,17 @@ WATCH_MAX_S: Final[float] = 6 * 3600.0
 #: A session that has not started on what it was sent after this long.
 NOT_STARTED_S: Final[float] = 120.0
 
+#: After a report, how long the hub keeps following a lane that may go on by itself.
+FOLLOW_MAX_S: Final[float] = 6 * 3600.0
+
+#: A lane that went on by itself is reported once it has been quiet this long:
+#: a background job's progress pings come seconds apart.
+FOLLOW_SETTLE_S: Final[float] = 90.0
+
+#: How a turn a lane's own background job started begins (a Claude Code task
+#: notification, and the reminder that comes with it).
+_SELF_WAKE_PREFIXES: Final[tuple[str, ...]] = ("<task-notification>", "<system-reminder>")
+
 #: A turn's newest tool calls read for the folders it worked in.
 _TURN_CALLS: Final[int] = 300
 
@@ -652,6 +663,10 @@ class TurnState:
     summary_due: bool = False
     #: When the hub sent the work: files changed since are the turn's.
     since: float | None = None
+    #: Since then, a turn its own background job started (a task notification).
+    woke_itself: bool = False
+    #: Since then, a message someone typed or sent into the chat.
+    typed: bool = False
 
     @property
     def working(self) -> bool:
@@ -1199,12 +1214,19 @@ class HubState:
             raw = json.loads((self._dir / "held.json").read_text(encoding="utf-8"))
             self.held = {str(k): dict(v) for k, v in raw.items()}
 
-    def keep_watch(self, session_id: str, *, sent_at: float, name: str, **owner: Any) -> None:
+    def keep_watch(
+        self, session_id: str, *, sent_at: float, name: str, follow: bool = False, **owner: Any
+    ) -> None:
         """Remember a send still to report back, so a restart does not lose it.
 
+        :param follow: It was reported; the lane is followed for what it does by itself.
         :param owner: ``user_id`` and ``base_url``, for resuming it after a restart.
         """
-        self.watches[session_id] = {"sent_at": sent_at, "name": name}
+        self.watches[session_id] = {
+            "sent_at": sent_at,
+            "name": name,
+            **({"follow": True} if follow else {}),
+        }
         self.owner = {**self.owner, **owner}
         self._write("watches.json", {**self.owner, "watches": self.watches})
 
@@ -1417,6 +1439,9 @@ class Hub:
         self._holds: dict[str, asyncio.Task[None]] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._poll_s = poll_s
+        #: Lanes followed after their report, in case they go on by themselves.
+        self._follows: dict[str, asyncio.Future[None]] = {}
+        self._follow_settle_s = FOLLOW_SETTLE_S
         #: The hub's conversation, when it has one: what the hub says is
         #: written there too (:class:`omnigent.server.hub_chat.HubConversation`).
         self.chat: Any = None
@@ -2594,6 +2619,10 @@ class Hub:
         running = self._watches.get(session.id)
         if running is not None and not running.done():
             return
+        # New work replaces following the last: its watch reports what comes next.
+        following = self._follows.pop(session.id, None)
+        if following is not None:
+            following.cancel()
         self.state.keep_watch(
             session.id,
             sent_at=sent_at,
@@ -2612,12 +2641,15 @@ class Hub:
             if time.time() - sent_at > WATCH_MAX_S:
                 self.state.drop_watch(session_id)
                 continue
-            running = self._watches.get(session_id)
+            running = self._watches.get(session_id) or self._follows.get(session_id)
             if running is not None and not running.done():
                 continue
             name = str(kept.get("name") or session_id[:8])
             session = HubSession(id=session_id, title=name, nickname=name)
-            self._watches[session_id] = asyncio.ensure_future(self._watch(session, sent_at))
+            if kept.get("follow"):
+                self.follow(session, sent_at)
+            else:
+                self._watches[session_id] = asyncio.ensure_future(self._watch(session, sent_at))
             resumed += 1
         for session_id, kept in list(self.state.held.items()):
             name = str(kept.get("name") or session_id[:8])
@@ -2634,6 +2666,7 @@ class Hub:
         summary_polls = max(2, round(SUMMARY_WAIT_S / self._poll_s))
         told_approval = False
         ended = True
+        reported = False
         try:
             while time.monotonic() < deadline:
                 await asyncio.sleep(self._poll_s)
@@ -2659,6 +2692,7 @@ class Hub:
                     and (not state.summary_due or idle_polls >= summary_polls)
                 ):
                     await self._report(session, state)
+                    reported = True
                     return
                 # A reply waiting on its summary is reported above once the wait ends.
                 if seen_working and not state.reply and idle_polls >= 6:
@@ -2687,6 +2721,65 @@ class Hub:
             self._watches.pop(session.id, None)
             if ended:
                 self.state.drop_watch(session.id)
+            if reported:
+                self.follow(session, time.time())
+
+    def follow(self, session: HubSession, since: float) -> None:
+        """After a report, report again what the lane goes on to do by itself.
+
+        A lane can end its reply while a background job of its own runs (a
+        build it monitors) and carry on when that job pings it, with no message
+        from anyone. Kept on disk like a watch, so a restart resumes it.
+        """
+        running = self._follows.get(session.id)
+        if running is not None and not running.done():
+            running.cancel()
+        self.state.keep_watch(
+            session.id,
+            sent_at=since,
+            name=session.name,
+            follow=True,
+            user_id=self.user_id,
+            base_url=getattr(self.chat, "base_url", "") or "",
+        )
+        self._follows[session.id] = asyncio.ensure_future(self._follow(session, since))
+
+    async def _follow(self, session: HubSession, since: float) -> None:
+        deadline = time.monotonic() + FOLLOW_MAX_S - max(0.0, time.time() - since)
+        settle_polls = max(2, round(self._follow_settle_s / self._poll_s))
+        quiet = 0
+        ended = True
+        try:
+            while time.monotonic() < deadline:
+                await asyncio.sleep(self._poll_s)
+                state = await self.require_backend().turn(session.id, since)
+                if state.typed:
+                    # Someone wrote in the lane's own chat: they are reading it there.
+                    return
+                if not state.woke_itself:
+                    continue
+                if state.working:
+                    quiet = 0
+                    continue
+                quiet += 1
+                if state.reply and quiet >= settle_polls:
+                    await self._report(session, state)
+                    since = time.time()
+                    self.state.keep_watch(
+                        session.id, sent_at=since, name=session.name, follow=True
+                    )
+                    deadline = time.monotonic() + FOLLOW_MAX_S
+                    quiet = 0
+        except asyncio.CancelledError:
+            ended = False
+            raise
+        except Exception:  # noqa: BLE001 - a broken follow must not take the hub down
+            _logger.warning("hub follow on %s failed", session.id, exc_info=True)
+        finally:
+            if self._follows.get(session.id) is asyncio.current_task():
+                self._follows.pop(session.id, None)
+                if ended:
+                    self.state.drop_watch(session.id)
 
     async def _report(self, session: HubSession, state: TurnState) -> None:
         reply = state.reply
@@ -2805,13 +2898,19 @@ class Hub:
 
     async def close(self) -> None:
         """Stop every watch, held delivery and pending answer."""
-        running = [*self._watches.values(), *self._holds.values(), *self._tasks]
+        running = [
+            *self._watches.values(),
+            *self._follows.values(),
+            *self._holds.values(),
+            *self._tasks,
+        ]
         for task in running:
             task.cancel()
         for task in running:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         self._watches.clear()
+        self._follows.clear()
         self._holds.clear()
 
 
@@ -3410,9 +3509,17 @@ def store_backend(
         reply, reply_response = "", None
         files: list[ReplyFile] = []
         summaries: list[tuple[Any, dict[str, Any]]] = []
+        woke_itself = typed = False
         for item in recent.data:
             if float(getattr(item, "created_at", 0) or 0) + 1 < since:
                 break
+            if _role(item.data) == "user":
+                said = _item_text(item.data).lstrip()
+                if said.startswith(_SELF_WAKE_PREFIXES):
+                    woke_itself = True
+                elif said:
+                    typed = True
+                continue
             if _role(item.data) != "assistant":
                 continue
             files[:0] = reply_files(item.data)
@@ -3451,6 +3558,8 @@ def store_backend(
             summary_lang=str((chosen or {}).get("lang") or ""),
             summary_due=bool(reply) and chosen is None and await _summaries_on(session_id),
             since=since,
+            woke_itself=woke_itself,
+            typed=typed,
         )
 
     async def _summaries_on(session_id: str) -> bool:
