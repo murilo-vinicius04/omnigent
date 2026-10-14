@@ -39,6 +39,12 @@ the sim Franka MPC (`~/spot-teleop/isaac-sim_ws/franka_mpc/`).
   awaits the user's go and four decisions (listed at the end of the plan). Upstream Smart Routing
   (`smart_routing.py`) is an LLM fast/balanced/powerful judge, the approach our routing report rejects.
   Reuse its plumbing only.
+- **Hub file links (663e09e5e, live 11:32):** project folders are all /home/nexus, while agents write
+  repo-relative paths, so 0 of 51 backticked report paths resolved. Reports now keep `anchors` (folders
+  the turn's tool calls read, wrote or cd'd into; `hub.touched_paths`/`anchor_dirs`). `workspace_file`
+  also tries them, still inside the workspace. `link_known_files` links a short path to the one known
+  file ending in it. Replay of the last 25 reports: 5 -> 23 links, all correct. Old messages are not
+  re-rendered. Write absolute paths in replies.
 - **Router premises from the user (11:10), now in the plan:**
   - The router decides on its own, with weekly ceilings so all 3 providers end the week with a buffer
     (proposed 15%). Claude Max -> Pro at the reset Fri 10-16 08:59.
