@@ -58,6 +58,14 @@ PROVIDER_EFFORTS: Final[dict[str, tuple[str, ...]]] = {
 
 PROVIDER_LABELS: Final[dict[str, str]] = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini"}
 
+#: When no provider has room at a tier, the tiers tried next, nearest first
+#: and upward before downward.
+NEAREST_TIERS: Final[dict[str, tuple[str, ...]]] = {
+    "top": ("top", "middle", "economical"),
+    "middle": ("middle", "top", "economical"),
+    "economical": ("economical", "middle", "top"),
+}
+
 
 @dataclass(frozen=True)
 class PlanMock:

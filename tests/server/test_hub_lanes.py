@@ -487,8 +487,61 @@ async def test_no_lane_opens_when_no_provider_has_budget_for_its_tier(
 
     assert server.opened == [] and server.sent == []
     said = hub.state.entries[-1]
-    assert said.kind == "attention" and "economical tier" in said.text
-    assert '"use Sonnet"' in said.text
+    assert said.kind == "attention" and "no provider has room now" in said.text
+    assert "Claude: today's budget is spent; Codex: today's budget is spent" in said.text
+
+    # Naming a model next opens that lane on it, past the quota.
+    hub.submit("use sonnet")
+    await _settle(hub)
+    await hub.close()
+    (_, spec), *_ = server.opened
+    assert (spec.topic, spec.run.provider, spec.run.model) == ("docs", "claude", "sonnet")
+    assert spec.run.reason == "You asked for Sonnet. Claude: today's budget is spent."
+    assert server.sent and server.sent[-1][1].startswith("Write docs.")
+
+
+async def test_a_tier_nobody_has_room_for_moves_to_the_nearest_that_has(
+    tmp_path, judged, monkeypatch
+) -> None:
+    middle = model_router.TierDecision(
+        tier="middle",
+        tier_probs={"economical": 0.3, "middle": 0.35, "top": 0.35},
+        effort="high",
+        efforts_by_tier={"economical": "high", "middle": "high", "top": "xhigh"},
+        close_call=True,
+    )
+
+    async def judge(task, backend):
+        return middle
+
+    monkeypatch.setattr(model_router, "judge", judge)
+    # Only Claude has a middle tier, and its 5-hour window is full.
+    monkeypatch.setattr(
+        budget,
+        "today",
+        lambda hub_dir: [
+            budget.ProviderBudget(
+                "claude", 52.0, None, daily=12.1, remaining=20.0, blocked="5-hour window at 88%"
+            ),
+            budget.ProviderBudget("codex", 0.0, None, daily=12.1, remaining=24.0),
+        ],
+    )
+    router = _Router(
+        '{"new_lane": "aaaa", "topic": "driver", "message": "Check the driver.", "say": "Ok."}'
+    )
+    server = _LaneServer()
+    _two_lanes(server)
+    hub = _hub(tmp_path, router, server)
+    hub._judge_tiers = True
+    monkeypatch.setattr(hub_module, "HUB_DIR", tmp_path)
+
+    hub.submit("abre uma lane pro driver")
+    await _settle(hub)
+    await hub.close()
+
+    (_, spec), *_ = server.opened
+    assert (spec.run.provider, spec.run.tier) == ("codex", "top")
+    assert "no provider had room for middle, so top" in spec.run.reason
 
 
 async def test_without_the_decision_model_a_lane_runs_like_the_projects_newest(tmp_path) -> None:

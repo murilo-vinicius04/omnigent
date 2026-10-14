@@ -72,6 +72,12 @@ WATCH_MAX_S: Final[float] = 6 * 3600.0
 #: A session that has not started on what it was sent after this long.
 NOT_STARTED_S: Final[float] = 120.0
 
+#: How long a lane the quota refused waits for them to name a model for it.
+PENDING_LANE_S: Final[float] = 15 * 60.0
+
+#: A reply that names a model for a refused lane is short: "use sonnet".
+_MAX_MODEL_REPLY_WORDS: Final[int] = 6
+
 #: After a report, how long the hub keeps following a lane that may go on by itself.
 FOLLOW_MAX_S: Final[float] = 6 * 3600.0
 
@@ -1401,6 +1407,16 @@ HANDOFF_REQUEST: Final[str] = (
 
 
 @dataclass(frozen=True)
+class _PendingLane:
+    """A lane the quota refused, kept until they name a model for it."""
+
+    project: str
+    topic: str
+    message: str
+    at: float
+
+
+@dataclass(frozen=True)
 class _LanePick:
     """What a new lane runs on, or why none was picked, and the judgement behind it."""
 
@@ -1443,6 +1459,7 @@ class Hub:
         #: Lanes followed after their report, in case they go on by themselves.
         self._follows: dict[str, asyncio.Future[None]] = {}
         self._follow_settle_s = FOLLOW_SETTLE_S
+        self._pending_lane: _PendingLane | None = None
         #: The hub's conversation, when it has one: what the hub says is
         #: written there too (:class:`omnigent.server.hub_chat.HubConversation`).
         self.chat: Any = None
@@ -1732,6 +1749,8 @@ class Hub:
                     self.chat.busy(False)
 
     async def _answer(self, text: str, via: str, *, context: str = "") -> None:
+        if await self._open_pending_lane(text, via):
+            return
         projects = await self.projects(shown=CHATS_SHOWN)
         router = await self._router_factory()
         how = "said, aloud, on a voice call" if via == "voice" else "wrote"
@@ -2315,6 +2334,25 @@ class Hub:
         finally:
             self._holds.pop(session.id, None)
 
+    async def _open_pending_lane(self, text: str, via: str) -> bool:
+        """Open the lane the quota refused when their reply names a model for it."""
+        pending = self._pending_lane
+        if pending is None or time.time() - pending.at > PENDING_LANE_S:
+            return False
+        provider, word = hub_lanes.named_run(text)
+        if len(text.split()) > _MAX_MODEL_REPLY_WORDS or not provider:
+            return False
+        self._pending_lane = None
+        projects = await self.projects(shown=CHATS_SHOWN)
+        project = next((p for p in projects if p.name == pending.project), None)
+        if project is None:
+            return False
+        use = word or budget.PROVIDER_LABELS.get(provider, provider)
+        entry = await self.open_lane(project, pending.topic, pending.message, via=via, use=use)
+        router = await self._router_factory()
+        router.tell(entry.text)
+        return True
+
     async def open_lane(
         self,
         project: HubProject,
@@ -2349,7 +2387,10 @@ class Hub:
         topic = hub_lanes.topic_name(topic, message)
         pick = await self._lane_run(project, like, message, use)
         if pick.run is None:
+            # A model they name next opens it ("use sonnet"), past the quota.
+            self._pending_lane = _PendingLane(project.name, topic, message, time.time())
             return self.say(pick.why, kind="attention", session_name=project.name)
+        self._pending_lane = None
         busy = [lane for lane in project.lanes if lane.working]
         in_use = []
         for lane in busy:
@@ -2451,17 +2492,31 @@ class Hub:
             ) or model_router.DEFAULT_EFFORT
             effort = budget.fit_effort(provider, effort)
             reason = f"You asked for {use}."
+            # Their choice stands over the quota; say when it is short.
+            mine = next((b for b in await fresh_budgets() if b.provider == provider), None)
+            if mine is not None and mine.blocked:
+                reason += f" {budget.PROVIDER_LABELS.get(provider, provider)}: {mine.blocked}."
         elif judged:
             assert decision is not None
             budgets = await fresh_budgets()
-            proposal = budget.pick(decision.tier, decision.effort, budgets, agy_models=_agy_models)
+            # No provider with room at the judged tier: the nearest tier that has one.
+            for tier in budget.NEAREST_TIERS.get(decision.tier, (decision.tier,)):
+                effort = decision.efforts_by_tier.get(tier, decision.effort)
+                proposal = budget.pick(tier, effort, budgets, agy_models=_agy_models)
+                if proposal.provider:
+                    break
             extra = {"proposal": proposal.as_dict(), "budgets": budget.snapshot(budgets)}
             if not proposal.provider:
+                full = "; ".join(
+                    f"{budget.PROVIDER_LABELS.get(b.provider, b.provider)}: {b.blocked}"
+                    for b in budgets
+                    if b.blocked
+                )
                 return _LanePick(
                     why=(
-                        f"I didn't open a lane in {project.name}: it needs the {decision.tier} "
-                        f"tier and {proposal.reason}. Tell me which model to use, for example "
-                        '"use Sonnet".'
+                        f"I didn't open a lane in {project.name}: no provider has room now "
+                        f"({full or proposal.reason}). Name a model to use anyway, for example "
+                        '"use Sonnet" or "use Luna", and I open it on that.'
                     ),
                     task=task,
                     decision=decision,
@@ -2473,8 +2528,14 @@ class Hub:
                 if decision.close_call
                 else f"{decision.tier} tier"
             )
+            moved = (
+                ""
+                if tier == decision.tier
+                else f"; no provider had room for {decision.tier}, so {tier}"
+            )
             reason = (
-                f"The router judged it {judged_as}, {decision.effort} effort; {proposal.reason}."
+                f"The router judged it {judged_as}, {decision.effort} effort{moved}; "
+                f"{proposal.reason}."
             )
         else:
             # No decision model: the same run as the chat it opens beside, or
@@ -2502,7 +2563,7 @@ class Hub:
             provider=provider,
             model=launch[0],
             effort=launch[1],
-            tier=decision.tier if judged and decision is not None else "",
+            tier=tier if judged else "",
             reason=reason,
         )
         return _LanePick(run=run, task=task, decision=decision if judged else None, extra=extra)
