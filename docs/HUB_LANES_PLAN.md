@@ -8,7 +8,8 @@ you can open and try before the next one starts.
 - Run more than one agent in the same project. For example, Opus keeps working
   on the sim Franka in RAL while a second agent plans today's experiment and
   the joystick work, and the Hub knows which agent is which.
-- Have the Hub pick the model for each task.
+- Have the Hub pick the agent for each task, spreading the work across
+  Claude, Codex and Gemini, not only Claude.
 
 ## What exists today (checked in the code)
 
@@ -20,7 +21,8 @@ you can open and try before the next one starts.
 | The Hub starting a chat | `new_project` decision | It cannot: it posts a link and you start the first task |
 | Creating a chat by API | `POST /v1/sessions` (`schemas.py`) | Takes `project_id`, `workspace`, `git` (create or bind a worktree), `model_override`, `reasoning_effort`, `harness_override`, `labels` |
 | Changing a chat's model from the Hub | `hub_models.py`, `set_model` | Works (10-10) |
-| Plan meters | `routes/plan_limits.py` | Claude 5h/7d and Codex Plus 5h/week; the same numbers as the usage rings |
+| Plan meters | `routes/plan_limits.py` | Claude 5h/7d, Codex Plus 5h/week, and Gemini from agy's own usage screen (readable while an agy runs; the last reading is kept). The same numbers as the usage rings |
+| The three vendors' CLIs | `hub_models.py` `PROVIDERS` | Omnigent already runs Claude Code, Codex and Antigravity (agy, Gemini) chats |
 | Upstream Smart Routing | `smart_routing.py`, `routing_backend.py` | Picks the harness and model when a chat is created, using an LLM judge that rates each request fast/balanced/powerful |
 | Reports back to the Hub | watches per chat id | Work, and survive restarts |
 
@@ -75,7 +77,17 @@ working)" and "RAL · joystick (Sonnet 5.5, idle)". Hub chips name the lane.
    - the panel.
    Then a scratch-server run, then live on RAL once you say go.
 
-## Phase 2: automatic model choice
+## Phase 2: choosing the agent for each lane (Claude, Codex or Gemini)
+
+Each lane runs one whole task on one vendor's own CLI:
+- Claude Code: Sonnet 5.5 or Opus 5.5;
+- Codex: GPT-6 Luna or Sol;
+- Antigravity (agy): Gemini 3.8.
+
+The Hub spreads the work across the three quota pools lane by lane. A single
+task is not split between vendors. In our runs, a Claude brain directing a
+cheaper worker shipped real bugs in 8 of 34 runs, against 0 of 27 for one
+agent doing the whole task.
 
 1. **Category table**, editable in `~/.omnigent/hub/routing.yaml`. The Hub's
    Gemini router already decides once per message; it would also name a
@@ -83,38 +95,52 @@ working)" and "RAL · joystick (Sonnet 5.5, idle)". Hub chips name the lane.
    follows Arch-Router: matching a request to categories you wrote is the part
    routers do well (93%).
 
-   | Category | Default | Basis |
-   |---|---|---|
-   | Plan, write, docs, explain | Sonnet 5.5 high | Text work; Opus adds cost, not quality |
-   | Code, normal | Sonnet 5.5 high | On the hard 5, plain Sonnet tied plain Opus (4/10 each, 0 real-bug runs) at 14.7% vs 27.2% Pro per run |
-   | Code after a failed check, or when you ask for the best | Opus 5.5 high, in a fresh lane with the brief | Escalate on evidence |
-   | Many independent edits with tests | Codex GPT-6 Luna, a separate quota pool | Only after the plain-Luna test (report test 1), which needs your go |
-   | A quick fact about the machine | The companion's read-only check, no agent | Costs no agent quota |
+   | Category | First choice | Next, if that pool is low | What we know |
+   |---|---|---|---|
+   | Plan, write docs, research, explain | Gemini 3.8 (agy) | Sonnet 5.5 high | Text work on a separate pool. No quality data yet; the shadow week measures it |
+   | Code the lane can test (the project has tests, or a check is written first) | Codex GPT-6 Luna high | Sonnet 5.5, then Gemini | As a worker under a Claude brain: 12/17 solved, 2 runs with a real bug, about 0.3% of the Plus week per run. On its own it is untested (report test 1) |
+   | Code with nothing to test it, or the project's core | Sonnet 5.5 high | Codex Luna high | Plain Sonnet: 0 runs with a real bug in 17 |
+   | Code after a failed check, or when you ask for the best | Opus 5.5 high, in a fresh lane with the brief | — | Asks you first |
+   | A quick fact about the machine | The companion's read-only check | — | No agent at all |
 
-2. **Quota rule.** When a lane starts, the Hub reads the plan meters. If Claude
-   is at or above 80% of the 5-hour window, or 85% of the week, the Hub moves
-   allowed categories to Codex; otherwise it tells you and asks. Prior art:
+2. **A check before code goes to Codex or Gemini.** When a code task has no
+   tests, a short Sonnet lane first writes acceptance tests from your request.
+   It reads only the request, not any code. Then the Codex or Gemini lane
+   builds, and the Hub runs the check on the result. Claude's part is the
+   check, not the code: in our runs, writing acceptance tests first turned two
+   misses into solves (kombu-sac at 9.5% Pro, langchain at 20.2%). The report
+   found the strong model most useful as the author of the check.
+3. **Quota rule across the three pools.** When a lane starts, the Hub reads the
+   three meters the rings already show. It takes the first choice unless that
+   pool is at or above 80% of its 5-hour window or 85% of its week; then it
+   moves to the next choice. When all are low, it tells you and asks. Prior
+   art:
    - GPT-5's fallback to a smaller model at usage limits;
    - LiteLLM `budget_fallbacks`;
    - PILOT, a budgeted routing policy.
 
-   Google's meter is never polled.
-3. **It tells you what it picked.** The sent chip shows "Sonnet 5.5 high ·
-   plan" and a one-line reason. Saying "use Opus" overrides it.
-4. **Shadow week first.** For a week the Hub only logs what it would have
+   Gemini runs only through agy, and its meter is read only while an agy is
+   already running. Google has suspended accounts for background quota
+   polling, so the Hub never adds any.
+4. **It tells you what it picked.** The sent chip shows, for example, "Codex ·
+   GPT-6 Luna high · code" and a one-line reason. Saying "use Claude" or "use
+   Gemini" overrides it.
+5. **Shadow week first.** For a week the Hub only logs what it would have
    chosen next to what you actually used. Nothing switches.
-5. **Outcome log** per task:
+6. **Outcome log** per task:
    - category;
-   - model and effort;
-   - quota used;
+   - vendor, model and effort;
+   - quota used in each pool;
    - minutes;
    - check result;
    - whether the change was kept.
 
-   This later feeds a per-category lookup. CodeRouterBench found that a plain
-   lookup or nearest-neighbour router matches a fine-tuned one.
-6. **Escalation.** When a lane finishes and its check fails, the Hub proposes an
-   Opus lane started from the brief and waits for your yes.
+   After a few weeks, this shows which vendor does which category best on your
+   work. CodeRouterBench found that a plain lookup or nearest-neighbour router
+   over such outcomes matches a fine-tuned one.
+7. **Escalation.** When a lane finishes and its check fails, the Hub proposes
+   the next step: another vendor, or Opus in a fresh lane started from the
+   brief. It waits for your yes.
 
 ## Later (not planned now)
 
@@ -126,7 +152,7 @@ working)" and "RAL · joystick (Sonnet 5.5, idle)". Hub chips name the lane.
 1. Phase 1 steps 1–3 and 6: lanes visible, and the busy guard. Show you.
 2. Phase 1 steps 4–5: the Hub opens lanes, with worktrees. Scratch-server test,
    then live on RAL with your go.
-3. Phase 2 steps 1–3 in shadow mode for a week. Show you the log.
+3. Phase 2 steps 1–4 in shadow mode for a week. Show you the log.
 4. Turn the chooser on.
 
 Building it spends no agent quota, because tests use fakes. Live trials use one
@@ -138,8 +164,16 @@ real lane each, and only after you say go.
    or paste it into the running task.
 2. **A second writer in the same repository:** its own worktree (recommended),
    or the same folder.
-3. **The chooser:** pick Sonnet or Codex on its own, but ask before Opus
-   (recommended); or always ask.
+3. **When the Hub picks the agent for a new lane, may it start it on its own?**
+   Recommended: yes for Codex, Gemini and Sonnet; ask you first only before
+   Opus, the most expensive.
+4. **The default split:**
+   - Gemini for planning, docs and research;
+   - Codex for code that can be tested;
+   - Sonnet for the rest;
+   - Opus only on escalation.
+
+   Change any line if you see the split differently.
 
 ## References
 
