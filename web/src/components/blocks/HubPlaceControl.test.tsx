@@ -83,7 +83,7 @@ describe("where the hub put a message for a busy lane", () => {
     );
 
     const ask = screen.getByTestId("hub-place-ask");
-    expect(ask).toHaveTextContent("Where should this go?");
+    expect(ask).toHaveTextContent("Pick one:");
     expect(screen.getByRole("button", { name: /into its work now/i })).toHaveTextContent(
       "(suggested)",
     );

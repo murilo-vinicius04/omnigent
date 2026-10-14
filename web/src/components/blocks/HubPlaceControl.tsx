@@ -100,7 +100,7 @@ export function HubPlaceControl({
         className="inline-flex flex-wrap items-center gap-1 align-middle"
         data-testid="hub-place-ask"
       >
-        <span className="text-xs text-muted-foreground">Where should this go?</span>
+        <span className="text-xs text-muted-foreground">Pick one:</span>
         {PLACES.map((p) => (
           <button
             key={p.place}
