@@ -655,3 +655,21 @@ def _isolated_companion_ledger(tmp_path, monkeypatch):
     from omnigent.server import discussion
 
     monkeypatch.setattr(discussion, "LEDGER_DIR", tmp_path / "companion")
+
+
+@pytest.fixture(autouse=True)
+def _companion_agy_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Companion agy processes get a fixed token, never one minted in the real home."""
+    monkeypatch.setattr(
+        "omnigent.server.discussion.companion_csrf_token", lambda: "test-csrf-token"
+    )
+
+
+@pytest.fixture(autouse=True)
+def _hub_reads_no_live_meters(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The hub decides on the meters a test gives it, never the real plan APIs."""
+
+    async def _no_refresh() -> None:
+        return None
+
+    monkeypatch.setattr("omnigent.server.hub._refresh_meters", _no_refresh)

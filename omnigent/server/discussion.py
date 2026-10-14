@@ -64,12 +64,14 @@ import logging
 import os
 import pathlib
 import re
+import shutil
 import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
+from omnigent.antigravity_native_rpc import companion_csrf_token
 from omnigent.model_fallbacks import SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
 from omnigent.server import companion_commands
 from omnigent.server.companion_commands import CommandRefused, CommandResult
@@ -650,14 +652,19 @@ class DiscussionSession:
             # skill expansion, ever.
             "--disable-slash-commands",
         ]
+        # A known CSRF token and a full path (``.../bin/agy``, what the quota
+        # reader looks for) let the plan meter ask this agy for Gemini's quota.
+        token = companion_csrf_token()
+        args += ["--csrf_token", token]
         try:
             process = await asyncio.create_subprocess_exec(
-                self._binary,
+                shutil.which(self._binary) or self._binary,
                 *args,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self._workdir(),
+                env={**os.environ, "ANTIGRAVITY_CSRF_TOKEN": token},
             )
         except FileNotFoundError as exc:
             raise DiscussionUnavailable(f"{self._binary!r} not found on PATH") from exc

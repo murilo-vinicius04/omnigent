@@ -446,6 +446,29 @@ _CD: Final[re.Pattern[str]] = re.compile(r"(?:^|[;&|(]\s*)cd\s+(['\"]?)([~/][^\s
 MAX_ANCHORS: Final[int] = 40
 
 
+#: Longest the hub waits for the plan meters before deciding on the readings it has.
+METER_REFRESH_S: Final[float] = 10.0
+
+
+async def _refresh_meters() -> None:
+    from omnigent.server.routes.plan_limits import collect_plan_limits
+
+    await collect_plan_limits()
+
+
+async def fresh_budgets() -> list[budget.ProviderBudget]:
+    """Every provider's budget, after reading the plan meters (cached for a minute).
+
+    Without this the meters were read only while a page showed them, and a
+    provider no page asked about stayed blocked on an old reading.
+    """
+    try:
+        await asyncio.wait_for(_refresh_meters(), METER_REFRESH_S)
+    except Exception:  # noqa: BLE001 - decide on the readings already kept
+        _logger.info("hub: plan meters not refreshed", exc_info=True)
+    return await asyncio.to_thread(budget.today, HUB_DIR)
+
+
 def touched_paths(items_newest_first: Sequence[Any]) -> list[str]:
     """Absolute paths a turn's tool calls name: files they read or wrote, folders they ran in."""
     found: list[str] = []
@@ -2404,7 +2427,7 @@ class Hub:
             reason = f"You asked for {use}."
         elif judged:
             assert decision is not None
-            budgets = await asyncio.to_thread(budget.today, HUB_DIR)
+            budgets = await fresh_budgets()
             proposal = budget.pick(decision.tier, decision.effort, budgets, agy_models=_agy_models)
             extra = {"proposal": proposal.as_dict(), "budgets": budget.snapshot(budgets)}
             if not proposal.provider:
@@ -2547,7 +2570,7 @@ class Hub:
         decision = await model_router.judge(task, backend)
         extra: dict[str, Any] = {}
         if decision.tier:
-            budgets = budget.today(HUB_DIR)
+            budgets = await fresh_budgets()
             extra = {
                 "proposal": budget.pick(
                     decision.tier, decision.effort, budgets, agy_models=_agy_models

@@ -164,3 +164,47 @@ def test_meters_and_history_are_read_from_the_data_dir(tmp_path) -> None:
     assert (meter.weekly, meter.five_hour) == (9.0, 4.0)
     # A stale replay is not a reading.
     assert readings["codex"] == [(datetime(2026, 10, 14, 10, tzinfo=UTC), 7.0)]
+
+
+def test_a_mocked_smaller_plan_counts_from_its_start_at_the_plans_multiple() -> None:
+    since = WEEK_START + timedelta(days=5, hours=9)
+    five_reset = since + timedelta(hours=2)
+    mock = budget.PlanMock(
+        since=since,
+        multiplier=5,
+        weekly_start=52,
+        weekly_at_start=52,
+        weekly_resets_at=RESET,
+        five_hour_at_start=36,
+        five_hour_resets_at=five_reset,
+    )
+    settings = BudgetSettings(spend_freely_until={"claude": RESET}, plan_mocks={"claude": mock})
+    now = since + timedelta(hours=1)
+    # The meter's reset times jitter by fractions of a second between readings.
+    jitter = timedelta(microseconds=15180)
+    meter = Meter("claude", 54.0, 40.0, RESET + jitter, now, five_reset - jitter)
+    readings = [(since - timedelta(hours=3), 50.0), (since + timedelta(minutes=30), 53.0)]
+
+    got = budget.provider_budget(meter, readings, settings, now)
+
+    # Two more Max points are ten Pro points; the 5-hour window grows the same way.
+    assert got.week_used == 62.0 and got.five_hour == 56.0
+    # Paced like the smaller plan: the leftover is not spent freely, and today
+    # counts only what was used since the mock began.
+    assert got.free_until is None and got.spent == 10.0
+    # A new 5-hour window and a new week are the plain multiple.
+    later = Meter(
+        "claude", 3.0, 10.0, RESET + timedelta(days=7), now, five_reset + timedelta(hours=5)
+    )
+    after = budget.provider_budget(later, [], settings, RESET + timedelta(hours=1))
+    assert (after.week_used, after.five_hour) == (15.0, 50.0)
+
+
+def test_a_busy_five_hour_window_loses_to_a_quieter_provider() -> None:
+    claude = _budget("claude", 30.0, five_hour=70.0)  # lots of week left, window nearly full
+    codex = _budget("codex", 8.0, five_hour=0.0)  # less of the week, an empty window
+
+    got = budget.pick("top", "high", [claude, codex])
+
+    assert claude.capacity < codex.capacity
+    assert got.provider == "codex" and "5-hour window 0% used" in got.reason

@@ -2266,3 +2266,12 @@ def test_pid_listen_ports_empty_when_neither_source_attributes(
     monkeypatch.setattr(rpc.psutil, "Process", _Proc)
     monkeypatch.setattr(rpc, "_run_lsof_listen_ports", lambda _pid: "")
     assert rpc._pid_listen_ports(72753) == []
+
+
+def test_the_servers_own_agy_token_is_kept_and_tried(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    token = rpc.companion_csrf_token()
+    assert len(token) == 64 and rpc.companion_csrf_token() == token
+    path = tmp_path / ".omnigent" / "companion" / "agy_csrf_token"
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert token in rpc._candidate_csrf_tokens()

@@ -58,6 +58,7 @@ import ipaddress
 import json
 import logging
 import os
+import secrets
 import struct
 import subprocess
 from collections.abc import AsyncIterator, Iterable
@@ -211,6 +212,29 @@ _HEADER_CSRF_TOKEN = "x-codeium-csrf-token"
 _PORT_CSRF_TOKENS: dict[int, str] = {}
 
 
+def companion_csrf_path() -> Path:
+    """Where the token every agy the server starts for itself (hub router,
+    companions) is launched with is kept, so the quota reader can ask any of them."""
+    return Path.home() / ".omnigent" / "companion" / "agy_csrf_token"
+
+
+def companion_csrf_token() -> str:
+    """The server's own agy CSRF token: read, or minted and kept owner-only."""
+    path = companion_csrf_path()
+    try:
+        token = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        token = ""
+    if token:
+        return token
+    token = secrets.token_hex(32)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(token + "\n")
+    return token
+
+
 def clear_port_csrf_tokens() -> None:
     """Clear the cached port-to-CSRF-token mappings (used for test isolation)."""
     _PORT_CSRF_TOKENS.clear()
@@ -225,8 +249,9 @@ def _candidate_csrf_tokens(explicit: str | None = None) -> list[str | None]:
     1. Explicitly supplied *explicit* token (if any).
     2. Active bridge directory tokens from ``~/.omnigent/antigravity-native/*/csrf_token``
        (newest modified first).
-    3. Ambient ``ANTIGRAVITY_CSRF_TOKEN`` from the process environment.
-    4. ``None`` (no header) for backward compatibility with older agy versions or mock tests.
+    3. The server's own agy token (:func:`companion_csrf_path`).
+    4. Ambient ``ANTIGRAVITY_CSRF_TOKEN`` from the process environment.
+    5. ``None`` (no header) for backward compatibility with older agy versions or mock tests.
 
     :param explicit: Optional token to prioritize.
     :returns: Deduplicated candidate tokens (including ``None``).
@@ -251,6 +276,12 @@ def _candidate_csrf_tokens(explicit: str | None = None) -> list[str | None]:
                     continue
         except OSError:
             pass
+    try:
+        companion = companion_csrf_path().read_text(encoding="utf-8").strip()
+    except OSError:
+        companion = ""
+    if companion and companion not in tokens:
+        tokens.append(companion)
     env_tok = os.environ.get("ANTIGRAVITY_CSRF_TOKEN")
     if env_tok and env_tok not in tokens:
         tokens.append(env_tok)

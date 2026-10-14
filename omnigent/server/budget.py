@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import pathlib
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
@@ -60,6 +60,65 @@ PROVIDER_LABELS: Final[dict[str, str]] = {"claude": "Claude", "codex": "Codex", 
 
 
 @dataclass(frozen=True)
+class PlanMock:
+    """Count a provider as if on a plan *multiplier* times smaller, from *since*.
+
+    Its meter then reads ``start + multiplier x (reading - reading at since)``
+    until the window resets, and ``multiplier x reading`` after. Before
+    *since*, readings count as *start*. The 5-hour window starts from its
+    own reading at *since*.
+    """
+
+    since: datetime
+    multiplier: float
+    weekly_start: float
+    weekly_at_start: float
+    weekly_resets_at: datetime | None = None
+    five_hour_at_start: float | None = None
+    five_hour_resets_at: datetime | None = None
+
+    def weekly(self, reading: float, resets_at: datetime | None) -> float:
+        if not _same_window(resets_at, self.weekly_resets_at):
+            return reading * self.multiplier
+        return self.weekly_start + self.multiplier * max(0.0, reading - self.weekly_at_start)
+
+    def five_hour(self, reading: float, resets_at: datetime | None) -> float:
+        start = self.five_hour_at_start
+        if start is None or not _same_window(resets_at, self.five_hour_resets_at):
+            return reading * self.multiplier
+        return start + self.multiplier * max(0.0, reading - start)
+
+
+def _same_window(resets_at: datetime | None, started: datetime | None) -> bool:
+    """Whether a reading is still in the window the mock began in.
+
+    A meter's reset time jitters by fractions of a second between readings.
+    """
+    if resets_at is None or started is None:
+        return True
+    return abs((resets_at - started).total_seconds()) < 600
+
+
+def _plan_mock(raw: Any) -> PlanMock | None:
+    if not isinstance(raw, dict):
+        return None
+    since = _parse_time(raw.get("since"))
+    numbers = {
+        k: float(v)
+        for k in ("multiplier", "weekly_start", "weekly_at_start", "five_hour_at_start")
+        if isinstance(v := raw.get(k), int | float) and v >= 0
+    }
+    if since is None or not {"multiplier", "weekly_start", "weekly_at_start"} <= set(numbers):
+        return None
+    return PlanMock(
+        since=since,
+        weekly_resets_at=_parse_time(raw.get("weekly_resets_at")),
+        five_hour_resets_at=_parse_time(raw.get("five_hour_resets_at")),
+        **numbers,
+    )
+
+
+@dataclass(frozen=True)
 class BudgetSettings:
     """The governor's knobs, from ``<hub dir>/budget.json`` when it has them."""
 
@@ -70,6 +129,8 @@ class BudgetSettings:
     stale_after_s: float = 6 * 3600.0
     #: Provider -> the instant up to which its week's whole leftover may be spent.
     spend_freely_until: dict[str, datetime] = field(default_factory=dict)
+    #: Provider -> a plan smaller than the one it is on, to see how routing behaves.
+    plan_mocks: dict[str, PlanMock] = field(default_factory=dict)
 
     @property
     def daily_pct(self) -> float:
@@ -105,7 +166,19 @@ def load_settings(hub_dir: pathlib.Path) -> BudgetSettings:
         for provider, stamp in (raw.get("spend_freely_until") or {}).items()
         if (when := _parse_time(stamp)) is not None
     }
-    return BudgetSettings(**{**asdict(defaults), **numbers, "spend_freely_until": free})
+    mocks = {
+        str(provider): mock
+        for provider, entry in (raw.get("plan_mocks") or {}).items()
+        if (mock := _plan_mock(entry)) is not None
+    }
+    return BudgetSettings(
+        **{
+            **asdict(defaults),
+            **numbers,
+            "spend_freely_until": free,
+            "plan_mocks": mocks,
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -117,6 +190,7 @@ class Meter:
     five_hour: float | None = None
     resets_at: datetime | None = None
     as_of: datetime | None = None
+    five_hour_resets_at: datetime | None = None
 
 
 def read_meter(provider: str, data_dir: pathlib.Path) -> Meter:
@@ -127,7 +201,7 @@ def read_meter(provider: str, data_dir: pathlib.Path) -> Meter:
     except (OSError, ValueError):
         return Meter(provider)
     weekly = five_hour = None
-    resets_at = None
+    resets_at = five_hour_resets_at = None
     for window in blob.get("windows") or []:
         if not isinstance(window, dict):
             continue
@@ -136,7 +210,26 @@ def read_meter(provider: str, data_dir: pathlib.Path) -> Meter:
             resets_at = _parse_time(window.get("resets_at"))
         elif window.get("kind") == five_hour_kind:
             five_hour = float(window.get("percent") or 0)
-    return Meter(provider, weekly, five_hour, resets_at, _parse_time(blob.get("as_of")))
+            five_hour_resets_at = _parse_time(window.get("resets_at"))
+    as_of = _parse_time(blob.get("as_of"))
+    return Meter(provider, weekly, five_hour, resets_at, as_of, five_hour_resets_at)
+
+
+def mocked(
+    meter: Meter, readings: list[tuple[datetime, float]], mock: PlanMock
+) -> tuple[Meter, list[tuple[datetime, float]]]:
+    """The meter and weekly readings as the smaller plan would show them."""
+    weekly = None if meter.weekly is None else mock.weekly(meter.weekly, meter.resets_at)
+    five_hour = (
+        None
+        if meter.five_hour is None
+        else mock.five_hour(meter.five_hour, meter.five_hour_resets_at)
+    )
+    scaled = [
+        (at, mock.weekly_start if at < mock.since else mock.weekly(pct, meter.resets_at))
+        for at, pct in readings
+    ]
+    return replace(meter, weekly=weekly, five_hour=five_hour), scaled
 
 
 _history_cache: dict[str, Any] = {}
@@ -197,10 +290,25 @@ class ProviderBudget:
     free_until: str | None = None
     blocked: str = ""
 
+    #: How full the 5-hour window may get before it waits, from the settings.
+    five_hour_cap: float = 85.0
+
     @property
     def headroom(self) -> float:
         """Today's remaining budget in days of budget, to compare providers."""
         return self.remaining / self.daily if self.daily > 0 else 0.0
+
+    @property
+    def five_hour_left(self) -> float:
+        """The share of the 5-hour window left before it waits, 0 to 1."""
+        if self.five_hour is None or self.five_hour_cap <= 0:
+            return 1.0
+        return max(0.0, self.five_hour_cap - self.five_hour) / self.five_hour_cap
+
+    @property
+    def capacity(self) -> float:
+        """What it can take now, 0 to 1: the tighter of today's share and the 5-hour window."""
+        return min(min(1.0, self.headroom), self.five_hour_left)
 
     def as_dict(self) -> dict[str, Any]:
         return {**asdict(self), "label": PROVIDER_LABELS.get(self.provider, self.provider)}
@@ -218,12 +326,16 @@ def provider_budget(
 ) -> ProviderBudget:
     """Today's budget for one provider from its meter and its readings this week."""
     daily = settings.daily_pct
+    mock = settings.plan_mocks.get(meter.provider)
+    if mock is not None:
+        meter, readings = mocked(meter, readings, mock)
     base = {
         "provider": meter.provider,
         "week_used": meter.weekly,
         "resets_at": _iso(meter.resets_at),
         "daily": round(daily, 2),
         "five_hour": meter.five_hour,
+        "five_hour_cap": settings.five_hour_guard_pct,
     }
     if meter.weekly is None or meter.resets_at is None or meter.as_of is None:
         return ProviderBudget(**base, stale=True, blocked="no reading")
@@ -239,7 +351,8 @@ def provider_budget(
     after = [pct for at, pct in this_week if at > day_start]
     at_day_start = before[-1] if before else (after[0] if after else meter.weekly)
     spent = max(0.0, meter.weekly - at_day_start)
-    free = settings.spend_freely_until.get(meter.provider)
+    # A mocked plan is paced like that plan: no spending the leftover freely.
+    free = None if mock is not None else settings.spend_freely_until.get(meter.provider)
     if free is not None and now < free:
         remaining = max(0.0, 100.0 - meter.weekly)
         allowed = spent + remaining
@@ -329,12 +442,15 @@ def pick(
         return Proposal(reason=f"no provider has the {tier} tier")
     ready = [b for b in having if not b.blocked]
     if ready:
-        best = max(ready, key=lambda b: b.headroom)
-        why = (
+        # The tighter of its two windows decides; days of weekly budget break a tie.
+        best = max(ready, key=lambda b: (round(b.capacity, 3), b.headroom))
+        week = (
             "spending the week's leftover before its reset"
             if best.free_until
             else f"{best.remaining:.1f}% of its week left today"
         )
+        five = f", 5-hour window {best.five_hour:.0f}% used" if best.five_hour is not None else ""
+        why = week + five
     else:
         old = [b for b in having if b.blocked in ("reading is old", "no reading since its reset")]
         if not old:
@@ -359,6 +475,8 @@ def snapshot(budgets: list[ProviderBudget]) -> dict[str, dict[str, Any]]:
             "allowed": b.allowed,
             "spent": b.spent,
             "day": b.day,
+            "five_hour": b.five_hour,
+            "capacity": round(b.capacity, 3),
             **({"blocked": b.blocked} if b.blocked else {}),
         }
         for b in budgets
