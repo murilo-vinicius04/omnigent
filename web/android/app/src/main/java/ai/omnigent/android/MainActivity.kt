@@ -90,6 +90,7 @@ class MainActivity : AppCompatActivity() {
             pendingMicRequest = null
             if (granted && request != null) {
                 request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+                KeepAliveService.start(this) // now with the mic, so a call survives the lock screen
             } else {
                 request?.deny()
             }
@@ -473,7 +474,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        // On screen is the only time the service may start; it keeps the app
+        // alive once it leaves the screen.
+        if (::webView.isInitialized) KeepAliveService.start(this)
+    }
+
     override fun onDestroy() {
+        if (isFinishing) KeepAliveService.stop(this)
         // Unblock a pending file input / mic request, then release WebView + worker.
         pendingFileCallback?.onReceiveValue(null)
         pendingFileCallback = null
@@ -746,6 +755,7 @@ class MainActivity : AppCompatActivity() {
         }
         if (hasPermission(Manifest.permission.RECORD_AUDIO)) {
             request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+            KeepAliveService.start(this)
         } else {
             pendingMicRequest?.deny() // don't leave a prior request hanging forever
             pendingMicRequest = request

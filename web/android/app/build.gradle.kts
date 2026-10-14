@@ -50,6 +50,10 @@ android {
         versionCode = appVersionCode
         versionName = appVersionName
 
+        // A personal build installs beside the store app: -PappIdSuffix=.nexus
+        buildProperty("appIdSuffix")?.let { applicationIdSuffix = it }
+        manifestPlaceholders["appLabel"] = buildProperty("appLabel") ?: "@string/app_name"
+
         // Instrumented (androidTest) runner — required for UI Automator / Espresso
         // screenshot tests. Mirrors the androidx.test stable line pinned below.
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
