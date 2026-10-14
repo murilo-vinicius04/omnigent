@@ -67,6 +67,9 @@ WATCH_MAX_S: Final[float] = 6 * 3600.0
 #: A session that has not started on what it was sent after this long.
 NOT_STARTED_S: Final[float] = 120.0
 
+#: A turn's newest tool calls read for the folders it worked in.
+_TURN_CALLS: Final[int] = 300
+
 #: Longest project reply kept for the hub chat to show in full.
 MAX_REPLY_CHARS: Final[int] = 20000
 
@@ -373,6 +376,64 @@ def attached_files(blocks: Sequence[Any], session_id: str) -> list[HubFile]:
     ]
 
 
+#: Tool-call arguments that name a file or folder the call worked on.
+_PATH_ARGS: Final[tuple[str, ...]] = ("file_path", "notebook_path", "path", "workdir", "cwd")
+
+#: ``cd <folder>`` in a shell command, for an absolute or home folder.
+_CD: Final[re.Pattern[str]] = re.compile(r"(?:^|[;&|(]\s*)cd\s+(['\"]?)([~/][^\s'\";&|)]*)\1")
+
+#: Most folders kept per report to find relative paths in.
+MAX_ANCHORS: Final[int] = 40
+
+
+def touched_paths(items_newest_first: Sequence[Any]) -> list[str]:
+    """Absolute paths a turn's tool calls name: files they read or wrote, folders they ran in."""
+    found: list[str] = []
+    for item in items_newest_first:
+        _kind, _response, data = voice_hub.item_fields(item)
+        args = data.get("arguments") if isinstance(data, dict) else None
+        try:
+            parsed = json.loads(args) if isinstance(args, str) else args
+        except ValueError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        found.extend(
+            value
+            for key in _PATH_ARGS
+            if isinstance(value := parsed.get(key), str) and value.startswith(("/", "~"))
+        )
+        command = parsed.get("command")
+        if isinstance(command, list):
+            command = " ".join(str(part) for part in command)
+        if isinstance(command, str):
+            found.extend(m.group(2) for m in _CD.finditer(command))
+    return found
+
+
+def anchor_dirs(touched: Sequence[str], workspace: str | None) -> list[str]:
+    """The folders inside *workspace* those paths sit in, each with its parents, newest first."""
+    if not workspace:
+        return []
+    root = pathlib.Path(workspace).expanduser().resolve()
+    anchors: list[str] = []
+    for raw in touched:
+        try:
+            path = pathlib.Path(raw).expanduser().resolve()
+            # A folder a command ran in may be gone since; a name without an
+            # extension still reads as one.
+            gone_folder = not path.exists() and not path.suffix
+            folder = path if path.is_dir() or gone_folder else path.parent
+            folder.relative_to(root)
+        except (ValueError, OSError):
+            continue
+        while folder != root and len(anchors) < MAX_ANCHORS:
+            if str(folder) not in anchors:
+                anchors.append(str(folder))
+            folder = folder.parent
+    return anchors
+
+
 @dataclass(frozen=True)
 class ProjectRecord:
     """One of their projects as stored, before the hub reads its chat.
@@ -449,6 +510,9 @@ class HubEntry:
     link: str | None = None
     #: The project's folder, so file paths in a reply link into its chat.
     workspace: str | None = None
+    #: Folders inside it the turn read or wrote in, newest first: a path the
+    #: reply gives relative to the repository it worked in is found there.
+    anchors: list[str] | None = None
     #: Files a reply came with, copied into the hub chat as ``output_file`` blocks.
     files: list[dict[str, Any]] | None = None
     #: What the project's chat shows under its summary of the reply: tables,
@@ -480,6 +544,8 @@ class TurnState:
     files: tuple[ReplyFile, ...] = ()
     #: The project's folder, for the file paths its reply names.
     workspace: str | None = None
+    #: Absolute paths the turn's tool calls read, wrote or ran in, newest first.
+    touched: tuple[str, ...] = ()
     #: The ``show`` list of the project's spoken summary of the reply.
     show: tuple[dict[str, Any], ...] = ()
     #: That summary's words, and the language tag it was written in. The hub
@@ -1677,6 +1743,7 @@ class Hub:
             session_name=session.name,
             detail=reply[:MAX_REPLY_CHARS],
             workspace=state.workspace,
+            anchors=anchor_dirs(state.touched, state.workspace) or None,
             files=await self._import_files(session, _files_to_copy(state)) or None,
             show=[b for b in state.show if b.get("kind") not in ("file", None)] or None,
         )
@@ -2283,6 +2350,16 @@ def store_backend(
             if not reply and _field(item.data, "agent") != "attachment":
                 reply = reply_text(item.data)
                 reply_response = getattr(item, "response_id", None) if reply else None
+        calls = await asyncio.to_thread(
+            conversation_store.list_items,
+            session_id,
+            limit=_TURN_CALLS,
+            order="desc",
+            type="function_call",
+        )
+        this_turn = [
+            item for item in calls.data if float(getattr(item, "created_at", 0) or 0) + 1 >= since
+        ]
         # The newest summary of this reply (a summary is revised once its audio is made).
         chosen = next((s for r, s in summaries if r == reply_response), None) if reply else None
         show = tuple(
@@ -2296,6 +2373,7 @@ def store_backend(
             pending_approvals=int(getattr(conv, "pending_elicitation_count", 0) or 0),
             files=tuple(files),
             workspace=getattr(conv, "workspace", None),
+            touched=tuple(touched_paths(this_turn)),
             show=show,
             summary=str((chosen or {}).get("text") or "").strip(),
             summary_lang=str((chosen or {}).get("lang") or ""),

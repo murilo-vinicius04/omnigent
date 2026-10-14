@@ -19,7 +19,7 @@ import pathlib
 import re
 import tarfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Any, Final
 from urllib.parse import quote
@@ -232,15 +232,16 @@ def render(
         def url_for(rel: str) -> str:
             return f"{chat}?file={quote(rel, safe='/')}"
 
+        anchors = entry.anchors or ()
         shown = (
-            show_markdown(entry.show, workspace, url_for)
+            show_markdown(entry.show, workspace, url_for, anchors)
             if entry.show
             else "\n\n".join(reply_tables(entry.detail or ""))
         )
-        shown = link_workspace_files(shown, workspace, url_for)
+        shown = link_workspace_files(shown, workspace, url_for, anchors)
         file_links = " · ".join(
             f"[`{label}`]({url_for(rel)})" if "/" in label else f"[{label}]({url_for(rel)})"
-            for label, rel in named_files(entry.detail or "", workspace)
+            for label, rel in named_files(entry.detail or "", workspace, anchors)
         )
         web_links = " · ".join(
             f"[{label}]({url})"
@@ -293,7 +294,10 @@ def link_known_files(text: str, files: dict[str, tuple[str, str]], base_url: str
         named = code if code is not None else bare
         if named is None:
             return match.group(0)
-        known = files.get(_POSITION_SUFFIX.sub("", named.strip()))
+        named_path = _POSITION_SUFFIX.sub("", named.strip())
+        known = files.get(named_path)
+        if known is None and "/" in named_path:
+            known = _known_tail(named_path, files)
         if known is None:
             return match.group(0)
         url = file_url(base_url, *known)
@@ -305,6 +309,14 @@ def link_known_files(text: str, files: dict[str, tuple[str, str]], base_url: str
             fenced = not fenced
         lines.append(line if fenced or _FENCE.match(line) else _NAMED_FILE.sub(linked, line))
     return "".join(lines)
+
+
+def _known_tail(named: str, files: dict[str, tuple[str, str]]) -> tuple[str, str] | None:
+    """The one known file whose path ends in *named*, a path given short; ``None`` if several."""
+    tail = "/" + named.lstrip("/")
+    keys = [key for key in files if "/" in key and ("/" + key.lstrip("/")).endswith(tail)]
+    targets = {files[key] for key in keys}
+    return targets.pop() if len(targets) == 1 else None
 
 
 def _known_host_path(path: str, files: dict[str, tuple[str, str]]) -> tuple[str, str] | None:
@@ -326,14 +338,17 @@ def known_files(
     for entry in reports[:_KNOWN_FILE_REPORTS]:
         assert entry.session_id is not None
         workspace = entry.workspace or workspace_of(entry.session_id)
-        for label, relative in named_files(entry.detail or "", workspace):
+        for label, relative in named_files(entry.detail or "", workspace, entry.anchors or ()):
             for key in (relative, label, relative.rsplit("/", 1)[-1]):
                 found.setdefault(key, (entry.session_id, relative))
     return found
 
 
 def show_markdown(
-    blocks: list[dict[str, Any]], workspace: str | None, url_for: Callable[[str], str]
+    blocks: list[dict[str, Any]],
+    workspace: str | None,
+    url_for: Callable[[str], str],
+    anchors: Sequence[str] = (),
 ) -> str:
     """A summary's ``show`` blocks as the chat draws them, in markdown.
 
@@ -352,7 +367,7 @@ def show_markdown(
         elif kind in ("image", "link"):
             if content.startswith("/v1/sessions/"):
                 continue
-            relative = workspace_file(content, workspace)
+            relative = workspace_file(content, workspace, anchors)
             if relative is not None:
                 out.append(f"[{label or relative.rsplit('/', 1)[-1]}]({url_for(relative)})")
             elif content.startswith(("http://", "https://")):
@@ -402,7 +417,9 @@ def web_links_of(markdown: str) -> list[tuple[str, str]]:
     return found[:_MAX_WEB_LINKS]
 
 
-def named_files(markdown: str, workspace: str | None) -> list[tuple[str, str]]:
+def named_files(
+    markdown: str, workspace: str | None, anchors: Sequence[str] = ()
+) -> list[tuple[str, str]]:
     """``(label, workspace path)`` of each file a reply links or names as a path.
 
     As the chat's friendly view lifts them: markdown links to files, and
@@ -420,17 +437,19 @@ def named_files(markdown: str, workspace: str | None) -> list[tuple[str, str]]:
             bang, label, target, code = match.groups()
             if bang or (code is not None and "/" not in code):
                 continue
-            relative = workspace_file(code if code is not None else target, workspace)
+            relative = workspace_file(code if code is not None else target, workspace, anchors)
             if relative is not None and all(relative != r for _, r in found):
                 found.append((code if code is not None else label or relative, relative))
     return found
 
 
-def workspace_file(target: str, workspace: str | None) -> str | None:
+def workspace_file(target: str, workspace: str | None, anchors: Sequence[str] = ()) -> str | None:
     """The workspace-relative path *target* names, when it is a file there.
 
     The chat page's rule: an absolute or ``~`` path counts only inside the
-    workspace, and the file must exist.
+    workspace, and the file must exist. A relative path not found at the
+    workspace's root is looked for in *anchors*, the folders the turn worked
+    in: agents write paths relative to the repository they are in.
     """
     target = _POSITION_SUFFIX.sub("", target.strip())
     if not workspace or not target or any(c.isspace() for c in target):
@@ -439,18 +458,23 @@ def workspace_file(target: str, workspace: str | None) -> str | None:
         return None
     root = pathlib.Path(workspace).expanduser()
     path = pathlib.Path(target).expanduser()
-    if not path.is_absolute():
-        path = root / path
-    try:
-        relative = path.resolve().relative_to(root.resolve())
-        found = path.is_file()
-    except (ValueError, OSError):
-        return None
-    return relative.as_posix() if found and relative.parts else None
+    bases = [] if path.is_absolute() else [root, *(pathlib.Path(a) for a in anchors)]
+    for candidate in [base / path for base in bases] if bases else [path]:
+        try:
+            relative = candidate.resolve().relative_to(root.resolve())
+            found = candidate.is_file()
+        except (ValueError, OSError):
+            continue
+        if found and relative.parts:
+            return relative.as_posix()
+    return None
 
 
 def link_workspace_files(
-    markdown: str, workspace: str | None, url_for: Callable[[str], str]
+    markdown: str,
+    workspace: str | None,
+    url_for: Callable[[str], str],
+    anchors: Sequence[str] = (),
 ) -> str:
     """The reply with each file it names linked to that file in its project's chat.
 
@@ -461,7 +485,7 @@ def link_workspace_files(
 
     def linked(match: re.Match[str]) -> str:
         _bang, label, target, code = match.groups()
-        relative = workspace_file(code if code is not None else target, workspace)
+        relative = workspace_file(code if code is not None else target, workspace, anchors)
         if relative is None:
             return match.group(0)
         if code is not None:

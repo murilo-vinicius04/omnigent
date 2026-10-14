@@ -768,3 +768,66 @@ async def test_a_reply_and_its_chart_reach_the_hub_as_the_project_shows_them(
     assert attached["file_id"] != chart_id  # the hub chat owns its own copy
     copy = await client.get(f"/v1/sessions/{hub_id}/resources/files/{attached['file_id']}/content")
     assert copy.content == chart
+
+
+def test_a_path_given_from_the_repository_the_turn_worked_in_is_linked(tmp_path) -> None:
+    repo = tmp_path / "wt" / "friendly-layer"
+    (repo / "docs").mkdir(parents=True)
+    (repo / "docs" / "HUB_LANES_PLAN.md").write_text("# plan\n")
+    detail = "The plan is in `docs/HUB_LANES_PLAN.md`; nothing in `docs/missing.md`."
+    # Without the folders the turn worked in, the path names nothing under the workspace.
+    assert "?file=" not in hub_chat.render(_finished(tmp_path, detail=detail), "http://h:6767")
+    entry = _finished(tmp_path, detail=detail, anchors=[str(repo / "docs"), str(repo)])
+    link = "http://h:6767/c/s1?file=wt/friendly-layer/docs/HUB_LANES_PLAN.md"
+    text = hub_chat.render(entry, "http://h:6767")
+    assert text.endswith(f"[`docs/HUB_LANES_PLAN.md`]({link})")
+    assert "missing.md" not in text
+
+
+def test_a_folder_outside_the_workspace_never_resolves_a_path(tmp_path) -> None:
+    outside = tmp_path / "outside"
+    (outside / "docs").mkdir(parents=True)
+    (outside / "docs" / "secret.md").write_text("x")
+    (tmp_path / "ws").mkdir()
+    assert hub_chat.workspace_file("docs/secret.md", str(tmp_path / "ws"), [str(outside)]) is None
+
+
+def test_the_hub_links_a_path_it_gives_short_to_the_file_a_report_named() -> None:
+    files = {
+        "wt/friendly-layer/docs/HUB_LANES_PLAN.md": (
+            "s1",
+            "wt/friendly-layer/docs/HUB_LANES_PLAN.md",
+        ),
+        "HUB_LANES_PLAN.md": ("s1", "wt/friendly-layer/docs/HUB_LANES_PLAN.md"),
+        "omnigent-fork/docs/RESUME.md": ("s1", "omnigent-fork/docs/RESUME.md"),
+        "wt/friendly-layer/docs/RESUME.md": ("s1", "wt/friendly-layer/docs/RESUME.md"),
+    }
+    text = hub_chat.link_known_files(
+        "O plano está em `docs/HUB_LANES_PLAN.md`; veja também `docs/RESUME.md`.",
+        files,
+        "http://h",
+    )
+    assert "[`docs/HUB_LANES_PLAN.md`](http://h/c/s1?file=" in text
+    # Two files end in that path: no guess.
+    assert "`docs/RESUME.md`." in text and "[`docs/RESUME.md`]" not in text
+
+
+def test_a_turns_tool_calls_give_the_folders_it_worked_in(tmp_path) -> None:
+    repo = tmp_path / "wt" / "friendly-layer"
+    (repo / "docs").mkdir(parents=True)
+    (repo / "docs" / "PLAN.md").write_text("x")
+    items = [  # newest first
+        {"data": {"arguments": f'{{"file_path": "{repo}/docs/PLAN.md"}}'}},
+        {"data": {"arguments": f'{{"command": "cd {tmp_path}/elsewhere && ls"}}'}},
+        {"data": {"arguments": '{"command": "cd /etc && cat hosts"}'}},
+        {"data": {"arguments": "not json"}},
+    ]
+    touched = hub_module.touched_paths(items)
+    assert touched == [f"{repo}/docs/PLAN.md", f"{tmp_path}/elsewhere", "/etc"]
+    # Newest first, each with its parents, and nothing outside the workspace.
+    assert hub_module.anchor_dirs(touched, str(tmp_path)) == [
+        str(repo / "docs"),
+        str(repo),
+        str(tmp_path / "wt"),
+        str(tmp_path / "elsewhere"),
+    ]
