@@ -1544,3 +1544,24 @@ async def test_a_lane_someone_writes_in_directly_is_no_longer_followed(tmp_path)
     await hub.close()
     assert sum(e.kind == "finished" for e in hub.state.entries) == 1
     assert HubState("u1", root=tmp_path).watches == {}
+
+
+async def test_a_missed_turn_is_reported_from_its_window(tmp_path) -> None:
+    server = _Server()
+    asked: list[tuple] = []
+    done = TurnState(status="running", reply="franka_ros2 builds and runs.", summary="Build ok.")
+
+    async def turn(session_id, since, until=None):
+        asked.append((session_id, since, until))
+        return done if until is not None else TurnState(status="running")
+
+    backend = server.backend()
+    hub = _hub(tmp_path, _Router(), server)
+    hub.bind(replace(backend, turn=turn))
+    lane = HubSession(id=BRASA, title="brasa", nickname="brasa")
+
+    entry = await hub.report_turn(lane, 100.0, 200.0)
+    await hub.close()
+
+    assert asked == [(BRASA, 100.0, 200.0)]
+    assert entry is not None and entry.text == "brasa finished: Build ok."

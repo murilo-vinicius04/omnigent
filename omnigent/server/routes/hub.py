@@ -81,6 +81,13 @@ class HubLaneIn(BaseModel):
     use: str = Field(default="", max_length=100)
 
 
+class HubReportIn(BaseModel):
+    """A lane's past turn to report: the window it ran in, in Unix seconds."""
+
+    since: float
+    until: float
+
+
 class HubCloseLaneIn(BaseModel):
     """How to close a lane."""
 
@@ -267,6 +274,20 @@ def create_hub_router(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"text": entry.text, "closing": entry.kind == "sent"}
+
+    @router.post("/hub/lanes/{session_id}/report")
+    async def hub_report_turn(
+        request: Request, session_id: str, body: HubReportIn
+    ) -> dict[str, Any]:
+        """Report a lane's turn the hub missed, as its finished report would have."""
+        if body.until <= body.since:
+            raise HTTPException(status_code=422, detail="until must come after since")
+        hub, _ = await _bound(request)
+        _, lane = await _lane(hub, session_id)
+        entry = await hub.report_turn(lane, body.since, body.until)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="no reply in that window")
+        return {"text": entry.text}
 
     @router.post("/hub/placements/{placement_id}/feedback")
     async def hub_place_feedback(

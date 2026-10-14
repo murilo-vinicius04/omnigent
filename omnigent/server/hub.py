@@ -1363,7 +1363,8 @@ class HubBackend:
     activity: Callable[[str], Awaitable[str]]
     send: Callable[[str, str, Sequence[HubFile]], Awaitable[None]]
     check: Callable[[str, str], Awaitable[str]]
-    turn: Callable[[str, float], Awaitable[TurnState]]
+    #: ``(session id, since, until=None)``: the turn since a moment, or a past one.
+    turn: Callable[..., Awaitable[TurnState]]
     projects: Callable[[], Awaitable[list[ProjectRecord]]]
     create_project: Callable[[str, str | None], Awaitable[ProjectRecord]]
     rename_project: Callable[[str, str], Awaitable[None]]
@@ -2724,6 +2725,20 @@ class Hub:
             if reported:
                 self.follow(session, time.time())
 
+    async def report_turn(
+        self, session: HubSession, since: float, until: float
+    ) -> HubEntry | None:
+        """Report a lane's turn between *since* and *until* that the hub missed.
+
+        :returns: The report, or ``None`` when that window has no reply.
+        """
+        backend = self.require_backend()
+        state = await backend.turn(session.id, since, until)
+        if not state.reply:
+            return None
+        await self._report(session, state)
+        return next((e for e in reversed(self.state.entries) if e.kind == "finished"), None)
+
     def follow(self, session: HubSession, since: float) -> None:
         """After a report, report again what the lane goes on to do by itself.
 
@@ -3498,12 +3513,21 @@ def store_backend(
             f"I couldn't find out with read-only commands: {result.needs_claude or 'no answer'}."
         )
 
-    async def turn(session_id: str, since: float) -> TurnState:
+    async def turn(session_id: str, since: float, until: float | None = None) -> TurnState:
         conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
         status = live_status(session_id, getattr(conv, "live_status", None))
+        # A past turn (*until* given) may sit behind newer work: read further back.
         recent = await asyncio.to_thread(
-            conversation_store.list_items, session_id, limit=30, order="desc", type="message"
+            conversation_store.list_items,
+            session_id,
+            limit=30 if until is None else 400,
+            order="desc",
+            type="message",
         )
+
+        def in_window(item: Any) -> bool:
+            return until is None or float(getattr(item, "created_at", 0) or 0) <= until + 1
+
         # Newest first. The answer is the newest message with answer text: a
         # spoken summary or an attached chart's caption comes after it.
         reply, reply_response = "", None
@@ -3513,6 +3537,8 @@ def store_backend(
         for item in recent.data:
             if float(getattr(item, "created_at", 0) or 0) + 1 < since:
                 break
+            if not in_window(item):
+                continue
             if _role(item.data) == "user":
                 said = _item_text(item.data).lstrip()
                 if said.startswith(_SELF_WAKE_PREFIXES):
@@ -3532,12 +3558,14 @@ def store_backend(
         calls = await asyncio.to_thread(
             conversation_store.list_items,
             session_id,
-            limit=_TURN_CALLS,
+            limit=_TURN_CALLS if until is None else 4 * _TURN_CALLS,
             order="desc",
             type="function_call",
         )
         this_turn = [
-            item for item in calls.data if float(getattr(item, "created_at", 0) or 0) + 1 >= since
+            item
+            for item in calls.data
+            if float(getattr(item, "created_at", 0) or 0) + 1 >= since and in_window(item)
         ]
         # The newest summary of this reply (a summary is revised once its audio is made).
         chosen = next((s for r, s in summaries if r == reply_response), None) if reply else None
@@ -3547,7 +3575,7 @@ def store_backend(
             if isinstance(b, dict) and b.get("kind") in SHOWN_KINDS
         )
         return TurnState(
-            status=status,
+            status=status if until is None else "idle",
             reply=reply,
             pending_approvals=int(getattr(conv, "pending_elicitation_count", 0) or 0),
             files=tuple(files),
