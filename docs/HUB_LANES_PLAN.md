@@ -140,6 +140,35 @@ restart):
   (economical/high → Claude Haiku high); "fala agora" → sent at once;
   "agente separado com o Sonnet" → new lane on Sonnet high. 4/4.
 
+**Placement by the model, asked until it has learned (10-14, `bd83b5885`,
+`a2c69d7dc`, `b1b07ea2b`, live since the 15:50 restart).** Your rule: not a
+busy/idle switch. Some messages steer the running task (a direction, a
+correction), some are a different task in the same project (the joystick plan),
+and a model should tell them apart and learn from your answers.
+- The router gives each message for a WORKING lane a place: `steer` (into its
+  work now), `after` (held until it finishes) or `new` (a new lane), or `ask`
+  when it cannot tell. Module `omnigent/server/hub_place.py`; log
+  `~/.omnigent/hub/<user>/placements.jsonl` (placement, your answer, reflex's
+  shadow answer).
+- **Asked until trusted:** while fewer than 9 of the router's last 10 guesses
+  matched your answers, every such message is asked: it waits, three buttons
+  beside the chip (its guess marked "suggested"), and goes when the lane
+  finishes if you pick none. After that it decides alone and you can still
+  correct it from the chip.
+- An answer moves the message where it still can: held → in now or a new lane;
+  a lane opened in the last 15 min → closed, message to the busy lane. Already
+  in a lane's work → stays, noted. Saying it ("isso era pro que ele tá fazendo")
+  works too, and "tell it now" counts as `steer`.
+- Every answer is shown to the router as a lesson (newest 8) and kept as a
+  training label for reflex.
+- Measured on 22 Hub messages (16 real busy-project messages from the log, 6
+  made up; labels mine): reflex 13/22 (one choice question) and 16/22 (yes/no
+  questions), it calls nearly everything "steer", and lessons in its input did
+  not help; Hub router (Gemini 3.8 Flash Low) 15/22 with no lessons (it held 6
+  of 8 different tasks as "after") and 18/19 on the other 19 after 3 answers
+  as lessons (its one miss it answered itself from the live status). Scripts:
+  session scratchpad `place/`.
+
 ## Phase 2: the daily budget and the model router
 
 ### 2.1 Tier ladder
@@ -428,7 +457,9 @@ real lane each, and only after you say go.
 ## Decisions for you
 
 1. ~~A message for a busy lane~~ **Decided 10-14: hold it** until the lane is
-   idle; "tell it now" still pastes it in.
+   idle; "tell it now" still pastes it in. **Replaced the same day** by your
+   rule: the router places it (into its work, after it, a new lane) and asks
+   you until its guesses match your answers (see Built 10-14).
 2. ~~A second writer in the same repository~~ **Decided 10-14: its own
    worktree** (see Built 10-14 for how, since the projects run in `/home/nexus`).
 3. **Buffer left at the end of each week:** 15% per provider (recommended), or

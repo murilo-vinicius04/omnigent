@@ -14,6 +14,23 @@ calls write ~1k) — starting fresh then costs more, not less.
 
 Keep it current before going idle. If something here is stale, fix it here.
 
+## 2026-10-14 15:55 — READ FIRST (placement by the model + asking; session d9653808, chat 247c77f5)
+
+**User 15:30 (Hub):** lanes are not a 0/1 busy switch: directions/corrections go to the running task,
+different tasks (joystick plan) to a new lane; a model decides and learns from their feedback. **15:40
+(held for this chat):** if the model is not reliable, ask them directly in the chat; their choice is
+training data. **Built and live (15:50 restart, web deployed 15:53):** `bd83b5885`, `a2c69d7dc`,
+`b1b07ea2b` — see HUB_LANES_PLAN.md "Placement by the model". Router places steer/after/new/ask; asked
+until 9 of its last 10 guesses match (no answers yet, so every busy-lane message is asked now); answers
+fix what they can, become lessons (newest 8 in the router prompt) and labels; reflex answers in shadow.
+Measured (chart attached in chat): reflex 13/22 and 16/22; router 15/22 no lessons, 18/19 with 3.
+Tests: `tests/server/test_hub_place.py` (21), web `HubPlaceControl.test.tsx` (4). Pre-existing,
+unrelated failure: `tests/server/test_live_voice.py::test_the_voice_is_told_when_to_delegate`.
+**Next:** the user's first real answers; once there are ~30+ labels, fine-tune reflex on them and
+compare against the router on the same log before letting it decide.
+**omni-bench:** still PAUSED. Validation finished: 19/22 valid (01, 04, 22 have tests that fail after
+the reference change). Resume steps unchanged (block below).
+
 ## 2026-10-14 15:25 — READ FIRST (lane fix live; benchmark PAUSED; session d9653808, chat 247c77f5)
 
 **Priority (user 15:15): multi-lane behaviour first; omni-bench paused until they say.**
