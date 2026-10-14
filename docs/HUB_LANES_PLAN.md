@@ -12,8 +12,9 @@ you can open and try before the next one starts.
 - **The router decides on its own**, watching spending, with a weekly ceiling
   per provider so all three end the week with quota left over. On Friday 10-16
   Claude drops from Max to Pro at its weekly reset.
-- **Use the best model whenever possible.** Cheaper models only save quota on
-  simple tasks.
+- ~~Use the best model whenever possible.~~ **Changed 10-14: reflex decides
+  each task's tier and reasoning effort**, even when quota has plenty of room;
+  hard-coded rules pick only the provider, from each one's quota balance.
 - **Track it daily**: the week ÷ 7 per day, on each provider's own reset day,
   in Pro plan terms, so no provider runs out mid-week.
 - **The router is a model** (Laya or Jev), fine-tuned to learn from mistakes:
@@ -57,7 +58,8 @@ you can open and try before the next one starts.
    repository gets its own git worktree. A planning agent writes only new files.
 3. **Unused quota is lost at reset.** While a provider is within its budget,
    its top tier costs nothing extra in the end. Saving matters only when
-   spending runs ahead of the budget.
+   spending runs ahead of the budget. (You chose on 10-14 to let reflex pick
+   the tier anyway, so the budget only steers which provider runs it.)
 4. **Calling a task "simple" will often be wrong, so correct it cheaply.**
    Routers that read only the prompt score AUC 0.55–0.63 on repository tasks;
    ours scored 0.43–0.66 untuned. Every wrong call is caught (a failed check, a
@@ -169,9 +171,8 @@ on each provider's own week.
 - **Before a lane starts**, its cost is estimated: the average spend of that
   category on that tier in the outcome log, or the benchmark numbers until
   there is a log. If today's remaining budget cannot cover it:
-  1. the task moves to the next provider with room, at its top tier;
-  2. if none has room, it drops a tier;
-  3. if even that does not fit, the Hub tells you and asks.
+  1. the task moves to the next provider with room for reflex's tier;
+  2. if none has room, the Hub tells you and asks.
 - **5-hour windows stay a separate guard:** a provider at 85% of its 5-hour
   window waits, or another provider takes the task.
 - **Until Friday**, Claude still has Max's leftover (43% of the Max week
@@ -182,21 +183,21 @@ on each provider's own week.
   e.g. "Opus 5.5 · Claude within today's budget" or "Luna · simple, Codex
   over today's budget".
 
-### 2.3 Choosing the model for a task: the model judges the tier, rules pick the provider
+### 2.3 Choosing the model for a task: reflex picks tier and effort, rules pick the provider
 
 1. **The Hub router** (Gemini Flash, in the call it already makes) reads the
    request: project, lane, category, and whether it fixes earlier work.
-2. **The decision model** (2.5) judges how much model the task needs:
-   economical, middle or top tier. This is the complexity judgement that code
-   cannot make.
-3. **Rules pick the provider and apply the budget.** Among the providers whose
-   tier fits the category (table below), take the one with the most of
-   today's budget left.
-   - **While that budget has room:** the top tier anyway, since you want the
-     best model whenever possible.
-   - **When the budget is tight:** the tier the decision model judged
-     sufficient. This is where the saving on simple tasks happens.
-   - **When no provider can afford it:** the Hub tells you and asks.
+2. **reflex (2.5) decides the tier and the reasoning effort**: the least
+   capable tier (economical, middle, top) and the lowest effort (low, medium,
+   high, xhigh) that will do the task right the first time. This holds even
+   when quota has plenty of room (your rule, 10-14). It is the judgement code
+   cannot make, and the part that is fine-tuned on the outcome log.
+3. **Rules pick only the provider**, from quota balance: among the providers
+   that have reflex's tier for this category (table below), the one with the
+   most of today's budget left. The effort is matched to that provider's own
+   list (Gemini through agy stops at high).
+   - **When no provider has budget for that tier today:** the Hub tells you
+     and asks.
 
    | Category | Fits |
    |---|---|
@@ -205,7 +206,10 @@ on each provider's own week.
    | Economical tier | Haiku, Luna, Flash |
    | A quick fact about the machine | The companion's read-only check, no agent |
 
-4. **A redo always goes one tier up**: a fixed rule, not a judgement.
+4. **A redo reads its failure.** reflex sees the previous request and its
+   result in its state, and the fix-request question flags it. Until the
+   fine-tuned model has learned this from the log, one guard stays in code: a
+   redo never runs below the tier and effort that failed.
 5. Saying "use Opus" or "use Codex" always overrides the choice.
 
 It decides on its own, as you asked, and each choice starts in a fresh lane
@@ -219,10 +223,12 @@ It decides on its own, as you asked, and each choice starts in a fresh lane
     labels it);
   - its change was reverted within 7 days;
   - the task was escalated.
-- **Fixing it.** The fix runs one tier above the one that made the mistake.
-  At the top tier, it goes to another provider's top.
-- **The next 5 tasks** of that project and category also start one tier
-  higher. Two clean tasks in a row bring it back down one tier.
+- **Fixing it.** reflex sees the failed attempt in its state and judges the
+  fix's tier and effort itself. One guard stays in code until the tuned model
+  has learned it: a fix never runs below the tier and effort that failed.
+- **The next similar tasks** see that outcome in their state too ("Luna, RAL,
+  code: needed a redo"), so reflex can raise them; the fine-tune makes it a
+  habit.
 - **Every decision and its outcome** go to `~/.omnigent/hub/outcomes.jsonl`:
   - request, project, lane, category, and whether it was marked simple;
   - provider, model, effort and tier;
@@ -241,8 +247,9 @@ questions with probabilities, never free text.
   - **the outcomes of the most similar past tasks**, e.g. "Luna, RAL, code,
     'add a ROS parameter': needed a redo, wrong QoS".
 - **The questions:**
-  - `choice` — which tier does this task need to be done right the first time:
+  - `choice` — the least capable tier that does it right the first time:
     economical, middle or top?
+  - `choice` — the reasoning effort it needs: low, medium, high or xhigh?
   - `noul` — would an economical model need a redo?
   - `score` — difficulty from 1 to 5, kept for the logs.
 
@@ -280,11 +287,10 @@ they can be swapped behind one interface:
 4. **Later, fine-tuning** of the open model on the accumulated log, promoted
    only when it beats what is live on outcomes it never saw.
 
-**One catch: it learns only from what it tried.** If every task runs on the
-top tier, it never learns which ones a cheaper model would have handled. The
-proposal: on at most 1 in 10 tasks it judged economical, outside the project's
-core files, the economical tier is actually used even when the budget has
-room.
+**One catch: it learns only from what it tried.** A task it sends to the top
+tier never shows whether a cheaper one would have done. Since reflex now picks
+the tier itself, its economical and middle picks are tried for real, which is
+most of the exploration; decision 6 adds a rare step below its pick.
 
 **Prior art.** TypeSafe's own Jev Router (on OpenRouter since 09-25) does this
 for API models: Jev "assesses the task, its difficulty, and the potential
@@ -305,7 +311,8 @@ lanes.
 | Understanding your message: project, lane, category, simple or not, is it a fix request | The Hub's existing Gemini Flash router, in the call it already makes | Language understanding; no extra call |
 | Writing the brief a new lane starts from | The Hub's router, or the lane that is handing over | Summarising text |
 | The work itself | The lanes: Claude, Codex or Gemini | — |
-| Which tier each task needs (its complexity) | The Jev-style decision model of 2.5 | A judgement code cannot make |
+| Which tier and effort each task needs (its complexity) | reflex, the decision model of 2.5 | A judgement code cannot make |
+| Which provider runs it | Plain code, from each provider's quota balance | Arithmetic |
 | Building all of the above | Me, in this chat, with tests. Once lanes exist, parts can be handed to a Codex lane as a first real test | — |
 
 ## Architecture
@@ -320,7 +327,7 @@ lanes.
  Model router  -------------------------------------------------------------- reads
    tier ladder + category fit (rules)                        <- routing.yaml
    mistake memory (tier bumps per project and category)      <- outcomes.jsonl
-   decision model: Jev (tier needed), past outcomes in its state <- outcomes.jsonl
+   decision model: reflex (tier + effort), past outcomes in its state <- outcomes.jsonl
         |   proposal
         v
  Budget governor   daily budgets per reset day, ceilings,    <- 3 meters + ledgers

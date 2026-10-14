@@ -2,10 +2,12 @@
 
 A Jev-style decision model (reflex, served on this machine) reads what the
 hub sends a project, which project it is and how the project's previous
-request went, and answers typed questions with probabilities: which tier the
-request needs to be done right the first time, whether an economical model
-would need a redo, how hard it is, and whether the request is fixing the
-previous result. It never writes prose.
+request went, and answers typed questions with probabilities: the least
+capable tier and the reasoning effort that will do the request right the
+first time, whether an economical model would need a redo, how hard it is,
+and whether the request is fixing the previous result. It never writes prose.
+The tier and effort are the decision model's; which provider runs them is
+left to rules over each provider's remaining quota.
 
 For now nothing acts on the answer: every decision is logged next to the
 model that actually ran the request (shadow mode), so the judgement can be
@@ -48,14 +50,24 @@ _TIER_CRITERIA: Final[dict[str, str]] = {
         "a small change whose exact steps are given, a routine command"
     ),
     "middle": (
-        "Sonnet 5.5: an ordinary coding, writing or analysis task with a clear goal, "
-        "touching a few files"
+        "Sonnet 5.5: most everyday coding, debugging, writing or analysis with a clear goal"
     ),
     "top": (
-        "Opus 5.5 or GPT-6.1 Sol is needed: ambiguous or cross-cutting work, design or "
-        "planning, research, debugging an unknown cause, a paper, or anything where a "
-        "mistake is costly"
+        "Opus 5.5 or GPT-6.1 Sol: work a middle model would likely get wrong, such as "
+        "open-ended design or research, a subtle bug whose cause is unknown, a change across "
+        "many parts of a system, or a paper"
     ),
+}
+
+#: Reasoning effort, in the names Claude and Codex share; each provider's own
+#: list is matched when the model is picked.
+EFFORTS: Final[tuple[str, ...]] = ("low", "medium", "high", "xhigh")
+
+_EFFORT_CRITERIA: Final[dict[str, str]] = {
+    "low": "little thinking: an answer, a lookup, a mechanical change",
+    "medium": "a few steps of reasoning with a clear plan",
+    "high": "careful work: debugging, trade-offs, several files, checking its own result",
+    "xhigh": "deep work: research, a subtle bug, long autonomous work, a plan others rely on",
 }
 
 _DIFFICULTY: Final[list[str]] = [
@@ -111,6 +123,8 @@ class TierDecision:
 
     tier: str = ""
     tier_probs: dict[str, float] = field(default_factory=dict)
+    effort: str = ""
+    effort_probs: dict[str, float] = field(default_factory=dict)
     #: Probability that an economical model would get it wrong or need a redo.
     p_cheap_redo: float | None = None
     #: 0 (trivial) to 4 (very hard), probability-weighted.
@@ -167,10 +181,18 @@ def questions(task: RouterTask) -> dict[str, dict[str, Any]]:
         "tier": {
             "type": "choice",
             "instructions": (
-                "Which model tier does the request sent to the project need so that it is "
-                "done right the first time, with no second round?"
+                "What is the least capable model tier that will still do the request sent to "
+                "the project right the first time, with no second round?"
             ),
             "criteria": dict(_TIER_CRITERIA),
+        },
+        "effort": {
+            "type": "choice",
+            "instructions": (
+                "How much reasoning effort does the request sent to the project need to be "
+                "done right the first time, and no more?"
+            ),
+            "criteria": dict(_EFFORT_CRITERIA),
         },
         "cheap_redo": {
             "type": "noul",
@@ -214,11 +236,16 @@ def read_decision(answers: dict[str, Any]) -> TierDecision:
     tier_probs = {t: p for t, p in _probs(answers["tier"]).items() if t in TIERS}
     if not tier_probs:
         raise ValueError(f"no tier probabilities: {answers['tier']!r}")
+    effort_probs = {e: p for e, p in _probs(answers["effort"]).items() if e in EFFORTS}
+    if not effort_probs:
+        raise ValueError(f"no effort probabilities: {answers['effort']!r}")
     category = _probs(answers["category"])
     fixes = answers.get("fixes_previous")
     return TierDecision(
         tier=max(tier_probs, key=lambda t: tier_probs[t]),
         tier_probs=tier_probs,
+        effort=max(effort_probs, key=lambda e: effort_probs[e]),
+        effort_probs=effort_probs,
         p_cheap_redo=round(float(answers["cheap_redo"]["noul"]), 4),
         difficulty=round(float(answers["difficulty"]["score"]), 3),
         category=max(category, key=lambda c: category[c]) if category else "",

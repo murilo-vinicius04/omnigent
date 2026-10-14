@@ -21,6 +21,10 @@ def _answers(questions: dict) -> dict:
             "choice": "top",
             "probabilities": {"economical": 0.1, "middle": 0.2, "top": 0.7},
         },
+        "effort": {
+            "choice": "high",
+            "probabilities": {"low": 0.05, "medium": 0.15, "high": 0.6, "xhigh": 0.2},
+        },
         "cheap_redo": {"noul": 0.81},
         "difficulty": {"score": 3.2, "probabilities": {"3": 0.6, "4": 0.3}},
         "category": {"choice": "debug", "probabilities": {"debug": 0.9, "code": 0.1}},
@@ -46,18 +50,20 @@ def reflex(monkeypatch):
     return bodies
 
 
-async def test_a_request_is_judged_on_tier_redo_risk_difficulty_and_kind(reflex) -> None:
+async def test_a_request_is_judged_on_tier_effort_redo_risk_difficulty_and_kind(reflex) -> None:
     task = RouterTask(request="Find why the gripper drifts after homing.", project="RAL")
 
     decision = await model_router.judge(task, BACKEND)
 
     assert decision.tier == "top" and decision.tier_probs["top"] == 0.7
+    assert decision.effort == "high" and decision.effort_probs["xhigh"] == 0.2
     assert (decision.p_cheap_redo, decision.difficulty, decision.category) == (0.81, 3.2, "debug")
     # No previous request: nothing to call a fix.
     assert decision.p_fixes_previous is None and decision.error == ""
     body = reflex[0]
-    assert set(body["questions"]) == {"tier", "cheap_redo", "difficulty", "category"}
+    assert set(body["questions"]) == {"tier", "effort", "cheap_redo", "difficulty", "category"}
     assert set(body["questions"]["tier"]["criteria"]) == {"economical", "middle", "top"}
+    assert set(body["questions"]["effort"]["criteria"]) == {"low", "medium", "high", "xhigh"}
     assert body["state"].startswith("## Request sent to the project\nFind why the gripper")
     assert "## Project\nRAL" in body["state"]
 
