@@ -49,6 +49,17 @@ FORWARDED_HEADERS: Final[tuple[str, ...]] = (
 #: Where a reply names a file: a markdown link or image, or an inline code span.
 _FILE_REF: Final[re.Pattern[str]] = re.compile(r"(!?)\[([^\]\n]*)\]\(<?([^)\s>]+)>?\)|`([^`\n]+)`")
 
+#: A file path written as plain text, not in a link or code: absolute, under
+#: home, or relative with a folder, ending in a file name with an extension.
+_BARE_PATH: Final[re.Pattern[str]] = re.compile(
+    r"(?<![\w/.~`\[(<:@-])(~?/?(?:[\w.@+-]+/)+[\w@+-][\w.@+-]*\.[A-Za-z][A-Za-z0-9]{0,7})(?![\w/])"
+)
+
+#: What a line's bare paths are looked for outside of: links, code spans, URLs.
+_NOT_BARE: Final[re.Pattern[str]] = re.compile(
+    r"!?\[[^\]\n]*\]\([^)\n]*\)|`[^`\n]+`|<[^>\n]+>|[a-zA-Z][\w+.-]*://\S+"
+)
+
 #: A line that opens or closes a code fence.
 _FENCE: Final[re.Pattern[str]] = re.compile(r"^\s*(```|~~~)", re.MULTILINE)
 
@@ -437,8 +448,9 @@ def named_files(
 ) -> list[tuple[str, str]]:
     """``(label, workspace path)`` of each file a reply links or names as a path.
 
-    As the chat's friendly view lifts them: markdown links to files, and
-    inline-code paths with a folder in them; only files that exist.
+    As the chat's friendly view lifts them: markdown links to files,
+    inline-code paths with a folder in them, and paths written as plain text;
+    only files that exist.
     """
     found: list[tuple[str, str]] = []
     fenced = False
@@ -455,6 +467,11 @@ def named_files(
             relative = workspace_file(code if code is not None else target, workspace, anchors)
             if relative is not None and all(relative != r for _, r in found):
                 found.append((code if code is not None else label or relative, relative))
+        prose = _NOT_BARE.sub(lambda m: " " * len(m.group(0)), line)
+        for match in _BARE_PATH.finditer(prose):
+            relative = workspace_file(match.group(1), workspace, anchors)
+            if relative is not None and all(relative != r for _, r in found):
+                found.append((relative, relative))
     return found
 
 

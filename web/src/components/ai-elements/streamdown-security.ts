@@ -67,23 +67,74 @@ export function extractWorkspaceFileLinks(markdown: string): WorkspaceFileLinkSo
   return links;
 }
 
-// Files a reader opens to look at, rather than read as code.
-const VIEWABLE_FILE = /\.(?:mp4|m4v|mov|webm|ogv|html?|png|jpe?g|gif|webp|svg|pdf)$/i;
+// A file path written as plain text, not in a link or code: absolute, under
+// home, or relative with a folder, ending in a file name with an extension.
+const BARE_PATH =
+  /(?<![\w/.~`[(<:@-])(~?\/?(?:[\w.@+-]+\/)+[\w@+-][\w.@+-]*\.[A-Za-z][A-Za-z0-9]{0,7})(?![\w/])/g;
+
+// What a line's bare paths are looked for outside of: links, code spans,
+// autolinks and URLs.
+const NOT_BARE = /!?\[[^\]\n]*\]\([^)\n]*\)|`[^`\n]+`|<[^>\n]+>|[a-zA-Z][\w+.-]*:\/\/\S+/g;
+
+const FENCE = /^\s*(```|~~~)/;
+
+/** Each line of *markdown* outside code fences, with a callback that may rewrite it. */
+function mapProseLines(markdown: string, rewrite: (line: string) => string): string {
+  let fenced = false;
+  return markdown
+    .split("\n")
+    .map((line) => {
+      if (FENCE.test(line)) {
+        fenced = !fenced;
+        return line;
+      }
+      return fenced ? line : rewrite(line);
+    })
+    .join("\n");
+}
+
+/** *line* with its bare paths passed through *each*, links, code and URLs untouched. */
+function mapBarePaths(line: string, each: (path: string) => string): string {
+  let out = "";
+  let last = 0;
+  for (const kept of line.matchAll(NOT_BARE)) {
+    const start = kept.index ?? 0;
+    out += line.slice(last, start).replace(BARE_PATH, (_, path: string) => each(path));
+    out += kept[0];
+    last = start + kept[0].length;
+  }
+  return out + line.slice(last).replace(BARE_PATH, (_, path: string) => each(path));
+}
 
 /**
- * Inline-code paths in *markdown* that name a viewable file (video, page, image,
- * PDF), outside code blocks, first occurrence only. Agents often write the file
- * they made as `` `~/runs/walk.mp4` `` rather than as a link; the transcript
- * already makes that clickable, and the friendly view must not drop it.
+ * *markdown* with each file path written as plain text put in inline code, so
+ * it renders like a path the agent wrote as `` `~/runs/plan.md` ``: a link to
+ * the file when it is one in the workspace. Agents in a new chat often write
+ * `/home/u/ws/plan.md` bare, which would otherwise be dead text.
  */
-export function extractViewableCodePaths(markdown: string): string[] {
-  const prose = markdown.replace(/^[ \t]*```[\s\S]*?^[ \t]*```/gm, "");
+export function codeBareFilePaths(markdown: string): string {
+  if (!markdown.includes("/")) return markdown;
+  return mapProseLines(markdown, (line) => mapBarePaths(line, (path) => `\`${path}\``));
+}
+
+/**
+ * Every file path *markdown* names outside code blocks, in order, first
+ * occurrence only: inline-code paths with a folder in them and paths written
+ * as plain text. The friendly view lists the ones that are workspace files,
+ * since its rewrite of the answer has no paths in it.
+ */
+export function extractFilePathMentions(markdown: string): string[] {
   const paths: string[] = [];
-  for (const match of prose.matchAll(/(?<!`)`([^`\s]+)`(?!`)/g)) {
-    const path = match[1];
-    if (!path.includes("/") || !VIEWABLE_FILE.test(path) || paths.includes(path)) continue;
-    paths.push(path);
-  }
+  const add = (path: string) => {
+    if (!paths.includes(path)) paths.push(path);
+    return path;
+  };
+  mapProseLines(markdown, (line) => {
+    for (const match of line.matchAll(/(?<!`)`([^`\s]+)`(?!`)/g)) {
+      if (match[1].includes("/")) add(match[1]);
+    }
+    return mapBarePaths(line, add);
+  });
   return paths;
 }
 

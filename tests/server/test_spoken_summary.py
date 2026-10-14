@@ -222,6 +222,15 @@ def test_strip_markdown_for_speech() -> None:
     assert "def test" not in cleaned
 
 
+def test_underscores_inside_a_name_are_not_italics() -> None:
+    """A file name like JOYSTICK_EXPERIMENT_PLAN.md reached the summary as
+    JOYSTICKEXPERIMENTPLAN.md, so the reader saw a name no file has."""
+    cleaned = strip_markdown_for_speech(
+        "Saved /home/u/JOYSTICK_EXPERIMENT_PLAN.md and `snake_case`; _em_ and __strong__."
+    )
+    assert cleaned == "Saved /home/u/JOYSTICK_EXPERIMENT_PLAN.md and snake_case; em and strong."
+
+
 def test_the_rewriter_is_offered_what_the_reader_could_be_shown() -> None:
     """Tables, images and links are stripped before the rewrite, so a reply
     whose point IS the table was summarized as if it had none. Now they are

@@ -36,7 +36,7 @@ import type { ActiveResponse } from "@/store/types";
 import { cn } from "@/lib/utils";
 import { FilePathAwareMessageResponse, WorkspaceFileChip } from "./ChatMarkdown";
 import {
-  extractViewableCodePaths,
+  extractFilePathMentions,
   extractWorkspaceFileLinks,
 } from "@/components/ai-elements/streamdown-security";
 import { CompanionAnswerNote } from "@/components/chat/CompanionAnswerNote";
@@ -779,7 +779,7 @@ function isInProgressTool(item: RenderItem): boolean {
 function friendlyFileLinks(text: string): ReactNode {
   const files = [
     ...extractWorkspaceFileLinks(text),
-    ...extractViewableCodePaths(text).map((path) => ({ label: path, href: path })),
+    ...extractFilePathMentions(text).map((path) => ({ label: path, href: path })),
   ].filter((file, index, all) => all.findIndex((other) => other.href === file.href) === index);
   if (files.length === 0) return undefined;
   return (

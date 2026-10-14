@@ -331,6 +331,27 @@ def test_without_the_apps_address_a_report_makes_no_links(tmp_path) -> None:
     assert text.startswith("**RAL**\n\no plano está pronto.\n\n| Group |")
 
 
+def test_a_report_links_a_file_its_reply_gave_as_a_plain_path(tmp_path) -> None:
+    # Agents in a new chat often write the path bare, on its own line.
+    (tmp_path / "RA-L" / "reviews").mkdir(parents=True)
+    (tmp_path / "RA-L" / "reviews" / "JOYSTICK_EXPERIMENT_PLAN.md").write_text("# plan\n")
+    entry = _finished(
+        tmp_path,
+        detail=(
+            "The plan is here:\n\n"
+            f"{tmp_path}/RA-L/reviews/JOYSTICK_EXPERIMENT_PLAN.md\n\n"
+            "Not files: /etc/hosts.conf, read/write.md, https://x.dev/a/b.md, missing/notes.md."
+        ),
+    )
+    plan = "http://h:6767/c/s1?file=RA-L/reviews/JOYSTICK_EXPERIMENT_PLAN.md"
+    assert hub_chat.render(entry, "http://h:6767") == (
+        '[RAL](http://h:6767/c/s1 "omnigent-project")\n\n'
+        "o plano está pronto.\n\n"
+        f"[`RA-L/reviews/JOYSTICK_EXPERIMENT_PLAN.md`]({plan})\n\n"
+        "[x.dev/a/b.md](https://x.dev/a/b.md)"
+    )
+
+
 def test_the_hub_links_a_file_a_project_named_wherever_it_mentions_it(tmp_path) -> None:
     report = _finished(tmp_path, workspace=None)  # written before reports kept the folder
     entries = [report, HubEntry(id=6, at=0, role="hub", kind="message", text="x")]

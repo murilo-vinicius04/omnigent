@@ -236,9 +236,12 @@ def strip_markdown_for_speech(text: str) -> str:
     cleaned = re.sub(r"https?://\S+", " ", cleaned)
     # Strip markdown headers, blockquotes, bullets from line beginnings
     cleaned = re.sub(r"^\s*[#>*-]+\s*", "", cleaned, flags=re.MULTILINE)
-    # Strip bold / italics markers
-    cleaned = re.sub(r"(\*\*|__)(.*?)\1", r"\2", cleaned)
-    cleaned = re.sub(r"(\*|_)(.*?)\1", r"\2", cleaned)
+    # Strip bold / italics markers; underscores inside a word, as in a file
+    # name like JOYSTICK_EXPERIMENT_PLAN.md, are not markers.
+    cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", cleaned)
+    cleaned = re.sub(r"(?<!\w)__(?=\S)(.*?\S)__(?!\w)", r"\1", cleaned)
+    cleaned = re.sub(r"\*(.*?)\*", r"\1", cleaned)
+    cleaned = re.sub(r"(?<!\w)_(?=\S)(.*?\S)_(?!\w)", r"\1", cleaned)
     # Strip strikethrough
     cleaned = re.sub(r"~~(.*?)~~", r"\1", cleaned)
     # Strip markdown table rows / delimiter rows

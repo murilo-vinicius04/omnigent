@@ -17,7 +17,10 @@ import { defaultRemarkPlugins } from "streamdown";
 import remarkBreaks from "remark-breaks";
 import { normalizeExplicitMathDelimiters } from "@/components/ai-elements/mathMarkdown";
 import { MessageResponse } from "@/components/ai-elements/message";
-import { WORKSPACE_FILE_LINK_ATTR } from "@/components/ai-elements/streamdown-security";
+import {
+  codeBareFilePaths,
+  WORKSPACE_FILE_LINK_ATTR,
+} from "@/components/ai-elements/streamdown-security";
 import { ZoomableImage } from "@/components/ImageLightbox";
 import { HUB_PLACE_TITLE, HubPlaceControl, readPlaceLink } from "./HubPlaceControl";
 import { useThrottledValue } from "@/hooks/useThrottledValue";
@@ -487,7 +490,7 @@ export function FilePathAwareMessageResponse({
   // non-string children (none today) pass an inert "" and bypass the result.
   const isString = typeof children === "string";
   const normalizedText = useMemo(
-    () => (isString ? normalizeExplicitMathDelimiters(children as string) : ""),
+    () => (isString ? codeBareFilePaths(normalizeExplicitMathDelimiters(children as string)) : ""),
     [isString, children],
   );
   const throttledText = useThrottledValue(normalizedText, STREAM_MARKDOWN_THROTTLE_MS);

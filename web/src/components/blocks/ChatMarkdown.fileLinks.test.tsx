@@ -212,3 +212,22 @@ describe("app links to a chat's file", () => {
     expect(openAppFileLink).not.toHaveBeenCalled();
   });
 });
+
+describe("file paths written as plain text", () => {
+  // Agents in a new chat often write the file they made bare, on its own line.
+  it("opens the FileViewer for a bare absolute path in the workspace", () => {
+    renderMarkdown(`The plan is here:\n\n${WORKSPACE}/reviews/JOYSTICK_PLAN.md\n`, [
+      "reviews/JOYSTICK_PLAN.md",
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: `${WORKSPACE}/reviews/JOYSTICK_PLAN.md` }));
+    expect(openFile).toHaveBeenCalledWith("reviews/JOYSTICK_PLAN.md");
+  });
+
+  it("leaves a bare path outside the workspace as text, not a link", () => {
+    renderMarkdown("Logs are in /var/log/app.log today.");
+
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByText("/var/log/app.log")).toBeInTheDocument();
+  });
+});
