@@ -164,16 +164,20 @@ the list above or this chat already answers.
 -- a project's Claude has to do or answer it. "message" is their request in \
 {language} for that Claude, faithful and complete: Claude cannot see this chat, \
 so carry what the request depends on from earlier here, and keep code, paths and \
-names exactly. "lane" is the lane whose topic it continues, for a project with \
-lanes; leave it out otherwise. "say" is a short confirmation for them that names \
-the project. When that lane (or the project's only chat) is WORKING, the hub \
-holds the message until it finishes: "say" then tells them it goes when it \
-finishes, not that it went. Add "now": true only when they ask to tell it now, \
-interrupting its work.
+names exactly. "lane" is the lane it goes to, for a project with lanes; leave it \
+out otherwise. "say" is a short confirmation for them that names the project. \
+To a WORKING lane, "send" only what adds to or changes the task it is doing now \
+(a correction, one more step for that task, something that needs its result): \
+the hub holds it until that lane finishes, and "say" tells them it goes when \
+the lane finishes, not that it went. Add "now": true when they ask to tell it \
+now, interrupting its work; that also delivers what is held for it, so when \
+they only say "tell it now", "message" is empty.
 {{"new_lane": "<handle>", "topic": "...", "message": "...", "say": "...", \
-"use": "..."}} -- a new agent in that project, working beside the others: when \
-they ask for a separate or parallel agent, or the request starts work unrelated \
-to what the project's WORKING lane is doing and should not wait for it. "topic" \
+"use": "..."}} -- a new agent in that project, working beside the others. Use \
+it for any new question or task for a project whose lane is WORKING, even on \
+the same subject, so it is answered in parallel instead of waiting; but if \
+another lane of that project is idle and its topic fits, "send" it there \
+instead. Use it too when they ask for a separate or parallel agent. "topic" \
 names the work in two to four words. "message" as for "send". "use" only when \
 they name a model or provider for it (e.g. "Sonnet", "Codex"); otherwise leave \
 it out and the hub picks. "say" names the project and the topic.
@@ -322,6 +326,8 @@ class HubSession:
     run: SessionRun = field(default_factory=SessionRun)
     project_id: str = ""
     lane: str = ""
+    #: Messages the hub holds for it until it finishes.
+    held: int = 0
 
     @property
     def name(self) -> str:
@@ -692,6 +698,12 @@ def _without_label(text: str, label: str) -> str:
     return text
 
 
+def _same_request(a: str, b: str) -> bool:
+    """Whether two messages say the same thing: the router often restates a held one."""
+    a, b = " ".join(a.lower().split()), " ".join(b.lower().split())
+    return a == b or difflib.SequenceMatcher(None, a, b).ratio() >= 0.8
+
+
 def _short(text: str, limit: int) -> str:
     text = " ".join(str(text).split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
@@ -725,6 +737,8 @@ def session_line(session: HubSession) -> str:
         state += f" (now: {_short(session.now, 90)})"
     if session.pending_approvals:
         state += f", waiting for {session.pending_approvals} approval(s)"
+    if session.held:
+        state += f", {session.held} message(s) held for it until it finishes"
     parts = [f'[{session.handle}] {name}"{session.title or "untitled"}" · {state}']
     if session.run.provider:
         parts.append(f"runs {session.run.summary()}")
@@ -1391,6 +1405,7 @@ class Hub:
                     nickname=f"{record.name} · {lane.lane_name}" if several else record.name,
                     handle=handles[lane.id],
                     project_id=record.id,
+                    held=len((self.state.held.get(lane.id) or {}).get("items") or ()),
                 )
                 for lane in found
             )
@@ -1677,6 +1692,8 @@ class Hub:
         if decision.action == "send" and target is not None:
             if target.working and not decision.now:
                 await self.hold(target, decision.message or text, via=via, say=decision.text)
+            elif decision.now and self.state.held.get(target.id):
+                await self.send_held_now(target, decision.message, via=via, say=decision.text)
             else:
                 await self.send_to(target, decision.message or text, via=via, say=decision.text)
             return
@@ -1888,6 +1905,20 @@ class Hub:
         router.remember(f"holding for {session.name}, which is busy: {message}")
         self._deliver_when_idle(session)
         return entry
+
+    async def send_held_now(
+        self, session: HubSession, message: str, *, via: str, say: str = ""
+    ) -> HubEntry:
+        """Deliver what is held for a lane at once, with *message* unless it repeats one of them.
+
+        Taken off the queue, so nothing goes twice once the lane finishes.
+        """
+        held = self.state.release(session.id)
+        texts = [str(h["message"]) for h in held]
+        if message.strip() and not any(_same_request(message, t) for t in texts):
+            texts.append(message.strip())
+        files = [HubFile(**f) for h in held for f in h.get("files") or []]
+        return await self.send_to(session, "\n\n".join(texts), via=via, say=say, files=files)
 
     def _deliver_when_idle(self, session: HubSession) -> None:
         running = self._holds.get(session.id)

@@ -256,6 +256,53 @@ async def test_tell_it_now_goes_into_the_busy_lane_at_once(tmp_path) -> None:
     assert not any(e.kind == "held" for e in hub.state.entries)
 
 
+async def test_tell_it_now_delivers_what_was_held_once_and_never_again(tmp_path) -> None:
+    router = _Router(
+        '{"send": "5151", "message": "Are the two ZEDs placed for coverage?", "say": "Held."}',
+        # The router restates the held question when told "now".
+        '{"send": "5151", "message": "Are the two ZEDs placed for best coverage?",'
+        ' "say": "Sent.", "now": true}',
+        '{"send": "5151", "message": "", "say": "Held."}',
+    )
+    server = _LaneServer()
+    _two_lanes(server)
+    server.turns = [TurnState(status="running")]
+    hub = _hub(tmp_path, router, server)
+
+    hub.submit("as zeds estão otimizadas?")
+    await _settle(hub, until=lambda: hub.state.held)
+    hub.submit("fala agora")
+    await _settle(hub, until=lambda: server.sent)
+    assert server.sent == [(SIM, "Are the two ZEDs placed for coverage?")]
+    assert hub.state.held == {}
+    # Told "now", the router saw what was held; afterwards nothing is.
+    hub.submit("e o que mais?")
+    await _settle(hub, until=lambda: len(router.prompts) == 3)
+    assert "1 message(s) held for it until it finishes" in router.prompts[1]
+    assert "message(s) held for it" not in router.prompts[2]
+
+    server.set_status(SIM, "idle")
+    server.turns = [TurnState(status="idle", reply="Placed by hand.")]
+    await _settle(hub, until=lambda: len(server.sent) == 2, timeout=3.0)
+    await hub.close()
+    # Only the third message is delivered when the lane finishes; the first went once.
+    assert server.sent[1] == (SIM, "e o que mais?")
+
+
+async def test_tell_it_now_with_something_new_sends_it_with_what_was_held(tmp_path) -> None:
+    server = _LaneServer()
+    _two_lanes(server)
+    hub = _hub(tmp_path, _Router(), server)
+    sim = HubSession(id=SIM, title="sim", nickname="amarras · sim", status="running")
+    await hub.hold(sim, "Plot the gains.", via="typed")
+
+    await hub.send_held_now(sim, "Stop: the gains are wrong.", via="typed")
+    await hub.close()
+
+    assert server.sent == [(SIM, "Plot the gains.\n\nStop: the gains are wrong.")]
+    assert hub.state.held == {}
+
+
 async def test_a_held_message_waits_for_the_lanes_report_and_survives_a_restart(tmp_path) -> None:
     server = _LaneServer()
     _two_lanes(server, sim="idle")
