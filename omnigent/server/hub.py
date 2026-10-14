@@ -3,9 +3,11 @@
 You talk to the hub -- typed in its chat, or aloud through the voice hub --
 and it works out which of your projects a message is for, sends it to that
 project's chat, and tells you in this same chat when its Claude finishes.
-A project is one of your Omnigent projects (the sidebar's Projects); the
-chat the hub sends to is the project's newest. Projects are made, renamed
-and deleted in the hub's Projects panel, or made by asking the hub.
+A project is one of your Omnigent projects (the sidebar's Projects). Its
+newest chats are its lanes: agents working side by side, each on its own
+topic (``hub_lanes``). A message for a busy lane waits until it finishes; new
+work while a lane is busy opens a new lane. Projects are made, renamed and
+deleted in the hub's Projects panel, or made by asking the hub.
 
 The router is a companion process (warm ``agy``, Gemini) with its own role,
 so deciding where a message goes costs no Claude quota. What the hub says
@@ -30,7 +32,7 @@ from typing import Any, Final, Literal
 from omnigent.antigravity_native_catalog import _probe_agy_models
 from omnigent.model_fallbacks import SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
 from omnigent.process_logging import data_dir
-from omnigent.server import budget, hub_models, model_router, voice_hub
+from omnigent.server import budget, hub_lanes, hub_models, model_router, voice_hub
 from omnigent.server.discussion import GOOGLE_REFUSED, DiscussionSession, DiscussionUnavailable
 from omnigent.server.hub_models import SessionRun
 
@@ -49,10 +51,10 @@ _FLASH_LOW: Final[re.Pattern[str]] = re.compile(r"^gemini-(\d+(?:\.\d+)*)-flash-
 #: Chats offered for adding to a project, newest first.
 LISTING_LIMIT: Final[int] = 100
 
-#: A project's chats read per listing; the newest is the one the hub sends to.
+#: A project's chats read per listing, newest activity first.
 CHATS_PER_PROJECT: Final[int] = 50
 
-#: A project's newest chats the Projects panel shows, each with its own model.
+#: A project's newest chats, its lanes: the router and the Projects panel see these.
 CHATS_SHOWN: Final[int] = 4
 
 #: Longest project name the hub takes (the projects API allows 100).
@@ -148,7 +150,8 @@ HUB_ROUTER_ROLE: Final[str] = (
 _DECIDE_PROMPT: Final[str] = """\
 [Their projects right now, newest first. Each starts with its handle in \
 brackets; wherever "<handle>" appears below, that code or the project's name \
-both work.]
+both work. A project with several lanes (agents working side by side, each on \
+its own topic) lists each lane under its own handle.]
 {projects}
 {context}{files}
 [They {how}]
@@ -157,11 +160,23 @@ both work.]
 Reply with ONE line of JSON and nothing else, exactly one of:
 {{"answer": "..."}} -- you reply yourself: greetings, small talk, and anything \
 the list above or this chat already answers.
-{{"send": "<handle>", "message": "...", "say": "..."}} -- a project's Claude has \
-to do or answer it. "message" is their request in {language} for that Claude, \
-faithful and complete: Claude cannot see this chat, so carry what the request \
-depends on from earlier here, and keep code, paths and names exactly. "say" is a \
-short confirmation for them that names the project.
+{{"send": "<handle>", "lane": "<lane handle>", "message": "...", "say": "..."}} \
+-- a project's Claude has to do or answer it. "message" is their request in \
+{language} for that Claude, faithful and complete: Claude cannot see this chat, \
+so carry what the request depends on from earlier here, and keep code, paths and \
+names exactly. "lane" is the lane whose topic it continues, for a project with \
+lanes; leave it out otherwise. "say" is a short confirmation for them that names \
+the project. When that lane (or the project's only chat) is WORKING, the hub \
+holds the message until it finishes: "say" then tells them it goes when it \
+finishes, not that it went. Add "now": true only when they ask to tell it now, \
+interrupting its work.
+{{"new_lane": "<handle>", "topic": "...", "message": "...", "say": "...", \
+"use": "..."}} -- a new agent in that project, working beside the others: when \
+they ask for a separate or parallel agent, or the request starts work unrelated \
+to what the project's WORKING lane is doing and should not wait for it. "topic" \
+names the work in two to four words. "message" as for "send". "use" only when \
+they name a model or provider for it (e.g. "Sonnet", "Codex"); otherwise leave \
+it out and the hub picks. "say" names the project and the topic.
 {{"status": "<handle>"}} -- they ask what a project is doing now or whether it \
 finished, and its line above does not say enough.
 {{"check": "<handle>", "question": "..."}} -- a fact on their machine (disk, \
@@ -263,6 +278,8 @@ EntryKind = Literal[
     "members",
     "attention",
     "error",
+    "held",
+    "lane",
 ]
 
 #: Entries an open voice hub call is told about as they happen.
@@ -286,6 +303,8 @@ class HubSession:
     :param pending_approvals: Approvals it is waiting on.
     :param run: Its provider, model and effort, and what it could switch to.
     :param project_id: The project it belongs to.
+    :param lane: The topic the hub opened it for, from its lane label; empty
+        for a chat the hub did not open.
     """
 
     id: str
@@ -302,6 +321,7 @@ class HubSession:
     pending_approvals: int = 0
     run: SessionRun = field(default_factory=SessionRun)
     project_id: str = ""
+    lane: str = ""
 
     @property
     def name(self) -> str:
@@ -328,7 +348,13 @@ class HubSession:
             "pending_approvals": self.pending_approvals,
             "run": self.run.as_dict(),
             "project_id": self.project_id,
+            "lane": self.lane_name,
         }
+
+    @property
+    def lane_name(self) -> str:
+        """What its lane is called: the topic it was opened for, else its title."""
+        return self.lane or self.title or self.handle
 
 
 @dataclass(frozen=True)
@@ -462,10 +488,10 @@ class HubProject:
     """One project as the hub shows and routes it.
 
     :param chats: How many chats it has, up to :data:`CHATS_PER_PROJECT`.
-    :param chat: Its newest chat, which the hub sends to; ``None`` while it
-        has none yet.
-    :param recent: Its newest chats, newest first, each on its own provider,
-        model and effort; read only for the Projects panel.
+    :param chat: Its newest chat, under the project's handle: what a send
+        that names no lane goes to. ``None`` while it has no chat yet.
+    :param lanes: Its newest chats, newest first, each under its own handle
+        and on its own provider, model and effort.
     :param route: The newest tier decision logged for one of its chats.
     """
 
@@ -477,7 +503,7 @@ class HubProject:
     chats: int = 0
     updated_at: float = 0.0
     chat: HubSession | None = None
-    recent: tuple[HubSession, ...] = ()
+    lanes: tuple[HubSession, ...] = ()
     route: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
@@ -491,7 +517,7 @@ class HubProject:
             "chats": self.chats,
             "updated_at": self.updated_at,
             "chat": self.chat.as_dict() if self.chat is not None else None,
-            "recent": [s.as_dict() for s in self.recent],
+            "lanes": [s.as_dict() for s in self.lanes],
             "route": self.route,
         }
 
@@ -574,13 +600,22 @@ class TurnState:
 class HubDecision:
     """What the router decided about one message."""
 
-    action: Literal["answer", "send", "status", "check", "model", "new_project", "ask", "none"]
+    action: Literal[
+        "answer", "send", "status", "check", "model", "new_project", "new_lane", "ask", "none"
+    ]
     text: str = ""
     handle: str | None = None
     message: str = ""
     #: For ``model``: the model and effort asked for; empty leaves it as is.
     model: str = ""
     effort: str = ""
+    #: For ``send``: the lane's handle; empty for the project's newest chat.
+    lane: str = ""
+    #: For ``send``: deliver into a busy lane instead of holding it.
+    now: bool = False
+    #: For ``new_lane``: what it works on, and a model or provider they named.
+    topic: str = ""
+    use: str = ""
 
 
 #: The server's file metadata and byte stores, set at startup: copying a
@@ -719,14 +754,22 @@ def sessions_block(sessions: Sequence[HubSession]) -> str:
 
 
 def project_line(project: HubProject) -> str:
-    """One project as the router reads it, with or without a chat yet."""
-    if project.chat is not None:
+    """One project as the router reads it: no chat yet, its one chat, or each lane."""
+    if project.chat is None:
+        return f"[{project.handle}] {project.name} · no chat yet: nothing can be sent to it"
+    if len(project.lanes) <= 1:
         line = session_line(project.chat)
-    else:
-        line = f"[{project.handle}] {project.name} · no chat yet: nothing can be sent to it"
-    if project.chats > 1:
-        line += f" · {project.chats} chats, this is the newest"
-    return line
+        if project.chats > 1:
+            line += f" · {project.chats} chats, this is the newest"
+        return line
+    lines = [
+        f"[{project.handle}] {project.name} · {len(project.lanes)} lanes, each its own "
+        "agent on its own topic, newest first:"
+    ]
+    lines.extend(f"  - lane {session_line(lane)}" for lane in project.lanes)
+    if project.chats > len(project.lanes):
+        lines.append(f"  ({project.chats - len(project.lanes)} older chats, not lanes)")
+    return "\n".join(lines)
 
 
 def route_summary(row: dict[str, Any]) -> dict[str, Any]:
@@ -768,7 +811,21 @@ def parse_decision(reply: str) -> HubDecision:
 
     if text("send"):
         return HubDecision(
-            action="send", handle=text("send"), message=text("message"), text=text("say")
+            action="send",
+            handle=text("send"),
+            message=text("message"),
+            text=text("say"),
+            lane=text("lane"),
+            now=parsed.get("now") is True,
+        )
+    if text("new_lane"):
+        return HubDecision(
+            action="new_lane",
+            handle=text("new_lane"),
+            message=text("message"),
+            text=text("say"),
+            topic=text("topic"),
+            use=text("use"),
         )
     if text("check"):
         return HubDecision(action="check", handle=text("check"), message=text("question"))
@@ -835,6 +892,39 @@ def find_project(projects: Sequence[HubProject], spoken: str) -> HubProject | No
         [(p.name, p.chat.title if p.chat is not None else None) for p in projects],
     )
     return projects[index] if index is not None else None
+
+
+def resolve_target(
+    projects: Sequence[HubProject], handle: str, lane: str = ""
+) -> tuple[HubProject | None, HubSession | None]:
+    """The project and chat a decision names.
+
+    A project's handle or name means its newest chat, or the lane *lane*
+    names; a lane's own handle or name means that lane.
+    """
+    if not handle.strip():
+        return None, None
+    wanted = handle.strip()
+    for project in projects:
+        for found in project.lanes:
+            if wanted in (found.handle, found.id):
+                return project, found
+    project = next((p for p in projects if p.handle == wanted), None) or find_project(
+        projects, wanted
+    )
+    if project is None:
+        found = find_session([chat for p in projects for chat in p.lanes], wanted)
+        if found is None:
+            return None, None
+        return next(p for p in projects if p.id == found.project_id), found
+    target = project.chat
+    if lane.strip() and project.lanes:
+        target = (
+            next((c for c in project.lanes if lane.strip() in (c.handle, c.id)), None)
+            or find_session(project.lanes, lane)
+            or target
+        )
+    return project, target
 
 
 class HubRouter(DiscussionSession):
@@ -963,6 +1053,9 @@ class HubState:
         #: Files attached and not yet sent, and when they were attached.
         self.files: list[dict[str, Any]] = []
         self.files_at = 0.0
+        #: Messages waiting for a busy lane, kept across restarts: session id
+        #: -> ``{"name": ..., "items": [{"message", "via", "files", "at"}]}``.
+        self.held: dict[str, dict[str, Any]] = {}
         self._waiters: set[asyncio.Future[None]] = set()
         self._load()
 
@@ -1010,6 +1103,9 @@ class HubState:
             raw = json.loads((self._dir / "files.json").read_text(encoding="utf-8"))
             self.files = [dict(f) for f in raw.get("files") or []]
             self.files_at = float(raw.get("at") or 0.0)
+        with contextlib.suppress(OSError, ValueError, AttributeError):
+            raw = json.loads((self._dir / "held.json").read_text(encoding="utf-8"))
+            self.held = {str(k): dict(v) for k, v in raw.items()}
 
     def keep_watch(self, session_id: str, *, sent_at: float, name: str, **owner: Any) -> None:
         """Remember a send still to report back, so a restart does not lose it.
@@ -1024,6 +1120,20 @@ class HubState:
         """Forget a send: it was reported back, or will never be."""
         if self.watches.pop(session_id, None) is not None:
             self._write("watches.json", {**self.owner, "watches": self.watches})
+
+    def hold(self, session_id: str, name: str, item: dict[str, Any]) -> None:
+        """Keep a message for a busy lane until it finishes, across restarts."""
+        kept = self.held.setdefault(session_id, {"name": name, "items": []})
+        kept["name"] = name
+        kept["items"].append(item)
+        self._write("held.json", self.held)
+
+    def release(self, session_id: str) -> list[dict[str, Any]]:
+        """The messages held for a lane, oldest first, forgotten once taken."""
+        kept = self.held.pop(session_id, None)
+        if kept is not None:
+            self._write("held.json", self.held)
+        return list((kept or {}).get("items") or [])
 
     def keep_files(self, files: Sequence[dict[str, Any]], at: float) -> None:
         """Remember the files waiting for a send; an empty list forgets them."""
@@ -1136,6 +1246,41 @@ class HubBackend:
     import_files: (
         Callable[[str, str, Sequence[ReplyFile]], Awaitable[list[dict[str, Any]]]] | None
     ) = None
+    #: A chat's live status alone, e.g. ``"running"``; ``None`` once it is
+    #: archived or gone.
+    status: Callable[[str], Awaitable[str | None]] | None = None
+    #: Open a chat in a project: ``(project_id, spec)`` -> the new chat's id.
+    open_chat: Callable[[str, hub_lanes.LaneSpec], Awaitable[str]] | None = None
+    #: The model ids a provider's CLI offers on the machine a chat runs on:
+    #: ``(provider, chat id)``.
+    catalog: Callable[[str, str], Awaitable[list[str]]] | None = None
+    #: Absolute paths a chat's newest tool calls read, wrote or ran in.
+    paths_in_use: Callable[[str], Awaitable[list[str]]] | None = None
+    #: Give a chat another title (its lane's name).
+    rename_chat: Callable[[str, str], Awaitable[None]] | None = None
+    #: Archive a chat: it leaves its project's lanes.
+    close_chat: Callable[[str], Awaitable[None]] | None = None
+
+
+#: Sent to a lane being closed, so the next agent can pick up where it stopped.
+HANDOFF_REQUEST: Final[str] = (
+    "This chat is being closed. Before it is: write or update the project's handoff "
+    "note with what you did, what is left, and where things are, so the next agent "
+    "can carry on. Reply with the note's path."
+)
+
+
+@dataclass(frozen=True)
+class _LanePick:
+    """What a new lane runs on, or why none was picked, and the judgement behind it."""
+
+    run: hub_lanes.LaneRun | None = None
+    why: str = ""
+    task: model_router.RouterTask = field(
+        default_factory=lambda: model_router.RouterTask(request="", project="")
+    )
+    decision: model_router.TierDecision | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 class Hub:
@@ -1161,6 +1306,8 @@ class Hub:
         self._backend: HubBackend | None = None
         self._busy = asyncio.Lock()
         self._watches: dict[str, asyncio.Task[None]] = {}
+        #: Lanes with messages held until they finish, each with its deliverer.
+        self._holds: dict[str, asyncio.Task[None]] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._poll_s = poll_s
         #: The hub's conversation, when it has one: what the hub says is
@@ -1221,10 +1368,10 @@ class Hub:
         return name
 
     async def projects(self, *, shown: int = 1) -> list[HubProject]:
-        """Their projects, most recently active first, each with its newest chat.
+        """Their projects, most recently active first, each with its newest chats.
 
-        :param shown: How many of each project's newest chats to read; more
-            than one also reads each project's newest tier decision.
+        :param shown: How many of each project's newest chats to read as its
+            lanes; more than one also reads each project's newest tier decision.
         """
         await self._move_sessions_to_projects()
         backend = self.require_backend()
@@ -1232,25 +1379,22 @@ class Hub:
         wanted = [c for r in records for c in r.chat_ids[: max(1, shown)]]
         chats = {s.id: s for s in await backend.sessions(wanted)} if wanted else {}
         routes = self.last_routes() if shown > 1 else {}
-        handles = assign_handles([r.id for r in records])
+        # Lanes get handles of their own, unique among the projects' too.
+        handles = assign_handles([r.id for r in records] + [c for c in wanted if c in chats])
         out: list[HubProject] = []
         for record in records:
-            chat = chats.get(record.chat_ids[0]) if record.chat_ids else None
-            if chat is not None:
-                chat = replace(
-                    chat, nickname=record.name, handle=handles[record.id], project_id=record.id
+            found = [chats[c] for c in record.chat_ids[: max(1, shown)] if c in chats]
+            several = len(found) > 1
+            lanes = tuple(
+                replace(
+                    lane,
+                    nickname=f"{record.name} · {lane.lane_name}" if several else record.name,
+                    handle=handles[lane.id],
+                    project_id=record.id,
                 )
-            recent = (
-                tuple(
-                    chat
-                    if chat is not None and c == chat.id
-                    else replace(chats[c], project_id=record.id)
-                    for c in record.chat_ids[:shown]
-                    if c in chats
-                )
-                if shown > 1
-                else ()
+                for lane in found
             )
+            chat = replace(lanes[0], handle=handles[record.id]) if lanes else None
             logged = [routes[c] for c in record.chat_ids if c in routes]
             out.append(
                 HubProject(
@@ -1262,7 +1406,7 @@ class Hub:
                     chats=len(record.chat_ids),
                     updated_at=max(chat.updated_at if chat else 0.0, record.created_at),
                     chat=chat,
-                    recent=recent,
+                    lanes=lanes if shown > 1 else (),
                     route=route_summary(max(logged, key=lambda r: r.get("at") or 0))
                     if logged
                     else None,
@@ -1454,7 +1598,7 @@ class Hub:
                     self.chat.busy(False)
 
     async def _answer(self, text: str, via: str, *, context: str = "") -> None:
-        projects = await self.projects()
+        projects = await self.projects(shown=CHATS_SHOWN)
         router = await self._router_factory()
         how = "said, aloud, on a voice call" if via == "voice" else "wrote"
         held = self.held_files()
@@ -1505,19 +1649,13 @@ class Hub:
                 entry = self.say(f"I didn't make it: {exc}.")
             router.remember(entry.text)
             return
-        project = (
-            next((p for p in projects if p.handle == decision.handle), None)
-            or find_project(projects, decision.handle)
-            if decision.handle
-            else None
-        )
-        if decision.action in ("send", "status", "check", "model") and project is None:
+        project, target = resolve_target(projects, decision.handle or "", decision.lane)
+        if decision.action in ("send", "status", "check", "model", "new_lane") and project is None:
             names = ", ".join(p.name for p in projects) or "none yet"
             said = f"I couldn't tell which project you mean. Your projects: {names}."
             self.say(said)
             router.remember(said)
             return
-        target = project.chat if project is not None else None
         if project is not None and target is None and decision.action != "ask":
             said = f"{project.name} has no chat yet, so nothing was sent. Start one first."
             self.say(
@@ -1525,8 +1663,22 @@ class Hub:
             )
             router.remember(said)
             return
+        if decision.action == "new_lane" and project is not None:
+            entry = await self.open_lane(
+                project,
+                decision.topic,
+                decision.message or text,
+                via=via,
+                say=decision.text,
+                use=decision.use,
+            )
+            router.remember(entry.text)
+            return
         if decision.action == "send" and target is not None:
-            await self.send_to(target, decision.message or text, via=via, say=decision.text)
+            if target.working and not decision.now:
+                await self.hold(target, decision.message or text, via=via, say=decision.text)
+            else:
+                await self.send_to(target, decision.message or text, via=via, say=decision.text)
             return
         if decision.action == "status" and target is not None:
             activity = await self.require_backend().activity(target.id)
@@ -1641,24 +1793,47 @@ class Hub:
         )
 
     async def send_to(
-        self, session: HubSession, message: str, *, via: str, say: str = ""
+        self,
+        session: HubSession,
+        message: str,
+        *,
+        via: str,
+        say: str = "",
+        files: Sequence[HubFile] | None = None,
+        brief: str = "",
+        judge: bool = True,
     ) -> HubEntry:
-        """Post into a chat, with any files held, log it here, and watch for its answer."""
+        """Post into a chat, log it here, and watch for its answer.
+
+        :param files: What goes with it; ``None`` takes the files attached in
+            the hub that no send has carried yet.
+        :param brief: Context for the agent after the request, kept out of the
+            hub chat's quote of what was sent.
+        :param judge: Log the decision model's judgement of it (shadow mode).
+        """
         sent_at = time.time()
-        files = self.held_files()
+        attached_here = files is None
+        files = self.held_files() if files is None else list(files)
         try:
-            await self.require_backend().send(session.id, message, files)
+            await self.require_backend().send(
+                session.id, f"{message}\n\n{brief}" if brief else message, files
+            )
         except Exception as exc:  # noqa: BLE001 - say it failed, never pretend
             _logger.warning("hub send to %s failed", session.id, exc_info=True)
-            kept = f" The {self._count(files)} stay here for the next try." if files else ""
+            kept = (
+                f" The {self._count(files)} stay here for the next try."
+                if files and attached_here
+                else ""
+            )
             return self.say(
                 f"Sending to {session.name} failed ({type(exc).__name__}); nothing was sent."
                 + kept,
                 kind="error",
                 session_id=session.id,
                 session_name=session.name,
+                detail=message,
             )
-        if files:
+        if files and attached_here:
             self._set_files([])
         names = ", ".join(f.filename for f in files)
         entry = self.say(
@@ -1675,9 +1850,359 @@ class Hub:
             f"sent to {session.name}: {message}" + (f" (attached: {names})" if files else "")
         )
         self.watch(session, sent_at)
-        if self._judge_tiers:
+        if self._judge_tiers and judge:
             self._spawn(self._judge_tier(session, message, before=entry.id))
         return entry
+
+    async def hold(
+        self, session: HubSession, message: str, *, via: str, say: str = ""
+    ) -> HubEntry:
+        """Keep a message for a busy lane and send it once that lane finishes.
+
+        A busy chat is never steered off its task by default; the files
+        attached in the hub wait with the message.
+        """
+        files = self.held_files()
+        if files:
+            self._set_files([])
+        self.state.hold(
+            session.id,
+            session.name,
+            {
+                "message": message,
+                "via": via,
+                "files": [asdict(f) for f in files],
+                "at": time.time(),
+            },
+        )
+        names = ", ".join(f.filename for f in files)
+        entry = self.say(
+            say or "It's busy right now; I'll send this when it finishes.",
+            kind="held",
+            via=via,
+            session_id=session.id,
+            session_name=session.name,
+            detail=message + (f"\n\nAttached: {names}" if files else ""),
+        )
+        router = await self._router_factory()
+        router.remember(f"holding for {session.name}, which is busy: {message}")
+        self._deliver_when_idle(session)
+        return entry
+
+    def _deliver_when_idle(self, session: HubSession) -> None:
+        running = self._holds.get(session.id)
+        if running is None or running.done():
+            self._holds[session.id] = asyncio.ensure_future(self._deliver_held(session))
+
+    async def _lane_status(self, session_id: str) -> str | None:
+        backend = self.require_backend()
+        if backend.status is not None:
+            return await backend.status(session_id)
+        found = await backend.sessions([session_id])
+        return (found[0].status or "") if found else None
+
+    async def _deliver_held(self, session: HubSession) -> None:
+        """Send what was held for a lane once it is idle and its last report is in."""
+        deadline = time.monotonic() + WATCH_MAX_S
+        idle_polls = 0
+        try:
+            while time.monotonic() < deadline:
+                await asyncio.sleep(self._poll_s)
+                watch = self._watches.get(session.id)
+                if watch is not None and not watch.done():
+                    # Its report comes first: a send now would be read as its answer.
+                    idle_polls = 0
+                    continue
+                status = await self._lane_status(session.id)
+                if status is None:
+                    held = self.state.release(session.id)
+                    if held:
+                        self.say(
+                            f"{session.name} was closed, so what I held for it was not sent.",
+                            kind="attention",
+                            session_id=session.id,
+                            session_name=session.name,
+                            detail="\n\n".join(h["message"] for h in held),
+                        )
+                    return
+                if status in voice_hub.WORKING_STATUSES:
+                    idle_polls = 0
+                    continue
+                idle_polls += 1
+                # Idle twice in a row: a native chat goes idle a moment early.
+                if idle_polls < 2:
+                    continue
+                held = self.state.release(session.id)
+                if held:
+                    await self.send_to(
+                        session,
+                        "\n\n".join(h["message"] for h in held),
+                        via=str(held[-1].get("via") or "typed"),
+                        files=[HubFile(**f) for h in held for f in h.get("files") or []],
+                    )
+                return
+            held = self.state.release(session.id)
+            if held:
+                self.say(
+                    f"{session.name} stayed busy for {WATCH_MAX_S / 3600:g} h, so what I held "
+                    "for it was not sent.",
+                    kind="attention",
+                    session_id=session.id,
+                    session_name=session.name,
+                    detail="\n\n".join(h["message"] for h in held),
+                )
+        except asyncio.CancelledError:
+            # A shutdown: the held messages stay on disk for the restart.
+            raise
+        except Exception:  # noqa: BLE001 - a broken delivery must not take the hub down
+            _logger.warning("hub delivery to %s failed", session.id, exc_info=True)
+        finally:
+            self._holds.pop(session.id, None)
+
+    async def open_lane(
+        self,
+        project: HubProject,
+        topic: str,
+        message: str,
+        *,
+        via: str,
+        say: str = "",
+        use: str = "",
+    ) -> HubEntry:
+        """Open a new chat in the project for this request, and send it there.
+
+        It runs on the tier and effort the decision model picks and the
+        provider the quota rules pick, unless *use* names one; it starts in
+        the folder of the project's newest chat, told what the busy lanes are
+        doing and which checkouts they write in.
+        """
+        backend = self.require_backend()
+        like = project.chat
+        if like is None:
+            return self.say(
+                f"{project.name} has no chat yet to open a lane beside. Start one first.",
+                kind="attention",
+                session_name=project.name,
+                link=project_link(project.name),
+            )
+        if backend.open_chat is None:
+            return self.say(
+                "I can't open lanes here yet.", kind="error", session_name=project.name
+            )
+        topic = hub_lanes.topic_name(topic, message)
+        pick = await self._lane_run(project, like, message, use)
+        if pick.run is None:
+            return self.say(pick.why, kind="attention", session_name=project.name)
+        busy = [lane for lane in project.lanes if lane.working]
+        in_use = []
+        for lane in busy:
+            paths = await backend.paths_in_use(lane.id) if backend.paths_in_use else []
+            in_use.append(
+                hub_lanes.BusyLane(
+                    name=lane.name,
+                    task=_short(lane.last_ask, _QUOTE_CHARS),
+                    repos=tuple(hub_lanes.repos_in_use(paths)),
+                )
+            )
+        # A folder that is itself a checkout gets its own worktree while another lane works.
+        branch = ""
+        root = hub_lanes.repo_root(project.folder) if busy and project.folder else None
+        if root is not None and any(root in lane.repos for lane in in_use):
+            branch = f"hub/{hub_lanes.branch_slug(topic)}"
+        spec = hub_lanes.LaneSpec(topic=topic, run=pick.run, like=like.id, branch=branch)
+        try:
+            session_id = await backend.open_chat(project.id, spec)
+        except Exception as exc:  # noqa: BLE001 - say it failed, never pretend
+            _logger.warning("hub could not open a lane in %s", project.name, exc_info=True)
+            return self.say(
+                f"Opening a new lane in {project.name} failed ({type(exc).__name__}); "
+                "nothing was sent.",
+                kind="error",
+                session_name=project.name,
+                detail=message,
+            )
+        name = f"{project.name} · {topic}"
+        lane = HubSession(
+            id=session_id,
+            title=topic,
+            nickname=name,
+            lane=topic,
+            project_id=project.id,
+            run=SessionRun(
+                provider=hub_lanes.PROVIDER_LABELS.get(pick.run.provider, pick.run.provider),
+                requested=pick.run.model,
+                effort=pick.run.effort,
+            ),
+        )
+        self.say(
+            f"New lane: {topic}, on {pick.run.summary()}. {pick.run.reason}",
+            kind="lane",
+            via=via,
+            session_id=session_id,
+            session_name=name,
+        )
+        entry = await self.send_to(
+            lane,
+            message,
+            via=via,
+            say=say,
+            brief=hub_lanes.brief(project.name, topic, in_use),
+            judge=False,
+        )
+        if pick.decision is not None:
+            task = replace(
+                pick.task,
+                session_id=session_id,
+                provider=lane.run.provider,
+                model=pick.run.model,
+                effort=pick.run.effort,
+            )
+            model_router.log_decision(
+                self.state.folder / model_router.LOG_NAME,
+                task,
+                pick.decision,
+                extra={**pick.extra, "lane": topic},
+            )
+        return entry
+
+    async def _lane_run(
+        self, project: HubProject, like: HubSession, message: str, use: str
+    ) -> _LanePick:
+        """What a new lane runs on: what they named, else the router's pick, else *like*'s."""
+        task = model_router.RouterTask(
+            request=message,
+            project=project.name,
+            provider=like.run.provider,
+            model=like.run.requested or like.run.model,
+            effort=like.run.effort,
+        )
+        router_backend = model_router.configured(HUB_DIR) if self._judge_tiers else None
+        decision = (
+            await model_router.judge(task, router_backend) if router_backend is not None else None
+        )
+        judged = decision is not None and bool(decision.tier)
+        extra: dict[str, Any] = {}
+        provider, word = hub_lanes.named_run(use)
+        if provider:
+            tier = (decision.tier if judged else "") or "top"
+            offered = budget.offered_tiers(provider, _agy_models)
+            if not word:
+                word = offered.get(tier) or next(iter(offered.values()), "")
+            effort = (
+                decision.efforts_by_tier.get(tier, decision.effort) if judged else ""
+            ) or model_router.DEFAULT_EFFORT
+            effort = budget.fit_effort(provider, effort)
+            reason = f"You asked for {use}."
+        elif judged:
+            assert decision is not None
+            budgets = await asyncio.to_thread(budget.today, HUB_DIR)
+            proposal = budget.pick(decision.tier, decision.effort, budgets, agy_models=_agy_models)
+            extra = {"proposal": proposal.as_dict(), "budgets": budget.snapshot(budgets)}
+            if not proposal.provider:
+                return _LanePick(
+                    why=(
+                        f"I didn't open a lane in {project.name}: it needs the {decision.tier} "
+                        f"tier and {proposal.reason}. Tell me which model to use, for example "
+                        '"use Sonnet".'
+                    ),
+                    task=task,
+                    decision=decision,
+                    extra=extra,
+                )
+            provider, word, effort = proposal.provider, proposal.model, proposal.effort
+            reason = (
+                f"The router judged it {decision.tier} tier, {decision.effort} effort; "
+                f"{proposal.reason}."
+            )
+        else:
+            # No decision model: the same run as the chat it opens beside, or
+            # Claude Code's defaults beside an agent lanes do not run on.
+            known = like.run.provider in hub_lanes.PROVIDER_OF_HARNESS
+            why = (decision.error if decision is not None else "") or "the router is off"
+            run = hub_lanes.LaneRun(
+                provider=hub_lanes.PROVIDER_OF_HARNESS.get(like.run.provider, "claude"),
+                model=(like.run.requested or like.run.model) if known else "",
+                effort=like.run.effort if known else "",
+                reason=f"Same as {like.name}: {why}.",
+            )
+            return _LanePick(run=run, task=task, decision=decision)
+        catalog = await self._catalog(provider, like.id)
+        launch = hub_lanes.launch_model(provider, word, effort, catalog)
+        if launch is None:
+            label = hub_lanes.PROVIDER_LABELS.get(provider, provider)
+            return _LanePick(
+                why=f"I didn't open a lane: {label} offers no {word} model on this machine.",
+                task=task,
+                decision=decision,
+                extra=extra,
+            )
+        run = hub_lanes.LaneRun(
+            provider=provider,
+            model=launch[0],
+            effort=launch[1],
+            tier=decision.tier if judged and decision is not None else "",
+            reason=reason,
+        )
+        return _LanePick(run=run, task=task, decision=decision if judged else None, extra=extra)
+
+    async def _catalog(self, provider: str, like_id: str) -> list[str]:
+        backend = self.require_backend()
+        listed = await backend.catalog(provider, like_id) if backend.catalog is not None else []
+        if provider == "gemini" and not listed:
+            listed = list(_agy_models)
+        return listed
+
+    async def rename_lane(self, lane: HubSession, name: str) -> HubEntry:
+        """Give a lane another name: its chat's title too."""
+        name = hub_lanes.topic_name(name, "")
+        if not name:
+            raise ValueError("a lane needs a name")
+        backend = self.require_backend()
+        if backend.rename_chat is None:
+            raise ValueError("lanes can't be renamed here")
+        await backend.rename_chat(lane.id, name)
+        return self.say(
+            f"Renamed the lane {lane.lane_name} to {name}.",
+            kind="project",
+            session_id=lane.id,
+            session_name=lane.name,
+        )
+
+    async def close_lane(self, lane: HubSession, *, handoff: bool) -> HubEntry:
+        """Archive a lane; with *handoff*, it first writes its handoff note.
+
+        :raises ValueError: It is working: closing would cut its task short.
+        """
+        backend = self.require_backend()
+        if backend.close_chat is None:
+            raise ValueError("lanes can't be closed here")
+        if lane.working:
+            raise ValueError(f"{lane.name} is working; wait for it to finish first")
+        if not handoff:
+            await backend.close_chat(lane.id)
+            return self.say(
+                f"Closed the lane {lane.lane_name}.",
+                kind="project",
+                session_id=lane.id,
+                session_name=lane.name,
+            )
+        entry = await self.send_to(lane, HANDOFF_REQUEST, via="panel", judge=False)
+        if entry.kind == "sent":
+            self._spawn(self._close_after_report(lane))
+        return entry
+
+    async def _close_after_report(self, lane: HubSession) -> None:
+        # The watch ends once the handoff turn is reported back.
+        watch = self._watches.get(lane.id)
+        if watch is not None:
+            await asyncio.wait({watch})
+        await self.require_backend().close_chat(lane.id)  # type: ignore[misc]
+        self.say(
+            f"Closed the lane {lane.lane_name}; its handoff note is in its last reply.",
+            kind="project",
+            session_id=lane.id,
+            session_name=lane.name,
+        )
 
     def previous_exchange(self, session_id: str, *, before: int) -> tuple[str, str]:
         """The last request sent to a chat before entry ``before``, and its report."""
@@ -1744,7 +2269,7 @@ class Hub:
         self._watches[session.id] = task
 
     def resume_watches(self) -> int:
-        """Start again the watches a server restart stopped; returns how many."""
+        """Start again the watches and held deliveries a restart stopped; returns how many."""
         resumed = 0
         for session_id, kept in list(self.state.watches.items()):
             sent_at = float(kept.get("sent_at") or 0.0)
@@ -1757,6 +2282,10 @@ class Hub:
             name = str(kept.get("name") or session_id[:8])
             session = HubSession(id=session_id, title=name, nickname=name)
             self._watches[session_id] = asyncio.ensure_future(self._watch(session, sent_at))
+            resumed += 1
+        for session_id, kept in list(self.state.held.items()):
+            name = str(kept.get("name") or session_id[:8])
+            self._deliver_when_idle(HubSession(id=session_id, title=name, nickname=name))
             resumed += 1
         return resumed
 
@@ -1930,13 +2459,15 @@ class Hub:
             return ""
 
     async def close(self) -> None:
-        """Stop every watch and pending answer."""
-        for task in [*self._watches.values(), *self._tasks]:
+        """Stop every watch, held delivery and pending answer."""
+        running = [*self._watches.values(), *self._holds.values(), *self._tasks]
+        for task in running:
             task.cancel()
-        for task in [*self._watches.values(), *self._tasks]:
+        for task in running:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         self._watches.clear()
+        self._holds.clear()
 
 
 def user_key(user_id: str | None) -> str:
@@ -2282,6 +2813,9 @@ def store_backend(
                     pending_approvals=int(getattr(conv, "pending_elicitation_count", 0) or 0),
                     run=run,
                     project_id=str(getattr(conv, "project_id", None) or ""),
+                    lane=str(
+                        (getattr(conv, "labels", None) or {}).get(hub_lanes.LANE_LABEL) or ""
+                    ),
                 )
             )
         return out
@@ -2405,6 +2939,95 @@ def store_backend(
             }
             response = await client.post(
                 f"/v1/sessions/{session_id}/events", json=body, headers=headers
+            )
+        response.raise_for_status()
+
+    async def status(session_id: str) -> str | None:
+        conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+        if conv is None or getattr(conv, "archived", False):
+            return None
+        return live_status(session_id, getattr(conv, "live_status", None)) or ""
+
+    agent_ids: dict[str, str] = {}
+
+    async def _agent_id(client: Any, name: str) -> str:
+        if name not in agent_ids:
+            response = await client.get("/v1/agents", params={"limit": 100}, headers=headers)
+            response.raise_for_status()
+            for agent in response.json().get("data") or []:
+                agent_ids.setdefault(str(agent.get("name")), str(agent.get("id")))
+        if name not in agent_ids:
+            raise LookupError(f"no {name} agent on this server")
+        return agent_ids[name]
+
+    async def open_chat(project_id: str, spec: hub_lanes.LaneSpec) -> str:
+        # Same machine and folder as the chat it opens beside; the CLI keeps the
+        # machine's own permission settings, as a chat made with the defaults does.
+        like = await asyncio.to_thread(conversation_store.get_conversation, spec.like)
+        host_id, workspace = getattr(like, "host_id", None), getattr(like, "workspace", None)
+        if not host_id or not workspace:
+            raise LookupError("the chat it opens beside has no machine or folder")
+        provider = spec.run.provider
+        async with _client() as client:
+            body: dict[str, Any] = {
+                "agent_id": await _agent_id(client, hub_lanes.AGENT_NAMES[provider]),
+                "project_id": project_id,
+                "host_id": str(host_id),
+                "workspace": str(workspace),
+                "title": spec.topic,
+                "labels": {
+                    "omnigent.ui": "terminal",
+                    "omnigent.wrapper": hub_lanes.WRAPPERS[provider],
+                    hub_lanes.LANE_LABEL: spec.topic,
+                },
+            }
+            if spec.run.model:
+                body["model_override"] = spec.run.model
+            if spec.run.effort:
+                body["reasoning_effort"] = spec.run.effort
+            if spec.branch:
+                body["git"] = {"branch_name": spec.branch}
+            response = await client.post("/v1/sessions", json=body, headers=headers)
+        response.raise_for_status()
+        return str(response.json()["id"])
+
+    async def catalog(provider: str, like_id: str) -> list[str]:
+        conv = await asyncio.to_thread(conversation_store.get_conversation, like_id)
+        host_id = getattr(conv, "host_id", None)
+        harness = hub_lanes.HARNESSES.get(provider)
+        if not host_id or harness is None:
+            return []
+        async with _client() as client:
+            response = await client.get(
+                f"/v1/hosts/{host_id}/harnesses/{harness}/model-options", headers=headers
+            )
+        if response.status_code != 200:
+            return []
+        return [str(m["id"]) for m in response.json().get("models") or [] if m.get("id")]
+
+    async def paths_in_use(session_id: str) -> list[str]:
+        calls = await asyncio.to_thread(
+            conversation_store.list_items,
+            session_id,
+            limit=_TURN_CALLS,
+            order="desc",
+            type="function_call",
+        )
+        return touched_paths(calls.data)
+
+    async def rename_chat(session_id: str, name: str) -> None:
+        async with _client() as client:
+            response = await client.patch(
+                f"/v1/sessions/{session_id}",
+                json={"title": name, "labels": {hub_lanes.LANE_LABEL: name}},
+                headers=headers,
+            )
+        response.raise_for_status()
+
+    async def close_chat(session_id: str) -> None:
+        async with _client() as client:
+            response = await client.patch(
+                f"/v1/sessions/{session_id}", json={"archived": True}, headers=headers
             )
         response.raise_for_status()
 
@@ -2543,4 +3166,10 @@ def store_backend(
         file_chat=file_chat,
         configure=configure,
         import_files=import_files,
+        status=status,
+        open_chat=open_chat,
+        catalog=catalog,
+        paths_in_use=paths_in_use,
+        rename_chat=rename_chat,
+        close_chat=close_chat,
     )

@@ -548,8 +548,8 @@ async def test_each_chat_of_a_project_has_its_own_model_in_the_panel(client, _hu
 
     listed = (await client.get("/v1/hub/projects")).json()["projects"]
     project = next(p for p in listed if p["id"] == first["project_id"])
-    assert sorted(c["id"] for c in project["recent"]) == sorted([first["id"], second["id"]])
-    other = next(c for c in project["recent"] if c["id"] != project["chat"]["id"])
+    assert sorted(c["id"] for c in project["lanes"]) == sorted([first["id"], second["id"]])
+    other = next(c for c in project["lanes"] if c["id"] != project["chat"]["id"])
 
     # A pick names the chat it is for; the project's other chat keeps its own.
     done = await client.post(

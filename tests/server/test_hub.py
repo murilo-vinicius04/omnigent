@@ -445,7 +445,7 @@ async def test_each_send_is_judged_in_shadow_with_the_projects_previous_request(
     assert amarras.route["proposal"]["provider"] == "codex"
 
 
-async def test_the_panel_lists_each_projects_newest_chats_with_their_own_models(tmp_path) -> None:
+async def test_each_projects_newest_chats_are_its_lanes_each_on_its_own_model(tmp_path) -> None:
     server = _Server()
     older = HubSession(
         id="old1",
@@ -464,12 +464,20 @@ async def test_the_panel_lists_each_projects_newest_chats_with_their_own_models(
     routed = await hub.projects()
 
     amarras = next(p for p in projects if p.name == "amarras")
-    assert [c.id for c in amarras.recent] == [AMARRAS, "old1"]
-    assert amarras.recent[0].name == "amarras" and amarras.recent[1].name == "Joystick plan"
-    assert [c.run.provider for c in amarras.recent] == ["Claude", "Codex"]
-    assert amarras.as_dict()["recent"][1]["run"]["effort"] == "high"
-    # Routing reads only the newest chat, as before.
-    assert next(p for p in routed if p.name == "amarras").recent == ()
+    assert [c.id for c in amarras.lanes] == [AMARRAS, "old1"]
+    # Two lanes: each is called by its project and its own topic.
+    assert [c.name for c in amarras.lanes] == [
+        "amarras · Project Analysis",
+        "amarras · Joystick plan",
+    ]
+    assert [c.run.provider for c in amarras.lanes] == ["Claude", "Codex"]
+    assert amarras.as_dict()["lanes"][1]["run"]["effort"] == "high"
+    # Each lane has a handle of its own; the project's newest is its chat.
+    assert amarras.lanes[1].handle == "old1" and amarras.chat.handle == "aaaa"
+    assert amarras.chat.id == AMARRAS
+    brasa = next(p for p in projects if p.name == "brasa")
+    assert brasa.lanes[0].name == "brasa"
+    assert next(p for p in routed if p.name == "amarras").lanes == ()
 
 
 async def test_a_hub_made_for_tests_judges_nothing(tmp_path, monkeypatch) -> None:

@@ -171,7 +171,7 @@ PROJECT_SENT_CHIP_TITLE: Final[str] = "omnigent-project-sent"
 
 #: Entries about one project: they open with its chip.
 _PROJECT_KINDS: Final[frozenset[str]] = frozenset(
-    {"sent", "finished", "attention", "status", "check", "model", "project"}
+    {"sent", "held", "lane", "finished", "attention", "status", "check", "model", "project"}
 )
 
 
@@ -215,10 +215,11 @@ def render(
     link = ""
     if base_url and entry.link and not entry.session_id:
         link = f"[Start a chat in {entry.session_name} ↗]({base_url}{entry.link})"
-    if entry.kind == "sent" and entry.detail:
+    if entry.kind in ("sent", "held") and entry.detail:
         # The sent chip says it went; the quote is what went. Without a link
-        # there is no chip to say it, so the words stay.
-        said = "" if chip.startswith("[") else entry.text
+        # there is no chip to say it, so the words stay. A held message keeps
+        # its words: they say it waits for the lane to finish.
+        said = "" if entry.kind == "sent" and chip.startswith("[") else entry.text
         parts = [chip, said, f"> {_quote(entry.detail)}", link]
         return "\n\n".join(part for part in parts if part)
     if entry.kind == "finished" and (entry.detail or entry.show):
@@ -267,11 +268,11 @@ def speech_text(entry: hub_module.HubEntry) -> str:
     """What the hub says aloud for an entry: its own words, never what it quotes or shows.
 
     Not the project's name or "finished" either: the chip shows which project it
-    is. Nothing for a send: its chip shows it went.
+    is. Nothing for a send or a new lane: the chip shows it went, and where.
     """
     from omnigent.server.spoken_summary import strip_markdown_for_speech
 
-    if entry.kind == "sent":
+    if entry.kind in ("sent", "lane"):
         return ""
     return strip_markdown_for_speech(own_words(entry))
 

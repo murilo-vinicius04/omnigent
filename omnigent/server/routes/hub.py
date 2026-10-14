@@ -72,6 +72,22 @@ class HubChatIn(BaseModel):
     session_id: str = Field(min_length=1, max_length=200)
 
 
+class HubLaneIn(BaseModel):
+    """A new lane: what it works on and its first request."""
+
+    topic: str = Field(default="", max_length=200)
+    message: str = Field(min_length=1, max_length=20_000)
+    #: A model or provider to run it on, e.g. ``"Sonnet"``; empty lets the hub pick.
+    use: str = Field(default="", max_length=100)
+
+
+class HubCloseLaneIn(BaseModel):
+    """How to close a lane."""
+
+    #: Ask it for its handoff note first, and archive it once that is written.
+    handoff: bool = True
+
+
 def create_hub_router(
     *,
     auth_provider: AuthProvider | None = None,
@@ -198,6 +214,54 @@ def create_hub_router(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"text": entry.text}
 
+    async def _lane(
+        hub: hub_module.Hub, session_id: str
+    ) -> tuple[hub_module.HubProject, hub_module.HubSession]:
+        for project in await hub.projects(shown=hub_module.CHATS_SHOWN):
+            for lane in project.lanes:
+                if lane.id == session_id:
+                    return project, lane
+        raise HTTPException(status_code=404, detail="not a lane of your projects")
+
+    @router.post("/hub/projects/{project_id}/lanes")
+    async def hub_open_lane(request: Request, project_id: str, body: HubLaneIn) -> dict[str, Any]:
+        """Open a new lane in a project with its first request, on the model the hub picks."""
+        hub, _ = await _bound(request)
+        project = next(
+            (p for p in await hub.projects(shown=hub_module.CHATS_SHOWN) if p.id == project_id),
+            None,
+        )
+        if project is None:
+            raise HTTPException(status_code=404, detail="not one of your projects")
+        entry = await hub.open_lane(project, body.topic, body.message, via="panel", use=body.use)
+        return {"opened": entry.kind == "sent", "text": entry.text, "session_id": entry.session_id}
+
+    @router.patch("/hub/lanes/{session_id}")
+    async def hub_rename_lane(
+        request: Request, session_id: str, body: HubNameIn
+    ) -> dict[str, Any]:
+        """Give a lane another name."""
+        hub, _ = await _bound(request)
+        _, lane = await _lane(hub, session_id)
+        try:
+            entry = await hub.rename_lane(lane, body.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"text": entry.text}
+
+    @router.post("/hub/lanes/{session_id}/close")
+    async def hub_close_lane(
+        request: Request, session_id: str, body: HubCloseLaneIn
+    ) -> dict[str, Any]:
+        """Close a lane: archived now, or once it has written its handoff note."""
+        hub, _ = await _bound(request)
+        _, lane = await _lane(hub, session_id)
+        try:
+            entry = await hub.close_lane(lane, handoff=body.handoff)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"text": entry.text, "closing": entry.kind == "sent"}
+
     @router.post("/hub/model")
     async def hub_model(request: Request, body: HubModelIn) -> dict[str, Any]:
         """Change a project's model or effort, by the same rules as asking for it.
@@ -211,7 +275,7 @@ def create_hub_router(
             project = next((p for p in projects if p.id == body.project_id), None)
             if project is None:
                 raise HTTPException(status_code=404, detail="not one of your projects")
-            chat = next((c for c in project.recent if c.id == body.session_id), None)
+            chat = next((c for c in project.lanes if c.id == body.session_id), None)
             if chat is None:
                 raise HTTPException(status_code=404, detail=f"not a recent chat of {project.name}")
         else:
@@ -241,7 +305,7 @@ def create_hub_router(
             return {"say": VOICE_TOO_SLOW, "sent": False, "last_id": hub.state.last_id}
         return {
             "say": "\n".join(e.text for e in said) or "Nothing came back from the hub.",
-            "sent": any(e.kind == "sent" for e in said),
+            "sent": any(e.kind in ("sent", "held") for e in said),
             "last_id": hub.state.last_id,
         }
 
