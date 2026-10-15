@@ -170,6 +170,10 @@ interface ChatHeaderProps {
   rightPanelOpen: boolean;
   /** Toggle the right workspace panel. */
   onToggleRightPanel: () => void;
+  /** Open a shell on the user's machine (the hub, which has none of its own). */
+  onOpenShell?: () => void;
+  /** Whether that shell is still opening. */
+  openShellPending?: boolean;
   /** Gating + handlers for the mobile session-menu FAB. */
   mobileMenu: MobileSessionMenuProps;
 }
@@ -220,6 +224,8 @@ export function ChatHeader({
   hasRailContent,
   rightPanelOpen,
   onToggleRightPanel,
+  onOpenShell,
+  openShellPending = false,
   mobileMenu,
 }: ChatHeaderProps) {
   // Dwell on the toggle for 400ms to peek the sidebar; leaving before then cancels
@@ -597,6 +603,25 @@ export function ChatHeader({
             Share
           </Button>
         ) : null}
+        {onOpenShell && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                aria-label="Open a terminal"
+                onClick={onOpenShell}
+                disabled={openShellPending}
+                componentId="chat.header.open_shell"
+                className="text-muted-foreground hover:text-foreground border-none"
+              >
+                <TerminalIcon className="size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Terminal on this machine (Ctrl+Alt+T)</TooltipContent>
+          </Tooltip>
+        )}
         {conversationId && hasRailContent && (
           <Tooltip>
             <TooltipTrigger asChild>

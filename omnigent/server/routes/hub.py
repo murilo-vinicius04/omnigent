@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from omnigent.server import budget, hub_chat
+from omnigent.server import budget, hub_chat, hub_terminal
 from omnigent.server import hub as hub_module
 from omnigent.server.auth import AuthProvider
 from omnigent.server.discussion import DiscussionRegistry, registry
@@ -93,6 +93,13 @@ class HubCloseLaneIn(BaseModel):
 
     #: Ask it for its handoff note first, and archive it once that is written.
     handoff: bool = True
+
+
+class HubTerminalIn(BaseModel):
+    """A shell to open from the hub."""
+
+    #: Open another shell even when one is running.
+    new: bool = False
 
 
 class HubPlaceIn(BaseModel):
@@ -300,6 +307,27 @@ def create_hub_router(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="no such placement") from exc
         return {"right": body.right, "text": entry.text if entry is not None else "Noted."}
+
+    @router.post("/hub/terminal")
+    async def hub_open_terminal(request: Request, body: HubTerminalIn) -> dict[str, Any]:
+        """Open a shell on their machine for the hub, which has none of its own."""
+        user_id = auth_provider.get_user_id(request) if auth_provider is not None else None
+        if auth_provider is not None and user_id is None:
+            raise HTTPException(status_code=401, detail="authentication required")
+        if conversation_store is None:
+            raise HTTPException(status_code=503, detail="hub unavailable")
+        try:
+            return await hub_terminal.open_terminal(
+                user_id,
+                conversation_store=conversation_store,
+                app=request.app,
+                headers={
+                    k: v for k, v in request.headers.items() if k in hub_chat.FORWARDED_HEADERS
+                },
+                new=body.new,
+            )
+        except hub_terminal.TerminalUnavailable as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @router.post("/hub/model")
     async def hub_model(request: Request, body: HubModelIn) -> dict[str, Any]:

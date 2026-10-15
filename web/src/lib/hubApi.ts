@@ -399,3 +399,29 @@ export async function correctHubPlace(
     }),
   );
 }
+
+/** A shell the hub opened on the user's machine, in the session that holds them. */
+export interface HubShell {
+  sessionId: string;
+  terminalId: string;
+}
+
+/**
+ * Open a shell for the hub, which has no machine of its own: the server keeps
+ * one session on the user's machine for it. Without `fresh` the shell already
+ * open comes back; with it another one opens.
+ */
+export async function openHubTerminal(fresh: boolean): Promise<HubShell> {
+  const body = await readJson<{ session_id?: unknown; terminal?: { id?: unknown } }>(
+    await authenticatedFetch("/v1/hub/terminal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new: fresh }),
+    }),
+  );
+  const terminalId = body.terminal?.id;
+  if (typeof body.session_id !== "string" || typeof terminalId !== "string") {
+    throw new Error("the server did not name a shell");
+  }
+  return { sessionId: body.session_id, terminalId };
+}

@@ -113,6 +113,8 @@ import { PermissionsModal } from "@/components/PermissionsModal";
 import { KeyboardShortcutsDialog } from "@/components/KeyboardShortcutsDialog";
 import { CommandPalette } from "./CommandPalette";
 import { Toaster } from "@/components/ui/sonner";
+import { showToast } from "@/components/ui/toast";
+import { openHubTerminal } from "@/lib/hubApi";
 import { CloseShellDialog } from "./CloseShellDialog";
 import { ForkSessionDialog } from "./ForkSessionDialog";
 import { ForkDialogContextProvider, type ForkDialogContextValue } from "./ForkDialogContext";
@@ -371,6 +373,10 @@ export function AppShell() {
     () => readFilesPanelPreferences().sort,
   );
   const [panelInitialKey, setPanelInitialKeyState] = useState<string | null>(null);
+  // The hub's shell lives in a session of its own on the user's machine (the
+  // hub has no runner), shown beside the hub chat rather than in place of it.
+  const [hubShell, setHubShell] = useState<{ sessionId: string; key: string } | null>(null);
+  const [hubShellPending, setHubShellPending] = useState(false);
   const [executionLogsKey, setExecutionLogsKey] = useState<string | null>(null);
   const [filesPanelOpen, setFilesPanelOpen] = useState(false);
   // Mobile-only full-screen drawers for the rail tabs that have no desktop
@@ -1567,7 +1573,21 @@ export function AppShell() {
     clearShellCreatePending,
     openTerminalTab,
   ]);
-  useNewShellHotkey(launchDefaultShell, shellLaunchable);
+  const openHubShell = useCallback(async (fresh: boolean) => {
+    setHubShellPending(true);
+    try {
+      const shell = await openHubTerminal(fresh);
+      setHubShell({ sessionId: shell.sessionId, key: `terminal:${shell.terminalId}` });
+    } catch (err) {
+      showToast(`Couldn't open a terminal: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setHubShellPending(false);
+    }
+  }, []);
+  useNewShellHotkey(
+    isHubConversation ? () => void openHubShell(true) : launchDefaultShell,
+    isHubConversation ? !hubShellPending : shellLaunchable,
+  );
 
   // Focus a shell the user just created ("+"→Shell) as soon as its tab appears
   // — a new non-agent terminal key that wasn't present when the create started.
@@ -2040,6 +2060,8 @@ export function AppShell() {
                     hasRailContent={hasRailContent}
                     rightPanelOpen={rightPanelOpen}
                     onToggleRightPanel={toggleRightPanel}
+                    onOpenShell={isHubConversation ? () => void openHubShell(false) : undefined}
+                    openShellPending={hubShellPending}
                     mobileMenu={{
                       fileViewerOpen,
                       panelOpen,
@@ -2147,7 +2169,15 @@ export function AppShell() {
               {/* Push panels — flex siblings to main, animate width. Only one is open at a time.
           Terminal-first sessions render the terminal inline inside main
           (via MainTerminalView in ChatPage) and never mount the drawer. */}
-              {conversationId && !terminalFirst && (
+              {isHubConversation && hubShell && (
+                <TerminalsPanel
+                  open
+                  conversationId={hubShell.sessionId}
+                  initialTerminalKey={hubShell.key}
+                  onClose={() => setHubShell(null)}
+                />
+              )}
+              {conversationId && !terminalFirst && !isHubConversation && (
                 <TerminalsPanel
                   open={panelOpen}
                   conversationId={conversationId}

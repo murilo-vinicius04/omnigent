@@ -77,6 +77,8 @@ function renderHeader(props: {
   showFilesPanel?: boolean;
   mobileMenu?: typeof mobileMenu;
   onOpenSidebar?: (peek?: boolean) => void;
+  onOpenShell?: () => void;
+  openShellPending?: boolean;
 }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -109,6 +111,8 @@ function renderHeader(props: {
             hasRailContent={props.hasRailContent ?? true}
             rightPanelOpen={false}
             onToggleRightPanel={() => {}}
+            onOpenShell={props.onOpenShell}
+            openShellPending={props.openShellPending}
             mobileMenu={props.mobileMenu ?? mobileMenu}
           />
         </TooltipProvider>
@@ -801,5 +805,24 @@ describe("ChatHeader — title-adjacent conversation actions", () => {
     expect(screen.queryByRole("button", { name: "Conversation actions" })).toBeNull();
     expect(screen.getByRole("link", { name: "Back to parent session" })).toBeInTheDocument();
     expect(screen.getByText("reviewer")).toBeInTheDocument();
+  });
+});
+
+describe("ChatHeader — the hub's terminal button", () => {
+  it("opens a shell when the hub offers one", () => {
+    const onOpenShell = vi.fn();
+    renderHeader({ sidebarOpen: true, onOpenShell });
+    fireEvent.click(screen.getByRole("button", { name: "Open a terminal" }));
+    expect(onOpenShell).toHaveBeenCalledTimes(1);
+  });
+
+  it("is disabled while the shell is opening", () => {
+    renderHeader({ sidebarOpen: true, onOpenShell: () => {}, openShellPending: true });
+    expect(screen.getByRole("button", { name: "Open a terminal" })).toBeDisabled();
+  });
+
+  it("is absent outside the hub", () => {
+    renderHeader({ sidebarOpen: true });
+    expect(screen.queryByRole("button", { name: "Open a terminal" })).toBeNull();
   });
 });

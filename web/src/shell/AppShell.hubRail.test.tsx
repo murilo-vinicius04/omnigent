@@ -5,6 +5,7 @@ import type * as UseChildSessionsModule from "@/hooks/useChildSessions";
 import type * as UseSessionModule from "@/hooks/useSession";
 import type * as UseConversationsModule from "@/hooks/useConversations";
 import type * as UseGithubModule from "@/hooks/useGithub";
+import type * as HubApiModule from "@/lib/hubApi";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -80,13 +81,24 @@ vi.mock("./FilesPanelDrawer", () => ({
   FilesPanelDrawer: () => <div data-testid="files-panel-drawer" />,
 }));
 vi.mock("./TerminalsPanel", () => ({
-  TerminalsPanel: () => <div data-testid="terminals-panel" />,
+  TerminalsPanel: (props: { conversationId: string; initialTerminalKey: string | null }) => (
+    <div
+      data-testid="terminals-panel"
+      data-chat={props.conversationId}
+      data-key={props.initialTerminalKey ?? ""}
+    />
+  ),
+}));
+vi.mock("@/lib/hubApi", async (importOriginal) => ({
+  ...(await importOriginal<typeof HubApiModule>()),
+  openHubTerminal: vi.fn(async () => ({ sessionId: "conv_term", terminalId: "terminal_bash_hub" })),
 }));
 
 import { FilePathAwareMessageResponse } from "@/components/blocks/ChatMarkdown";
 import { AppShell } from "./AppShell";
 import { useGithubInfo } from "@/hooks/useGithub";
 import { useConversations } from "@/hooks/useConversations";
+import { openHubTerminal } from "@/lib/hubApi";
 
 const useGithubInfoMock = vi.mocked(useGithubInfo);
 
@@ -182,5 +194,33 @@ describe("the hub's rail", () => {
       expect(viewer).toHaveAttribute("data-path", "RA-L/reviews/REVISION_PLAN.md");
     }
     expect(screen.getByTitle("RA-L/reviews/REVISION_PLAN.md")).toBeInTheDocument();
+  });
+});
+
+describe("the hub's terminal", () => {
+  beforeEach(() => vi.mocked(openHubTerminal).mockClear());
+
+  it("opens the shell already open on the machine from the header button", async () => {
+    renderShell();
+    expect(screen.queryByTestId("terminals-panel")).toBeNull();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open a terminal" }));
+
+    // Beside the hub chat, attached to the session that holds the shells.
+    const panel = await screen.findByTestId("terminals-panel");
+    expect(panel).toHaveAttribute("data-chat", "conv_term");
+    expect(panel).toHaveAttribute("data-key", "terminal:terminal_bash_hub");
+    expect(openHubTerminal).toHaveBeenCalledWith(false);
+    expect(screen.getByText("chat")).toBeVisible();
+  });
+
+  it("opens a new shell with the new-shell shortcut", async () => {
+    renderShell();
+    await screen.findByRole("button", { name: "Open a terminal" });
+
+    fireEvent.keyDown(document, { key: "t", code: "KeyT", ctrlKey: true, altKey: true });
+
+    await screen.findByTestId("terminals-panel");
+    expect(openHubTerminal).toHaveBeenCalledWith(true);
   });
 });

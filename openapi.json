@@ -553,6 +553,109 @@
         "title": "CancelledEvent",
         "type": "object"
       },
+      "CheckRequest": {
+        "description": "Something the voice wants found out on the machine.",
+        "properties": {
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "timeout_s": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "format": "double",
+                "maximum": 120.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout S"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "CheckRequest",
+        "type": "object"
+      },
+      "CheckResponse": {
+        "description": "How a check ended, and every command it ran.\n\nExactly one of `answer` and `needs_claude` is set.",
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer"
+          },
+          "commands": {
+            "items": {
+              "$ref": "#/components/schemas/CheckedCommand"
+            },
+            "title": "Commands",
+            "type": "array"
+          },
+          "needs_claude": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Claude"
+          }
+        },
+        "title": "CheckResponse",
+        "type": "object"
+      },
+      "CheckedCommand": {
+        "description": "One command a check ran.",
+        "properties": {
+          "command": {
+            "title": "Command",
+            "type": "string"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "format": "int64",
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "output": {
+            "title": "Output",
+            "type": "string"
+          },
+          "seconds": {
+            "format": "double",
+            "title": "Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "command",
+          "exit_code",
+          "seconds",
+          "output"
+        ],
+        "title": "CheckedCommand",
+        "type": "object"
+      },
       "ChildSessionList": {
         "description": "Paginated list of child sessions; `data` is a page of `ChildSessionSummary`.",
         "properties": {
@@ -2641,6 +2744,210 @@
         "title": "HeartbeatEvent",
         "type": "object"
       },
+      "HubChatIn": {
+        "description": "A chat to put in a project.",
+        "properties": {
+          "session_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "HubChatIn",
+        "type": "object"
+      },
+      "HubCloseLaneIn": {
+        "description": "How to close a lane.",
+        "properties": {
+          "handoff": {
+            "default": true,
+            "title": "Handoff",
+            "type": "boolean"
+          }
+        },
+        "title": "HubCloseLaneIn",
+        "type": "object"
+      },
+      "HubLaneIn": {
+        "description": "A new lane: what it works on and its first request.",
+        "properties": {
+          "message": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "topic": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Topic",
+            "type": "string"
+          },
+          "use": {
+            "default": "",
+            "maxLength": 100,
+            "title": "Use",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "HubLaneIn",
+        "type": "object"
+      },
+      "HubModelIn": {
+        "description": "A model or effort picked for a project in the hub's Projects panel.",
+        "properties": {
+          "effort": {
+            "default": "",
+            "maxLength": 32,
+            "title": "Effort",
+            "type": "string"
+          },
+          "model": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Model",
+            "type": "string"
+          },
+          "project_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "session_id": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "HubModelIn",
+        "type": "object"
+      },
+      "HubNameIn": {
+        "description": "A project's new name.",
+        "properties": {
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "HubNameIn",
+        "type": "object"
+      },
+      "HubPlaceIn": {
+        "description": "Where a message the hub placed beside a busy lane should have gone.",
+        "properties": {
+          "right": {
+            "pattern": "^(steer|after|new)$",
+            "title": "Right",
+            "type": "string"
+          }
+        },
+        "required": [
+          "right"
+        ],
+        "title": "HubPlaceIn",
+        "type": "object"
+      },
+      "HubProjectIn": {
+        "description": "A project to make.",
+        "properties": {
+          "from_chat": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Chat"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "HubProjectIn",
+        "type": "object"
+      },
+      "HubReportIn": {
+        "description": "A lane's past turn to report: the window it ran in, in Unix seconds.",
+        "properties": {
+          "since": {
+            "format": "double",
+            "title": "Since",
+            "type": "number"
+          },
+          "until": {
+            "format": "double",
+            "title": "Until",
+            "type": "number"
+          }
+        },
+        "required": [
+          "since",
+          "until"
+        ],
+        "title": "HubReportIn",
+        "type": "object"
+      },
+      "HubTerminalIn": {
+        "description": "A shell to open from the hub.",
+        "properties": {
+          "new": {
+            "default": false,
+            "title": "New",
+            "type": "boolean"
+          }
+        },
+        "title": "HubTerminalIn",
+        "type": "object"
+      },
+      "HubVoiceIn": {
+        "description": "What a voice call handed to the hub.",
+        "properties": {
+          "context": {
+            "default": "",
+            "maxLength": 8000,
+            "title": "Context",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "HubVoiceIn",
+        "type": "object"
+      },
       "ImportItemInput": {
         "description": "One normalized existing Omnigent item received from the CLI.",
         "properties": {
@@ -2928,6 +3235,17 @@
             ],
             "title": "Instructions"
           },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
           "mode": {
             "default": "converse",
             "enum": [
@@ -2996,6 +3314,11 @@
       "LiveOfferResponse": {
         "description": "The SDP answer and the id of the session it belongs to.",
         "properties": {
+          "hub": {
+            "default": false,
+            "title": "Hub",
+            "type": "boolean"
+          },
           "sdp": {
             "title": "Sdp",
             "type": "string"
@@ -3548,7 +3871,8 @@
               "summary",
               "question",
               "answer",
-              "note"
+              "note",
+              "command"
             ],
             "title": "Kind",
             "type": "string"
@@ -9731,6 +10055,59 @@
         ]
       }
     },
+    "/v1/discussion/{session_id}/check": {
+      "post": {
+        "description": "Let the companion look something up with read-only commands.\n\nThe live voice calls this for a fact it could see by looking -- disk\nuse, a run's progress, recent commits -- instead of waking Claude.\nCommands run in the session's workspace, read-only and sandboxed;\nanything that would change the machine is refused, and the answer\nsays Claude is needed instead.",
+        "operationId": "discussion_check_v1_discussion__session_id__check_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Discussion Check",
+        "tags": [
+          "discussion"
+        ]
+      }
+    },
     "/v1/discussion/{session_id}/close": {
       "post": {
         "description": "Stop the process. The ledger survives and replays on the next ask.",
@@ -10901,6 +11278,760 @@
         ]
       }
     },
+    "/v1/hub": {
+      "get": {
+        "description": "The caller's hub conversation, made on first use, and its projects.",
+        "operationId": "get_hub_v1_hub_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Hub V1 Hub Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Hub",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
+    "/v1/hub/budgets": {
+      "get": {
+        "description": "Each provider's budget for today, on its own week.",
+        "operationId": "hub_budgets_v1_hub_budgets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Budgets V1 Hub Budgets Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Hub Budgets",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
+    "/v1/hub/candidates": {
+      "get": {
+        "description": "Their chats outside every project, newest first.",
+        "operationId": "hub_candidates_v1_hub_candidates_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Candidates V1 Hub Candidates Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Hub Candidates",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
+    "/v1/hub/lanes/{session_id}": {
+      "patch": {
+        "description": "Give a lane another name.",
+        "operationId": "hub_rename_lane_v1_hub_lanes__session_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HubNameIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Rename Lane V1 Hub Lanes  Session Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hub Rename Lane",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
+    "/v1/hub/lanes/{session_id}/close": {
+      "post": {
+        "description": "Close a lane: archived now, or once it has written its handoff note.",
+        "operationId": "hub_close_lane_v1_hub_lanes__session_id__close_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HubCloseLaneIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Close Lane V1 Hub Lanes  Session Id  Close Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hub Close Lane",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
+    "/v1/hub/lanes/{session_id}/report": {
+      "post": {
+        "description": "Report a lane's turn the hub missed, as its finished report would have.",
+        "operationId": "hub_report_turn_v1_hub_lanes__session_id__report_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HubReportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Report Turn V1 Hub Lanes  Session Id  Report Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hub Report Turn",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
+    "/v1/hub/model": {
+      "post": {
+        "description": "Change a project's model or effort, by the same rules as asking for it.\n\nThe change is checked against what the project's chat offers and\nwritten into the hub chat, so a pick made here reads like one asked for.",
+        "operationId": "hub_model_v1_hub_model_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HubModelIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Model V1 Hub Model Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hub Model",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
+    "/v1/hub/placements/{placement_id}/feedback": {
+      "post": {
+        "description": "Their word on a placement: kept as a lesson, and fixed where it still can be.",
+        "operationId": "hub_place_feedback_v1_hub_placements__placement_id__feedback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "placement_id",
+            "required": true,
+            "schema": {
+              "title": "Placement Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HubPlaceIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Place Feedback V1 Hub Placements  Placement Id  Feedback Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hub Place Feedback",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
+    "/v1/hub/projects": {
+      "get": {
+        "description": "Their projects, each with its newest chats, their models and live status.",
+        "operationId": "hub_projects_v1_hub_projects_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Projects V1 Hub Projects Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Hub Projects",
+        "tags": [
+          "hub"
+        ]
+      },
+      "post": {
+        "description": "Make a project, empty or with one of their chats as its first.",
+        "operationId": "hub_create_project_v1_hub_projects_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HubProjectIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Create Project V1 Hub Projects Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hub Create Project",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
+    "/v1/hub/projects/{project_id}": {
+      "delete": {
+        "description": "Delete a project; its chats are kept, outside any project.",
+        "operationId": "hub_delete_project_v1_hub_projects__project_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Delete Project V1 Hub Projects  Project Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hub Delete Project",
+        "tags": [
+          "hub"
+        ]
+      },
+      "patch": {
+        "description": "Give a project another name, in the sidebar too.",
+        "operationId": "hub_rename_project_v1_hub_projects__project_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HubNameIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Rename Project V1 Hub Projects  Project Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hub Rename Project",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
+    "/v1/hub/projects/{project_id}/chats": {
+      "post": {
+        "description": "Put one of their chats outside every project into this one.",
+        "operationId": "hub_add_chat_v1_hub_projects__project_id__chats_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HubChatIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Add Chat V1 Hub Projects  Project Id  Chats Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hub Add Chat",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
+    "/v1/hub/projects/{project_id}/lanes": {
+      "post": {
+        "description": "Open a new lane in a project with its first request, on the model the hub picks.",
+        "operationId": "hub_open_lane_v1_hub_projects__project_id__lanes_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HubLaneIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Open Lane V1 Hub Projects  Project Id  Lanes Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hub Open Lane",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
+    "/v1/hub/terminal": {
+      "post": {
+        "description": "Open a shell on their machine for the hub, which has none of its own.",
+        "operationId": "hub_open_terminal_v1_hub_terminal_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HubTerminalIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Open Terminal V1 Hub Terminal Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hub Open Terminal",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
+    "/v1/hub/updates": {
+      "get": {
+        "description": "News an open call should tell: a session finished or needs them.",
+        "operationId": "hub_updates_v1_hub_updates_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "wait",
+            "required": false,
+            "schema": {
+              "default": 0.0,
+              "title": "Wait",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Updates V1 Hub Updates Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hub Updates",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
+    "/v1/hub/voice": {
+      "post": {
+        "description": "Act on what a voice handed over and return what the voice should say.\n\nFor a voice that cannot run the hub's tools itself (GPT-Live, Gemini\nLive): the request and the hub's answer land in the hub conversation as\nfor a typed message. `sent` says it went to a project, so the call can\nend the way a project chat's call ends once Claude has the request.",
+        "operationId": "hub_voice_v1_hub_voice_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HubVoiceIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Voice V1 Hub Voice Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hub Voice",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
     "/v1/imports": {
       "post": {
         "description": "Import one normalized transcript, optionally replacing its prior import.",
@@ -11134,6 +12265,27 @@
         "tags": [
           "live-voice"
         ]
+      }
+    },
+    "/v1/live/unmute/availability": {
+      "get": {
+        "description": "Report whether the Unmute stack is up, for the engine picker.",
+        "operationId": "unmute_live_availability_v1_live_unmute_availability_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Unmute Live Availability V1 Live Unmute Availability Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Unmute Live Availability"
       }
     },
     "/v1/me": {

@@ -3270,7 +3270,11 @@ def store_backend(
 
     def _offered(conv: Any) -> bool:
         labels = getattr(conv, "labels", None) or {}
-        return conv.id not in exclude and labels.get("omnigent.hub") != "1"
+        return (
+            conv.id not in exclude
+            and labels.get("omnigent.hub") != "1"
+            and labels.get("omnigent.hub_terminal") != "1"
+        )
 
     async def listing() -> list[HubCandidate]:
         page = await asyncio.to_thread(
