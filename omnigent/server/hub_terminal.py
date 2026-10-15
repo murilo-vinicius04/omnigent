@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import posixpath
-import time
+import secrets
 from typing import Any, Final
 
 import httpx
@@ -80,7 +80,7 @@ async def open_terminal(
                 return {"session_id": session_id, "terminal": running}
         made = await client.post(
             f"/v1/sessions/{session_id}/resources/terminals",
-            json={"terminal": SHELL, "session_key": f"hub-{int(time.time() * 1000)}"},
+            json={"terminal": SHELL, "session_key": f"hub-{secrets.token_hex(4)}"},
             headers=headers,
         )
     if made.status_code >= 400:

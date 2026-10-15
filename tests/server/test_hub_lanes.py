@@ -664,3 +664,44 @@ async def test_a_lane_is_created_through_the_sessions_route_beside_its_chat() ->
             "reasoning_effort": "high",
         }
     ]
+
+
+async def test_a_lane_opened_with_no_topic_is_named_by_its_work(tmp_path, judged, monkeypatch):
+    # A lane named by the start of a long request ("O usuário quer controlar o
+    # robô remotamente a partir de out…") gave the router nothing to tell it by.
+    router = _Router(
+        '{"new_lane": "aaaa", "message": "Ligue o teleop remoto no robô real.", "say": "Ok."}'
+    )
+    router.report = "Teleop remoto no robô real"
+    server = _LaneServer()
+    _two_lanes(server)
+    hub = _hub(tmp_path, router, server)
+    monkeypatch.setattr(hub_module, "HUB_DIR", tmp_path)
+
+    hub.submit("abre uma frente pra controlar o robô real de longe")
+    await _settle(hub, until=lambda: server.sent)
+    await hub.close()
+
+    _, spec = server.opened[0]
+    assert spec.topic == "Teleop remoto no robô real"
+    assert any("two to four words" in task for task in router.performed)
+
+
+async def test_a_lane_name_the_router_cannot_give_is_the_requests_start(
+    tmp_path, judged, monkeypatch
+):
+    router = _Router(
+        '{"new_lane": "aaaa", "message": "Write the docs for the API.", "say": "Ok."}'
+    )
+    router.report = "This is not a name but a whole sentence about the docs."
+    server = _LaneServer()
+    _two_lanes(server)
+    hub = _hub(tmp_path, router, server)
+    monkeypatch.setattr(hub_module, "HUB_DIR", tmp_path)
+
+    hub.submit("abre uma frente pros docs")
+    await _settle(hub, until=lambda: server.sent)
+    await hub.close()
+
+    _, spec = server.opened[0]
+    assert spec.topic == "Write the docs for the API."

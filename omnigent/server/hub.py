@@ -190,9 +190,20 @@ the list above or this chat already answers.
 "place": "...", "topic": "..."}} -- a project's Claude has to do or answer it. \
 "message" is their request in {language} for that Claude, faithful and complete: \
 Claude cannot see this chat, so carry what the request depends on from earlier \
-here, and keep code, paths and names exactly. "lane" is the lane it goes to, for \
-a project with lanes; leave it out otherwise. "say" is a short confirmation for \
-them that names the project.
+here, and keep code, paths and names exactly. Never add what they did not say: \
+no approval, agreement, choice or answer to a question a lane asked unless \
+their own words give it. A message that adds a request ("also", "também") does \
+not answer the question a lane just asked: leave that question open, in \
+"message" and in "say". "lane" is the lane it goes to, for a project with \
+lanes; leave it out otherwise. Pick it from what the message is about, matched \
+against what each lane has been doing (its first request, last request and \
+latest update), not from which lane spoke last and not from a lane's name alone: \
+a lane named after a thing does not own every message that mentions that thing. \
+Where the work happens is part of what it is about: the real hardware or a \
+simulation, a remote machine or this one. When the message fits more than one \
+lane, or a lane other than the one that just spoke, and they name neither, use \
+"ask" naming those lanes. "say" is a short confirmation for them that names \
+the project.
 When that lane is WORKING, "place" says where the message goes, judged from what \
 it says and what the lane is doing; leave it out for an idle lane:
   "steer" -- it is about the task the lane is doing now: a direction, a \
@@ -238,9 +249,9 @@ Projects panel.
 {{"new_project": "<name>", "say": "..."}} -- they ask for a new project. Use \
 the name they gave; if they gave none, use "ask" for one. The project starts \
 empty: they give it its first task from the link the hub posts.
-{{"ask": "..."}} -- you cannot tell which project they mean, or whether they \
-want anything sent at all: one short question that names the likely projects \
-or what you would send.
+{{"ask": "..."}} -- you cannot tell which project or lane they mean, or whether \
+they want anything sent at all: one short question that names the likely \
+projects or lanes, or what you would send.
 Projects are renamed and deleted, and existing chats added to them, only in \
 the Projects panel: say so when they ask, and never claim it was done.
 
@@ -278,6 +289,17 @@ to you in, what it did or found, and whether it needs anything from them. No \
 code, no lists. The hub puts "{name} finished:" in front itself: do not repeat it.
 
 {reply}\
+"""
+
+#: A lane opened with no topic gets one: its name is what the router tells lanes
+#: apart by, and the start of a long request says little about the work.
+_TOPIC_TASK: Final[str] = """\
+Name the work this request asks for in two to four words, in the language it \
+is written in, for a list of agents working side by side in one project. Say \
+what it works on, and where when that tells it apart: the real robot or a \
+simulation, a remote machine or this one. Reply with the name only.
+
+{request}\
 """
 
 #: A project's own summary in another language than the hub's. Translated
@@ -951,6 +973,40 @@ def parse_decision(reply: str) -> HubDecision:
     if text("answer"):
         return HubDecision(action="answer", text=text("answer"))
     return HubDecision(action="none")
+
+
+#: A forwarded message reporting their consent ("O usuário aprovou o plano…").
+_CLAIMED_YES = re.compile(
+    r"\b(?:aprov(?:ou|aram|ado|ada)|concord(?:ou|aram)|autoriz(?:ou|aram)|"
+    r"approved|agreed|confirmed|signed off|gave the go)\b",
+    re.IGNORECASE,
+)
+#: Words of theirs that can give it.
+_THEIR_YES = re.compile(
+    r"\b(?:sim|pode|podes|ok|okay|beleza|blz|bora|manda|vai|vamo|vamos|fechou|isso|"
+    r"perfeito|show|claro|certo|aprov\w*|concord\w*|autoriz\w*|segue|siga|faz|faça|"
+    r"yes|yep|yeah|sure|go|agree\w*|approv\w*|confirm\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def without_invented_yes(decision: HubDecision, said: str) -> HubDecision:
+    """A send that claims they approved, when nothing they said approves, goes as they said it.
+
+    The router reads "also do X" after a lane's question as a yes and writes
+    that yes into the message; the lane then acts on a plan nobody approved.
+    """
+    if decision.action not in ("send", "new_lane") or not decision.message:
+        return decision
+    if not _CLAIMED_YES.search(decision.message) or _THEIR_YES.search(said):
+        return decision
+    _logger.warning(
+        "hub router claimed an approval they did not give | message=%r said=%r",
+        decision.message[:200],
+        said[:200],
+    )
+    # The confirmation repeats the claim, so the hub's plain one replaces it.
+    return replace(decision, message=said.strip(), text="")
 
 
 def _find(
@@ -1790,7 +1846,7 @@ class Hub:
                 kind="error",
             )
             return
-        decision = parse_decision(reply)
+        decision = without_invented_yes(parse_decision(reply), text)
         _logger.info(
             "hub decision | action=%s handle=%s said=%r",
             decision.action,
@@ -2353,6 +2409,18 @@ class Hub:
         router.tell(entry.text)
         return True
 
+    async def _name_topic(self, message: str) -> str:
+        """Two to four words for a lane's work, or empty when the router can't say."""
+        try:
+            router = await self._router_factory()
+            named = await router.perform(
+                _TOPIC_TASK.format(request=_short(message, 2000)), timeout_s=ROUTE_TIMEOUT_S
+            )
+        except Exception:  # noqa: BLE001 - the request's start still names it
+            return ""
+        named = " ".join(named.strip().strip("\"'.`*").split())
+        return named if 0 < len(named.split()) <= 6 else ""
+
     async def open_lane(
         self,
         project: HubProject,
@@ -2384,6 +2452,8 @@ class Hub:
             return self.say(
                 "I can't open lanes here yet.", kind="error", session_name=project.name
             )
+        if not topic.strip():
+            topic = await self._name_topic(message)
         topic = hub_lanes.topic_name(topic, message)
         pick = await self._lane_run(project, like, message, use)
         if pick.run is None:

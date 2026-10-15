@@ -1565,3 +1565,52 @@ async def test_a_missed_turn_is_reported_from_its_window(tmp_path) -> None:
 
     assert asked == [(BRASA, 100.0, 200.0)]
     assert entry is not None and entry.text == "brasa finished: Build ok."
+
+
+def test_an_approval_they_did_not_give_is_not_forwarded():
+    # 10-15: after a lane asked "shall I start there?", "also look into X"
+    # went out as "they approved the plan and also asked: X".
+    said = (
+        "investiga tambem como fazer a integração do curobo no robo real agora "
+        "com o driver do franka ros2"
+    )
+    decision = hub_module.parse_decision(
+        json.dumps(
+            {
+                "send": "3625",
+                "lane": "4a18",
+                "message": "O usuário aprovou o plano do campo de atração e pediu também: "
+                "investigue a integração do cuRobo no robô real com o `franka_ros2`.",
+                "say": "Pedi ao Franka para avançar com o plano de atração e investigar o cuRobo.",
+            }
+        )
+    )
+    kept = hub_module.without_invented_yes(decision, said)
+    assert kept.message == said
+    assert kept.text == ""
+    assert (kept.handle, kept.lane) == ("3625", "4a18")
+
+
+def test_an_approval_they_gave_is_forwarded_as_written():
+    decision = hub_module.parse_decision(
+        json.dumps(
+            {"send": "3625", "message": "O usuário aprovou o plano; comece pelo campo de atração."}
+        )
+    )
+    assert hub_module.without_invented_yes(decision, "pode, começa por aí") == decision
+
+
+def test_a_message_claiming_no_approval_is_left_alone():
+    decision = hub_module.parse_decision(
+        json.dumps({"send": "3625", "message": "Confirme se o driver está de pé.", "say": "Pedi."})
+    )
+    assert hub_module.without_invented_yes(decision, "ve se o driver ta de pe") == decision
+
+
+def test_the_routing_prompt_still_formats():
+    # The rules are a format string: a stray brace would break every message.
+    text = hub_module._DECIDE_PROMPT.format(
+        projects="", lessons="", context="", files="", how="wrote", message="oi", language="pt-BR"
+    )
+    assert "Never add what they did not say" in text
+    assert "not from which lane spoke last" in text
