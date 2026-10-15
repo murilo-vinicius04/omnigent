@@ -7,6 +7,7 @@ handling are exercised for real without spending a Gemini call.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import stat
 import sys
@@ -37,6 +38,8 @@ for line in sys.stdin:
         sys.exit(9)
     if "PLEASE_HANG" in content:
         time.sleep(30)
+    if "PLEASE_DAWDLE" in content:
+        time.sleep(1)
     sys.stdout.write(json.dumps({"event": "progress", "note": "thinking"}) + "\\n")
     sys.stdout.write(json.dumps({"event": "result", "result": {"response": content}}) + "\\n")
     sys.stdout.flush()
@@ -65,6 +68,21 @@ async def test_notes_do_not_start_a_process(session):
     session.note("summary", "all 10 passed")
     assert session.running is False
     assert [entry.text for entry in session.context] == ["running the tests", "all 10 passed"]
+
+
+async def test_an_abandoned_turn_does_not_answer_the_next_one(session):
+    # A summary whose caller times out from outside cancels the turn while
+    # the CLI is still working. Its late answer must not become the answer
+    # to whatever is asked next: the next turn reads its own.
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(session.perform("PLEASE_DAWDLE summarize this"), timeout=0.3)
+    assert session.running is True
+    first = await session.perform("translate this")
+    assert "translate this" in first
+    assert "summarize this" not in first
+    second = await session.perform("and now this")
+    assert "and now this" in second
+    assert "translate this" not in second
 
 
 async def test_blank_notes_are_dropped(session):

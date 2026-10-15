@@ -479,6 +479,10 @@ class DiscussionSession:
         self._lock = asyncio.Lock()
         self._last_used = time.time()
         self._started_at: float | None = None
+        # Answers still coming for turns whose caller gave up, e.g. an outer
+        # timeout cancelling a summary. Each is skipped before reading the
+        # next turn's answer, or every later turn reads its predecessor's.
+        self._owed = 0
         # Whether the process now held has been given the role and the
         # ledger. False after any respawn, which is what makes a replay
         # get folded into the next message.
@@ -669,6 +673,7 @@ class DiscussionSession:
         except FileNotFoundError as exc:
             raise DiscussionUnavailable(f"{self._binary!r} not found on PATH") from exc
         self._process = process
+        self._owed = 0
         self._started_at = time.time()
         self._stderr_task = asyncio.create_task(self._drain_stderr(process))
         return process
@@ -1155,21 +1160,33 @@ class DiscussionSession:
         # The "event" key is load-bearing: a "type" key is rejected with
         # `stream input message is missing the "event" field`.
         line = json.dumps({"event": "user", "message": {"role": "user", "content": message}})
+        answered = False
         try:
             process.stdin.write(line.encode() + b"\n")
             await process.stdin.drain()
-            return await asyncio.wait_for(self._read_result(process), timeout=timeout_s)
+            answer = await asyncio.wait_for(self._read_result(process), timeout=timeout_s)
+            answered = True
+            return answer
+        except DiscussionUnavailable:
+            # Its result was read (empty or unreadable), or the process ended.
+            answered = True
+            raise
         except (TimeoutError, asyncio.TimeoutError) as exc:
             raise DiscussionUnavailable(f"no answer within {timeout_s:g}s") from exc
         except (BrokenPipeError, ConnectionResetError) as exc:
             raise DiscussionUnavailable(f"companion process died: {self._stderr_tail()}") from exc
+        finally:
+            # Timed out, cancelled from outside, or failed: the answer still comes.
+            if not answered and self._process is process:
+                self._owed += 1
 
     async def _read_result(self, process: asyncio.subprocess.Process) -> str:
         """Read NDJSON until this turn's ``result`` event.
 
         Non-result events (progress, warnings) are skipped; the CLI emits
         exactly one result per input message, so reading to the next one
-        is what pairs an answer with its question.
+        is what pairs an answer with its question -- once the answers owed
+        to abandoned turns are read past.
         """
         stdout = process.stdout
         assert stdout is not None
@@ -1177,6 +1194,10 @@ class DiscussionSession:
             raw = await stdout.readline()
             if not raw:
                 raise DiscussionUnavailable(f"companion process ended: {self._stderr_tail()}")
+            if self._owed and _is_result(raw):
+                self._owed -= 1
+                _logger.info("companion skipped an answer owed to an abandoned turn")
+                continue
             text = raw.decode(errors="replace").strip()
             if not text:
                 continue
@@ -1197,6 +1218,15 @@ class DiscussionSession:
     def _stderr_tail(self) -> str:
         """Return the last stderr lines, for an error message."""
         return " | ".join(self._stderr) or "no stderr"
+
+
+def _is_result(raw: bytes) -> bool:
+    """Whether an NDJSON line from the CLI is a turn's ``result`` event."""
+    try:
+        event = json.loads(raw.decode(errors="replace"))
+    except json.JSONDecodeError:
+        return False
+    return isinstance(event, dict) and event.get("event") == "result"
 
 
 def _unwrap_english(value: object) -> str | None:
