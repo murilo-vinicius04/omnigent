@@ -302,6 +302,27 @@ simulation, a remote machine or this one. Reply with the name only.
 {request}\
 """
 
+#: A lane's name, looked at again as its work moves on.
+_RENAME_TASK: Final[str] = """\
+A lane is one agent working on one topic, side by side with other lanes in \
+the project {project}. Its name tells the person, and the router that sends \
+their messages, which lane does what. Name what this lane works on now in two \
+to four words, in the language its requests are written in. Say where the work \
+happens when that tells it apart from the other lanes: the real robot or a \
+simulation, a remote machine or this one. If its current name still says what \
+it works on, reply with the current name unchanged. Reply with the name only.
+
+Current name: {name}
+Other lanes: {others}
+First request: {first}
+Latest request: {last}
+Latest report: {report}
+Its latest steps, newest first: {steps}\
+"""
+
+#: Reports between looks at a lane's name once it was named from its work.
+RENAME_EVERY_REPORTS: Final[int] = 4
+
 #: A project's own summary in another language than the hub's. Translated
 #: whole: shortening it again is what lost the reader the details.
 _TRANSLATE_TASK: Final[str] = """\
@@ -531,6 +552,33 @@ def touched_paths(items_newest_first: Sequence[Any]) -> list[str]:
         if isinstance(command, str):
             found.extend(m.group(2) for m in _CD.finditer(command))
     return found
+
+
+#: Tool steps a lane's rename is shown: they say where its work happens.
+_STEPS_SHOWN: Final[int] = 12
+
+
+def step_lines(items_newest_first: Sequence[Any], *, limit: int = _STEPS_SHOWN) -> list[str]:
+    """What tool calls did, one short line each: their description, else the command."""
+    lines: list[str] = []
+    for item in items_newest_first:
+        _kind, _response, data = voice_hub.item_fields(item)
+        args = data.get("arguments") if isinstance(data, dict) else None
+        try:
+            parsed = json.loads(args) if isinstance(args, str) else args
+        except ValueError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        said = parsed.get("description") or parsed.get("command") or parsed.get("file_path")
+        if isinstance(said, list):
+            said = " ".join(str(part) for part in said)
+        line = _short(" ".join(str(said or "").split()), 120)
+        if line and line not in lines:
+            lines.append(line)
+        if len(lines) >= limit:
+            break
+    return lines
 
 
 def anchor_dirs(touched: Sequence[str], workspace: str | None) -> list[str]:
@@ -1225,6 +1273,9 @@ class HubState:
         #: Messages waiting for a busy lane, kept across restarts: session id
         #: -> ``{"name": ..., "items": [{"message", "via", "files", "at"}]}``.
         self.held: dict[str, dict[str, Any]] = {}
+        #: Who named each lane and its reports since: session id ->
+        #: ``{"by": "user" | "router", "reports": n}``.
+        self.lane_names: dict[str, dict[str, Any]] = {}
         self._waiters: set[asyncio.Future[None]] = set()
         self._load()
 
@@ -1275,6 +1326,9 @@ class HubState:
         with contextlib.suppress(OSError, ValueError, AttributeError):
             raw = json.loads((self._dir / "held.json").read_text(encoding="utf-8"))
             self.held = {str(k): dict(v) for k, v in raw.items()}
+        with contextlib.suppress(OSError, ValueError, AttributeError):
+            raw = json.loads((self._dir / "lane_names.json").read_text(encoding="utf-8"))
+            self.lane_names = {str(k): dict(v) for k, v in raw.items()}
 
     def keep_watch(
         self, session_id: str, *, sent_at: float, name: str, follow: bool = False, **owner: Any
@@ -1325,6 +1379,18 @@ class HubState:
             self.held.pop(session_id, None)
         self._write("held.json", self.held)
         return found
+
+    def lane_named(self, session_id: str, by: str) -> None:
+        """Record who named a lane; its report count starts over."""
+        self.lane_names[session_id] = {"by": by, "reports": 0}
+        self._write("lane_names.json", self.lane_names)
+
+    def lane_reported(self, session_id: str) -> dict[str, Any]:
+        """Count a lane's report; returns its naming record."""
+        kept = self.lane_names.setdefault(session_id, {"by": "", "reports": 0})
+        kept["reports"] = int(kept.get("reports") or 0) + 1
+        self._write("lane_names.json", self.lane_names)
+        return dict(kept)
 
     def keep_files(self, files: Sequence[dict[str, Any]], at: float) -> None:
         """Remember the files waiting for a send; an empty list forgets them."""
@@ -1448,6 +1514,8 @@ class HubBackend:
     catalog: Callable[[str, str], Awaitable[list[str]]] | None = None
     #: Absolute paths a chat's newest tool calls read, wrote or ran in.
     paths_in_use: Callable[[str], Awaitable[list[str]]] | None = None
+    #: What a chat's newest tool calls did, newest first, one line each.
+    recent_steps: Callable[[str], Awaitable[list[str]]] | None = None
     #: Give a chat another title (its lane's name).
     rename_chat: Callable[[str, str], Awaitable[None]] | None = None
     #: Archive a chat: it leaves its project's lanes.
@@ -2452,6 +2520,8 @@ class Hub:
             return self.say(
                 "I can't open lanes here yet.", kind="error", session_name=project.name
             )
+        # A topic typed in the panel is their name for it; the router may rename the rest.
+        named_by = "user" if via == "panel" and topic.strip() else ""
         if not topic.strip():
             topic = await self._name_topic(message)
         topic = hub_lanes.topic_name(topic, message)
@@ -2489,6 +2559,8 @@ class Hub:
                 session_name=project.name,
                 detail=message,
             )
+        if named_by:
+            self.state.lane_named(session_id, named_by)
         name = f"{project.name} · {topic}"
         lane = HubSession(
             id=session_id,
@@ -2654,6 +2726,7 @@ class Hub:
         if backend.rename_chat is None:
             raise ValueError("lanes can't be renamed here")
         await backend.rename_chat(lane.id, name)
+        self.state.lane_named(lane.id, "user")
         return self.say(
             f"Renamed the lane {lane.lane_name} to {name}.",
             kind="project",
@@ -2965,6 +3038,65 @@ class Hub:
             f"{session.name} finished: {told}"
             + "".join(f"\n  file it handed over: {root / relative}" for _, relative in handed)
         )
+        self._spawn(self._rename_from_work(session.id, told))
+
+    async def _rename_from_work(self, session_id: str, report: str) -> None:
+        """Rename a lane after a report when its work has moved past its name.
+
+        A lane they named themselves keeps its name. One named from the start of
+        a long request is looked at after its first report; one the router
+        named, every :data:`RENAME_EVERY_REPORTS` reports.
+        """
+        try:
+            kept = self.state.lane_reported(session_id)
+            by = str(kept.get("by") or "")
+            if by == "user":
+                return
+            if by == "router" and kept["reports"] < RENAME_EVERY_REPORTS:
+                return
+            project, lane = None, None
+            for candidate in await self.projects(shown=CHATS_SHOWN):
+                lane = next((s for s in candidate.lanes if s.id == session_id), None)
+                if lane is not None:
+                    project = candidate
+                    break
+            if project is None or lane is None or not lane.lane:
+                return
+            others = "; ".join(s.lane_name for s in project.lanes if s.id != lane.id) or "none"
+            backend = self.require_backend()
+            # What it ran says where it works; its words often talk about the other place.
+            steps = await backend.recent_steps(lane.id) if backend.recent_steps else []
+            router = await self._router_factory()
+            named = await router.perform(
+                _RENAME_TASK.format(
+                    project=project.name,
+                    name=lane.lane_name,
+                    others=_short(others, 600),
+                    first=_short(lane.first_ask, 600),
+                    last=_short(lane.last_ask, 600),
+                    report=_short(report, 800),
+                    steps=_short("; ".join(steps), 1200) or "none shown",
+                ),
+                timeout_s=ROUTE_TIMEOUT_S,
+            )
+            named = " ".join(named.strip().strip("\"'.`*").split())
+            if not 0 < len(named.split()) <= 6:
+                return
+            self.state.lane_named(session_id, "router")
+            if named.casefold() == lane.lane_name.casefold():
+                return
+            if backend.rename_chat is None:
+                return
+            await backend.rename_chat(lane.id, hub_lanes.topic_name(named, ""))
+            entry = self.say(
+                f"Renamed the lane {lane.lane_name} to {named}: what it works on now.",
+                kind="project",
+                session_id=lane.id,
+                session_name=f"{project.name} · {named}",
+            )
+            router.tell(entry.text)
+        except Exception:  # noqa: BLE001 - a lane keeps its name when this fails
+            _logger.warning("hub: lane %s not renamed", session_id, exc_info=True)
 
     async def _in_hub_language(
         self, router: HubRouter, session: HubSession, state: TurnState
@@ -3609,6 +3741,16 @@ def store_backend(
         )
         return touched_paths(calls.data)
 
+    async def recent_steps(session_id: str) -> list[str]:
+        calls = await asyncio.to_thread(
+            conversation_store.list_items,
+            session_id,
+            limit=_TURN_CALLS,
+            order="desc",
+            type="function_call",
+        )
+        return step_lines(calls.data)
+
     async def rename_chat(session_id: str, name: str) -> None:
         async with _client() as client:
             response = await client.patch(
@@ -3788,6 +3930,7 @@ def store_backend(
         open_chat=open_chat,
         catalog=catalog,
         paths_in_use=paths_in_use,
+        recent_steps=recent_steps,
         rename_chat=rename_chat,
         close_chat=close_chat,
     )

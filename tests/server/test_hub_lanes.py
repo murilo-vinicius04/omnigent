@@ -31,6 +31,7 @@ class _LaneServer(_Server):
         self.closed: list[str] = []
         self.renamed: list[tuple[str, str]] = []
         self.paths: dict[str, list[str]] = {}
+        self.steps: dict[str, list[str]] = {}
         self.catalogs = {
             "claude": ["sonnet", "opus", "haiku", "opus[1m]"],
             "codex": ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-luna"],
@@ -61,6 +62,9 @@ class _LaneServer(_Server):
         async def paths_in_use(session_id):
             return list(self.paths.get(session_id, []))
 
+        async def recent_steps(session_id):
+            return list(self.steps.get(session_id, []))
+
         async def rename_chat(session_id, name):
             self.renamed.append((session_id, name))
 
@@ -74,6 +78,7 @@ class _LaneServer(_Server):
             open_chat=open_chat,
             catalog=catalog,
             paths_in_use=paths_in_use,
+            recent_steps=recent_steps,
             rename_chat=rename_chat,
             close_chat=close_chat,
         )
@@ -705,3 +710,102 @@ async def test_a_lane_name_the_router_cannot_give_is_the_requests_start(
 
     _, spec = server.opened[0]
     assert spec.topic == "Write the docs for the API."
+
+
+class _NamingRouter(_Router):
+    """Answers a lane-name question with *name*, every other task as usual."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self.name = name
+
+    async def perform(self, task: str, *, timeout_s: float | None = None) -> str:
+        self.performed.append(task)
+        return self.name if "Name what this lane works on now" in task else self.report
+
+
+def _renames(router: _Router) -> list[str]:
+    return [t for t in router.performed if "Name what this lane works on now" in t]
+
+
+async def test_a_lane_is_renamed_by_its_work_after_a_report(tmp_path) -> None:
+    router = _NamingRouter("Teleop remoto Franka real")
+    server = _LaneServer()
+    _two_lanes(server, sim="idle")
+    server.steps[SIM] = ["Run real-recover on the lab PC", "Ramp to fast gains"]
+    hub = _hub(tmp_path, router, server)
+
+    await hub._rename_from_work(SIM, "The driver is up and the pad drives the real arm.")
+    await hub.close()
+
+    assert server.renamed == [(SIM, "Teleop remoto Franka real")]
+    (asked,) = _renames(router)
+    assert "Current name: sim" in asked and "the pad drives the real arm" in asked
+    # What it ran, which says where it works when its words don't.
+    assert "Run real-recover on the lab PC; Ramp to fast gains" in asked
+    assert hub.state.lane_names[SIM] == {"by": "router", "reports": 0}
+    assert "Renamed the lane sim to Teleop remoto Franka real" in hub.state.entries[-1].text
+    assert any("Renamed the lane" in t for t in router.told)
+
+
+async def test_a_lane_they_named_keeps_its_name(tmp_path) -> None:
+    router = _NamingRouter("Something else")
+    server = _LaneServer()
+    _two_lanes(server, sim="idle")
+    hub = _hub(tmp_path, router, server)
+    sim = next(
+        lane
+        for p in await hub.projects(shown=hub_module.CHATS_SHOWN)
+        for lane in p.lanes
+        if lane.id == SIM
+    )
+
+    await hub.rename_lane(sim, "Franka MPC")
+    for _ in range(hub_module.RENAME_EVERY_REPORTS + 1):
+        await hub._rename_from_work(SIM, "It tuned the gains.")
+    await hub.close()
+
+    assert server.renamed == [(SIM, "Franka MPC")]
+    assert _renames(router) == []
+    # Kept across a restart.
+    assert HubState("u1", root=tmp_path).lane_names[SIM]["by"] == "user"
+
+
+async def test_a_router_name_is_looked_at_again_only_every_few_reports(tmp_path) -> None:
+    router = _NamingRouter("sim")
+    server = _LaneServer()
+    _two_lanes(server, sim="idle")
+    hub = _hub(tmp_path, router, server)
+    hub.state.lane_named(SIM, "router")
+
+    for _ in range(hub_module.RENAME_EVERY_REPORTS - 1):
+        await hub._rename_from_work(SIM, "It tuned the gains.")
+    assert _renames(router) == []
+    await hub._rename_from_work(SIM, "It tuned the gains.")
+    await hub.close()
+
+    # Asked once; the name still fits, so nothing changes or is said.
+    assert len(_renames(router)) == 1
+    assert server.renamed == []
+    assert not any("Renamed the lane" in e.text for e in hub.state.entries)
+    assert hub.state.lane_names[SIM]["reports"] == 0
+
+
+def test_a_lanes_steps_are_its_tool_calls_descriptions_newest_first() -> None:
+    def call(**args):
+        return {"type": "function_call", "data": {"name": "Bash", "arguments": json.dumps(args)}}
+
+    items = [
+        call(command="docker exec isaac ...", description="Run the attraction batch in Isaac"),
+        call(command="ls /tmp"),
+        call(file_path="/home/u/franka_mpc/run.sh"),
+        call(command="ls /tmp"),
+        {"type": "function_call", "data": {"name": "Bash", "arguments": "not json"}},
+    ]
+
+    assert hub_module.step_lines(items) == [
+        "Run the attraction batch in Isaac",
+        "ls /tmp",
+        "/home/u/franka_mpc/run.sh",
+    ]
+    assert hub_module.step_lines(items, limit=1) == ["Run the attraction batch in Isaac"]
