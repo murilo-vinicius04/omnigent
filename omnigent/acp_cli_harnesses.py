@@ -116,3 +116,30 @@ ACP_CLI_HARNESSES: dict[str, AcpCliHarness] = {
         aliases=("grok-build",),
     ),
 }
+
+#: Permission stances the generic ACP wrap honors live. ``auto`` (default)
+#: shows an approval card; ``bypassPermissions`` skips the card for a call
+#: no policy had an opinion on. Policy DENY/ASK still run in both.
+ACP_PERMISSION_MODES: frozenset[str] = frozenset({"auto", "bypassPermissions"})
+
+#: Session label holding the live ACP permission stance, so a reload and a
+#: harness respawn both see a mid-session switch. Distinct from the
+#: claude-native label: the vocabularies differ (ACP has no plan/acceptEdits).
+ACP_PERMISSION_MODE_LABEL_KEY = "omnigent.acp.permission_mode"
+
+
+def is_acp_permission_harness(harness: str | None) -> bool:
+    """Whether *harness* can change ACP permission mode on a live session.
+
+    Covers builtin ACP CLI rows (``grok``, ``devin``), the generic ``acp``
+    wrap, and namespaced ``acp:<slug>`` ids.
+
+    :param harness: Canonical or aliased harness id, e.g. ``"grok"``.
+    :returns: True when the harness runs :class:`AcpExecutor`.
+    """
+    if not harness:
+        return False
+    from omnigent.harness_aliases import canonicalize_harness
+
+    name = canonicalize_harness(harness) or harness
+    return name == "acp" or name.startswith("acp:") or name in ACP_CLI_HARNESSES

@@ -112,6 +112,11 @@ import { attachmentKey } from "@/lib/attachments";
 import type { ActiveResponse } from "./types";
 import { supportsEffortControl } from "@/lib/sessionCapabilities";
 import { claudePermissionModeFromSession } from "@/lib/claudePermissionMode";
+import {
+  ACP_DEFAULT_PERMISSION_MODE,
+  acpPermissionModeFromSession,
+  isAcpPermissionSession,
+} from "@/lib/acpPermissionMode";
 import { codexApprovalModeFromSession } from "@/lib/codexApprovalMode";
 import { codexPlanModeFromSession, isCodexNativeSession } from "@/lib/codexPlanMode";
 import { getCurrentAuthorId } from "@/lib/identity";
@@ -3067,9 +3072,13 @@ function sessionBindingPatch(
     costControlModeOverride: session.costControlModeOverride ?? null,
     subagentRoutingOverride: session.subagentRoutingOverride ?? null,
     codexPlanMode: codexPlanModeFromSession(session),
-    claudePermissionMode: isNativeTerminalSessionFn(session)
-      ? (claudePermissionModeFromSession(session) ?? "")
-      : "",
+    claudePermissionMode:
+      acpPermissionModeFromSession(session) ??
+      (isAcpPermissionSession(session)
+        ? ACP_DEFAULT_PERMISSION_MODE
+        : isNativeTerminalSessionFn(session)
+          ? (claudePermissionModeFromSession(session) ?? "")
+          : ""),
     codexApprovalMode: isCodexNativeSession(session)
       ? (codexApprovalModeFromSession(session) ?? "")
       : "",

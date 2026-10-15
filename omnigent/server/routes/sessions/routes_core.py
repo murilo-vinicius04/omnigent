@@ -101,6 +101,8 @@ from omnigent.server.routes._content_type import (
 from omnigent.server.routes._errors import session_not_found as _session_not_found
 from omnigent.server.routes._origin import require_trusted_origin
 from omnigent.server.routes._sessions.common import (
+    _ACP_PERMISSION_MODE_LABEL_KEY,
+    _ACP_PERMISSION_MODES,
     _CLAUDE_NATIVE_PERMISSION_MODE_LABEL_KEY,
     _CLAUDE_NATIVE_PERMISSION_MODES,
     _CLAUDE_NATIVE_UI_LABEL_KEY,
@@ -149,6 +151,7 @@ from omnigent.server.routes._sessions.helpers import (
     _require_cost_control_label_authority,
     _require_permission_mode_forward,
     _reset_runner_resources_after_switch,
+    _resolve_harness,
     _same_provider_family,
     _session_status_from_cache,
     _set_read_state,
@@ -1926,15 +1929,11 @@ def register_core_routes(
             requested_codex_collaboration_mode = body.collaboration_mode
         permission_mode_requested = "permission_mode" in body.model_fields_set
         requested_claude_permission_mode: str | None = None
+        requested_acp_permission_mode: str | None = None
         if permission_mode_requested:
             if body.permission_mode is None:
                 raise OmnigentError(
                     "permission_mode must be a non-empty string",
-                    code=ErrorCode.INVALID_INPUT,
-                )
-            if body.permission_mode not in _CLAUDE_NATIVE_PERMISSION_MODES:
-                raise OmnigentError(
-                    f"permission_mode must be one of {sorted(_CLAUDE_NATIVE_PERMISSION_MODES)}",
                     code=ErrorCode.INVALID_INPUT,
                 )
             conv_for_permission_mode = await asyncio.to_thread(
@@ -1943,15 +1942,33 @@ def register_core_routes(
             )
             if conv_for_permission_mode is None:
                 raise _session_not_found()
-            if (
+            is_claude_native = (
                 conv_for_permission_mode.labels.get(_CLAUDE_NATIVE_WRAPPER_LABEL_KEY)
-                != _CLAUDE_NATIVE_WRAPPER_LABEL_VALUE
-            ):
+                == _CLAUDE_NATIVE_WRAPPER_LABEL_VALUE
+            )
+            from omnigent.acp_cli_harnesses import is_acp_permission_harness
+
+            session_harness = _resolve_harness(conv_for_permission_mode)
+            is_acp = is_acp_permission_harness(session_harness)
+            if is_claude_native:
+                if body.permission_mode not in _CLAUDE_NATIVE_PERMISSION_MODES:
+                    raise OmnigentError(
+                        f"permission_mode must be one of {sorted(_CLAUDE_NATIVE_PERMISSION_MODES)}",
+                        code=ErrorCode.INVALID_INPUT,
+                    )
+                requested_claude_permission_mode = body.permission_mode
+            elif is_acp:
+                if body.permission_mode not in _ACP_PERMISSION_MODES:
+                    raise OmnigentError(
+                        f"permission_mode must be one of {sorted(_ACP_PERMISSION_MODES)}",
+                        code=ErrorCode.INVALID_INPUT,
+                    )
+                requested_acp_permission_mode = body.permission_mode
+            else:
                 raise OmnigentError(
-                    "permission_mode is only supported for claude-native sessions",
+                    "permission_mode is only supported for claude-native and ACP (grok) sessions",
                     code=ErrorCode.INVALID_INPUT,
                 )
-            requested_claude_permission_mode = body.permission_mode
         approval_mode_requested = "approval_mode" in body.model_fields_set
         requested_codex_approval_mode: str | None = None
         if approval_mode_requested:
@@ -2291,6 +2308,25 @@ def register_core_routes(
                     session_id,
                     terminal_launch_args=_merged_permission_args,
                 )
+        if requested_acp_permission_mode is not None and live_forward:
+            _acp_result = await _forward_session_change_to_runner(
+                session_id,
+                runner_router,
+                {
+                    "type": "permission_mode_change",
+                    "permission_mode": requested_acp_permission_mode,
+                },
+            )
+            # A live harness must take the new stance now. No runner is fine:
+            # the label is what a later spawn reads, so the next turn still
+            # honors the pick.
+            if _acp_result is not None and not (200 <= _acp_result.status_code < 300):
+                _require_permission_mode_forward(
+                    session_id,
+                    requested_acp_permission_mode,
+                    _acp_result,
+                )
+            labels_to_set[_ACP_PERMISSION_MODE_LABEL_KEY] = requested_acp_permission_mode
         if requested_codex_approval_mode is not None and live_forward:
             _approval_result = await _forward_session_change_to_runner(
                 session_id,
@@ -2329,6 +2365,11 @@ def register_core_routes(
             _publish_permission_mode(
                 session_id,
                 labels_to_set[_CLAUDE_NATIVE_PERMISSION_MODE_LABEL_KEY],
+            )
+        if _ACP_PERMISSION_MODE_LABEL_KEY in labels_to_set:
+            _publish_permission_mode(
+                session_id,
+                labels_to_set[_ACP_PERMISSION_MODE_LABEL_KEY],
             )
         if _CODEX_NATIVE_APPROVAL_MODE_LABEL_KEY in labels_to_set:
             _publish_codex_approval_mode(

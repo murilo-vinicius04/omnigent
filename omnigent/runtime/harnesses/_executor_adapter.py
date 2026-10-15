@@ -126,6 +126,10 @@ class ExecutorAdapter(HarnessApp):
         self._harness_label = harness_label
         # Lazily-constructed inner executor, reused across turns for the conversation lifetime.
         self._executor: Executor | None = None
+        # ACP permission stance set mid-session before the executor exists.
+        # Applied on first construct so a gear click before the first turn
+        # still takes effect.
+        self._permission_mode_override: str | None = None
         # Per-turn turn context. The stable tool/elicitation/policy bridges read this at call
         # time so MCP handlers that closure-captured the bridge on turn 1 dispatch into the
         # current turn's ctx, not turn 1's dead ctx.
@@ -691,6 +695,31 @@ class ExecutorAdapter(HarnessApp):
         evaluation_id = f"poleval_{secrets.token_hex(16)}"
         return await ctx.evaluate_policy(evaluation_id, phase, data)
 
+    def set_permission_mode(self, mode: str) -> str:
+        """Apply an ACP permission stance to this conversation's executor.
+
+        Stored even when the executor has not been constructed yet, so a
+        mid-session switch before the first turn still lands. A live
+        executor that exposes ``set_permission_mode`` is updated in place.
+
+        :param mode: ``"auto"`` or ``"bypassPermissions"``.
+        :returns: The mode now in effect.
+        :raises ValueError: If *mode* is not an ACP permission stance, or
+            the live executor cannot change permission mode.
+        """
+        from omnigent.acp_cli_harnesses import ACP_PERMISSION_MODES
+
+        if mode not in ACP_PERMISSION_MODES:
+            raise ValueError(
+                f"permission_mode must be one of {sorted(ACP_PERMISSION_MODES)}; got {mode!r}"
+            )
+        self._permission_mode_override = mode
+        executor = self._executor
+        setter = getattr(executor, "set_permission_mode", None) if executor is not None else None
+        if callable(setter):
+            return str(setter(mode))
+        return mode
+
     def _ensure_executor(self) -> Executor:
         """
         Construct the inner executor on first use; return cached
@@ -700,6 +729,10 @@ class ExecutorAdapter(HarnessApp):
         """
         if self._executor is None:
             self._executor = self._executor_factory()
+            override = self._permission_mode_override
+            setter = getattr(self._executor, "set_permission_mode", None)
+            if override is not None and callable(setter):
+                setter(override)
         return self._executor
 
     def _translate_event(self, event: ExecutorEvent, ctx: TurnContext) -> None:

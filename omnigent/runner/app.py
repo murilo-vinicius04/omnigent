@@ -44,7 +44,12 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from omnigent.acp_cli_harnesses import ACP_CLI_HARNESSES
+from omnigent.acp_cli_harnesses import (
+    ACP_CLI_HARNESSES,
+    ACP_PERMISSION_MODE_LABEL_KEY,
+    ACP_PERMISSION_MODES,
+    is_acp_permission_harness,
+)
 from omnigent.debug_logging import runner_primary_session_id
 from omnigent.entities.session_resources import (
     DEFAULT_ENVIRONMENT_ID,
@@ -1607,6 +1612,34 @@ _subagent_ordinal_counters: dict[tuple[str, str], int] = {}
 _session_sub_harness_overrides: dict[str, dict[str, str]] = {}
 _session_sub_model_overrides: dict[str, dict[str, str]] = {}
 _session_sub_effort_overrides: dict[str, dict[str, str]] = {}
+
+# Live ACP permission stance (``auto`` / ``bypassPermissions``), keyed by
+# session. Set by a mid-session PATCH and seeded from the session-init
+# labels so a harness respawn keeps the pick.
+_session_acp_permission_overrides: dict[str, str] = {}
+
+
+def _note_acp_permission_from_labels(session_id: str, labels: Mapping[str, object] | None) -> None:
+    """Seed the ACP permission override from persisted session labels."""
+    if not labels:
+        return
+    raw = labels.get(ACP_PERMISSION_MODE_LABEL_KEY)
+    if isinstance(raw, str) and raw in ACP_PERMISSION_MODES:
+        _session_acp_permission_overrides[session_id] = raw
+
+
+def _apply_acp_permission_override(
+    conv_id: str, spawn_env: dict[str, str] | None
+) -> dict[str, str] | None:
+    """Pin ``HARNESS_ACP_PERMISSION_MODE`` from a mid-session pick, if any."""
+    if spawn_env is None:
+        return None
+    mode = _session_acp_permission_overrides.get(conv_id)
+    if not mode:
+        return spawn_env
+    env = dict(spawn_env)
+    env["HARNESS_ACP_PERMISSION_MODE"] = mode
+    return env
 
 
 def note_session_sub_agent_overrides(
@@ -3872,6 +3905,7 @@ def create_runner_app(
         # endpoint at all.
         _routing_class = init_context.routing_class
         remember_session_routing_class(session_id, _routing_class)
+        _note_acp_permission_from_labels(session_id, init_context.labels)
         if init_context.envelope is not None:
             _note_session_harness_override(
                 session_id, init_context.envelope.snapshot.harness_override
@@ -3972,6 +4006,7 @@ def create_runner_app(
                 session_id=session_id,
                 model_override=_model_override,
             )
+            spawn_env = _apply_acp_permission_override(session_id, spawn_env)
             if spawn_env is None:
                 spawn_env = await _resolve_native_spawn_env(
                     harness_name,
@@ -4600,6 +4635,7 @@ def create_runner_app(
 
         _session_spec_cache.pop(session_id, None)
         _session_harness_overrides.pop(session_id, None)
+        _session_acp_permission_overrides.pop(session_id, None)
         forget_session_sub_agent_overrides(session_id)
         _session_skills_cache.pop(session_id, None)
         _session_cursor_model_names.pop(session_id, None)
@@ -5664,6 +5700,70 @@ def create_runner_app(
                 session_key=session_key,
                 publish_event=_publish_event,
             )
+
+    async def _handle_acp_permission_mode_change(
+        conv_id: str,
+        mode: str | None,
+    ) -> Response:
+        """Switch a live ACP session's permission stance (Grok, Devin, acp).
+
+        The stance lives on the in-process :class:`AcpExecutor`, so this
+        POSTs to the harness subprocess rather than typing into a TUI.
+        Remembered on the runner so a later harness respawn keeps it.
+
+        :param conv_id: Session/conversation id.
+        :param mode: ``"auto"`` or ``"bypassPermissions"``.
+        :returns: 200 with the settled mode, or 400/503 on failure.
+        """
+        if mode is None or not mode.strip():
+            return Response(status_code=204)
+        settled = mode.strip()
+        if settled not in ACP_PERMISSION_MODES:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "invalid_input",
+                    "detail": (f"permission_mode must be one of {sorted(ACP_PERMISSION_MODES)}"),
+                },
+            )
+        _session_acp_permission_overrides[conv_id] = settled
+        if process_manager is None:
+            return JSONResponse(status_code=200, content={"permission_mode": settled})
+        try:
+            harness_client = await process_manager.get_client(conv_id, "any")
+            resp = await harness_client.post(
+                f"/v1/sessions/{conv_id}/permission_mode",
+                json={"permission_mode": settled},
+                timeout=3.0,
+            )
+        except NoLiveHarnessError:
+            # No subprocess yet: the override applies when it spawns.
+            return JSONResponse(status_code=200, content={"permission_mode": settled})
+        except Exception as exc:  # noqa: BLE001 — surface as 503, don't persist a lie
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "acp_permission_mode_failed",
+                    "detail": _client_safe_error_detail(exc, context="ACP permission mode change"),
+                },
+            )
+        if not (200 <= resp.status_code < 300):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "acp_permission_mode_failed",
+                    "detail": f"harness returned {resp.status_code}",
+                },
+            )
+        echoed = settled
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get("permission_mode"), str):
+            echoed = payload["permission_mode"]
+            _session_acp_permission_overrides[conv_id] = echoed
+        return JSONResponse(status_code=200, content={"permission_mode": echoed})
 
     async def _handle_claude_native_permission_mode_change(
         conv_id: str,
@@ -7577,6 +7677,7 @@ def create_runner_app(
                 model_override=cast(str | None, msg_body.get("model_override")),
                 session_id=conv,
             )
+            spawn_env = _apply_acp_permission_override(conv, spawn_env)
             # Gated harnesses use nullable to avoid the fallback literal.
             _authored_bg = raw_author_instructions(cached_spec) is not None
             if harness_name in _GATED_COMPOSED_INSTRUCTION_HARNESSES:
@@ -8029,6 +8130,7 @@ def create_runner_app(
                     },
                 )
 
+        spawn_env = _apply_acp_permission_override(conv_id, spawn_env)
         try:
             client = await manager.get_client(conv_id, harness_name, env=spawn_env)
         except RuntimeError as exc:
@@ -9019,17 +9121,22 @@ def create_runner_app(
 
         if body_type == "permission_mode_change":
             harness = _session_harness_name(conversation_id)
+            mode = body.get("permission_mode") if isinstance(body, dict) else None
+            if mode is not None and not isinstance(mode, str):
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "invalid_input",
+                        "detail": "Body 'permission_mode' must be a string or null",
+                    },
+                )
             if harness == "claude-native":
-                mode = body.get("permission_mode") if isinstance(body, dict) else None
-                if mode is not None and not isinstance(mode, str):
-                    return JSONResponse(
-                        status_code=400,
-                        content={
-                            "error": "invalid_input",
-                            "detail": "Body 'permission_mode' must be a string or null",
-                        },
-                    )
                 return await _handle_claude_native_permission_mode_change(
+                    conversation_id,
+                    mode,
+                )
+            if is_acp_permission_harness(harness):
+                return await _handle_acp_permission_mode_change(
                     conversation_id,
                     mode,
                 )
@@ -11132,6 +11239,7 @@ def create_runner_app(
         _session_spec_cache.pop(session_id, None)
         _session_agent_ids.pop(session_id, None)
         _session_harness_overrides.pop(session_id, None)
+        _session_acp_permission_overrides.pop(session_id, None)
         forget_session_sub_agent_overrides(session_id)
         # Bump so any in-flight fill discards its write rather than reinstating it.
         _session_cache_generations[session_id] = _session_cache_generations.get(session_id, 0) + 1

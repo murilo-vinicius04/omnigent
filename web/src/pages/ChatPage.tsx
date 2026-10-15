@@ -226,6 +226,12 @@ import {
   isClaudeNativeSession,
 } from "@/lib/claudePermissionMode";
 import {
+  ACP_DEFAULT_PERMISSION_MODE,
+  ACP_PERMISSION_MODES,
+  acpPermissionModeLabel,
+  isAcpPermissionSession,
+} from "@/lib/acpPermissionMode";
+import {
   CODEX_NATIVE_RUNTIME_APPROVAL_PRESETS,
   codexApprovalModeLabel,
 } from "@/lib/codexApprovalMode";
@@ -1053,6 +1059,7 @@ export function ChatPage() {
       codexModelOptions={codexModelOptions}
       showCodexPlanMode={shouldShowCodexPlanModeControl(capabilitySource)}
       showClaudePermissionMode={shouldShowClaudePermissionModeControl(capabilitySource)}
+      showAcpPermissionMode={shouldShowAcpPermissionModeControl(capabilitySource)}
       showCodexApprovalMode={shouldShowCodexApprovalModeControl(capabilitySource)}
       showGoalControl={shouldShowGoalControl(capabilitySource)}
       showClaudeGoalControl={shouldShowPollyClaudeGoalControl(activeSession)}
@@ -1303,6 +1310,8 @@ interface MainAgentSurfaceProps {
   /** Show the Codex Plan-mode toggle. */
   showCodexPlanMode: boolean;
   showClaudePermissionMode?: boolean;
+  /** Show the ACP (Grok) Ask / Don't ask permission control. */
+  showAcpPermissionMode?: boolean;
   showCodexApprovalMode?: boolean;
   /** Show the session Goal control. */
   showGoalControl?: boolean;
@@ -1449,6 +1458,7 @@ const MainAgentSurface = memo(function MainAgentSurfaceImpl({
   codexModelOptions,
   showCodexPlanMode,
   showClaudePermissionMode = false,
+  showAcpPermissionMode = false,
   showCodexApprovalMode = false,
   showGoalControl = false,
   showClaudeGoalControl = false,
@@ -1770,6 +1780,7 @@ const MainAgentSurface = memo(function MainAgentSurfaceImpl({
             codexModelOptions={codexModelOptions}
             showCodexPlanMode={showCodexPlanMode}
             showClaudePermissionMode={showClaudePermissionMode}
+            showAcpPermissionMode={showAcpPermissionMode}
             showCodexApprovalMode={showCodexApprovalMode}
             showGoalControl={showGoalControl}
             showClaudeGoalControl={showClaudeGoalControl}
@@ -1895,6 +1906,8 @@ interface ComposerProps {
   /** Show the Codex Plan-mode toggle. */
   showCodexPlanMode: boolean;
   showClaudePermissionMode?: boolean;
+  /** Show the ACP (Grok) Ask / Don't ask permission control. */
+  showAcpPermissionMode?: boolean;
   showCodexApprovalMode?: boolean;
   /** Show the session Goal control. */
   showGoalControl?: boolean;
@@ -2492,6 +2505,7 @@ function ComposerImpl({
   codexModelOptions,
   showCodexPlanMode,
   showClaudePermissionMode = false,
+  showAcpPermissionMode = false,
   showCodexApprovalMode = false,
   showGoalControl = false,
   showClaudeGoalControl = false,
@@ -3781,6 +3795,7 @@ function ComposerImpl({
                 showModels={showModels}
                 showEffort={showEffort}
                 showClaudePermissionMode={showClaudePermissionMode}
+                showAcpPermissionMode={showAcpPermissionMode}
                 showCodexApprovalMode={showCodexApprovalMode}
                 effortLevels={effortLevels}
                 modelPickerKind={modelPickerKind}
@@ -4223,6 +4238,18 @@ export function shouldShowClaudePermissionModeControl(
 }
 
 /**
+ * True when the ACP (Grok) permission picker should be visible.
+ *
+ * ACP sessions can switch ``auto`` / ``bypassPermissions`` live; no
+ * other harness honors that pair on a running conversation.
+ */
+export function shouldShowAcpPermissionModeControl(
+  conv: { harness?: string | null } | null | undefined,
+): boolean {
+  return isAcpPermissionSession(conv);
+}
+
+/**
  * True when the codex-native approval-mode picker should be visible.
  *
  * Codex-native sessions only: the switch drives Codex's own approval/sandbox
@@ -4304,6 +4331,7 @@ function SessionConfigModal({
   showModels,
   showEffort,
   showClaudePermissionMode = false,
+  showAcpPermissionMode = false,
   showCodexApprovalMode = false,
   effortLevels,
   modelPickerKind,
@@ -4319,6 +4347,7 @@ function SessionConfigModal({
   showModels: boolean;
   showEffort: boolean;
   showClaudePermissionMode?: boolean;
+  showAcpPermissionMode?: boolean;
   showCodexApprovalMode?: boolean;
   effortLevels: readonly string[];
   modelPickerKind: NativeModelPickerKind | null;
@@ -4358,7 +4387,9 @@ function SessionConfigModal({
   const [draftModelId, setDraftModelId] = useState<string | null>(resolvedModelId);
   const [draftEffort, setDraftEffort] = useState<string | null>(selectedEffort);
   const [draftRoutingOn, setDraftRoutingOn] = useState(liveRoutingOn);
-  const [draftPermissionMode, setDraftPermissionMode] = useState(claudePermissionMode);
+  const [draftPermissionMode, setDraftPermissionMode] = useState(
+    claudePermissionMode || (showAcpPermissionMode ? ACP_DEFAULT_PERMISSION_MODE : ""),
+  );
   const [draftApprovalMode, setDraftApprovalMode] = useState(codexApprovalMode);
   // Unlike the other drafts (snapshot-on-open), the approval picker must track
   // live store changes while the modal stays open — a /permissions change in
@@ -4507,7 +4538,10 @@ function SessionConfigModal({
           await store.setEffort(draftEffort);
         // Same pane as /model + /effort, so this must stay in the awaited
         // sequence rather than firing concurrently.
-        if (showClaudePermissionMode && draftPermissionMode !== claudePermissionMode)
+        if (
+          (showClaudePermissionMode || showAcpPermissionMode) &&
+          draftPermissionMode !== claudePermissionMode
+        )
           await store.setClaudePermissionMode(draftPermissionMode);
         // Codex approval switch drives Codex's own /permissions popup on the
         // runner — same awaited sequence so it can't race the others.
@@ -4670,6 +4704,40 @@ function SessionConfigModal({
               </Select>
             </ConfigRow>
           )}
+          {showAcpPermissionMode && (
+            <ConfigRow label="Permissions" description="How much Grok asks before acting">
+              <Select
+                value={draftPermissionMode || ACP_DEFAULT_PERMISSION_MODE}
+                onValueChange={setDraftPermissionMode}
+                componentId="chat.composer.permission_mode"
+                valueHasNoPii
+              >
+                <SelectTrigger
+                  className="w-full"
+                  data-testid="composer-config-permission-mode"
+                  aria-label="Permission mode"
+                >
+                  <SelectValue>
+                    {acpPermissionModeLabel(draftPermissionMode || ACP_DEFAULT_PERMISSION_MODE)}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent position="popper" align="start">
+                  {ACP_PERMISSION_MODES.map((mode) => (
+                    <SelectItem
+                      key={mode.value}
+                      value={mode.value}
+                      data-permission-mode={mode.value}
+                    >
+                      <span className="flex flex-col items-start">
+                        <span>{mode.label}</span>
+                        <span className="text-muted-foreground text-xs">{mode.description}</span>
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </ConfigRow>
+          )}
           {showCodexApprovalMode && (
             <ConfigRow label="Approvals" description="How much Codex asks before acting">
               {/* Drives Codex's own /permissions popup by keystroke injection,
@@ -4789,6 +4857,7 @@ function ComposerConfigGear({
   showModels,
   showEffort,
   showClaudePermissionMode = false,
+  showAcpPermissionMode = false,
   showCodexApprovalMode = false,
   effortLevels,
   modelPickerKind,
@@ -4804,6 +4873,7 @@ function ComposerConfigGear({
   showModels: boolean;
   showEffort: boolean;
   showClaudePermissionMode?: boolean;
+  showAcpPermissionMode?: boolean;
   showCodexApprovalMode?: boolean;
   effortLevels: readonly string[];
   modelPickerKind: NativeModelPickerKind | null;
@@ -4842,6 +4912,7 @@ function ComposerConfigGear({
     !costRoutingEligible &&
     !subagentRoutingEligible &&
     !showClaudePermissionMode &&
+    !showAcpPermissionMode &&
     !showCodexApprovalMode
   )
     return null;
@@ -4901,6 +4972,7 @@ function ComposerConfigGear({
         showModels={showModels}
         showEffort={showEffort}
         showClaudePermissionMode={showClaudePermissionMode}
+        showAcpPermissionMode={showAcpPermissionMode}
         showCodexApprovalMode={showCodexApprovalMode}
         effortLevels={effortLevels}
         modelPickerKind={modelPickerKind}

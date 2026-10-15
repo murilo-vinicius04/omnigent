@@ -55,7 +55,7 @@ import secrets
 import shlex
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, TypeAlias
 
@@ -919,6 +919,27 @@ class AcpExecutor(Executor):
         silencing the default would drop meaningful prompts.)
         """
         return self._config.permission_mode == "bypassPermissions"
+
+    def set_permission_mode(self, mode: str) -> str:
+        """Switch the live permission stance without respawning the agent.
+
+        Next ``session/request_permission`` uses the new mode. A card already
+        on screen is unchanged; the reader still has to answer that one.
+
+        :param mode: ``"auto"`` (prompt) or ``"bypassPermissions"`` (skip
+            the card when policy is silent).
+        :returns: The mode now in effect.
+        :raises ValueError: If *mode* is not an ACP permission stance.
+        """
+        from omnigent.acp_cli_harnesses import ACP_PERMISSION_MODES
+
+        if mode not in ACP_PERMISSION_MODES:
+            raise ValueError(
+                f"permission_mode must be one of {sorted(ACP_PERMISSION_MODES)}; got {mode!r}"
+            )
+        self._config = replace(self._config, permission_mode=mode)
+        logger.info("acp permission_mode set to %s", mode)
+        return mode
 
     @staticmethod
     def _permission_options(params: _AcpJsonObject) -> list[_AcpJsonObject]:

@@ -50,9 +50,11 @@ import json
 import logging
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, Response
 
 from omnigent.cli_invocation import cli_invocation
+from omnigent.errors import ErrorCode, OmnigentError
 from omnigent.inner.acp_executor import AcpAgentConfig, AcpExecutor
 from omnigent.inner.acp_extension import NO_ACP_EXTENSION, AcpExtension
 from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec
@@ -179,4 +181,32 @@ def create_app(extension: AcpExtension = NO_ACP_EXTENSION) -> FastAPI:
     adapter = ExecutorAdapter(
         executor_factory=lambda: _build_acp_executor(extension), harness_label=label
     )
-    return adapter.build()
+    app = adapter.build()
+
+    @app.post("/v1/sessions/{conversation_id}/permission_mode")
+    async def set_permission_mode(conversation_id: str, request: Request) -> Response:
+        """Switch the live ACP permission stance without respawning."""
+        denied = adapter._check_auth(request)
+        if denied is not None:
+            return denied
+        adapter._check_conversation_id(request, conversation_id)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — malformed body is a 400
+            raise OmnigentError(
+                "permission_mode body must be JSON",
+                code=ErrorCode.INVALID_INPUT,
+            ) from None
+        mode = body.get("permission_mode") if isinstance(body, dict) else None
+        if not isinstance(mode, str) or not mode.strip():
+            raise OmnigentError(
+                "permission_mode must be a non-empty string",
+                code=ErrorCode.INVALID_INPUT,
+            )
+        try:
+            settled = adapter.set_permission_mode(mode.strip())
+        except ValueError as exc:
+            raise OmnigentError(str(exc), code=ErrorCode.INVALID_INPUT) from exc
+        return JSONResponse({"permission_mode": settled})
+
+    return app

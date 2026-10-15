@@ -18,6 +18,7 @@ import cachetools
 import httpx
 from pydantic import TypeAdapter
 
+from omnigent.acp_cli_harnesses import ACP_PERMISSION_MODE_LABEL_KEY, ACP_PERMISSION_MODES
 from omnigent.db.db_models import LABEL_VALUE_MAX_LEN
 from omnigent.entities.conversation import (
     ITEM_TYPE_TO_DATA_CLS,
@@ -228,6 +229,9 @@ _CLAUDE_NATIVE_PERMISSION_MODE_LABEL_KEY = "omnigent.claude_native.permission_mo
 _CLAUDE_NATIVE_PERMISSION_MODES: frozenset[str] = frozenset(
     {"default", "acceptEdits", "plan", "auto"}
 )
+
+_ACP_PERMISSION_MODE_LABEL_KEY = ACP_PERMISSION_MODE_LABEL_KEY
+_ACP_PERMISSION_MODES = ACP_PERMISSION_MODES
 
 
 _CODEX_NATIVE_SUBAGENT_DISPLAY_FALLBACK = "Codex"
@@ -861,6 +865,8 @@ def get_server_host_registry() -> HostRegistry | None:
 __all__ = [
     "COST_CONTROL_OVERRIDE_VALUES",
     "SUBAGENT_ROUTING_OVERRIDE_VALUES",
+    "_ACP_PERMISSION_MODES",
+    "_ACP_PERMISSION_MODE_LABEL_KEY",
     "_ALLOWED_EVENT_TYPES",
     "_ANTIGRAVITY_NATIVE_ELICITATION_HOOK_TIMEOUT_S",
     "_ANTIGRAVITY_NATIVE_HARNESS",
