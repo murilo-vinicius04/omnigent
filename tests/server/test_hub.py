@@ -291,7 +291,7 @@ class _Server:
             self.checked.append((session_id, question))
             return "18 GB free."
 
-        async def turn(session_id, since):
+        async def turn(session_id, since, until=None):
             return self.turns.pop(0) if len(self.turns) > 1 else self.turns[0]
 
         async def projects():
@@ -1668,6 +1668,21 @@ async def test_a_missed_turn_is_reported_from_its_window(tmp_path) -> None:
 
     assert asked == [(BRASA, 100.0, 200.0)]
     assert entry is not None and entry.text == "brasa finished: Build ok."
+
+
+async def test_a_lane_reported_late_is_followed_again_from_then(tmp_path) -> None:
+    server = _Server()
+    server.turns = [TurnState(status="running", reply="36 of 36 poses.", summary="36 de 36.")]
+    hub = _hub(tmp_path, _Router(), server)
+    lane = HubSession(id=BRASA, title="brasa", nickname="brasa")
+    until = time.time()
+    await hub.report_turn(lane, until - 600, until)
+    await hub.close()
+    assert HubState("u1", root=tmp_path).watches[BRASA] == {
+        "sent_at": until,
+        "name": "brasa",
+        "follow": True,
+    }
 
 
 def test_an_approval_they_did_not_give_is_not_forwarded():

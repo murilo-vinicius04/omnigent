@@ -3033,6 +3033,9 @@ class Hub:
     ) -> HubEntry | None:
         """Report a lane's turn between *since* and *until* that the hub missed.
 
+        A lane nothing watches any more is followed again from *until*, when
+        that is recent: the hub missed it because it stopped looking.
+
         :returns: The report, or ``None`` when that window has no reply.
         """
         backend = self.require_backend()
@@ -3040,6 +3043,9 @@ class Hub:
         if not state.reply:
             return None
         await self._report(session, state)
+        looked_at = (self._watches.get(session.id), self._follows.get(session.id))
+        if time.time() - until < FOLLOW_MAX_S and all(t is None or t.done() for t in looked_at):
+            self.follow(session, until)
         return next((e for e in reversed(self.state.entries) if e.kind == "finished"), None)
 
     async def _ask_again_if_passed_over(self, session: HubSession, state: TurnState) -> None:
