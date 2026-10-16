@@ -1599,6 +1599,21 @@ async def test_a_message_a_busy_lane_passes_over_is_asked_again_once_it_stops(tm
     assert any("Why Gazebo, not Isaac?" in task for task in router.performed)
 
 
+async def test_a_message_asked_again_is_not_wrapped_twice(tmp_path) -> None:
+    router = _Router()
+    router.report = "ignored"
+    server = _Server()
+    _busy_brasa(server, "running")
+    server.turns = [TurnState(status="running"), TurnState(status="idle", reply="Sweep done.")]
+    hub = _hub(tmp_path, router, server)
+    asked = hub_module.ASK_AGAIN.format(message="Why Gazebo?")
+    await hub.send_to(HubSession(id=BRASA, title="brasa"), asked, via="typed")
+    _busy_brasa(server, "idle")
+    await _settle(hub, until=lambda: len(server.sent) == 2)
+    await hub.close()
+    assert server.sent[1][1] == asked
+
+
 async def test_a_message_a_busy_lane_answers_is_not_asked_again(tmp_path) -> None:
     router = _Router()
     router.report = "answered"
@@ -1626,6 +1641,21 @@ async def test_a_message_to_an_idle_lane_is_not_checked_for_an_answer(tmp_path) 
     await _settle(hub, until=lambda: any(e.kind == "finished" for e in hub.state.entries))
     await hub.close()
     assert not any("answered or ignored" in t for t in router.performed)
+
+
+async def test_a_followed_lane_waiting_for_approval_is_told_once(tmp_path) -> None:
+    router = _Router('{"send": "bbbb", "message": "Build it.", "say": "Sent."}')
+    server = _Server()
+    first = TurnState(status="idle", reply="Started the sweep.")
+    asking = TurnState(status="running", woke_itself=True, pending_approvals=1)
+    server.turns = [TurnState(status="running"), first, first, asking, asking, asking]
+    hub = _hub(tmp_path, router, server)
+    hub.submit("build it in brasa")
+    await _settle(hub, until=lambda: any(e.kind == "attention" for e in hub.state.entries))
+    await asyncio.sleep(0.05)
+    await hub.close()
+    told = [e.text for e in hub.state.entries if e.kind == "attention"]
+    assert len(told) == 1 and told[0].endswith("is waiting for your approval.")
 
 
 async def test_a_lane_someone_writes_in_directly_is_no_longer_followed(tmp_path) -> None:

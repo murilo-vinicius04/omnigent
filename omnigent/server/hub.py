@@ -3056,7 +3056,8 @@ class Hub:
         sent = self._mid_task.pop(session.id, [])
         if not sent:
             return
-        message = "\n\n".join(sent)
+        # A message asked again carries the earlier asking: it is asked once, not nested.
+        message = "\n\n".join(sent).replace(ASK_AGAIN.split("{message}")[0], "")
         said = "\n\n".join([*(s.reply for s in state.earlier[:1]), state.reply])
         try:
             router = await self._router_factory()
@@ -3117,6 +3118,7 @@ class Hub:
         settle_polls = max(2, round(self._follow_settle_s / self._poll_s))
         quiet = 0
         ended = True
+        told_approval = False
         try:
             while time.monotonic() < deadline:
                 await asyncio.sleep(self._poll_s)
@@ -3124,6 +3126,17 @@ class Hub:
                 if state.typed:
                     # Someone wrote in the lane's own chat: they are reading it there.
                     return
+                if not state.pending_approvals:
+                    told_approval = False
+                elif not told_approval:
+                    # Running on by itself, it can stop on a permission prompt too.
+                    told_approval = True
+                    self.say(
+                        f"{session.name} is waiting for your approval.",
+                        kind="attention",
+                        session_id=session.id,
+                        session_name=session.name,
+                    )
                 if not state.woke_itself:
                     continue
                 if state.working:
