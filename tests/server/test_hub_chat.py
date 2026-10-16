@@ -844,6 +844,68 @@ async def test_a_reply_and_its_chart_reach_the_hub_as_the_project_shows_them(
     assert copy.content == chart
 
 
+async def test_a_lanes_earlier_turns_and_omnigent_notices_are_read_apart(
+    client, _hub_home, db_uri
+) -> None:
+    from omnigent.entities import NewConversationItem
+    from omnigent.entities.conversation import parse_item_data
+    from tests.server.helpers import create_test_session
+
+    await client.get("/v1/hub")
+    target = await create_test_session(client, title="RAL calib")
+
+    def item(role: str, content: list[dict], response: str) -> NewConversationItem:
+        data = {"type": "message", "role": role, "agent": "claude-native-ui", "content": content}
+        return NewConversationItem(
+            type="message", response_id=response, data=parse_item_data("message", data)
+        )
+
+    def text(said: str) -> list[dict]:
+        return [{"type": "output_text" if said[0] != "<" else "input_text", "text": said}]
+
+    store = SqlAlchemyConversationStore(db_uri)
+    # A turn that answered, a job waking it, then a turn of its own.
+    for role, content, response in [
+        ("assistant", text("PhysX runs at 200 Hz."), "resp_1"),
+        (
+            "assistant",
+            [{"type": "spoken_summary", "text": "A física roda.", "lang": "pt-BR"}],
+            "resp_1",
+        ),
+        ("user", text("<task-notification>render done</task-notification>"), "resp_2"),
+        (
+            "user",
+            [
+                {
+                    "type": "input_text",
+                    "text": "The user sent a new message while you were "
+                    "working:\n[Omnigent] This session is at 61% of its context window.",
+                }
+            ],
+            "resp_2",
+        ),
+        ("user", [{"type": "input_text", "text": "/compact"}], "resp_2"),
+        ("user", text("This session is being continued from a previous conversation."), "resp_2"),
+        ("assistant", text("Rendering frame 400."), "resp_2"),
+        (
+            "assistant",
+            [{"type": "spoken_summary", "text": "Quadro 400.", "lang": "pt-BR"}],
+            "resp_2",
+        ),
+    ]:
+        store.append(target["id"], [item(role, content, response)])
+
+    hub = hub_module.hub_for(None)
+    state = await hub.require_backend().turn(target["id"], 0.0)
+    assert (state.reply, state.summary) == ("Rendering frame 400.", "Quadro 400.")
+    assert [(s.reply, s.summary, s.lang) for s in state.earlier] == [
+        ("PhysX runs at 200 Hz.", "A física roda.", "pt-BR")
+    ]
+    assert state.summary_at is not None
+    # Its own job woke it; Omnigent's notice is nobody reading it in its chat.
+    assert state.woke_itself and not state.typed
+
+
 def test_a_path_given_from_the_repository_the_turn_worked_in_is_linked(tmp_path) -> None:
     repo = tmp_path / "wt" / "friendly-layer"
     (repo / "docs").mkdir(parents=True)

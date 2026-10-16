@@ -89,6 +89,22 @@ FOLLOW_SETTLE_S: Final[float] = 90.0
 #: notification, and the reminder that comes with it).
 _SELF_WAKE_PREFIXES: Final[tuple[str, ...]] = ("<task-notification>", "<system-reminder>")
 
+#: How the messages a compaction puts in a lane begin: Omnigent's notice to
+#: write its notes down, the command, and Claude Code's summary after it.
+#: Nobody wrote them, so they are not someone reading the lane in its own chat.
+_COMPACTION_PREFIXES: Final[tuple[str, ...]] = (
+    "[Omnigent]",
+    "/compact",
+    "This session is being continued from a previous conversation",
+)
+
+#: How Claude Code shows a lane a message that came in mid-turn.
+_MID_TURN: Final[str] = "The user sent a new message while you were working:"
+
+#: A lane that keeps working after a reply it summarized is reported once that
+#: reply has stood this long, instead of only once the lane goes quiet.
+FOLLOW_STALE_S: Final[float] = 180.0
+
 #: A turn's newest tool calls read for the folders it worked in.
 _TURN_CALLS: Final[int] = 300
 
@@ -290,6 +306,31 @@ code, no lists. The hub puts "{name} finished:" in front itself: do not repeat i
 
 {reply}\
 """
+
+#: A message sent into a lane mid-task can be passed over: Claude Code shows it
+#: inside the running turn, and a lane busy with a long job carries on.
+_ANSWERED_TASK: Final[str] = """\
+A message for the project {name} reached it while it was busy with other \
+work, in the middle of its task.
+
+[The message]
+{message}
+
+[What the project said once that stretch of work ended]
+{reply}
+
+Did the project answer the message or act on it in what it said? Count it as \
+answered when it replies to the question, does what was asked, or says it \
+will do it after the current step. Count it as not answered when it only \
+reports on its other work and does not take the message up at all.
+Reply with ONE word: answered or ignored.\
+"""
+
+#: What a lane that passed over a mid-task message is sent once it stops.
+ASK_AGAIN: Final[str] = (
+    "While you were busy you got the message below and did not take it up. "
+    "Answer it now, before going on with anything else:\n\n{message}"
+)
 
 #: A lane opened with no topic gets one: its name is what the router tells lanes
 #: apart by, and the start of a long request says little about the work.
@@ -717,6 +758,16 @@ class ReplyFile:
 
 
 @dataclass(frozen=True)
+class Said:
+    """A reply a lane ended a turn with, and the spoken summary it got."""
+
+    at: float
+    reply: str
+    summary: str
+    lang: str = ""
+
+
+@dataclass(frozen=True)
 class TurnState:
     """Where a session is with the work the hub sent it."""
 
@@ -743,6 +794,12 @@ class TurnState:
     woke_itself: bool = False
     #: Since then, a message someone typed or sent into the chat.
     typed: bool = False
+    #: When the newest reply's summary landed.
+    summary_at: float | None = None
+    #: The summarized replies before the newest one, oldest first: a lane a
+    #: background job keeps waking ends several turns before it goes quiet,
+    #: and the first of them is often the answer.
+    earlier: tuple[Said, ...] = ()
 
     @property
     def working(self) -> bool:
@@ -1331,17 +1388,26 @@ class HubState:
             self.lane_names = {str(k): dict(v) for k, v in raw.items()}
 
     def keep_watch(
-        self, session_id: str, *, sent_at: float, name: str, follow: bool = False, **owner: Any
+        self,
+        session_id: str,
+        *,
+        sent_at: float,
+        name: str,
+        follow: bool = False,
+        mid_task: Sequence[str] = (),
+        **owner: Any,
     ) -> None:
         """Remember a send still to report back, so a restart does not lose it.
 
         :param follow: It was reported; the lane is followed for what it does by itself.
+        :param mid_task: What was sent while it was busy, to check its report against.
         :param owner: ``user_id`` and ``base_url``, for resuming it after a restart.
         """
         self.watches[session_id] = {
             "sent_at": sent_at,
             "name": name,
             **({"follow": True} if follow else {}),
+            **({"mid_task": list(mid_task)} if mid_task else {}),
         }
         self.owner = {**self.owner, **owner}
         self._write("watches.json", {**self.owner, "watches": self.watches})
@@ -1583,6 +1649,8 @@ class Hub:
         #: Lanes followed after their report, in case they go on by themselves.
         self._follows: dict[str, asyncio.Future[None]] = {}
         self._follow_settle_s = FOLLOW_SETTLE_S
+        #: Messages sent into a lane while it was busy, until its report is checked.
+        self._mid_task: dict[str, list[str]] = {}
         self._pending_lane: _PendingLane | None = None
         #: The hub's conversation, when it has one: what the hub says is
         #: written there too (:class:`omnigent.server.hub_chat.HubConversation`).
@@ -2286,6 +2354,10 @@ class Hub:
         attached_here = files is None
         files = self.held_files() if files is None else list(files)
         try:
+            busy = await self._lane_status(session.id) in voice_hub.WORKING_STATUSES
+        except Exception:  # noqa: BLE001 - only decides whether its answer is checked
+            busy = False
+        try:
             await self.require_backend().send(
                 session.id, f"{message}\n\n{brief}" if brief else message, files
             )
@@ -2321,7 +2393,7 @@ class Hub:
         router.tell(
             f"sent to {session.name}: {message}" + (f" (attached: {names})" if files else "")
         )
-        self.watch(session, sent_at)
+        self.watch(session, sent_at, mid_task=message if busy else "")
         if self._judge_tiers and judge:
             self._spawn(self._judge_tier(session, message, before=entry.id))
         return entry
@@ -2815,14 +2887,28 @@ class Hub:
         """The newest logged decision for each chat: what the router would pick."""
         return model_router.last_by_session(self.state.folder / model_router.LOG_NAME)
 
-    def watch(self, session: HubSession, sent_at: float) -> None:
+    def watch(self, session: HubSession, sent_at: float, *, mid_task: str = "") -> None:
         """Report back when the session finishes; one watch per session.
 
         The watch is written down first, so a server restart resumes it
         (:meth:`resume_watches`) instead of losing the report.
+
+        :param mid_task: What was sent while it was busy: checked against its
+            report, and asked again if it was passed over.
         """
+        if mid_task:
+            self._mid_task.setdefault(session.id, []).append(mid_task)
         running = self._watches.get(session.id)
         if running is not None and not running.done():
+            if mid_task:
+                self.state.keep_watch(
+                    session.id,
+                    sent_at=float(
+                        self.state.watches.get(session.id, {}).get("sent_at") or sent_at
+                    ),
+                    name=session.name,
+                    mid_task=self._mid_task[session.id],
+                )
             return
         # New work replaces following the last: its watch reports what comes next.
         following = self._follows.pop(session.id, None)
@@ -2832,6 +2918,7 @@ class Hub:
             session.id,
             sent_at=sent_at,
             name=session.name,
+            mid_task=self._mid_task.get(session.id, ()),
             user_id=self.user_id,
             base_url=getattr(self.chat, "base_url", "") or "",
         )
@@ -2854,6 +2941,8 @@ class Hub:
             if kept.get("follow"):
                 self.follow(session, sent_at)
             else:
+                if kept.get("mid_task"):
+                    self._mid_task[session_id] = [str(m) for m in kept["mid_task"]]
                 self._watches[session_id] = asyncio.ensure_future(self._watch(session, sent_at))
             resumed += 1
         for session_id, kept in list(self.state.held.items()):
@@ -2872,6 +2961,7 @@ class Hub:
         told_approval = False
         ended = True
         reported = False
+        follow_from: float | None = None
         try:
             while time.monotonic() < deadline:
                 await asyncio.sleep(self._poll_s)
@@ -2887,6 +2977,14 @@ class Hub:
                 if state.working:
                     seen_working = True
                     idle_polls = 0
+                    stale = self._stale_report(state)
+                    if stale is not None:
+                        # It ended a turn and runs on by itself: tell what it said, then follow.
+                        await self._report(session, stale)
+                        reported = True
+                        follow_from = (stale.summary_at or time.time()) + 1.5
+                        await self._ask_again_if_passed_over(session, stale)
+                        return
                     continue
                 idle_polls += 1
                 # Idle twice in a row: a native session can go idle a moment
@@ -2898,6 +2996,7 @@ class Hub:
                 ):
                     await self._report(session, state)
                     reported = True
+                    await self._ask_again_if_passed_over(session, state)
                     return
                 # A reply waiting on its summary is reported above once the wait ends.
                 if seen_working and not state.reply and idle_polls >= 6:
@@ -2927,7 +3026,7 @@ class Hub:
             if ended:
                 self.state.drop_watch(session.id)
             if reported:
-                self.follow(session, time.time())
+                self.follow(session, follow_from or time.time())
 
     async def report_turn(
         self, session: HubSession, since: float, until: float
@@ -2942,6 +3041,50 @@ class Hub:
             return None
         await self._report(session, state)
         return next((e for e in reversed(self.state.entries) if e.kind == "finished"), None)
+
+    async def _ask_again_if_passed_over(self, session: HubSession, state: TurnState) -> None:
+        """Ask a lane again what it was sent mid-task when its report passed it over.
+
+        Held like a message for a busy lane, so it goes once the lane stops.
+        """
+        sent = self._mid_task.pop(session.id, [])
+        if not sent:
+            return
+        message = "\n\n".join(sent)
+        said = "\n\n".join([*(s.reply for s in state.earlier[:1]), state.reply])
+        try:
+            router = await self._router_factory()
+            verdict = await router.perform(
+                _ANSWERED_TASK.format(
+                    name=session.name, message=_short(message, 2000), reply=_short(said, 6000)
+                ),
+                timeout_s=ROUTE_TIMEOUT_S,
+            )
+        except Exception:  # noqa: BLE001 - unchecked, it is not asked twice
+            _logger.warning("hub: could not check %s's answer", session.id, exc_info=True)
+            return
+        if "ignored" not in verdict.casefold() or "answered" in verdict.casefold():
+            return
+        self.state.hold(
+            session.id,
+            session.name,
+            {
+                "message": ASK_AGAIN.format(message=message),
+                "via": "typed",
+                "files": [],
+                "at": time.time(),
+            },
+        )
+        entry = self.say(
+            f"{session.name} went on with its work without taking up what you sent it; "
+            "I'll ask it again as soon as it stops.",
+            kind="held",
+            session_id=session.id,
+            session_name=session.name,
+            detail=message,
+        )
+        router.tell(entry.text)
+        self._deliver_when_idle(session)
 
     def follow(self, session: HubSession, since: float) -> None:
         """After a report, report again what the lane goes on to do by itself.
@@ -2979,6 +3122,16 @@ class Hub:
                     continue
                 if state.working:
                     quiet = 0
+                    stale = self._stale_report(state)
+                    if stale is not None:
+                        # A long run of its own: what it summarized so far, not after the run.
+                        await self._report(session, stale)
+                        # Its replies after that summary are still to come.
+                        since = (stale.summary_at or time.time()) + 1.5
+                        self.state.keep_watch(
+                            session.id, sent_at=since, name=session.name, follow=True
+                        )
+                        deadline = time.monotonic() + FOLLOW_MAX_S
                     continue
                 quiet += 1
                 if state.reply and quiet >= settle_polls:
@@ -3000,12 +3153,50 @@ class Hub:
                 if ended:
                     self.state.drop_watch(session.id)
 
+    @staticmethod
+    def _stale_report(state: TurnState) -> TurnState | None:
+        """What a lane still working summarized over :data:`FOLLOW_STALE_S` ago, if anything.
+
+        Only summarized replies: its words since are mid-turn and may change.
+        """
+        if state.summary and state.summary_at is not None:
+            newest = state
+        elif state.earlier:
+            last = state.earlier[-1]
+            newest = replace(
+                state,
+                reply=last.reply,
+                summary=last.summary,
+                summary_lang=last.lang,
+                summary_at=last.at,
+                earlier=state.earlier[:-1],
+                show=(),
+                files=(),
+            )
+        else:
+            return None
+        if time.time() - (newest.summary_at or 0.0) < FOLLOW_STALE_S:
+            return None
+        return newest
+
     async def _report(self, session: HubSession, state: TurnState) -> None:
         reply = state.reply
         router = await self._router_factory()
         # The project's own summary is the report: it is what its chat shows,
         # and a summary of it lost the details the reader came for.
-        told = await self._in_hub_language(router, session, state) if state.summary else ""
+        told = (
+            await self._in_hub_language(router, session, state.summary, state.summary_lang)
+            if state.summary
+            else ""
+        )
+        # A lane its own jobs kept waking ended turns before this one: the
+        # first of them often answered what was sent, and is told first.
+        first = state.earlier[0] if state.earlier else None
+        first_told = (
+            await self._in_hub_language(router, session, first.summary, first.lang)
+            if first
+            else ""
+        )
         if not told:
             try:
                 told = (
@@ -3017,6 +3208,9 @@ class Hub:
             except DiscussionUnavailable:
                 told = _short(reply, 300)
         told = _without_label(told, f"{session.name} finished:")
+        if first is not None:
+            told = f"{first_told}\n\n{told}"
+            reply = f"{first.reply}\n\n---\n\n{reply}"
         from omnigent.server.hub_chat import handed_files
 
         anchors = anchor_dirs(state.touched, state.workspace)
@@ -3099,12 +3293,12 @@ class Hub:
             _logger.warning("hub: lane %s not renamed", session_id, exc_info=True)
 
     async def _in_hub_language(
-        self, router: HubRouter, session: HubSession, state: TurnState
+        self, router: HubRouter, session: HubSession, summary: str, lang: str
     ) -> str:
         """The project's summary in the hub's language: as written, or translated whole."""
-        summary = state.summary.strip()
+        summary = summary.strip()
         hub_lang = await self.language()
-        if not hub_lang or not state.summary_lang or _same_language(hub_lang, state.summary_lang):
+        if not hub_lang or not lang or _same_language(hub_lang, lang):
             return summary
         try:
             translated = (
@@ -3810,28 +4004,42 @@ def store_backend(
         reply, reply_response = "", None
         files: list[ReplyFile] = []
         summaries: list[tuple[Any, dict[str, Any]]] = []
+        # Each turn's newest reply and newest summary, by response.
+        turns: dict[Any, dict[str, Any]] = {}
         woke_itself = typed = False
         for item in recent.data:
-            if float(getattr(item, "created_at", 0) or 0) + 1 < since:
+            at = float(getattr(item, "created_at", 0) or 0)
+            if at + 1 < since:
                 break
             if not in_window(item):
                 continue
             if _role(item.data) == "user":
                 said = _item_text(item.data).lstrip()
+                notice = said.removeprefix(_MID_TURN).lstrip()
                 if said.startswith(_SELF_WAKE_PREFIXES):
                     woke_itself = True
+                elif notice.startswith(_COMPACTION_PREFIXES):
+                    pass
                 elif said:
                     typed = True
                 continue
             if _role(item.data) != "assistant":
                 continue
             files[:0] = reply_files(item.data)
+            response = getattr(item, "response_id", None)
+            told = turns.setdefault(response, {}) if response else {}
             summary = spoken_summary(item.data)
             if summary is not None:
-                summaries.append((getattr(item, "response_id", None), summary))
-            if not reply and _field(item.data, "agent") != "attachment":
-                reply = reply_text(item.data)
-                reply_response = getattr(item, "response_id", None) if reply else None
+                summaries.append((response, summary))
+                told.setdefault("summary", summary)
+                told.setdefault("at", at)
+            if _field(item.data, "agent") != "attachment":
+                text = reply_text(item.data)
+                if text:
+                    told.setdefault("reply", text)
+                if not reply:
+                    reply = text
+                    reply_response = response if reply else None
         calls = await asyncio.to_thread(
             conversation_store.list_items,
             session_id,
@@ -3846,6 +4054,19 @@ def store_backend(
         ]
         # The newest summary of this reply (a summary is revised once its audio is made).
         chosen = next((s for r, s in summaries if r == reply_response), None) if reply else None
+        earlier = sorted(
+            (
+                Said(
+                    at=float(t["at"]),
+                    reply=str(t["reply"]),
+                    summary=str(t["summary"].get("text") or "").strip(),
+                    lang=str(t["summary"].get("lang") or ""),
+                )
+                for r, t in turns.items()
+                if r != reply_response and t.get("reply") and t.get("summary")
+            ),
+            key=lambda said: said.at,
+        )
         show = tuple(
             b
             for b in (chosen or {}).get("show") or []
@@ -3865,6 +4086,8 @@ def store_backend(
             since=since,
             woke_itself=woke_itself,
             typed=typed,
+            summary_at=(turns.get(reply_response) or {}).get("at") if chosen else None,
+            earlier=tuple(s for s in earlier if s.summary),
         )
 
     async def _summaries_on(session_id: str) -> bool:

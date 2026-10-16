@@ -28,6 +28,7 @@ from omnigent.server.hub import (
     HubSession,
     HubState,
     ProjectRecord,
+    Said,
     TurnState,
     assign_handles,
     find_project,
@@ -1523,6 +1524,108 @@ async def test_a_lane_that_goes_on_by_itself_is_reported_once_it_settles(tmp_pat
     await hub.close()
     assert len(reports) == 2  # its answer, then what it did by itself: no ping in between
     assert HubState("u1", root=tmp_path).watches[BRASA]["follow"] is True
+
+
+async def test_a_lane_running_on_by_itself_is_reported_while_it_runs(tmp_path) -> None:
+    router = _Router('{"send": "bbbb", "message": "Build it.", "say": "Sent."}')
+    server = _Server()
+    first = TurnState(status="idle", reply="Started the sweep.")
+    # It ended a turn minutes ago and its jobs keep waking it: never quiet.
+    ran_on = TurnState(
+        status="running",
+        woke_itself=True,
+        reply="Sweep 1 failed at waypoint 0.",
+        summary="A varredura 1 falhou no ponto 0.",
+        summary_at=time.time() - 300,
+    )
+    server.turns = [
+        TurnState(status="running"),
+        first,
+        first,
+        ran_on,
+        TurnState(status="running", woke_itself=True),
+    ]
+    hub = _hub(tmp_path, router, server)
+    hub._follow_settle_s = 60.0
+    hub.submit("build it in brasa")
+    await _settle(hub, until=lambda: sum(e.kind == "finished" for e in hub.state.entries) == 2)
+    reports = [e.text for e in hub.state.entries if e.kind == "finished"]
+    await hub.close()
+    assert reports[1].endswith("A varredura 1 falhou no ponto 0.")
+    # Followed again from after that summary, for what it says next.
+    assert HubState("u1", root=tmp_path).watches[BRASA]["sent_at"] > ran_on.summary_at
+
+
+async def test_a_report_tells_the_first_turn_the_lane_ended_and_its_newest(tmp_path) -> None:
+    router = _Router('{"send": "bbbb", "message": "Is it kinematic?", "say": "Sent."}')
+    server = _Server()
+    answered = Said(at=time.time() - 60, reply="PhysX runs at 200 Hz.", summary="A física roda.")
+    done = TurnState(
+        status="idle",
+        reply="Rendering frame 400 of 494.",
+        summary="Renderizando o quadro 400.",
+        earlier=(answered,),
+    )
+    server.turns = [TurnState(status="running"), done]
+    hub = _hub(tmp_path, router, server)
+    hub.submit("is it kinematic in brasa?")
+    await _settle(hub, until=lambda: any(e.kind == "finished" for e in hub.state.entries))
+    report = next(e for e in hub.state.entries if e.kind == "finished")
+    await hub.close()
+    assert report.text.endswith("A física roda.\n\nRenderizando o quadro 400.")
+    assert report.detail.startswith("PhysX runs at 200 Hz.")
+
+
+def _busy_brasa(server: _Server, status: str) -> None:
+    server.sessions = [replace(s, status=status) if s.id == BRASA else s for s in server.sessions]
+
+
+async def test_a_message_a_busy_lane_passes_over_is_asked_again_once_it_stops(tmp_path) -> None:
+    router = _Router()
+    router.report = "ignored"
+    server = _Server()
+    _busy_brasa(server, "running")
+    done = TurnState(status="idle", reply="Sweep 2 of 3 done.", summary="Varredura 2 de 3.")
+    server.turns = [TurnState(status="running"), done]
+    hub = _hub(tmp_path, router, server)
+    await hub.send_to(HubSession(id=BRASA, title="brasa"), "Why Gazebo, not Isaac?", via="typed")
+    assert HubState("u1", root=tmp_path).watches[BRASA]["mid_task"] == ["Why Gazebo, not Isaac?"]
+    _busy_brasa(server, "idle")
+    await _settle(hub, until=lambda: len(server.sent) == 2)
+    await hub.close()
+    again = server.sent[1][1]
+    assert again.startswith("While you were busy") and again.endswith("Why Gazebo, not Isaac?")
+    assert any("without taking up what you sent" in e.text for e in hub.state.entries)
+    assert any("Why Gazebo, not Isaac?" in task for task in router.performed)
+
+
+async def test_a_message_a_busy_lane_answers_is_not_asked_again(tmp_path) -> None:
+    router = _Router()
+    router.report = "answered"
+    server = _Server()
+    _busy_brasa(server, "running")
+    done = TurnState(status="idle", reply="Gazebo runs the lab's C++ controller.", summary="Ok.")
+    server.turns = [TurnState(status="running"), done]
+    hub = _hub(tmp_path, router, server)
+    await hub.send_to(HubSession(id=BRASA, title="brasa"), "Why Gazebo, not Isaac?", via="typed")
+    _busy_brasa(server, "idle")
+    await _settle(hub, until=lambda: any(e.kind == "finished" for e in hub.state.entries))
+    await _settle(hub, until=lambda: any("answered or ignored" in t for t in router.performed))
+    await asyncio.sleep(0.1)
+    await hub.close()
+    assert len(server.sent) == 1
+    assert not any(e.kind == "held" for e in hub.state.entries)
+
+
+async def test_a_message_to_an_idle_lane_is_not_checked_for_an_answer(tmp_path) -> None:
+    router = _Router()
+    server = _Server()
+    server.turns = [TurnState(status="running"), TurnState(status="idle", reply="Done.")]
+    hub = _hub(tmp_path, router, server)
+    await hub.send_to(HubSession(id=BRASA, title="brasa"), "Run it.", via="typed")
+    await _settle(hub, until=lambda: any(e.kind == "finished" for e in hub.state.entries))
+    await hub.close()
+    assert not any("answered or ignored" in t for t in router.performed)
 
 
 async def test_a_lane_someone_writes_in_directly_is_no_longer_followed(tmp_path) -> None:
