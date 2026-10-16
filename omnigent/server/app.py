@@ -1545,6 +1545,18 @@ def create_app(
             asyncio.create_task(meter_keeper.keep_meters()) if meter_keeper.enabled() else None
         )
 
+        # Stops a working chat before its plan window runs out, to write it up.
+        from omnigent.server import plan_guard
+        from omnigent.server.routes._sessions.orchestration import build_plan_guard
+
+        guard_task = (
+            asyncio.create_task(
+                plan_guard.keep_guard(build_plan_guard(conversation_store, runner_router))
+            )
+            if plan_guard.enabled()
+            else None
+        )
+
         # Report-backs the hub owed when the server last stopped.
         try:
             from omnigent.server import hub_chat
@@ -1564,6 +1576,10 @@ def create_app(
             companion_sweep_task.cancel()
             with suppress(asyncio.CancelledError):
                 await companion_sweep_task
+            if guard_task is not None:
+                guard_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await guard_task
             if meter_task is not None:
                 meter_task.cancel()
                 with suppress(asyncio.CancelledError):

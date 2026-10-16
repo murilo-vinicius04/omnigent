@@ -7788,6 +7788,31 @@ async def _wake_parent_for_blocked_child(
 _detached_auto_compaction: set[asyncio.Task[None]] = set()
 
 
+def _plan_pressure(labels: dict[str, str]) -> Any:
+    """The plan window a session is past the ceiling of, or ``None``."""
+    from omnigent.process_logging import data_dir
+    from omnigent.server import quota_handoff
+
+    try:
+        root = data_dir()
+        return quota_handoff.pressure_for(labels, data_dir=root, hub_dir=root / "hub")
+    except Exception:  # noqa: BLE001 - no plan reading just means no early handoff
+        _logger.debug("auto-compaction: plan pressure unavailable", exc_info=True)
+        return None
+
+
+def _plan_full(labels: dict[str, str]) -> str | None:
+    """Which plan window of a session is full, or ``None``."""
+    from omnigent.process_logging import data_dir
+    from omnigent.server import quota_handoff
+
+    try:
+        return quota_handoff.exhausted(labels, data_dir=data_dir())
+    except Exception:  # noqa: BLE001 - not knowing is not a reason to hold back
+        _logger.debug("auto-compaction: plan state unavailable", exc_info=True)
+        return None
+
+
 async def _run_auto_compaction(
     session_id: str,
     conversation_store: ConversationStore,
@@ -7817,7 +7842,10 @@ async def _run_auto_compaction(
         auto_compact.forget(session_id)
         return
     labels = dict(conv.labels or {})
-    step = auto_compact.next_step(session_id, labels)
+    # Past a plan-window ceiling the write-up is asked for too, so the session
+    # is documented and lean before the provider blocks it.
+    pressure = await asyncio.to_thread(_plan_pressure, labels)
+    step = auto_compact.next_step(session_id, labels, pressure=pressure)
 
     async def _publish_state(state: str) -> None:
         """Tell the UI what compaction is doing, so it is not silent."""
@@ -7856,7 +7884,7 @@ async def _run_auto_compaction(
                 "content": [
                     {
                         "type": "input_text",
-                        "text": auto_compact.DOCUMENTATION_PROMPT.format(pct=round(share)),
+                        "text": auto_compact.prompt_for(session_id, share, pressure),
                     }
                 ],
             },
@@ -7883,12 +7911,22 @@ async def _run_auto_compaction(
             return
         await _publish_state(auto_compact.state_for(step))
         _logger.info(
-            "auto-compaction: asked session=%s to write its context down at %.0f%%",
+            "auto-compaction: asked session=%s to write its context down at %.0f%% (%s)",
             session_id,
             share,
+            auto_compact.reason(session_id),
         )
         return
 
+    full = await asyncio.to_thread(_plan_full, labels)
+    if full:
+        # The write-up may have used the last of the window: a compaction needs
+        # the model too, so it would only fail inside the pane.
+        await _publish_state("")
+        _logger.info(
+            "auto-compaction: not compacting session=%s, its plan is full (%s)", session_id, full
+        )
+        return
     result = await _forward_session_change_to_runner(
         session_id,
         runner_router,
@@ -7905,6 +7943,217 @@ async def _run_auto_compaction(
         session_id,
         share,
         "done" if compacted else f"failed ({status or 'no runner'})",
+    )
+
+
+#: After an interrupt, how long to wait for the chat to read idle before it is
+#: asked to write up anyway (its status can lag behind the interrupt).
+_GUARD_IDLE_WAIT_S = 45.0
+
+
+async def _interrupt_session(session_id: str, runner_router: RunnerRouter | None) -> bool:
+    """Interrupt a session's running turn, as the ``interrupt`` event does.
+
+    :returns: Whether its runner took the interrupt.
+    """
+    from omnigent.server.routes._sessions.helpers import _publish_interrupted
+
+    _publish_interrupted(session_id)
+    _interrupt_fenced_sessions.add(session_id)
+    runner_client = await _get_runner_client(session_id, runner_router)
+    delivered = False
+    if runner_client is not None:
+        try:
+            response = await runner_client.post(
+                f"/v1/sessions/{session_id}/events", json={"type": "interrupt"}, timeout=5.0
+            )
+            delivered = response.status_code < 400
+        except (httpx.HTTPError, ConnectionError):
+            _logger.warning("plan guard: interrupt of %s failed", session_id, exc_info=True)
+    if not delivered:
+        _interrupt_fenced_sessions.discard(session_id)
+    return delivered
+
+
+async def _interrupt_write_up_and_compact(
+    session_id: str,
+    pressure: Any,
+    conversation_store: ConversationStore,
+    runner_router: RunnerRouter | None,
+) -> None:
+    """Stop a session at its plan ceiling, have it write its handoff, compact it.
+
+    Leaves the session idle: resuming would spend the last of the window.
+    """
+    from omnigent.server import auto_compact, hub_handoff
+    from omnigent.server import hub as hub_module
+    from omnigent.server.routes._sessions.common import _COMPACT_TYPE
+    from omnigent.server.routes._sessions.helpers import _TUI_INJECT_FORWARD_TIMEOUT_S
+
+    conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+    if conv is None or not auto_compact.claim(session_id):
+        return
+    try:
+        if not await _interrupt_session(session_id, runner_router):
+            auto_compact._QUOTA_HANDLED.pop(session_id, None)
+            return
+        await asyncio.to_thread(
+            conversation_store.set_labels,
+            session_id,
+            {auto_compact.STATE_LABEL: auto_compact.STATE_WRITING_NOTES},
+        )
+
+        async def _labels() -> dict[str, str]:
+            fresh = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+            return dict(getattr(fresh, "labels", None) or {})
+
+        async def _tokens(_sid: str) -> int:
+            return auto_compact.context_tokens(await _labels())
+
+        async def _compact(_sid: str) -> None:
+            result = await _forward_session_change_to_runner(
+                session_id,
+                runner_router,
+                {"type": _COMPACT_TYPE},
+                timeout_s=_TUI_INJECT_FORWARD_TIMEOUT_S,
+            )
+            if result is None or result.status_code not in (200, 204):
+                raise OmnigentError("compaction was refused", code=ErrorCode.INTERNAL_ERROR)
+
+        async def _landed(_sid: str, since: float) -> bool:
+            page = await asyncio.to_thread(
+                conversation_store.list_items, session_id, limit=1, order="desc", type="compaction"
+            )
+            newest = page.data[0] if page.data else None
+            return newest is not None and float(getattr(newest, "created_at", 0) or 0) + 1 >= since
+
+        async def _blocked(_sid: str) -> str | None:
+            return await asyncio.to_thread(_plan_full, await _labels())
+
+        async def _status(_sid: str) -> str | None:
+            fresh = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+            if fresh is None:
+                return None
+            return hub_module.live_status(session_id, getattr(fresh, "live_status", None)) or ""
+
+        async def _ask(_sid: str, text: str) -> None:
+            runner_client = await _get_runner_client(session_id, runner_router)
+            if runner_client is None:
+                raise OmnigentError("no runner", code=ErrorCode.INTERNAL_ERROR)
+            _ensure_runner_relay(session_id, conv.runner_id, runner_client, conversation_store)
+            body = SessionEventInput(
+                type="message",
+                data={
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                },
+            )
+            await _dispatch_session_event_to_runner(
+                session_id,
+                conv,
+                body,
+                conversation_store,
+                runner_client,
+                agent_name=None,
+                file_store=None,
+                artifact_store=None,
+                runner_router=runner_router,
+            )
+
+        outcome = await hub_handoff.write_up_and_compact(
+            session_id,
+            prompt=auto_compact.INTERRUPT_DOCUMENTATION_PROMPT.format(
+                window=pressure.window, pct=round(pressure.pct), resets=pressure.resets
+            ),
+            compaction=hub_handoff.Compaction(
+                context_tokens=_tokens, compact=_compact, compacted_since=_landed, blocked=_blocked
+            ),
+            send=_ask,
+            status=_status,
+            idle_wait_s=_GUARD_IDLE_WAIT_S,
+            interrupted=True,
+            claimed=True,
+        )
+        _logger.info(
+            "plan guard: %s paused at %s %.0f%% -> %s",
+            session_id,
+            pressure.window,
+            pressure.pct,
+            outcome,
+        )
+        done = outcome == "compacted"
+        await asyncio.to_thread(
+            conversation_store.set_labels,
+            session_id,
+            {auto_compact.STATE_LABEL: auto_compact.STATE_COMPACTED if done else ""},
+        )
+        await _tell_hubs_paused(session_id, pressure, outcome, hub_module)
+    finally:
+        auto_compact.release(session_id)
+
+
+async def _tell_hubs_paused(session_id: str, pressure: Any, outcome: str, hub_module: Any) -> None:
+    """Say in the hub of whoever owns the chat that it was stopped, and why."""
+    from omnigent.server import hub_handoff
+
+    said = hub_handoff.SAID.get(outcome, "")
+    for hub in list(hub_module._HUBS.values()):
+        try:
+            backend = hub.require_backend()
+            records = await backend.projects()
+            if not any(session_id in r.chat_ids for r in records):
+                continue
+            session = next(iter(await backend.sessions([session_id])), None)
+            name = session.name if session is not None else session_id[:8]
+            hub.say(
+                f"Paused {name} at {pressure.pct:.0f}% of its {pressure.window} plan window "
+                f"(resets {pressure.resets}) before it ran out: it was stopped mid-task"
+                + (
+                    ", wrote its handoff and was compacted. It is idle now; tell it to "
+                    "continue after the reset, or switch it elsewhere."
+                    if outcome == "compacted"
+                    else f"; {said or 'the handoff did not finish'}."
+                ),
+                kind="message",
+                session_id=session_id,
+                session_name=name,
+            )
+        except Exception:  # noqa: BLE001 - the notice is a courtesy; the chat is already safe
+            _logger.debug("plan guard: could not tell a hub about %s", session_id, exc_info=True)
+
+
+def build_plan_guard(
+    conversation_store: ConversationStore, runner_router: RunnerRouter | None
+) -> Any:
+    """The plan guard's view of the server: which chats work, their plans, how to stop them."""
+    from omnigent.process_logging import data_dir
+    from omnigent.server import plan_guard
+    from omnigent.server.routes import plan_limits
+
+    root = data_dir()
+
+    def _working() -> list[str]:
+        return [sid for sid, status in list(_session_status_cache.items()) if status == "running"]
+
+    async def _labels(session_id: str) -> dict[str, str] | None:
+        conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+        return dict(conv.labels or {}) if conv is not None else None
+
+    async def _refresh() -> None:
+        await plan_limits.collect_plan_limits()
+
+    async def _act(session_id: str, pressure: Any) -> None:
+        await _interrupt_write_up_and_compact(
+            session_id, pressure, conversation_store, runner_router
+        )
+
+    return plan_guard.Deps(
+        working=_working,
+        labels=_labels,
+        refresh=_refresh,
+        act=_act,
+        data_dir=root,
+        hub_dir=root / "hub",
     )
 
 

@@ -32,7 +32,17 @@ from typing import Any, Final, Literal
 from omnigent.antigravity_native_catalog import _probe_agy_models
 from omnigent.model_fallbacks import SPOKEN_SUMMARY_AGY_DEFAULT_MODEL
 from omnigent.process_logging import data_dir
-from omnigent.server import budget, hub_lanes, hub_models, hub_place, model_router, voice_hub
+from omnigent.server import (
+    auto_compact,
+    budget,
+    hub_handoff,
+    hub_lanes,
+    hub_models,
+    hub_place,
+    model_router,
+    quota_handoff,
+    voice_hub,
+)
 from omnigent.server.discussion import GOOGLE_REFUSED, DiscussionSession, DiscussionUnavailable
 from omnigent.server.hub_models import SessionRun
 
@@ -1550,6 +1560,8 @@ class HubBackend:
     :param file_chat: Put a chat in a project.
     :param configure: Set a chat's model and effort, as its own picker
         does: ``None`` leaves one as is, ``"default"`` clears it.
+    :param compaction: Compact a chat first when its model changes; without it
+        (or without ``status``) a model change applies at once.
     """
 
     sessions: Callable[[Sequence[str]], Awaitable[list[HubSession]]]
@@ -1573,6 +1585,7 @@ class HubBackend:
     #: A chat's live status alone, e.g. ``"running"``; ``None`` once it is
     #: archived or gone.
     status: Callable[[str], Awaitable[str | None]] | None = None
+    compaction: hub_handoff.Compaction | None = None
     #: Open a chat in a project: ``(project_id, spec)`` -> the new chat's id.
     open_chat: Callable[[str, hub_lanes.LaneSpec], Awaitable[str]] | None = None
     #: The model ids a provider's CLI offers on the machine a chat runs on:
@@ -1645,6 +1658,8 @@ class Hub:
         #: Lanes with messages held until they finish, each with its deliverer.
         self._holds: dict[str, asyncio.Task[None]] = {}
         self._tasks: set[asyncio.Task[None]] = set()
+        #: Chats being written up and compacted before a model switch.
+        self._switching: set[str] = set()
         self._poll_s = poll_s
         #: Lanes followed after their report, in case they go on by themselves.
         self._follows: dict[str, asyncio.Future[None]] = {}
@@ -2124,6 +2139,96 @@ class Hub:
         backend = self.require_backend()
         if backend.configure is None:
             return self.say("I can't change models from here yet.", kind="error", **fields)
+        if self._compacts_first(session, new_model):
+            # A chat whose plan is full cannot answer a write-up or a compaction;
+            # asking would only sit until it timed out.
+            full = await backend.compaction.why_blocked(session.id)  # type: ignore[union-attr]
+            if not full:
+                return self._switch_after_handoff(session, new_model, new_effort, via=via)
+            return await self._configure(
+                session, new_model, new_effort, via=via, note=hub_handoff.SAID["blocked"]
+            )
+        return await self._configure(session, new_model, new_effort, via=via)
+
+    def _compacts_first(self, session: HubSession, new_model: str | None) -> bool:
+        """Whether this change of model should write the chat up and compact it first.
+
+        A new model starts with an empty prompt cache, so a big context is paid
+        for again in full. Effort alone and a model it already runs are left
+        alone, and so is a chat the hub cannot follow through a compaction.
+        """
+        backend = self.require_backend()
+        return (
+            new_model is not None
+            and backend.compaction is not None
+            and backend.status is not None
+            and session.run.kind in ("claude", "codex")
+            and session.id not in self._switching
+            and new_model != session.run.selected()
+        )
+
+    def _switch_after_handoff(
+        self, session: HubSession, new_model: str | None, new_effort: str | None, *, via: str
+    ) -> HubEntry:
+        """Write the chat up and compact it in the background, then switch it."""
+        self._switching.add(session.id)
+        target = (
+            "its default model" if new_model == "default" else session.run.label(new_model or "")
+        )
+        fields: dict[str, Any] = {"session_id": session.id, "session_name": session.name}
+        entry = self.say(
+            f"{session.name} will write down where it is and compact before moving to {target}, "
+            "so the new model does not re-read everything; I'll switch it when that's done.",
+            kind="model",
+            via=via,
+            **fields,
+        )
+        self._spawn(self._finish_switch(session, new_model, new_effort, target, via=via))
+        return entry
+
+    async def _finish_switch(
+        self,
+        session: HubSession,
+        new_model: str | None,
+        new_effort: str | None,
+        target: str,
+        *,
+        via: str,
+    ) -> None:
+        backend = self.require_backend()
+        assert backend.compaction is not None and backend.status is not None
+        outcome: hub_handoff.Outcome = "refused"
+        try:
+            outcome = await hub_handoff.write_up_and_compact(
+                session.id,
+                prompt=auto_compact.SWITCH_DOCUMENTATION_PROMPT.format(model=target),
+                compaction=backend.compaction,
+                send=lambda sid, text: backend.send(sid, text, ()),
+                status=backend.status,
+                poll_s=max(self._poll_s, 0.01),
+            )
+        except Exception:  # noqa: BLE001 - the switch still goes ahead
+            _logger.warning("hub handoff before switching %s failed", session.id, exc_info=True)
+        finally:
+            self._switching.discard(session.id)
+        await self._configure(
+            session, new_model, new_effort, via=via, note=hub_handoff.SAID.get(outcome, "")
+        )
+
+    async def _configure(
+        self,
+        session: HubSession,
+        new_model: str | None,
+        new_effort: str | None,
+        *,
+        via: str,
+        note: str = "",
+    ) -> HubEntry:
+        """Apply a model and/or effort to a chat and say so."""
+        backend = self.require_backend()
+        run = session.run
+        fields: dict[str, Any] = {"session_id": session.id, "session_name": session.name}
+        assert backend.configure is not None
         try:
             await backend.configure(session.id, new_model, new_effort)
         except Exception as exc:  # noqa: BLE001 - say it failed, never pretend
@@ -2139,7 +2244,8 @@ class Hub:
         if new_effort is not None:
             parts.append("default effort" if new_effort == "default" else f"{new_effort} effort")
         return self.say(
-            f"Switched {session.name} to {' at '.join(parts)}; it applies from its next message.",
+            f"Switched {session.name} to {' at '.join(parts)}; it applies from its next message."
+            + (f" ({note[0].upper() + note[1:]}.)" if note else ""),
             kind="model",
             via=via,
             **fields,
@@ -3993,6 +4099,29 @@ def store_backend(
                 response.raise_for_status()
         runs.pop(session_id, None)
 
+    async def context_tokens(session_id: str) -> int:
+        conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+        return auto_compact.context_tokens(dict(getattr(conv, "labels", None) or {}))
+
+    async def compact(session_id: str) -> None:
+        async with _client() as client:
+            response = await client.post(
+                f"/v1/sessions/{session_id}/events", json={"type": "compact"}, headers=headers
+            )
+        response.raise_for_status()
+
+    async def blocked(session_id: str) -> str | None:
+        conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+        labels = dict(getattr(conv, "labels", None) or {})
+        return await asyncio.to_thread(quota_handoff.exhausted, labels, data_dir=data_dir())
+
+    async def compacted_since(session_id: str, since: float) -> bool:
+        page = await asyncio.to_thread(
+            conversation_store.list_items, session_id, limit=1, order="desc", type="compaction"
+        )
+        newest = page.data[0] if page.data else None
+        return newest is not None and float(getattr(newest, "created_at", 0) or 0) + 1 >= since
+
     async def check(session_id: str, question: str) -> str:
         conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
         companion = await companions().get(session_id)
@@ -4175,4 +4304,10 @@ def store_backend(
         recent_steps=recent_steps,
         rename_chat=rename_chat,
         close_chat=close_chat,
+        compaction=hub_handoff.Compaction(
+            context_tokens=context_tokens,
+            compact=compact,
+            compacted_since=compacted_since,
+            blocked=blocked,
+        ),
     )

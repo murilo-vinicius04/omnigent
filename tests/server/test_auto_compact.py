@@ -15,6 +15,9 @@ from omnigent.server import auto_compact
 def _clean_state() -> None:
     auto_compact._ASKED.clear()
     auto_compact._LAST_COMPACTED.clear()
+    auto_compact._REASON.clear()
+    auto_compact._CLAIMED.clear()
+    auto_compact._QUOTA_HANDLED.clear()
 
 
 def _labels(tokens: int, window: int, **extra: str) -> dict[str, str]:
@@ -173,3 +176,149 @@ async def test_a_summary_that_never_lands_does_not_block_compaction(
             break
     assert ran == ["conv_b"]
     never.cancel()
+
+
+# -- plan window pressure -----------------------------------------------------
+
+
+def _pressure(pct: float, key: str = "codex:5h:2026-10-16T19:13:05+00:00"):
+    return auto_compact.Pressure(window="5h", pct=pct, limit=80.0, key=key, resets="at 16:13")
+
+
+def test_a_window_past_its_ceiling_asks_for_the_write_up_even_with_a_small_context() -> None:
+    # 120k of 1M is nowhere near the context threshold; the window is what matters.
+    labels = _labels(120_000, 1_000_000)
+    assert auto_compact.next_step("conv_a", labels, pressure=_pressure(86)) == "write-notes"
+    assert auto_compact.reason("conv_a") == "quota"
+    assert auto_compact.next_step("conv_a", labels, pressure=_pressure(88)) == "compact"
+
+
+def test_a_window_below_its_ceiling_or_already_blocked_does_nothing() -> None:
+    labels = _labels(120_000, 1_000_000)
+    assert auto_compact.next_step("conv_a", labels, pressure=_pressure(79)) is None
+    # At 100% the session cannot answer a write-up request anyway.
+    assert auto_compact.next_step("conv_a", labels, pressure=_pressure(100)) is None
+
+
+def test_a_context_too_small_to_matter_is_not_compacted_for_the_window() -> None:
+    assert (
+        auto_compact.next_step("conv_a", _labels(10_000, 1_000_000), pressure=_pressure(90))
+        is None
+    )
+
+
+def test_one_window_asks_once_but_the_next_window_asks_again() -> None:
+    labels = _labels(120_000, 1_000_000)
+    assert auto_compact.next_step("conv_a", labels, pressure=_pressure(86)) == "write-notes"
+    assert auto_compact.next_step("conv_a", labels, pressure=_pressure(87)) == "compact"
+    # Still big and still past the ceiling in the same window: not asked again.
+    assert auto_compact.next_step("conv_a", labels, now=10_000.0, pressure=_pressure(90)) is None
+    later = _pressure(86, key="codex:5h:2026-10-17T00:13:05+00:00")
+    assert auto_compact.next_step("conv_a", labels, now=20_000.0, pressure=later) == "write-notes"
+
+
+def test_a_crossing_that_could_not_be_asked_is_asked_again_next_turn() -> None:
+    labels = _labels(120_000, 1_000_000)
+    assert auto_compact.next_step("conv_a", labels, pressure=_pressure(86)) == "write-notes"
+    auto_compact.forget("conv_a")  # the runner was unreachable
+    assert auto_compact.next_step("conv_a", labels, pressure=_pressure(86)) == "write-notes"
+
+
+def test_the_prompt_says_which_window_and_when_it_resets() -> None:
+    auto_compact.next_step("conv_a", _labels(120_000, 1_000_000), pressure=_pressure(86))
+    text = auto_compact.prompt_for("conv_a", 12.0, _pressure(86))
+    assert "5h plan window" in text and "86%" in text and "at 16:13" in text
+    # A context-driven request keeps the old wording.
+    auto_compact.forget("conv_b")
+    assert "12% of its context window" in auto_compact.prompt_for("conv_b", 12.0)
+
+
+def test_a_claimed_session_is_left_to_the_flow_that_claimed_it() -> None:
+    assert auto_compact.claim("conv_a") is True
+    assert auto_compact.claim("conv_a") is False
+    assert auto_compact.next_step("conv_a", _labels(900_000, 1_000_000)) is None
+    assert (
+        auto_compact.next_step("conv_a", _labels(120_000, 1_000_000), pressure=_pressure(90))
+        is None
+    )
+    auto_compact.release("conv_a", compacted=True)
+    # Just compacted: the share check holds off, so it is not asked at once.
+    assert auto_compact.next_step("conv_a", _labels(900_000, 1_000_000)) is None
+
+
+async def test_a_turn_end_past_the_window_ceiling_asks_then_compacts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from omnigent.server.routes._sessions import orchestration
+
+    labels = _labels(120_000, 1_000_000)
+    store = SimpleNamespace(
+        get_conversation=lambda _sid: SimpleNamespace(labels=dict(labels), runner_id="r1"),
+        set_labels=lambda _sid, new: labels.update(new),
+    )
+    sent: list[str] = []
+    forwarded: list[dict] = []
+
+    async def _client(*_args: object) -> object:
+        return object()
+
+    async def _dispatch(_sid, _conv, body, *_args, **_kwargs) -> None:
+        sent.append(body.data["content"][0]["text"])
+
+    async def _forward(_sid, _router, body, **_kwargs):
+        forwarded.append(body)
+        return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(orchestration, "_get_runner_client", _client)
+    monkeypatch.setattr(orchestration, "_ensure_runner_relay", lambda *a, **k: None)
+    monkeypatch.setattr(orchestration, "_dispatch_session_event_to_runner", _dispatch)
+    monkeypatch.setattr(orchestration, "_forward_session_change_to_runner", _forward)
+    monkeypatch.setattr(orchestration, "_plan_pressure", lambda _labels: _pressure(86))
+
+    await orchestration._run_auto_compaction("conv_q", store, None)  # type: ignore[arg-type]
+    assert len(sent) == 1 and "5h plan window" in sent[0] and "86%" in sent[0]
+    assert forwarded == []  # the write-up comes first
+    assert labels[auto_compact.STATE_LABEL] == auto_compact.STATE_WRITING_NOTES
+
+    await orchestration._run_auto_compaction("conv_q", store, None)  # type: ignore[arg-type]
+    assert [f["type"] for f in forwarded] == ["compact"]
+    assert labels[auto_compact.STATE_LABEL] == auto_compact.STATE_COMPACTED
+
+
+async def test_the_compaction_step_is_skipped_when_the_write_up_filled_the_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from omnigent.server.routes._sessions import orchestration
+
+    labels = _labels(120_000, 1_000_000)
+    store = SimpleNamespace(
+        get_conversation=lambda _sid: SimpleNamespace(labels=dict(labels), runner_id="r1"),
+        set_labels=lambda _sid, new: labels.update(new),
+    )
+    forwarded: list[dict] = []
+
+    async def _client(*_args: object) -> object:
+        return object()
+
+    async def _dispatch(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def _forward(_sid, _router, body, **_kwargs):
+        forwarded.append(body)
+        return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(orchestration, "_get_runner_client", _client)
+    monkeypatch.setattr(orchestration, "_ensure_runner_relay", lambda *a, **k: None)
+    monkeypatch.setattr(orchestration, "_dispatch_session_event_to_runner", _dispatch)
+    monkeypatch.setattr(orchestration, "_forward_session_change_to_runner", _forward)
+    monkeypatch.setattr(orchestration, "_plan_pressure", lambda _labels: _pressure(86))
+
+    await orchestration._run_auto_compaction("conv_f", store, None)  # type: ignore[arg-type]
+    monkeypatch.setattr(orchestration, "_plan_full", lambda _labels: "5h window full until 16:13")
+    await orchestration._run_auto_compaction("conv_f", store, None)  # type: ignore[arg-type]
+    assert forwarded == []  # nothing typed into a pane whose plan turns requests away
+    assert labels[auto_compact.STATE_LABEL] == ""
