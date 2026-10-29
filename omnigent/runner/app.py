@@ -2932,6 +2932,7 @@ def create_runner_app(
     # retries those) while the store's single-flight probe completes in the
     # background.
     _claude_model_options_rows: dict[str, tuple[float, list[dict[str, object]]]] = {}
+    _antigravity_model_options_rows: dict[str, tuple[float, list[dict[str, object]]]] = {}
 
     async def _resolve_session_claude_launch_config(
         session_id: str,
@@ -3521,6 +3522,11 @@ def create_runner_app(
                     if isinstance(raw_agent_name, str) and raw_agent_name:
                         agent_name = raw_agent_name
                     raw_labels = body.get("labels")
+                    if isinstance(raw_labels, dict) and _session_cache_generation_is_current(
+                        session_id, generation
+                    ):
+                        # Agent switches clear the override without another session-init.
+                        _note_acp_permission_from_labels(session_id, raw_labels)
                     claude_task_mirror = isinstance(raw_labels, dict) and bool(
                         raw_labels.get(CLAUDE_TASK_MIRROR_LABEL_KEY)
                     )
@@ -4639,6 +4645,7 @@ def create_runner_app(
         forget_session_sub_agent_overrides(session_id)
         _session_skills_cache.pop(session_id, None)
         _session_cursor_model_names.pop(session_id, None)
+        _antigravity_model_options_rows.pop(session_id, None)
         _drop_session_claude_launch_config(session_id)
         _session_start_cache.pop(session_id, None)
         _session_workspace_cache.pop(session_id, None)
@@ -5772,15 +5779,19 @@ def create_runner_app(
         """
         Switch a live claude-native session's permission mode.
 
-        Claude Code can only set the mode at launch (``--permission-mode``)
-        or from its own shift+tab cycle, so the bridge drives that cycle
-        and verifies the pane landed on *mode*. A 200 carries the mode now
-        rendered, which the Omnigent server persists as the session's
-        current mode.
+        Drive Claude's mode cycle, resuming the exact native conversation
+        when an older launch has not enabled bypass. Only acknowledge the
+        mode after its footer is visible in the live pane.
         """
         from omnigent.claude_native_bridge import (
+            ClaudePermissionModeRestartBlocked,
+            ClaudePermissionModeUnavailable,
             bridge_dir_for_bridge_id,
+            permission_mode_resume_args,
+            prepare_permission_mode_resume,
+            read_claude_status_model,
             set_permission_mode,
+            write_tmux_target,
         )
 
         if mode is None or not mode.strip():
@@ -5792,11 +5803,63 @@ def create_runner_app(
         bridge_dir = bridge_dir_for_bridge_id(bridge_id)
         await _prepare_claude_native_pane_for_injection(conv_id, bridge_dir)
         try:
-            settled = await asyncio.to_thread(
-                set_permission_mode,
-                bridge_dir,
-                mode=mode.strip(),
-                timeout_s=1.0,
+            lock = _claude_terminal_ensure_locks.setdefault(conv_id, asyncio.Lock())
+            async with lock:
+                try:
+                    settled = await asyncio.to_thread(
+                        set_permission_mode,
+                        bridge_dir,
+                        mode=mode.strip(),
+                        timeout_s=1.0,
+                    )
+                except ClaudePermissionModeUnavailable:
+                    if mode.strip() != "bypassPermissions":
+                        raise
+                    if conv_id in _live_response_id:
+                        raise ClaudePermissionModeRestartBlocked(
+                            "Wait for Claude to finish or stop its turn before enabling bypass."
+                        ) from None
+                    registry = resource_registry.terminal_registry if resource_registry else None
+                    instance = registry.get(conv_id, "claude", "main") if registry else None
+                    if instance is None:
+                        raise RuntimeError("Claude terminal is unavailable for resume") from None
+                    pane_pid = await asyncio.to_thread(instance.pane_pid_sync)
+                    native_id = await asyncio.to_thread(
+                        prepare_permission_mode_resume,
+                        bridge_dir,
+                        mode=mode.strip(),
+                        pane_pid=pane_pid,
+                    )
+                    resume_args = permission_mode_resume_args(
+                        instance.args,
+                        session_id=native_id,
+                        mode=mode.strip(),
+                        model=await asyncio.to_thread(read_claude_status_model, bridge_dir),
+                        effort=_session_reasoning_effort.get(conv_id),
+                    )
+                    await instance.respawn(args=resume_args)
+                    await resource_registry.observe_required_terminal(
+                        conv_id,
+                        "claude",
+                        "main",
+                        instance,
+                        resource_role=CLAUDE_NATIVE_TERMINAL_ROLE,
+                    )
+                    write_tmux_target(
+                        bridge_dir,
+                        socket_path=instance.socket_path,
+                        tmux_target=instance.tmux_target,
+                    )
+                    settled = await asyncio.to_thread(
+                        set_permission_mode,
+                        bridge_dir,
+                        mode=mode.strip(),
+                        timeout_s=_CLAUDE_PANE_READY_TIMEOUT_S,
+                    )
+        except ClaudePermissionModeRestartBlocked as exc:
+            return JSONResponse(
+                status_code=409,
+                content={"error": "claude_native_permission_mode_failed", "detail": str(exc)},
             )
         except (RuntimeError, ValueError) as exc:
             return JSONResponse(
@@ -6175,6 +6238,80 @@ def create_runner_app(
                 content={
                     "error": "kiro_native_model_failed",
                     "detail": _client_safe_error_detail(exc, context="kiro-native model change"),
+                },
+            )
+        return Response(status_code=204)
+
+    async def _antigravity_native_bridge_dir_for_session(conv_id: str) -> Path:
+        from omnigent.antigravity_native_bridge import (
+            ANTIGRAVITY_NATIVE_BRIDGE_ID_LABEL_KEY,
+            bridge_dir_for_bridge_id,
+        )
+
+        labels = (
+            await _session_labels_for_runner_spawn(
+                server_client=server_client,
+                session_id=conv_id,
+            )
+            if server_client is not None
+            else {}
+        )
+        bridge_id = labels.get(ANTIGRAVITY_NATIVE_BRIDGE_ID_LABEL_KEY) or conv_id
+        return bridge_dir_for_bridge_id(bridge_id)
+
+    async def _handle_antigravity_native_effort_change(
+        conv_id: str,
+        effort: str | None,
+    ) -> Response:
+        from omnigent.antigravity_native_bridge import inject_slash_command_via_tui
+        from omnigent.reasoning_effort import ANTIGRAVITY_EFFORTS
+
+        if effort is None or effort not in ANTIGRAVITY_EFFORTS:
+            return Response(status_code=204)
+        bridge_dir = await _antigravity_native_bridge_dir_for_session(conv_id)
+        try:
+            await asyncio.to_thread(
+                inject_slash_command_via_tui,
+                bridge_dir,
+                command=f"/effort {effort}",
+                timeout_s=5.0,
+            )
+        except (RuntimeError, ValueError) as exc:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "antigravity_native_effort_failed",
+                    "detail": _client_safe_error_detail(
+                        exc, context="antigravity-native effort change"
+                    ),
+                },
+            )
+        return Response(status_code=204)
+
+    async def _handle_antigravity_native_model_change(
+        conv_id: str,
+        model: str | None,
+    ) -> Response:
+        from omnigent.antigravity_native_bridge import inject_slash_command_via_tui
+
+        if model is None or not model.strip():
+            return Response(status_code=204)
+        bridge_dir = await _antigravity_native_bridge_dir_for_session(conv_id)
+        try:
+            await asyncio.to_thread(
+                inject_slash_command_via_tui,
+                bridge_dir,
+                command=f"/model {model.strip()}",
+                timeout_s=5.0,
+            )
+        except (RuntimeError, ValueError) as exc:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "antigravity_native_model_failed",
+                    "detail": _client_safe_error_detail(
+                        exc, context="antigravity-native model change"
+                    ),
                 },
             )
         return Response(status_code=204)
@@ -7677,6 +7814,11 @@ def create_runner_app(
                 model_override=cast(str | None, msg_body.get("model_override")),
                 session_id=conv,
             )
+            if (
+                is_acp_permission_harness(harness_name)
+                and conv not in _session_acp_permission_overrides
+            ):
+                await _session_snapshot(conv)
             spawn_env = _apply_acp_permission_override(conv, spawn_env)
             # Gated harnesses use nullable to avoid the fallback literal.
             _authored_bg = raw_author_instructions(cached_spec) is not None
@@ -8130,6 +8272,11 @@ def create_runner_app(
                     },
                 )
 
+        if (
+            is_acp_permission_harness(harness_name)
+            and conv_id not in _session_acp_permission_overrides
+        ):
+            await _session_snapshot(conv_id)
         spawn_env = _apply_acp_permission_override(conv_id, spawn_env)
         try:
             client = await manager.get_client(conv_id, harness_name, env=spawn_env)
@@ -9032,7 +9179,7 @@ def create_runner_app(
                 _session_reasoning_effort[conversation_id] = effort
             else:
                 _session_reasoning_effort.pop(conversation_id, None)
-            if harness in ("claude-native", "codex-native", "pi-native"):
+            if harness in ("claude-native", "codex-native", "pi-native", "antigravity-native"):
                 if harness == "codex-native":
                     return await _handle_codex_native_settings_update(
                         conversation_id,
@@ -9040,6 +9187,11 @@ def create_runner_app(
                     )
                 if harness == "pi-native":
                     return await _handle_pi_native_effort_change(
+                        conversation_id,
+                        effort,
+                    )
+                if harness == "antigravity-native":
+                    return await _handle_antigravity_native_effort_change(
                         conversation_id,
                         effort,
                     )
@@ -9058,6 +9210,7 @@ def create_runner_app(
                 "opencode-native",
                 "kiro-native",
                 "pi-native",
+                "antigravity-native",
             ):
                 model = body.get("model") if isinstance(body, dict) else None
                 if model is not None and not isinstance(model, str):
@@ -9092,6 +9245,11 @@ def create_runner_app(
                     )
                 if harness == "pi-native":
                     return await _handle_pi_native_model_change(
+                        conversation_id,
+                        model,
+                    )
+                if harness == "antigravity-native":
+                    return await _handle_antigravity_native_model_change(
                         conversation_id,
                         model,
                     )
@@ -10951,6 +11109,59 @@ def create_runner_app(
         )
         return JSONResponse(status_code=200, content={"models": rows})
 
+    @app.get("/v1/sessions/{session_id}/antigravity-model-options")
+    async def get_session_antigravity_model_options(session_id: str) -> JSONResponse:
+        if _session_harness_name(session_id) not in ("antigravity-native", "antigravity"):
+            return JSONResponse(status_code=200, content={"models": []})
+        cached = _antigravity_model_options_rows.get(session_id)
+        if cached is not None:
+            expires_at, cached_rows = cached
+            if time.monotonic() < expires_at:
+                return JSONResponse(status_code=200, content={"models": cached_rows})
+        from omnigent.antigravity_native_catalog import antigravity_launch_catalog
+
+        try:
+            async with asyncio.timeout(_CLAUDE_MODEL_OPTIONS_INLINE_WAIT_S):
+                rows = await antigravity_launch_catalog()
+        except TimeoutError:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "antigravity_native_model_options_pending",
+                    "detail": "the harness model probe is still resolving",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — retryable model-options failure
+            _logger.warning(
+                "Antigravity model discovery failed for session=%s",
+                session_id,
+                exc_info=True,
+                extra={"session_id": session_id},
+            )
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "antigravity_native_model_options_failed",
+                    "detail": _client_safe_error_detail(
+                        exc, context="antigravity-native model options"
+                    ),
+                },
+            )
+        if not rows:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "antigravity_native_model_options_failed",
+                    "detail": "the harness model probe failed; retrying",
+                },
+            )
+        rows = _with_model_configuration_source(session_id, rows)
+        _antigravity_model_options_rows[session_id] = (
+            time.monotonic() + _CLAUDE_MODEL_OPTIONS_CACHE_TTL_S,
+            rows,
+        )
+        return JSONResponse(status_code=200, content={"models": rows})
+
     @app.get("/v1/sessions/{session_id}/model-options")
     async def get_session_model_options(session_id: str) -> JSONResponse:
         """One route for every harness family's session model listing.
@@ -10968,6 +11179,8 @@ def create_runner_app(
             return await get_session_cursor_model_options(session_id)
         if harness == "kiro-native":
             return await get_session_kiro_model_options(session_id)
+        if harness in ("antigravity-native", "antigravity"):
+            return await get_session_antigravity_model_options(session_id)
         return JSONResponse(status_code=200, content={"models": []})
 
     @app.post("/v1/sessions/{session_id}/skills/resolve")
@@ -11246,6 +11459,7 @@ def create_runner_app(
         _session_snapshot_cache.pop(session_id, None)
         _session_skills_cache.pop(session_id, None)
         _session_cursor_model_names.pop(session_id, None)
+        _antigravity_model_options_rows.pop(session_id, None)
         _drop_session_claude_launch_config(session_id)
         _session_tool_schemas.pop(session_id, None)
         _session_mcp_spec_hash.pop(session_id, None)

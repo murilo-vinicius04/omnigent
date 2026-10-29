@@ -5,6 +5,7 @@
  * through the hub instead of a runner. This only finds (or makes) it.
  */
 import { authenticatedFetch } from "@/lib/identity";
+import { terminalInfoFromResource, type TerminalInfo } from "@/lib/terminals";
 
 /** The caller's hub conversation id, made on first use. */
 export async function openHub(): Promise<string> {
@@ -113,6 +114,8 @@ export interface HubSessionRun {
 
 /** One of a project's chats, a lane: an agent on its own topic. */
 export interface HubSessionRow {
+  host_id?: string;
+  workspace?: string;
   id: string;
   /** What the hub calls it: its project's name, and its lane's when it has several. */
   name: string;
@@ -129,10 +132,51 @@ export interface HubSessionRow {
   pending_approvals: number;
   run: HubSessionRun;
   project_id: string;
+  /** What it was first asked; "" when unknown. */
+  first_ask?: string;
+  /** What it was last asked; "" when unknown. */
+  last_ask?: string;
+  /** The latest thing its agent said; "" when unknown. */
+  said?: string;
+  /** The companion's latest spoken summary of it; null when none. */
+  summary?: string | null;
+  /** Messages the hub holds for it until it finishes. */
+  held?: number;
+  /** Its live to-do list, from its own snapshot. */
+  todos?: HubTodoItem[];
+}
+
+/** One to-do item: what to do, and whether it is done. */
+export interface HubTodoItem {
+  content: string;
+  status: string;
+  /** What the companion calls it; kept as sent, absent on a new item. */
+  id?: string;
+  /** Who wrote it: "you" or "companion"; absent on a new item. */
+  by?: string;
+}
+
+/** One line of what a project got done, as the companion wrote it. */
+export interface HubBriefProgress {
+  /** Seconds since the epoch. */
+  at: number;
+  text: string;
+  /** The part of the project that did it. */
+  lane: string;
+}
+
+/** The part of a project's brief the companion writes. */
+export interface HubLiving {
+  overview: string;
+  status: string;
+  progress: HubBriefProgress[];
+  /** Seconds since the epoch; 0 before it ever wrote one. */
+  updated_at: number;
 }
 
 /** One project as the hub runs it. */
 export interface HubProjectRow {
+  host_id?: string;
   id: string;
   name: string;
   handle: string;
@@ -150,6 +194,84 @@ export interface HubProjectRow {
   lanes?: HubSessionRow[];
   /** The router's newest decision for one of its chats, logged only for now. */
   route?: HubRoute | null;
+  /** What the project is about, in their own words; "" when never written. */
+  brief?: string;
+  /** The project's to-do list, oldest first: theirs and the companion's. */
+  brief_todos?: HubTodoItem[];
+  /** What the companion wrote: overview, where it stands, recent progress. */
+  living?: HubLiving;
+}
+
+/** What a project is doing, in one word. */
+export type HubProjectState = "working" | "waiting" | "holding" | "idle" | "empty";
+
+/** One lane's state as the project's brief reports it. */
+export interface HubBriefLane {
+  id: string;
+  name: string;
+  state: Exclude<HubProjectState, "empty">;
+}
+
+/** A lane's live to-do list. */
+export interface HubLaneTodos {
+  lane: string;
+  session_id: string;
+  items: HubTodoItem[];
+}
+
+/** Everything the panel's brief shows for one project. */
+export interface HubProjectBrief {
+  project_id: string;
+  name: string;
+  /** What the project is: their words, else the companion's; "" when neither. */
+  about: string;
+  /** "written" for their words, "companion" for its overview, "" for none. */
+  about_source: string;
+  /** Where it stands now, as the companion wrote it; "" before it did. */
+  status: string;
+  progress: HubBriefProgress[];
+  /** Seconds since the companion last wrote the brief; 0 if never. */
+  updated_at: number;
+  state: HubProjectState;
+  lanes: HubBriefLane[];
+  lane_todos: HubLaneTodos[];
+  /** Their own overview; the companion leaves it as written. */
+  brief: string;
+  brief_todos: HubTodoItem[];
+  /** Handoff note files the lanes handed over: [label, workspace path]. */
+  handoff_files: string[][];
+  /** Whether the companion can write the brief now: a chat has something to read. */
+  can_refresh: boolean;
+}
+
+/** Read a project's brief: what it is, where it stands, recent progress, to-dos. */
+export async function getHubProjectBrief(projectId: string): Promise<HubProjectBrief> {
+  return readJson<HubProjectBrief>(
+    await authenticatedFetch(`/v1/hub/projects/${encodeURIComponent(projectId)}/brief`),
+  );
+}
+
+/** Keep their own brief and to-do list for a project. */
+export async function saveHubProjectBrief(
+  projectId: string,
+  brief: { brief: string; brief_todos: HubTodoItem[] },
+): Promise<{ project_id: string; brief: string; brief_todos: HubTodoItem[] }> {
+  return readJson(
+    await authenticatedFetch(`/v1/hub/projects/${encodeURIComponent(projectId)}/brief`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(brief),
+    }),
+  );
+}
+
+/** Have the companion write a project's brief now, from what it last reported. */
+export async function refreshHubProjectBrief(projectId: string): Promise<HubProjectBrief> {
+  return readJson<HubProjectBrief>(
+    await authenticatedFetch(`/v1/hub/projects/${encodeURIComponent(projectId)}/brief/refresh`, {
+      method: "POST",
+    }),
+  );
 }
 
 /** Which provider, model and effort the quota rules would run a request on. */
@@ -194,6 +316,9 @@ export interface HubBudget {
   free_until: string | null;
   /** Why it cannot take work now; "" when it can. */
   blocked: string;
+  daily_started_at?: string | null;
+  daily_resets_at?: string | null;
+  daily_timezone?: string | null;
 }
 
 /** Each provider's budget for today. */
@@ -333,13 +458,18 @@ export interface OpenedHubLane {
  */
 export async function openHubLane(
   projectId: string,
-  lane: { topic: string; message: string; use?: string },
+  lane: { topic: string; message: string; use?: string; host_id?: string; workspace?: string },
 ): Promise<OpenedHubLane> {
   return readJson<OpenedHubLane>(
     await authenticatedFetch(`/v1/hub/projects/${encodeURIComponent(projectId)}/lanes`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ topic: lane.topic, message: lane.message, use: lane.use ?? "" }),
+      body: JSON.stringify({
+        topic: lane.topic,
+        message: lane.message,
+        use: lane.use ?? "",
+        ...(lane.host_id ? { host_id: lane.host_id, workspace: lane.workspace } : {}),
+      }),
     }),
   );
 }
@@ -404,6 +534,7 @@ export async function correctHubPlace(
 export interface HubShell {
   sessionId: string;
   terminalId: string;
+  terminal: TerminalInfo;
 }
 
 /**
@@ -411,17 +542,33 @@ export interface HubShell {
  * one session on the user's machine for it. Without `fresh` the shell already
  * open comes back; with it another one opens.
  */
-export async function openHubTerminal(fresh: boolean): Promise<HubShell> {
-  const body = await readJson<{ session_id?: unknown; terminal?: { id?: unknown } }>(
+export async function openHubTerminal(
+  fresh: boolean,
+  machine?: { host_id: string; workspace: string },
+): Promise<HubShell> {
+  const body = await readJson<{ session_id?: unknown; terminal?: Record<string, unknown> }>(
     await authenticatedFetch("/v1/hub/terminal", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ new: fresh }),
+      body: JSON.stringify({ new: fresh, ...machine }),
     }),
   );
-  const terminalId = body.terminal?.id;
-  if (typeof body.session_id !== "string" || typeof terminalId !== "string") {
+  const terminal = body.terminal ? terminalInfoFromResource(body.terminal) : null;
+  if (typeof body.session_id !== "string" || !body.session_id || terminal === null) {
     throw new Error("the server did not name a shell");
   }
-  return { sessionId: body.session_id, terminalId };
+  return { sessionId: body.session_id, terminalId: terminal.id, terminal };
+}
+
+export async function setHubProjectMachine(
+  projectId: string,
+  machine: { host_id: string; workspace: string },
+): Promise<void> {
+  await readJson(
+    await authenticatedFetch(`/v1/hub/projects/${encodeURIComponent(projectId)}/machine`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(machine),
+    }),
+  );
 }

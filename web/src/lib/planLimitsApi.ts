@@ -56,6 +56,10 @@ export interface PlanLimitProvider {
   label: string;
   state: PlanLimitState;
   windows: PlanLimitWindow[];
+  /** API usage estimates must not be rendered as subscription quotas. */
+  meter_type?: "subscription" | "api_usage";
+  /** Unknown API credit balances are null, never inferred from Codex usage. */
+  credit_balance?: number | null;
   /** Why a non-``ok`` state happened, when the server can explain it. */
   reason?: string | null;
   /** Human plan/tier name, when resolvable (shown in the tooltip). */

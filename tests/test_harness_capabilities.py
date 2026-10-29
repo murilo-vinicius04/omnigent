@@ -136,6 +136,17 @@ def test_grok_declares_its_effort_ladder_and_takes_a_model_override() -> None:
     assert harness_capabilities()["acp"].effort is EffortFamily.NONE
 
 
+def test_muse_code_declares_its_effort_ladder_and_takes_a_model_override() -> None:
+    """Muse Code sets both over ACP session config options (muse-code-acp)."""
+    from omnigent.model_override import harness_supports_model_override
+    from omnigent.reasoning_effort import MUSE_EFFORTS, efforts_for_harness
+
+    assert harness_capabilities()["muse-code"].effort is EffortFamily.MUSE
+    assert efforts_for_harness("muse-code") == MUSE_EFFORTS
+    assert efforts_for_harness("muse") == MUSE_EFFORTS
+    assert harness_supports_model_override("muse-code")
+
+
 def test_optional_bench_capabilities_default_to_unknown() -> None:
     capability = HarnessCapabilities(
         IntegrationMode.SDK_IN_PROCESS,

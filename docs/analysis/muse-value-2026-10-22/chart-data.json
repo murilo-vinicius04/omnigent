@@ -1,0 +1,34 @@
+[
+  {
+    "name": "Muse Everyday \u00b7 $5",
+    "status": "Measured \u00b7 22 Oct",
+    "tokens": 80786795,
+    "session_points": 41,
+    "weekly_points": 14,
+    "color": "#087f8c"
+  },
+  {
+    "name": "Muse High \u00b7 $15",
+    "status": "Projected \u00b7 5\u00d7 allowance",
+    "tokens": 80786795,
+    "session_points": 8.2,
+    "weekly_points": 2.8,
+    "color": "#59aeb6"
+  },
+  {
+    "name": "Codex Plus \u00b7 $20",
+    "status": "Measured \u00b7 22 Oct",
+    "tokens": 5652341,
+    "session_points": 23,
+    "weekly_points": 4,
+    "color": "#6554c0"
+  },
+  {
+    "name": "Claude Pro \u00b7 $20",
+    "status": "Historical \u00b7 20 Oct",
+    "tokens": 268071323,
+    "session_points": null,
+    "weekly_points": 27,
+    "color": "#bd7041"
+  }
+]

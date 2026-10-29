@@ -39,6 +39,8 @@ def _write(path: Path, *events: dict) -> None:
         ("gemini-3.8-flash-low", "gemini"),
         ("gpt-5.6-luna", "openai"),
         ("grok-4.6-build", "grok"),
+        ("muse-spark-1.3", "muse"),
+        ("muse-wonder-1.0", "muse"),
         ("llama-3-70b", "other"),
         (None, "other"),
     ],
@@ -48,6 +50,21 @@ def test_provider_family_is_read_off_the_model_id(model: str | None, family: str
     # with spaces, a prefixed alias, a plain slug — and all of them have to land
     # on the same vendor row.
     assert usage_timeline.provider_for_model(model) == family
+
+
+def test_same_gpt_model_does_not_merge_api_and_codex_accounts(tmp_path: Path) -> None:
+    path = tmp_path / "history.jsonl"
+    common = {"at": "2026-10-16T12:00:00Z", "model": "gpt-6.1-sol"}
+    _write(
+        path,
+        {**common, "kind": "openai_call", "source": "proxy", "tokens": 100},
+        {**common, "kind": "model_call", "source": "native", "tokens": 200},
+        {**common, "kind": "model_call", "source": "relay", "tokens": 300},
+    )
+    rows = {r["id"]: r for r in usage_timeline.build_token_usage(path=path)["providers"]}
+    assert rows["openai"]["tokens"] == 100
+    assert rows["codex"]["tokens"] == 200
+    assert rows["openai-other"]["tokens"] == 300
 
 
 def test_tokens_are_grouped_by_vendor_day_and_model(tmp_path: Path) -> None:

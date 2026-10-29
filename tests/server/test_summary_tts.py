@@ -66,6 +66,14 @@ async def test_synthesis_failure_returns_none_rather_than_raising() -> None:
         assert await tts.synthesize_summary("resumo que falha") is None
 
 
+@pytest.mark.asyncio
+async def test_the_voice_never_reads_emojis_or_bullet_marks() -> None:
+    """The written summary has emojis and bullets; the recording says only the words."""
+    with patch.object(tts, "_synthesize_sync", return_value=None) as synth:
+        await tts.synthesize_summary("Deu bom ✅\n\n- Vídeo salvo\n- Teste passou")
+    assert synth.call_args.args[0] == "Deu bom. Vídeo salvo. Teste passou."
+
+
 def test_short_summary_is_spoken_in_one_go() -> None:
     """Chunking must not fragment a summary that already fits."""
     text = "Terminei o ajuste e rodei os testes. Passou tudo, pode conferir."

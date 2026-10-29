@@ -94,6 +94,7 @@ class Host:
     sandbox_id: str | None = None
     configured_harnesses: dict[str, HarnessAvailability] | None = None
     terminating_sandbox_id: str | None = None
+    credential_expires_at: int | None = None
 
 
 def host_is_live(host: Host, now: int | None = None) -> bool:
@@ -160,6 +161,7 @@ def _row_to_host(row: SqlHost) -> Host:
         created_at=row.created_at,
         updated_at=row.updated_at,
         sandbox_provider=row.sandbox_provider,
+        credential_expires_at=row.token_expires_at,
         sandbox_id=row.sandbox_id,
         terminating_sandbox_id=row.terminating_sandbox_id,
         configured_harnesses=_parse_configured_harnesses(row.configured_harnesses),
@@ -273,10 +275,8 @@ class HostStore:
                             SqlHost.token_hash == hash_host_launch_token(managed_token),
                             SqlHost.token_expires_at.is_not(None),
                             SqlHost.token_expires_at >= now,
-                            SqlHost.sandbox_id.is_not(None),
                         )
                         .values(
-                            name=name,
                             status=encode_host_status("online"),
                             updated_at=now,
                             configured_harnesses=harnesses_json,
@@ -305,7 +305,6 @@ class HostStore:
                 # Known host_id (same user_id, or reown opted in): update
                 # user_id/name in case they changed, then refresh status and timestamp.
                 row.user_id = user_id
-                row.name = name
                 row.status = encode_host_status("online")
                 row.updated_at = now
                 row.configured_harnesses = harnesses_json
@@ -894,6 +893,56 @@ class HostStore:
                 return None
             row = session.get(SqlHost, (current_workspace_id(), host_id))
             return _row_to_host(row) if row is not None else None
+
+    def rename_host(self, host_id: str, name: str) -> None:
+        with self._session("rename_host") as session:
+            row = session.get(SqlHost, (current_workspace_id(), host_id))
+            if row is None:
+                raise ValueError("unknown machine")
+            duplicate = session.execute(
+                select(SqlHost).where(
+                    SqlHost.workspace_id == current_workspace_id(),
+                    SqlHost.user_id == row.user_id,
+                    SqlHost.name == name,
+                    SqlHost.host_id != host_id,
+                )
+            ).scalar_one_or_none()
+            if duplicate is not None:
+                raise ValueError("another machine already uses this name")
+            row.name = name
+
+    def enroll_external_host(
+        self, host_id: str, name: str, user_id: str, token: str, expires_at: int
+    ) -> Host:
+        """Issue a host-bound credential without granting a user login or provider secrets."""
+        with self._session("enroll_external_host") as session:
+            row = session.get(SqlHost, (current_workspace_id(), host_id))
+            if row is not None and (row.user_id != user_id or row.sandbox_provider is not None):
+                raise ValueError("host identity is already in use")
+            duplicate = session.execute(
+                select(SqlHost).where(
+                    SqlHost.workspace_id == current_workspace_id(),
+                    SqlHost.user_id == user_id,
+                    SqlHost.name == name,
+                    SqlHost.host_id != host_id,
+                )
+            ).scalar_one_or_none()
+            if duplicate is not None:
+                raise ValueError("another machine already uses this name")
+            if row is None:
+                row = SqlHost(
+                    host_id=host_id,
+                    user_id=user_id,
+                    name=name,
+                    status=encode_host_status("offline"),
+                    created_at=now_epoch(),
+                    updated_at=now_epoch(),
+                )
+                session.add(row)
+            row.name = name
+            row.token_hash = hash_host_launch_token(token)
+            row.token_expires_at = expires_at
+            return _row_to_host(row)
 
     def resolve_launch_token(self, host_id: str, token: str) -> Host | None:
         """

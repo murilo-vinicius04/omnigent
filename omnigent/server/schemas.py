@@ -926,7 +926,13 @@ class Usage(BaseModel):
         turn (e.g. ``openai-agents``).  For single-call executors
         this is absent and ``total_tokens`` serves the same purpose.
         The toolbar context ring and ``/context`` command use this
-        field when present, falling back to ``total_tokens``.
+        field when present, falling back to ``total_tokens``. ACP
+        executors set it to the adapter's live occupancy (``used``)
+        when reported, which excludes billing-only cache re-reads.
+    :param context_window: Live window size in tokens reported by the
+        agent alongside ``context_tokens`` (ACP ``usage_update``).
+        Persisted as the window label so snapshots and auto-compact
+        see the observed denominator; ``None`` when unreported.
     :param cache_read_input_tokens: Prompt tokens served from a
         provider prompt cache (cache hit), billed at a reduced rate.
         Reported by Anthropic-style providers as a count *separate*
@@ -957,6 +963,7 @@ class Usage(BaseModel):
     output_tokens_details: UsageDetails = Field(default_factory=UsageDetails)
     total_tokens: int = 0
     context_tokens: int | None = None
+    context_window: int | None = None
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
     model: str | None = None

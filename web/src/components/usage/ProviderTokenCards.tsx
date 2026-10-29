@@ -41,6 +41,16 @@ export function ProviderTokenCards({ providers }: Props) {
           <p className="mt-1 text-2xl font-semibold tabular-nums">
             {formatTokens(provider.tokens)}
           </p>
+          {provider.id === "codex" && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Session tokens · cost is a reference, not an API charge.
+            </p>
+          )}
+          {provider.id === "openai-other" && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Route not identified · excluded from API and Codex meters.
+            </p>
+          )}
           <p className="mt-0.5 text-xs text-muted-foreground tabular-nums">
             {provider.calls} call{provider.calls === 1 ? "" : "s"}
             {provider.costUsd > 0 && ` · ${formatSessionCostUsd(provider.costUsd)}`}

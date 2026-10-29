@@ -35,6 +35,7 @@ from omnigent.host.frames import (
     HostFsResultFrame,
     HostHarnessReadinessFrame,
     HostHelloFrame,
+    HostInspectResultFrame,
     HostImportLocalDoneFrame,
     HostImportLocalSessionFrame,
     HostInstallHarnessResultFrame,
@@ -767,6 +768,12 @@ async def _receive_loop(
                     }
                 )
             continue
+        if isinstance(frame, HostInspectResultFrame):
+            future = conn.pending_inspections.pop(frame.request_id, None)
+            if future is not None and not future.done():
+                future.set_result(frame.payload)
+            continue
+
         if isinstance(frame, HostPlanLimitsResultFrame):
             limits_future = conn.pending_plan_limits.pop(frame.request_id, None)
             if limits_future is not None and not limits_future.done():

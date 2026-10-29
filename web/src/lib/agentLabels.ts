@@ -180,8 +180,8 @@ const NO_ACP_HARNESSES: ReadonlySet<string> = new Set<string>();
 
 /**
  * Harness ids the server declares generic-ACP (``integration_mode ===
- * "acp-subprocess"``) — builtin ACP CLI rows (``devin``, ``grok``) and
- * user-configured ``acp:<slug>`` agents alike.
+ * "acp-subprocess"``) — builtin ACP CLI rows (``devin``, ``grok``,
+ * ``muse-code``) and user-configured ``acp:<slug>`` agents alike.
  *
  * Server-derived on purpose: a new builtin ACP row is one data entry in
  * ``omnigent/acp_cli_harnesses.py``, and the picker recognizes it (grouping +

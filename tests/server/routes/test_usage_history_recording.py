@@ -78,6 +78,61 @@ def test_relay_turn_without_usage_records_nothing(db_uri: str, log: Path) -> Non
     assert _lines(log) == []
 
 
+def test_relay_turn_persists_live_context_labels(db_uri: str, log: Path) -> None:
+    """An inner ACP turn's live occupancy lands on the context labels.
+
+    **What breaks if this fails**: inner ACP turns write no
+    ``last_context_*`` labels, so the snapshot ring and auto-compact never
+    see them — the lane that reported 100% live keeps no durable trace and
+    auto-compact stays blind.
+    """
+    store = SqlAlchemyConversationStore(db_uri)
+    conv = store.create_conversation(title="acp", agent_id=_AGENT_ID)
+
+    _accumulate_session_usage(
+        {
+            "usage": {
+                "model": "muse-spark",
+                "input_tokens": 120,
+                "output_tokens": 80,
+                "total_tokens": 200,
+                "context_tokens": 12345,
+                "context_window": 1000000,
+            }
+        },
+        conv.id,
+        store,
+    )
+
+    labels = store.get_conversation(conv.id).labels
+    assert labels["omnigent.last_context_tokens"] == "12345"
+    assert labels["omnigent.last_context_window"] == "1000000"
+
+
+def test_relay_turn_ignores_bad_live_context(db_uri: str, log: Path) -> None:
+    store = SqlAlchemyConversationStore(db_uri)
+    conv = store.create_conversation(title="acp-bad", agent_id=_AGENT_ID)
+
+    _accumulate_session_usage(
+        {
+            "usage": {
+                "model": "muse-spark",
+                "input_tokens": 120,
+                "output_tokens": 80,
+                "total_tokens": 200,
+                "context_tokens": -5,
+                "context_window": 0,
+            }
+        },
+        conv.id,
+        store,
+    )
+
+    labels = store.get_conversation(conv.id).labels
+    assert "omnigent.last_context_tokens" not in labels
+    assert "omnigent.last_context_window" not in labels
+
+
 def test_native_reports_record_growth_not_the_running_total(db_uri: str, log: Path) -> None:
     store = SqlAlchemyConversationStore(db_uri)
     conv = store.create_conversation(title="native", agent_id=_AGENT_ID)

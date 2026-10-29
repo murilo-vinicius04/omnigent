@@ -43,6 +43,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -198,10 +199,9 @@ _PERMISSION_MODE_FOOTERS: dict[str, str] = {
     "acceptEdits": "accept edits on",
     "plan": "plan mode on",
     "auto": "auto mode on",
+    "bypassPermissions": "bypass permissions on",
 }
-# Modes shift+tab can reach. ``dontAsk`` is never in the cycle and
-# ``bypassPermissions`` only joins it when launched into, so both are
-# rejected up front.
+# Bypass joins the cycle when enabled by Claude's launch flags or settings.
 CYCLEABLE_PERMISSION_MODES = frozenset(_PERMISSION_MODE_FOOTERS)
 # Cap on shift+tab presses. The cycle is 3-5 modes wide depending on which
 # optional modes are enabled, so a full lap plus slack proves the target is
@@ -277,6 +277,14 @@ ToolExecutor = Callable[[str, _JsonObject], Awaitable[object]]
 
 class ClaudePromptTimeout(RuntimeError):
     """Claude Code's input box did not render before delivery timed out."""
+
+
+class ClaudePermissionModeUnavailable(RuntimeError):
+    """The requested mode is absent from the running Claude mode cycle."""
+
+
+class ClaudePermissionModeRestartBlocked(RuntimeError):
+    """A permission change cannot safely resume the current conversation yet."""
 
 
 class TmuxSessionNotAdvertised(RuntimeError):
@@ -3548,6 +3556,7 @@ def _read_settled_permission_mode(
     tmux_target: str,
     *,
     previous: str | None = None,
+    accept_bypass: bool = False,
 ) -> str | None:
     """
     Poll the pane until its permission-mode footer settles.
@@ -3570,7 +3579,20 @@ def _read_settled_permission_mode(
     """
     deadline = time.monotonic() + _MODE_FOOTER_SETTLE_TIMEOUT_S
     while True:
-        mode = _permission_mode_from_pane(_capture_pane(socket_path, tmux_target))
+        pane = _capture_pane(socket_path, tmux_target)
+        bypass_dialog = (
+            accept_bypass
+            and "Bypass Permissions mode" in pane
+            and not _claude_prompt_rendered(pane)
+        )
+        if bypass_dialog:
+            choice = re.search(r"(?m)^[^\w\n]*(\d+)\.\s*Yes, I accept", pane)
+            if choice is not None:
+                _run_tmux(socket_path, "send-keys", "-l", "-t", tmux_target, choice.group(1))
+                _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
+            mode = None
+        else:
+            mode = _permission_mode_from_pane(pane)
         if mode is not None and mode != previous:
             return mode
         if time.monotonic() >= deadline:
@@ -3589,10 +3611,10 @@ def set_permission_mode(
     """
     Switch the running Claude terminal to *mode* by cycling shift+tab.
 
-    Claude Code has no non-interactive way to set a live session's mode
-    (``--permission-mode`` is launch-only, ``/permissions`` is an interactive
-    dialog, settings load at startup), so this drives the TUI's shift+tab
-    cycle, reading the mode footer after each press. The cycle is walked
+    This drives the TUI's shift+tab cycle, reading the mode footer after
+    each press. Bypass requires a launch that enables it; otherwise the
+    runner can resume the same native session with the required flags.
+    The cycle is walked
     rather than computed: its width varies with which optional modes are
     enabled, so a fixed press count could land on the wrong mode.
 
@@ -3621,10 +3643,15 @@ def set_permission_mode(
     # this gate a shift+tab sent mid-boot is dropped and the read below
     # reports a mode the keystroke never reached.
     _wait_for_claude_prompt_ready(socket_path, tmux_target, timeout_s=timeout_s)
-    current = _read_settled_permission_mode(socket_path, tmux_target)
+    current = _read_settled_permission_mode(
+        socket_path, tmux_target, accept_bypass=mode == "bypassPermissions"
+    )
     if current is None:
         pane = _capture_pane(socket_path, tmux_target)
-        raise RuntimeError(
+        error_type = (
+            ClaudePermissionModeUnavailable if mode == "bypassPermissions" else RuntimeError
+        )
+        raise error_type(
             "Claude Code did not render a permission-mode footer, so its current "
             f"mode could not be read.{_format_terminal_failure_tail(pane)}"
         )
@@ -3634,17 +3661,101 @@ def set_permission_mode(
             return current
         # No ``-l``: tmux must interpret ``BTab`` as the shift+tab key.
         _run_tmux(socket_path, "send-keys", "-t", tmux_target, "BTab")
-        settled = _read_settled_permission_mode(socket_path, tmux_target, previous=current)
+        settled = _read_settled_permission_mode(
+            socket_path,
+            tmux_target,
+            previous=current,
+            accept_bypass=mode == "bypassPermissions",
+        )
         if settled is not None:
             current = settled
             seen.append(current)
+            if current == seen[0]:
+                break
     if current == mode:
         return current
-    raise RuntimeError(
+    raise ClaudePermissionModeUnavailable(
         f"Could not switch Claude Code to {mode!r} mode: cycled shift+tab "
-        f"{_MODE_CYCLE_MAX_PRESSES} times and only reached {sorted(set(seen))}. "
+        f"{len(seen) - 1} times and only reached {sorted(set(seen))}. "
         "The mode is not available in this session's cycle."
     )
+
+
+def permission_mode_resume_args(
+    args: list[str],
+    *,
+    session_id: str,
+    mode: str,
+    model: str | None = None,
+    effort: str | None = None,
+) -> list[str]:
+    """Resume the exact native session, preserving its model, tools and hooks."""
+    if mode not in CYCLEABLE_PERMISSION_MODES:
+        raise ValueError(f"Unsupported Claude permission mode: {mode!r}")
+    uuid.UUID(session_id)
+    merged: list[str] = []
+    index = 0
+    value_flags = {"--resume", "-r", "--session-id", "--permission-mode"}
+    if model:
+        value_flags.add("--model")
+    if effort:
+        value_flags.add("--effort")
+    boolean_flags = {"--continue", "-c", "--fork-session", "--dangerously-skip-permissions"}
+    while index < len(args):
+        arg = args[index]
+        if arg in value_flags:
+            index += 1
+            if index < len(args) and not args[index].startswith("-"):
+                index += 1
+            continue
+        if arg in boolean_flags or any(arg.startswith(f"{flag}=") for flag in value_flags):
+            index += 1
+            continue
+        merged.append(arg)
+        index += 1
+    if "--allow-dangerously-skip-permissions" not in merged:
+        merged.append("--allow-dangerously-skip-permissions")
+    if model:
+        merged.extend(("--model", model))
+    if effort:
+        merged.extend(("--effort", effort))
+    return [*merged, "--resume", session_id, "--permission-mode", mode]
+
+
+def prepare_permission_mode_resume(
+    bridge_dir: Path, *, mode: str, pane_pid: int | None = None
+) -> str:
+    """Require a resumable, idle conversation before changing launch settings."""
+    from omnigent.claude_native_status_file import read_session_status, resolve_status_file
+
+    session_id = read_claude_session_id(bridge_dir)
+    transcript = read_transcript_path(bridge_dir)
+    if session_id is None or transcript is None or not transcript.is_file():
+        raise ClaudePermissionModeRestartBlocked(
+            "Claude has no saved native transcript to resume; leaving it running."
+        )
+    uuid.UUID(session_id)
+    status_path = resolve_status_file(pane_pid=pane_pid, expected_session_id=session_id)
+    status = read_session_status(status_path) if status_path is not None else None
+    if status is None or status.raw_status != "idle":
+        raise ClaudePermissionModeRestartBlocked(
+            "Wait for Claude to finish or stop its turn before enabling bypass."
+        )
+    settings_path = bridge_dir / _INVOCATION_SETTINGS_FILE
+    settings = _read_json_file(settings_path)
+    if not settings:
+        raise ClaudePermissionModeRestartBlocked(
+            "Claude invocation settings are unavailable; leaving it running."
+        )
+    permissions = settings.get("permissions")
+    settings["permissions"] = {
+        **(permissions if isinstance(permissions, dict) else {}),
+        "defaultMode": mode,
+    }
+    if mode == "bypassPermissions":
+        settings["skipDangerousModePermissionPrompt"] = True
+    _write_json_file(settings_path, settings)
+    return session_id
 
 
 def confirm_dialog_if_open(bridge_dir: Path, *, hint: str) -> bool:

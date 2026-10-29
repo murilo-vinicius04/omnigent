@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import secrets
+import time
 import weakref
 from collections.abc import Callable
 from typing import Any, Literal, cast
@@ -38,7 +39,7 @@ from omnigent.runtime import (
 )
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.runtime.policies.approval import _ELICITATION_MODE
-from omnigent.server import hub_chat, presence
+from omnigent.server import hub_chat, hub_lanes, presence
 from omnigent.server._elicitation_registry import (
     _harness_elicitation_owners,
     _harness_elicitation_registry,
@@ -261,6 +262,72 @@ def _evict_retry_recovery_task(
         _retry_recovery_tasks.pop(session_id, None)
     if not completed_task.cancelled():
         completed_task.exception()
+
+
+def _watch_lane_from_direct_message(
+    body: SessionEventInput,
+    session_id: str,
+    conv: Any,
+    *,
+    user_id: str | None,
+) -> None:
+    """Pull the lane's hub into watching a user-direct turn.
+
+    Lanes report back to their hub project only while watched, and a watch
+    starts only on the hub's own sends. A message typed directly in the
+    lane's own chat starts the same work with no watch, so its reply never
+    reaches the project. This closes that gap by starting the same watch
+    the hub's send would have started.
+
+    Never raises and never disturbs an already-running watch: ``Hub.watch``
+    is a no-op while one runs, hub-marked sends are excluded by the topic
+    decision, and a hub that was never opened here simply has no backend
+    to report through yet.
+
+    :param body: The ingress event that started the turn.
+    :param session_id: The lane conversation id.
+    :param conv: The refreshed conversation row (labels carry the lane topic).
+    :param user_id: The caller, selecting which hub watches.
+    """
+    # Local import: omnigent.server.hub is heavy and this module loads
+    # under routers that must not pay for it on unaffected paths.
+    from omnigent.server import hub as hub_module
+
+    topic = hub_lanes.direct_message_lane_topic(
+        body_type=body.type,
+        content=body.data.get("content"),
+        labels=getattr(conv, "labels", None),
+    )
+    if not topic:
+        return
+    try:
+        hub = hub_module.hub_for(user_id)
+        hub.require_backend()
+    except Exception:  # hub never opened here; nothing to report to yet
+        _logger.debug(
+            "lane watch skipped for session=%s: hub has no backend bound",
+            session_id,
+            extra={"session_id": session_id},
+        )
+        return
+    try:
+        hub.watch(
+            hub_module.HubSession(
+                id=session_id,
+                title=getattr(conv, "title", None) or topic,
+                nickname=topic,
+                project_id=getattr(conv, "project_id", None) or "",
+                lane=topic,
+            ),
+            time.time(),
+        )
+    except Exception:  # a watch must never break message delivery
+        _logger.warning(
+            "lane watch failed for session=%s",
+            session_id,
+            extra={"session_id": session_id},
+            exc_info=True,
+        )
 
 
 async def _recover_retry_session(
@@ -2010,6 +2077,7 @@ def register_events_routes(
             )
             if pending_background_title is not None:
                 pending_background_title.schedule()
+            _watch_lane_from_direct_message(body, session_id, conv, user_id=user_id)
             return {"queued": True, "item_id": item_id}
         dispatch = await _dispatch_session_event_to_runner(
             session_id,
@@ -2030,6 +2098,7 @@ def register_events_routes(
         )
         if pending_background_title is not None:
             pending_background_title.schedule()
+        _watch_lane_from_direct_message(body, session_id, conv, user_id=user_id)
         response: dict[str, Any] = {"queued": True}
         if dispatch.item_id is not None:
             response["item_id"] = dispatch.item_id

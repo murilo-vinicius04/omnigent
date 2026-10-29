@@ -1,0 +1,13 @@
+[Unit]
+Description=Fail over pve from the wired NIC to wifi when the NIC hangs
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/net-failover.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

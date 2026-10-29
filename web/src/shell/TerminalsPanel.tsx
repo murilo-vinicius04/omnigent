@@ -23,7 +23,7 @@
 // slide-in transition (translate-x) needs ~200ms to settle; on
 // desktop width is set instantly but the timeout is harmless.
 
-import { TerminalIcon, XIcon } from "lucide-react";
+import { Loader2Icon, TerminalIcon, XIcon } from "lucide-react";
 import type { CSSProperties } from "react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -80,6 +80,7 @@ export function TerminalsPanel({
   const ref = useRef<HTMLElement>(null);
   const {
     terminals,
+    isLoading,
     activeKey,
     setActiveKey,
     activeTerminal,
@@ -135,8 +136,8 @@ export function TerminalsPanel({
 
   // Auto-close when there's nothing left to view.
   useEffect(() => {
-    if (open && terminals.length === 0) onClose();
-  }, [open, terminals.length, onClose]);
+    if (open && !isLoading && terminals.length === 0) onClose();
+  }, [open, isLoading, terminals.length, onClose]);
 
   useEffect(() => {
     if (ref.current) {
@@ -211,6 +212,15 @@ export function TerminalsPanel({
               {...columnHandleProps}
               className="absolute inset-y-0 right-0 z-10 w-1 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
             />
+          )}
+          {isLoading && (
+            <div
+              role="status"
+              className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground"
+            >
+              <Loader2Icon className="size-4 animate-spin" />
+              Loading shells…
+            </div>
           )}
           {terminals.map((t) => {
             const key = terminalTabKey(t);

@@ -2846,8 +2846,10 @@ def _merge_codex_permission_launch_args(
 def _merge_claude_permission_launch_args(
     existing_args: list[str] | None,
     mode: str,
+    *,
+    explicit: bool = False,
 ) -> list[str] | None:
-    """Rewrite an existing ``--permission-mode`` in Claude launch args to ``mode``.
+    """Persist a selected mode without pinning unsolicited initial footer reports.
 
     A runtime mode switch (shift+tab or PATCH) must survive relaunch, and the
     launcher restores the mode from ``terminal_launch_args`` — not the label.
@@ -2855,7 +2857,7 @@ def _merge_claude_permission_launch_args(
     the current mode, preserving other args in order, so a cold resume reopens
     in the mode the user last chose.
 
-    Returns ``existing_args`` unchanged when they carry no ``--permission-mode``:
+    Unless ``explicit`` is true, returns args unchanged when no mode flag exists:
     a session launched without the flag (manual, or a ``settings.json``
     ``defaultMode``) must NOT be pinned to an explicit mode by a footer report —
     the forwarder posts the launch mode on its first poll (see
@@ -2864,7 +2866,12 @@ def _merge_claude_permission_launch_args(
     the permission-mode label instead.
     """
     args = list(existing_args or ())
-    if not any(a == "--permission-mode" or a.startswith("--permission-mode=") for a in args):
+    if not explicit and not any(
+        a == "--permission-mode"
+        or a.startswith("--permission-mode=")
+        or a == "--dangerously-skip-permissions"
+        for a in args
+    ):
         return existing_args
     merged: list[str] = []
     index = 0
@@ -2874,6 +2881,9 @@ def _merge_claude_permission_launch_args(
             index += 2  # drop the flag and its separate value token
             continue
         if arg.startswith("--permission-mode="):
+            index += 1
+            continue
+        if arg == "--dangerously-skip-permissions":
             index += 1
             continue
         merged.append(arg)
@@ -11879,6 +11889,9 @@ async def _load_model_options(
     session_id: str,
     path: str,
     fallback_path: str | None = None,
+    *,
+    host_id: str | None = None,
+    host_harness: str | None = None,
 ) -> None:
     """
     Background single-flight fetch of a session's native model catalog.
@@ -11891,6 +11904,10 @@ async def _load_model_options(
         *path* 404s (an older runner without the unified route), e.g.
         ``"/v1/sessions/conv_abc/cursor-model-options"``. ``None`` disables
         the fallback.
+    :param host_id: Optional host id to fall back to when a pre-update runner
+        returns an empty catalog for a host-resolvable harness.
+    :param host_harness: Optional harness name for the host fallback, e.g.
+        ``"antigravity-native"``.
     """
     # Read the retry schedule off the facade so tests patching
     # ``sessions._MODEL_OPTIONS_RETRY_DELAYS_S`` reach this impl.
@@ -11919,6 +11936,9 @@ async def _load_model_options(
             if resp.status_code == 503 and attempt < len(delays):
                 await asyncio.sleep(delays[attempt])
                 continue
+            if host_id is not None and host_harness is not None:
+                await _load_model_options_from_host(session_id, host_id, harness=host_harness)
+                _model_options_stale.discard(session_id)
             return
         try:
             options = _model_options_from_wire(resp.json().get("models", []))
@@ -11930,6 +11950,10 @@ async def _load_model_options(
             )
             return
         if not options:
+            if host_id is not None and host_harness == "antigravity-native":
+                await _load_model_options_from_host(session_id, host_id, harness=host_harness)
+                _model_options_stale.discard(session_id)
+                return
             # Older runners returned 200 + [] for the same not-ready window.
             # Do not cache that empty catalog; retry, then leave the cache
             # cold so a later snapshot can try again.
@@ -12071,15 +12095,19 @@ def prefetch_session_routing_catalogs(
     task.add_done_callback(_catalog_prefetch_tasks.discard)
 
 
-async def _host_model_options_via_registry(host_id: str) -> list[dict[str, Any]] | None:
+async def _host_model_options_via_registry(
+    host_id: str,
+    harness: str = "claude-native",
+) -> list[dict[str, Any]] | None:
     """
-    Resolve a host's pre-launch claude catalog over its live tunnel.
+    Resolve a host's pre-launch model catalog over its live tunnel.
 
     Session-side reuse of the new-session picker's source
     (``get_host_model_options`` in ``routes/hosts.py``): the host resolves
     the catalog locally, so no runner is needed.
 
     :param host_id: Host identifier, e.g. ``"host_a1b2c3"``.
+    :param harness: Harness identifier, e.g. ``"claude-native"`` or ``"antigravity-native"``.
     :returns: Raw model rows, or ``None`` when the host is not connected,
         rejects the request, or times out.
     """
@@ -12096,7 +12124,7 @@ async def _host_model_options_via_registry(host_id: str) -> list[dict[str, Any]]
         result = await _proxy_model_options(
             host_registry=registry,
             host_conn=conn,
-            harness="claude-native",
+            harness=harness,
         )
     except HTTPException:
         return None
@@ -12106,12 +12134,17 @@ async def _host_model_options_via_registry(host_id: str) -> list[dict[str, Any]]
     return models if isinstance(models, list) else None
 
 
-async def _load_model_options_from_host(session_id: str, host_id: str) -> None:
+async def _load_model_options_from_host(
+    session_id: str,
+    host_id: str,
+    *,
+    harness: str = "claude-native",
+) -> None:
     """
-    Background catalog fill for an asleep claude-native session.
+    Background catalog fill for an asleep claude-native or antigravity-native session.
 
     With no runner bound and a cold cache (e.g. the server restarted while
-    the session slept), the session's host can still resolve the claude
+    the session slept), the session's host can still resolve the model
     catalog — the same pre-launch source the new-session picker uses. Fills
     the cache stale-marked so the next live runner replaces it with its
     launch-exact snapshot, and publishes ``session.model_options`` so open
@@ -12119,12 +12152,16 @@ async def _load_model_options_from_host(session_id: str, host_id: str) -> None:
 
     :param session_id: Session/conversation identifier, e.g. ``"conv_abc"``.
     :param host_id: The session's bound host, e.g. ``"host_a1b2c3"``.
+    :param harness: Harness identifier, e.g. ``"claude-native"`` or ``"antigravity-native"``.
     """
     # Read through the facade so tests patching
     # ``sessions._host_model_options_via_registry`` reach this impl.
     import omnigent.server.routes.sessions as _facade
 
-    raw = await _facade._host_model_options_via_registry(host_id)
+    if harness == "claude-native":
+        raw = await _facade._host_model_options_via_registry(host_id)
+    else:
+        raw = await _facade._host_model_options_via_registry(host_id, harness)
     if not raw:
         return
     try:

@@ -95,94 +95,124 @@ export function PlanLimitPills() {
 
   const providers = usableProviders(limits);
   if (providers.length === 0) return null;
+  const groups = [
+    {
+      label: "Subscription quotas",
+      rows: providers.filter((p) => p.meter_type !== "api_usage" && p.id !== "openai"),
+    },
+    {
+      label: "API usage",
+      rows: providers.filter((p) => p.meter_type === "api_usage" || p.id === "openai"),
+    },
+  ];
 
   return (
     <>
-      {providers.map((provider) => {
-        if (provider.state === "error" && provider.reason === "rate_limited") {
-          const retryTime = formatResetAt(provider.retry_at);
-          return (
-            <Tooltip key={provider.id}>
-              <TooltipTrigger asChild>
-                <span
-                  data-testid={`plan-limit-${provider.id}`}
-                  className="flex items-center gap-1.5 opacity-50 text-muted-foreground"
-                  aria-label={`${provider.label} rate limited${
-                    retryTime ? `, retrying at ${retryTime}` : ", retrying"
-                  }`}
-                >
-                  <span className="text-sm tabular-nums" aria-hidden="true">
-                    {provider.label} —
-                  </span>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="top" className="max-w-56 text-center text-sm">
-                <p className="font-medium">{provider.label}</p>
-                <p className="text-muted-foreground">
-                  {provider.id === "claude" ? "Anthropic" : provider.label} rate limit, retrying
-                  {retryTime ? ` at ${retryTime}` : ""}
-                </p>
-              </TooltipContent>
-            </Tooltip>
-          );
-        }
+      {groups
+        .filter((group) => group.rows.length > 0)
+        .map((group) => (
+          <span
+            key={group.label}
+            role="group"
+            aria-label={group.label}
+            className="flex flex-wrap items-center gap-2"
+          >
+            <span className="text-[10px] text-muted-foreground">{group.label}</span>
+            {group.rows.map((provider) => {
+              if (provider.state === "error" && provider.reason === "rate_limited") {
+                const retryTime = formatResetAt(provider.retry_at);
+                return (
+                  <Tooltip key={provider.id}>
+                    <TooltipTrigger asChild>
+                      <span
+                        data-testid={`plan-limit-${provider.id}`}
+                        className="flex items-center gap-1.5 opacity-50 text-muted-foreground"
+                        aria-label={`${provider.label} rate limited${
+                          retryTime ? `, retrying at ${retryTime}` : ", retrying"
+                        }`}
+                      >
+                        <span className="text-sm tabular-nums" aria-hidden="true">
+                          {provider.label} —
+                        </span>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-56 text-center text-sm">
+                      <p className="font-medium">{provider.label}</p>
+                      <p className="text-muted-foreground">
+                        {provider.id === "claude" ? "Anthropic" : provider.label} rate limit,
+                        retrying
+                        {retryTime ? ` at ${retryTime}` : ""}
+                      </p>
+                    </TooltipContent>
+                  </Tooltip>
+                );
+              }
 
-        const window = tightestWindow(provider);
-        if (!window) return null;
-        const resets = formatResetAt(window.resets_at);
-        const stale = provider.state === "stale";
-        const asOf = stale ? formatResetAt(provider.as_of) : null;
-        const percent = window.percent;
+              const window = tightestWindow(provider);
+              if (!window) return null;
+              const resets = formatResetAt(window.resets_at);
+              const stale = provider.state === "stale";
+              const asOf = stale ? formatResetAt(provider.as_of) : null;
+              const percent = window.percent;
+              const apiUsage = provider.meter_type === "api_usage" || provider.id === "openai";
 
-        return (
-          <Tooltip key={provider.id}>
-            <TooltipTrigger asChild>
-              <span
-                data-testid={`plan-limit-${provider.id}`}
-                data-stale={stale ? "true" : undefined}
-                className={cn(
-                  "flex items-center gap-1.5",
-                  severityClass(percent),
-                  // A replayed reading must not look like a live one.
-                  stale && "opacity-50",
-                )}
-                aria-label={`${provider.label} ${window.label} plan limit ${percent}% used${
-                  stale ? " (last known)" : ""
-                }`}
-              >
-                <LimitRing percent={percent} />
-                <span className="text-sm tabular-nums" aria-hidden="true">
-                  {percent}%
-                </span>
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="max-w-56 text-center text-sm">
-              <p className="font-medium">
-                {provider.label}
-                {provider.tier ? ` · ${provider.tier}` : ""}
-              </p>
-              {provider.windows.map((w) => (
-                <p key={w.kind} className="tabular-nums">
-                  {w.label}: {w.percent}% used
-                  {w.kind === window.kind && resets ? ` · resets ${resets}` : ""}
-                </p>
-              ))}
-              {provider.details?.map((line) => (
-                <p key={line} className="tabular-nums">
-                  {line}
-                </p>
-              ))}
-              {stale && (
-                <p className="text-muted-foreground">
-                  {provider.id === "claude"
-                    ? `${asOf ? `as of ${asOf} — ` : ""}Anthropic rate limit, retrying`
-                    : `last known${asOf ? ` · ${asOf}` : ""}`}
-                </p>
-              )}
-            </TooltipContent>
-          </Tooltip>
-        );
-      })}
+              return (
+                <Tooltip key={provider.id}>
+                  <TooltipTrigger asChild>
+                    <span
+                      data-testid={`plan-limit-${provider.id}`}
+                      data-stale={stale ? "true" : undefined}
+                      className={cn(
+                        "flex items-center gap-1.5",
+                        severityClass(percent),
+                        // A replayed reading must not look like a live one.
+                        stale && "opacity-50",
+                      )}
+                      aria-label={`${provider.label} ${window.label} ${apiUsage ? "local API usage" : "subscription quota"} ${percent}% used${
+                        stale ? " (last known)" : ""
+                      }`}
+                    >
+                      {!apiUsage && <LimitRing percent={percent} />}
+                      <span className="text-sm tabular-nums" aria-hidden="true">
+                        {provider.label} {apiUsage ? "· credits unavailable" : `${percent}%`}
+                      </span>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-56 text-center text-sm">
+                    <p className="font-medium">
+                      {provider.label}
+                      {provider.tier ? ` · ${provider.tier}` : ""}
+                    </p>
+                    {provider.windows.map((w) => (
+                      <p key={w.kind} className="tabular-nums">
+                        {w.label}: {w.percent}% used
+                        {w.kind === window.kind && resets ? ` · resets ${resets}` : ""}
+                      </p>
+                    ))}
+                    {provider.details?.map((line) => (
+                      <p key={line} className="tabular-nums">
+                        {line}
+                      </p>
+                    ))}
+                    {provider.meter_type === "api_usage" && provider.credit_balance == null && (
+                      <p>
+                        Credit balance unavailable — this is local token usage, not subscription
+                        quota.
+                      </p>
+                    )}
+                    {stale && (
+                      <p className="text-muted-foreground">
+                        {provider.id === "claude"
+                          ? `${asOf ? `as of ${asOf} — ` : ""}Anthropic rate limit, retrying`
+                          : `last known${asOf ? ` · ${asOf}` : ""}`}
+                      </p>
+                    )}
+                  </TooltipContent>
+                </Tooltip>
+              );
+            })}
+          </span>
+        ))}
     </>
   );
 }

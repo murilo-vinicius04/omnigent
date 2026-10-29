@@ -45,8 +45,9 @@ PLACE_LABELS: Final[dict[str, str]] = {
     ASK: "where should this go?",
 }
 
-#: The router decides alone once its own place matched their answer at least
-#: :data:`TRUST_AGREE` times in their newest :data:`TRUST_WINDOW` answers.
+#: The router decides alone for a place once its guesses of that place matched
+#: their answer at least :data:`TRUST_AGREE` times in the newest
+#: :data:`TRUST_WINDOW` answers to them.
 TRUST_WINDOW: Final[int] = 10
 TRUST_AGREE: Final[int] = 9
 
@@ -177,14 +178,20 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def trusted(path: pathlib.Path) -> bool:
-    """Whether the router's own places have matched their answers enough to decide alone."""
+def trusted(path: pathlib.Path, place: str = "") -> bool:
+    """Whether the router's guesses of ``place`` matched their answers enough to decide alone.
+
+    Each place is earned on its own: right "steer" guesses say nothing about
+    its "new" ones, and a "steer" that was really a new task counts against it.
+    """
+    if place not in PLACES:
+        return False
     answered = sorted(
-        (r for r in read_log(path).values() if r.right and r.placement.guess),
+        (r for r in read_log(path).values() if r.right and r.placement.guess == place),
         key=lambda r: r.placement.at,
         reverse=True,
     )[:TRUST_WINDOW]
-    agreed = sum(r.right == r.placement.guess for r in answered)
+    agreed = sum(r.right == place for r in answered)
     return len(answered) >= TRUST_WINDOW and agreed >= TRUST_AGREE
 
 

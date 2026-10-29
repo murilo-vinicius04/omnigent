@@ -1,3 +1,5 @@
+import { HubMachineDialog } from "./HubMachineDialog";
+import type { HubMachine } from "./HubMachinePicker";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Outlet, useParams, useSearchParams } from "@/lib/routing";
@@ -17,6 +19,7 @@ import { useNewShellHotkey } from "@/hooks/useNewShellHotkey";
 import { useIsEmbedded } from "@/lib/embedded";
 import { AgentInfoContent, agentHasInfo } from "@/components/AgentInfo";
 import { useIdleNotifications } from "@/hooks/useIdleNotifications";
+import { useHubChimeListener } from "@/lib/hubChime";
 import { useSeedReadState } from "@/hooks/useUnseenConversations";
 import { useIOSViewportLock } from "@/hooks/useIOSViewportLock";
 import { readFilesPanelPreferences, writeFilesPanelPreferences } from "@/lib/filesPanelPreferences";
@@ -65,6 +68,8 @@ import {
   isAgentTerminalKey,
   PANEL_NO_TERMINAL_KEY,
   terminalTabKey,
+  terminalsQueryKey,
+  type TerminalInfo,
   useCreateTerminal,
   useDeleteTerminal,
   useTerminals,
@@ -377,6 +382,7 @@ export function AppShell() {
   // hub has no runner), shown beside the hub chat rather than in place of it.
   const [hubShell, setHubShell] = useState<{ sessionId: string; key: string } | null>(null);
   const [hubShellPending, setHubShellPending] = useState(false);
+  const [hubMachineRequest, setHubMachineRequest] = useState<boolean | null>(null);
   const [executionLogsKey, setExecutionLogsKey] = useState<string | null>(null);
   const [filesPanelOpen, setFilesPanelOpen] = useState(false);
   // Mobile-only full-screen drawers for the rail tabs that have no desktop
@@ -432,6 +438,9 @@ export function AppShell() {
   // the active conversation id, which suppresses the notification/badge for
   // the session the user is actively viewing.
   useIdleNotifications(conversationId);
+  // Listen for Hub task updates (task finished / response needed) and play
+  // the discrete notification chime when enabled.
+  useHubChimeListener();
   // Seed the per-user read-state (unread/seen) mirror from the conversation
   // list, so the sidebar dots reflect what the user did on any device.
   // `undefined` while the query is still loading (vs `[]` for a loaded-but-
@@ -453,6 +462,7 @@ export function AppShell() {
   // is the only path through which the UI learns the user's permission
   // level. ``derivePermissionLevel`` prefers this over ``activeConv``.
   const { session: activeSession, isLoading: sessionLoading } = useSession(conversationId);
+  const isHubConversation = activeSession?.labels?.["omnigent.hub"] === "1";
   // Same liveness the chat surface switches on (see ChatPage / useSessionLiveness).
   // AppShell reads it only to drive the Terminal pill's "loading" state: a session
   // in `starting` (a relaunch the moment a message is sent — `turnActive`) is
@@ -634,9 +644,17 @@ export function AppShell() {
   // and the mobile menu. The pill surfaces (``terminalsAvailable``,
   // ``setView``) keep the full ``terminals`` list so the agent's own
   // terminal stays openable through the Terminal pill.
+  const terminalConversationId = isHubConversation ? hubShell?.sessionId : conversationId;
+  const { terminals: hubTerminals } = useTerminals(
+    isHubConversation ? (hubShell?.sessionId ?? null) : null,
+  );
   const railTerminals = useMemo(
-    () => inventoryTerminals(terminals, terminalFirst),
-    [terminals, terminalFirst],
+    () =>
+      inventoryTerminals(
+        isHubConversation ? hubTerminals : terminals,
+        isHubConversation || terminalFirst,
+      ),
+    [isHubConversation, hubTerminals, terminals, terminalFirst],
   );
   // Shell soft tabs are 1:1 with the session's shell inventory: every shell —
   // whether the user opened it or the agent spawned it — is its own tab, and a
@@ -645,7 +663,7 @@ export function AppShell() {
   // it. The agent's own control terminal is excluded by ``inventoryTerminals``
   // (it lives behind the connection pill, not as a shell tab).
   const openTerminals = useMemo(() => railTerminals.map((t) => terminalTabKey(t)), [railTerminals]);
-  const deleteTerminalMutation = useDeleteTerminal(conversationId ?? "");
+  const deleteTerminalMutation = useDeleteTerminal(terminalConversationId ?? "");
   // Tab key awaiting a close confirmation, or null. Closing a tab kills the
   // terminal, so a user-initiated close routes through a confirm modal first.
   const [terminalPendingClose, setTerminalPendingClose] = useState<string | null>(null);
@@ -761,9 +779,8 @@ export function AppShell() {
   // Per-tab availability for the right workspace rail — the single source
   // of truth shared by the tab-fallback effect below, the rail's mount
   // gate, and the header's collapse toggle, so they can never disagree.
-  // The hub runs other sessions and has no workspace of its own: its rail is
-  // the Sessions tab alone.
-  const isHubConversation = activeSession?.labels?.["omnigent.hub"] === "1";
+  // The hub's fixed navigation is Projects; file and shell tabs use the
+  // workspaces of the sessions it runs.
   // The hub's file tabs name a project's chat as well as the path.
   const hubFile =
     isHubConversation && selectedFilePath !== null ? parseChatFileRef(selectedFilePath) : null;
@@ -1573,17 +1590,42 @@ export function AppShell() {
     clearShellCreatePending,
     openTerminalTab,
   ]);
-  const openHubShell = useCallback(async (fresh: boolean) => {
-    setHubShellPending(true);
-    try {
-      const shell = await openHubTerminal(fresh);
-      setHubShell({ sessionId: shell.sessionId, key: `terminal:${shell.terminalId}` });
-    } catch (err) {
-      showToast(`Couldn't open a terminal: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setHubShellPending(false);
-    }
-  }, []);
+  const openHubShell = useCallback(
+    async (fresh: boolean, machine?: HubMachine) => {
+      if (!machine) {
+        setHubMachineRequest(fresh);
+        return;
+      }
+      setHubShellPending(true);
+      try {
+        const shell = await openHubTerminal(fresh, machine);
+        const key = `terminal:${shell.terminalId}`;
+        setHubShell({ sessionId: shell.sessionId, key });
+        // The hub doesn't subscribe to the shell session's resource events.
+        // Seed its cache before showing the tab so it can attach immediately.
+        const queryKey = terminalsQueryKey(shell.sessionId);
+        queryClient.setQueryData<TerminalInfo[]>(queryKey, (current = []) =>
+          current.some((terminal) => terminal.id === shell.terminal.id)
+            ? current.map((terminal) =>
+                terminal.id === shell.terminal.id ? shell.terminal : terminal,
+              )
+            : [...current, shell.terminal],
+        );
+        void queryClient.invalidateQueries({ queryKey });
+        if (stateConvRef.current !== conversationId) return;
+        setPanelInitialKey(null);
+        setRightPanelMaximized(false);
+        openTerminalTab(key);
+        if (!window.matchMedia("(min-width: 768px)").matches) setShellsPanelOpen(true);
+      } catch (err) {
+        showToast(`Couldn't open a terminal: ${err instanceof Error ? err.message : String(err)}`);
+        throw err;
+      } finally {
+        setHubShellPending(false);
+      }
+    },
+    [conversationId, openTerminalTab, queryClient, setPanelInitialKey],
+  );
   useNewShellHotkey(
     isHubConversation ? () => void openHubShell(true) : launchDefaultShell,
     isHubConversation ? !hubShellPending : shellLaunchable,
@@ -1625,9 +1667,15 @@ export function AppShell() {
       if (remaining.length === 0) return null;
       return remaining[idx - 1] ?? remaining[idx] ?? remaining[0];
     });
-    const info = terminals.find((t) => terminalTabKey(t) === key);
-    if (info && conversationId) deleteTerminalMutation.mutate(info.id);
-  }, [terminalPendingClose, openTerminals, terminals, conversationId, deleteTerminalMutation]);
+    const info = railTerminals.find((t) => terminalTabKey(t) === key);
+    if (info && terminalConversationId) deleteTerminalMutation.mutate(info.id);
+  }, [
+    terminalPendingClose,
+    openTerminals,
+    railTerminals,
+    terminalConversationId,
+    deleteTerminalMutation,
+  ]);
 
   // The active shell selection is sticky: it changes only on explicit user
   // action (opening a shell/file, switching a nav tab, closing the active
@@ -2124,6 +2172,7 @@ export function AppShell() {
                 {conversationId && workspacePanelVisible && (
                   <WorkspacePanel
                     conversationId={conversationId}
+                    terminalConversationId={terminalConversationId}
                     width={inlinePanelWidth}
                     inert={inlinePanelWidth === 0}
                     handleProps={inlinePanelHandleProps}
@@ -2159,7 +2208,7 @@ export function AppShell() {
                     onSortChange={handleFilesSortChange}
                     filesPanelShowHidden={filesPanelShowHidden}
                     onShowHiddenChange={setFilesPanelShowHidden}
-                    liveness={liveness}
+                    liveness={isHubConversation ? undefined : liveness}
                     onShellCreateStart={markShellCreateStarted}
                     onShellCreateFailed={clearShellCreatePending}
                   />
@@ -2169,13 +2218,15 @@ export function AppShell() {
               {/* Push panels — flex siblings to main, animate width. Only one is open at a time.
           Terminal-first sessions render the terminal inline inside main
           (via MainTerminalView in ChatPage) and never mount the drawer. */}
-              {isHubConversation && hubShell && (
-                <TerminalsPanel
-                  open
-                  conversationId={hubShell.sessionId}
-                  initialTerminalKey={hubShell.key}
-                  onClose={() => setHubShell(null)}
-                />
+              {isHubConversation && hubShell && shellsPanelOpen && (
+                <div className="md:hidden">
+                  <TerminalsPanel
+                    open
+                    conversationId={hubShell.sessionId}
+                    initialTerminalKey={hubShell.key}
+                    onClose={() => setShellsPanelOpen(false)}
+                  />
+                </div>
               )}
               {conversationId && !terminalFirst && !isHubConversation && (
                 <TerminalsPanel
@@ -2225,7 +2276,7 @@ export function AppShell() {
                   <SubagentsPanel conversationId={conversationId} rootSessionId={rootSessionId} />
                 </MobilePanelDrawer>
               )}
-              {conversationId && (
+              {conversationId && !isHubConversation && (
                 <MobilePanelDrawer
                   open={shellsPanelOpen}
                   title="Shells"
@@ -2288,11 +2339,21 @@ export function AppShell() {
               }}
             />
           )}
+          {hubMachineRequest !== null && (
+            <HubMachineDialog
+              title="Terminal machine"
+              optionalFolder
+              onClose={() => setHubMachineRequest(null)}
+              onSave={async (machine) => {
+                await openHubShell(hubMachineRequest, machine);
+              }}
+            />
+          )}
           <CloseShellDialog
             open={terminalPendingClose !== null}
             shellLabel={(() => {
               if (terminalPendingClose === null) return null;
-              const info = terminals.find((t) => terminalTabKey(t) === terminalPendingClose);
+              const info = railTerminals.find((t) => terminalTabKey(t) === terminalPendingClose);
               if (!info) return null;
               return info.session ? `${info.name} · ${info.session}` : info.name;
             })()}

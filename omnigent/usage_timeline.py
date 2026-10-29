@@ -39,13 +39,24 @@ logger = logging.getLogger(__name__)
 PROVIDER_LABELS: dict[str, str] = {
     "claude": "Claude",
     "gemini": "Gemini",
-    "openai": "OpenAI",
+    "openai": "OpenAI API",
+    "codex": "Codex sessions",
+    "openai-other": "GPT (other routes)",
     "grok": "Grok",
+    "muse": "Muse",
     "other": "Other",
 }
 
 #: Render order: the four vendors the tray tracks, then the catch-all.
-PROVIDER_ORDER: tuple[str, ...] = ("claude", "gemini", "openai", "grok", "other")
+PROVIDER_ORDER: tuple[str, ...] = (
+    "claude",
+    "gemini",
+    "codex",
+    "openai",
+    "openai-other",
+    "grok",
+    "other",
+)
 
 #: Substring -> provider family, tried in order against the lowercased model id.
 #: Model ids arrive in whatever shape the harness reports ("claude-opus-5",
@@ -58,6 +69,7 @@ _MODEL_FAMILIES: tuple[tuple[str, str], ...] = (
     ("antigravity", "gemini"),
     ("grok", "grok"),
     ("xai", "grok"),
+    ("muse", "muse"),
     ("gpt", "openai"),
     ("codex", "openai"),
     ("openai", "openai"),
@@ -73,7 +85,9 @@ PLAN_PROVIDER_FAMILY: dict[str, str] = {
     "antigravity": "gemini",
     "gemini": "gemini",
     "openai": "openai",
+    "codex": "codex",
     "grok": "grok",
+    "muse": "muse",
 }
 
 #: Short labels for the window kinds the tray records; unknown kinds pass
@@ -205,6 +219,13 @@ def _event_provider(event: dict[str, Any], kind: str) -> str:
         return explicit
     model = event.get("model")
     family = provider_for_model(model if isinstance(model, str) else None)
+    if family == "openai":
+        # Model names do not identify an API account or its credit balance.
+        if kind == "openai_call":
+            return "openai"
+        if event.get("source") == "native":
+            return "codex"
+        return "openai-other"
     if family != "other":
         return family
     prefix = kind.removesuffix("_call")

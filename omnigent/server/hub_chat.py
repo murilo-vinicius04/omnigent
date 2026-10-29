@@ -541,6 +541,29 @@ def handed_files(
     return handed
 
 
+def news_since(
+    entries: Sequence[hub_module.HubEntry], session_id: str, sent_at: float | None, window_s: float
+) -> float | None:
+    """Since when a file a chat's report names is news: that chat's report before it.
+
+    A lane's background job can write its file after one report and before
+    the next message reaches the lane; the reply to that message is where the
+    reader first hears of it. No earlier than *window_s* before the send, the
+    longest a lane's own work runs on after it reported.
+    """
+    if sent_at is None:
+        return None
+    last = max(
+        (
+            e.at
+            for e in entries
+            if e.kind == "finished" and e.session_id == session_id and e.at <= sent_at
+        ),
+        default=sent_at,
+    )
+    return max(last, sent_at - window_s)
+
+
 def entry_files(
     entry: hub_module.HubEntry, workspace: str | None, *, since: float | None = None
 ) -> list[tuple[str, str]]:

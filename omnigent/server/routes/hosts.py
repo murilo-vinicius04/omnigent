@@ -20,9 +20,10 @@ import asyncio
 import logging
 import secrets
 from typing import Any
+from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Query, Request, Response
+from pydantic import BaseModel, Field
 
 from omnigent.db.utils import now_epoch
 from omnigent.debug_logging import add_audit_attrs
@@ -62,6 +63,27 @@ from omnigent.stores.host_store import HostStore, host_is_live
 from omnigent.stores.permission_store import PermissionStore
 
 _logger = logging.getLogger(__name__)
+
+
+class HostEnrollmentIn(BaseModel):
+    host_id: UUID
+    name: str = Field(min_length=1, max_length=64, pattern=r"^\S(?:.*\S)?$")
+
+
+class HostRenameIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64, pattern=r"^\S(?:.*\S)?$")
+
+
+class HostInspectionIn(BaseModel):
+    action: str = Field(pattern="^(identity|command|repos|report)$")
+    workspace: str = Field(default="", max_length=4096)
+    command: str = Field(default="", max_length=8000)
+    timeout_s: float = Field(default=15, gt=0, le=30)
+    paths: list[str] = Field(default_factory=list, max_length=100)
+    touched: list[str] = Field(default_factory=list, max_length=100)
+    reply: str = Field(default="", max_length=40000)
+    since: float | None = None
+
 
 _LAUNCH_RESULT_TIMEOUT_S = 30.0
 # Per-call timeout for host.list_dir round-trips. Listing is a single
@@ -563,6 +585,102 @@ def create_hosts_router(
     flags = feature_flags or resolve_feature_flags()
     router = APIRouter()
 
+    @router.post("/hosts/enroll")
+    async def enroll_host(
+        request: Request, body: HostEnrollmentIn, response: Response
+    ) -> dict[str, Any]:
+        """Enroll an external machine with a revocable, host-only credential."""
+        user_id = require_user(request, auth_provider) or "local"
+        token = secrets.token_urlsafe(32)
+        expires_at = now_epoch() + 90 * 86400
+        try:
+            host = await asyncio.to_thread(
+                host_store.enroll_external_host,
+                body.host_id.hex,
+                body.name,
+                user_id,
+                token,
+                expires_at,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        response.headers["Cache-Control"] = "no-store"
+        conn = host_registry.get(host.host_id)
+        if conn is not None:
+            await conn.ws.close(code=4004, reason="credential rotated")
+        return {
+            "host_id": host.host_id,
+            "name": host.name,
+            "token": token,
+            "expires_at": expires_at,
+        }
+
+    @router.delete("/hosts/{host_id}/credential")
+    async def revoke_host(request: Request, host_id: str) -> dict[str, bool]:
+        from omnigent.server.routes._host_launch import resolve_host_owner
+
+        user_id = require_user(request, auth_provider)
+        host = await asyncio.to_thread(
+            resolve_host_owner, user_id=user_id, host_id=host_id, host_store=host_store
+        )
+        if host.sandbox_provider is not None or host.credential_expires_at is None:
+            raise HTTPException(
+                status_code=409,
+                detail="this machine uses a user login, not an enrolled host credential",
+            )
+        await asyncio.to_thread(host_store.revoke_launch_token, host_id)
+        conn = host_registry.get(host_id)
+        if conn is not None:
+            await conn.ws.close(code=4004, reason="credential revoked")
+        return {"revoked": True}
+
+    @router.post("/hosts/{host_id}/inspect")
+    async def inspect_host(
+        request: Request, host_id: str, body: HostInspectionIn
+    ) -> dict[str, Any]:
+        from omnigent.server.host_inspection import request_inspection
+
+        user_id = require_user(request, auth_provider)
+        try:
+            return await request_inspection(
+                host_registry, host_store, user_id, host_id, body.model_dump()
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except TimeoutError as exc:
+            raise HTTPException(status_code=504, detail="machine did not answer") from exc
+
+    @router.patch("/hosts/{host_id}")
+    async def rename_host(request: Request, host_id: str, body: HostRenameIn):
+        from omnigent.server.routes._host_launch import resolve_host_owner
+
+        await asyncio.to_thread(
+            resolve_host_owner,
+            user_id=require_user(request, auth_provider),
+            host_id=host_id,
+            host_store=host_store,
+        )
+        try:
+            await asyncio.to_thread(host_store.rename_host, host_id, body.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"name": body.name}
+
+    @router.delete("/hosts/{host_id}")
+    async def delete_host(request: Request, host_id: str):
+        from omnigent.server.routes._host_launch import resolve_host_owner
+
+        host = await asyncio.to_thread(
+            resolve_host_owner,
+            user_id=require_user(request, auth_provider),
+            host_id=host_id,
+            host_store=host_store,
+        )
+        if host.sandbox_provider is not None or host_is_live(host):
+            raise HTTPException(status_code=409, detail="disconnect the external machine first")
+        await asyncio.to_thread(host_store.delete_host, host_id)
+        return {"deleted": True}
+
     @router.get("/hosts")
     async def list_hosts(request: Request) -> dict[str, list[dict[str, Any]]]:
         """List all hosts owned by the authenticated user.
@@ -612,6 +730,7 @@ def create_hosts_router(
                     # user-connectable machines.
                     "sandbox_provider": host.sandbox_provider,
                     "configured_harnesses": host.configured_harnesses,
+                    "credential_expires_at": host.credential_expires_at,
                     # Held in memory from the host's connect handshake, not the
                     # hosts row. ``None`` means this replica has no report yet —
                     # emitted as-is so a client can tell "unknown" from "not

@@ -33,7 +33,11 @@ Env vars read at startup:
   agent authenticating from a variable needs it named here). Names only — each
   value is read from this process's own environment.
 - ``HARNESS_ACP_PROMPT_TIMEOUT_S``: optional idle (time-without-progress) deadline in
-  seconds for a prompt turn (default 300); must be positive and finite or the child aborts.
+  seconds for a prompt turn (default 1800); must be positive and finite or the child aborts.
+- ``HARNESS_ACP_MUSE_TIMEOUT_S``: optional idle-budget override for Muse Code
+  backends (default 3600). A Muse turn gets the larger of the two budgets —
+  ``muse-code-acp`` fronts ``muse serve`` and routinely works many minutes
+  without emitting a single ACP frame.
 - ``HARNESS_ACP_PERMISSION_MODE``: Omnigent permission stance, ``auto`` (default) or
   ``bypassPermissions`` — the latter skips the approval card for a tool call no
   policy had an opinion on, so a headless agent runs without parking on prompts.

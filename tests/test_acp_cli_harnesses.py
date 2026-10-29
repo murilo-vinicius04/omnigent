@@ -139,6 +139,14 @@ def test_fake_row_login_command() -> None:
     assert _FAKE_ROW.binary == "fakecli"
 
 
+def test_muse_code_row_uses_the_muse_acp_adapter() -> None:
+    row = ACP_CLI_HARNESSES["muse-code"]
+    assert row.binary == "muse-code-acp"
+    assert row.install.package == "@bex-co/muse-code-acp"
+    assert row.login_command == "muse-code-acp --cli login"
+    assert canonicalize_harness("muse") == "muse-code"
+
+
 # ---------------------------------------------------------------------------
 # Per-row registration (parametrized over the real catalog)
 # ---------------------------------------------------------------------------
@@ -151,7 +159,7 @@ def test_fake_row_login_command() -> None:
 _VENDOR_WRAPS = {"devin": "omnigent.inner.devin.harness"}
 # Rows whose agent advertises a standard ACP ``reasoning_effort`` option, which
 # the shared executor sets; they may differ from "acp" on the effort axis only.
-_EFFORT_ROWS = {"grok"}
+_EFFORT_ROWS = {"grok", "muse-code"}
 
 
 @pytest.mark.parametrize("name", sorted(ACP_CLI_HARNESSES))

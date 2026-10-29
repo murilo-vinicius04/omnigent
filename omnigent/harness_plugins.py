@@ -694,6 +694,14 @@ _BUILTIN_CAPABILITIES["grok"] = dataclasses.replace(
     effort=EffortFamily.GROK,
 )
 
+# Muse Code exposes ``reasoning_effort`` as a standard ACP session config
+# option (via the community ``muse-code-acp`` adapter), which the generic
+# executor sets before each prompt.
+_BUILTIN_CAPABILITIES["muse-code"] = dataclasses.replace(
+    _BUILTIN_CAPABILITIES["acp"],
+    effort=EffortFamily.MUSE,
+)
+
 
 _BUILTIN_CONTRIBUTION = HarnessContribution(
     name="omnigent",
@@ -840,6 +848,9 @@ _BUILTIN_CONTRIBUTION = HarnessContribution(
         # Grok's ACP session accepts a ``model`` config option; the generic
         # executor warm-switches to this id before the first prompt.
         "grok": "HARNESS_ACP_MODEL",
+        # Muse Code's session accepts a ``model`` config option through the
+        # community ``muse-code-acp`` adapter; same warm-switch path as grok.
+        "muse-code": "HARNESS_ACP_MODEL",
         "hermes": "HARNESS_HERMES_MODEL",
         "kimi": "HARNESS_KIMI_MODEL",
         "openai-agents": "HARNESS_OPENAI_AGENTS_MODEL",

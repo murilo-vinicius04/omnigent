@@ -115,6 +115,20 @@ ACP_CLI_HARNESSES: dict[str, AcpCliHarness] = {
         args=("agent", "stdio"),
         aliases=("grok-build",),
     ),
+    # Muse Code speaks its own MSP protocol. The community ACP adapter wraps
+    # `muse serve`, preserving Muse's native auth, sessions, and approvals.
+    "muse-code": AcpCliHarness(
+        install=HarnessInstallSpec(
+            "Muse Code",
+            "muse-code-acp",
+            "@bex-co/muse-code-acp",
+            login_args=("--cli", "login"),
+            install_hint="npm install -g @bex-co/muse-code-acp",
+            auth_hint="Install Muse Code with `curl -fsSL https://dev.meta.ai/install.sh | sh`, then sign in with `muse login`.",
+        ),
+        args=(),
+        aliases=("muse",),
+    ),
 }
 
 #: Permission stances the generic ACP wrap honors live. ``auto`` (default)

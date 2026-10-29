@@ -997,6 +997,30 @@ def test_a_report_links_only_the_files_it_handed_over(tmp_path) -> None:
     assert [r for _, r in hub_chat.handed_files(detail, str(tmp_path))] == ["RA-L/fr3_lab.yaml"]
 
 
+def test_a_file_a_background_job_wrote_between_reports_is_handed_over(tmp_path) -> None:
+    # A job the lane started wrote it after one report; the next reply gave it.
+    _file(tmp_path / "videos" / "m8_play_120s.mp4", 1723)
+    _file(tmp_path / "videos" / "m8_play_60s.mp4", 1300)  # before the last report
+    entries = [
+        HubEntry(id=1, at=1249, role="hub", kind="sent", text="x", session_id="s1"),
+        HubEntry(id=2, at=1377, role="hub", kind="finished", text="x", session_id="s1"),
+        HubEntry(id=3, at=1600, role="hub", kind="finished", text="x", session_id="s2"),
+        HubEntry(id=4, at=1754, role="hub", kind="sent", text="x", session_id="s1"),
+    ]
+    since = hub_chat.news_since(entries, "s1", 1754, window_s=6 * 3600)
+    assert since == 1377
+    detail = (
+        f"The video is `{tmp_path}/videos/m8_play_120s.mp4`; "
+        f"the old one `{tmp_path}/videos/m8_play_60s.mp4`."
+    )
+    handed = hub_chat.handed_files(detail, str(tmp_path), since=since)
+    assert [relative for _, relative in handed] == ["videos/m8_play_120s.mp4"]
+    # A chat never reported on counts from the send; an old report, from the window.
+    assert hub_chat.news_since(entries, "s3", 1754, window_s=100) == 1754
+    assert hub_chat.news_since(entries, "s1", 1754, window_s=100) == 1654
+    assert hub_chat.news_since(entries, "s1", None, window_s=100) is None
+
+
 def test_an_old_report_is_judged_from_when_the_hub_sent_the_work(tmp_path) -> None:
     _file(tmp_path / "RA-L" / "plan.md", 2000)
     _file(tmp_path / "RA-L" / "old_notes.md", 10)

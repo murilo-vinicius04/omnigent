@@ -13,6 +13,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -157,6 +158,81 @@ async def _open_claude_native_session(
         )
         assert create_resp.status_code == 201, create_resp.text
     return app, registry
+
+
+@pytest.mark.parametrize("result", ["success", "blocked", "unconfirmed"])
+async def test_bypass_resumes_the_same_terminal_and_native_conversation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, result: str
+) -> None:
+    conv_id = "b1b2c3d4e5f60718293a4b5c6d7e8f90"
+    native_id = "f0f39aa1-5d4d-4d31-b97a-50ea056bb380"
+    calls: list[str] = []
+    app, registry = await _open_claude_native_session(
+        monkeypatch, conv_id=conv_id, auto_create_calls=calls
+    )
+    instance = TerminalInstance(
+        name="claude",
+        session_key="main",
+        socket_path=tmp_path / "tmux.sock",
+        private_dir=tmp_path,
+        args=["--model", "old-model", "--settings", "/private/hooks.json"],
+        running=True,
+    )
+    instance.is_alive = AsyncMock(return_value=True)
+    instance.respawn = AsyncMock()
+    instance.pane_pid_sync = lambda: 123
+    with registry._lock:
+        registry._by_conversation[conv_id] = {("claude", "main"): instance}
+    monkeypatch.setattr(
+        claude_native_bridge, "read_claude_status_model", lambda _p: "current-model"
+    )
+    observe = AsyncMock()
+    monkeypatch.setattr(
+        "omnigent.runner.resource_registry.SessionResourceRegistry.observe_required_terminal",
+        observe,
+    )
+    switches: list[str] = []
+
+    def switch(_dir: Path, *, mode: str, timeout_s: float) -> str:
+        switches.append(mode)
+        if len(switches) == 1:
+            raise claude_native_bridge.ClaudePermissionModeUnavailable("not enabled at launch")
+        if result == "unconfirmed":
+            raise RuntimeError("Claude did not render a bypass footer")
+        return mode
+
+    def prepare(_dir: Path, *, mode: str, pane_pid: int | None) -> str:
+        assert mode == "bypassPermissions" and pane_pid == 123
+        if result == "blocked":
+            raise claude_native_bridge.ClaudePermissionModeRestartBlocked(
+                "Wait for Claude to finish"
+            )
+        return native_id
+
+    monkeypatch.setattr(claude_native_bridge, "set_permission_mode", switch)
+    monkeypatch.setattr(claude_native_bridge, "prepare_permission_mode_resume", prepare)
+    async with _runner_client(app) as client:
+        response = await client.post(
+            f"/v1/sessions/{conv_id}/events",
+            json={"type": "permission_mode_change", "permission_mode": "bypassPermissions"},
+        )
+    assert registry.get(conv_id, "claude", "main") is instance
+    if result == "blocked":
+        assert response.status_code == 409
+        instance.respawn.assert_not_awaited()
+        observe.assert_not_awaited()
+        return
+    instance.respawn.assert_awaited_once()
+    args = instance.respawn.call_args.kwargs["args"]
+    assert args[args.index("--resume") + 1] == native_id
+    assert args[args.index("--model") + 1] == "current-model"
+    assert args[args.index("--settings") + 1] == "/private/hooks.json"
+    assert "--fork-session" not in args
+    observe.assert_awaited_once()
+    assert switches == ["bypassPermissions", "bypassPermissions"]
+    assert response.status_code == (200 if result == "success" else 503)
+    if result == "success":
+        assert response.json() == {"permission_mode": "bypassPermissions"}
 
 
 @pytest.mark.asyncio

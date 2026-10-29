@@ -1,6 +1,7 @@
 """The hub's tier judge: how much model a request needs, asked of a decision model.
 
-A Jev-style decision model (reflex, served on this machine) reads what the
+A Jev-style decision model (a provider model through the supervisor's
+OpenRouter backend, unless an explicit endpoint is configured) reads what the
 hub sends a project, which project it is and how the project's previous
 request went, and answers typed questions with probabilities: the least
 capable tier that will do the request right the first time, the reasoning
@@ -31,11 +32,8 @@ from omnigent.supervisor import Backend, post_questions
 
 _logger = logging.getLogger(__name__)
 
-#: reflex's ``reflex-serve`` default port, TypeSafe's wire format.
-DEFAULT_URL: Final[str] = "http://127.0.0.1:8008/v1/systemone"
-
 #: The flag file under the hub's folder that turns shadow decisions on; it
-#: holds the endpoint's URL, or nothing for :data:`DEFAULT_URL`.
+#: holds an explicit endpoint's URL, or nothing for the supervisor backend.
 FLAG_NAME: Final[str] = "router-url"
 
 #: Each user's decisions, one JSON object per line, beside their hub log.
@@ -53,16 +51,16 @@ CLOSE_CALL_MARGIN: Final[float] = 0.10
 #: against the work each tier is good for.
 _TIER_CRITERIA: Final[dict[str, str]] = {
     "economical": (
-        "Haiku 5.5, GPT-6 Luna or Gemini Flash is enough: a status question, a lookup, "
+        "GPT-6 Luna or Gemini Flash is prioritized (or Haiku 5.5): a status question, a lookup, "
         "a small change whose exact steps are given, a routine command"
     ),
     "middle": (
         "Sonnet 5.5: most everyday coding, debugging, writing or analysis with a clear goal"
     ),
     "top": (
-        "Opus 5.5 or GPT-6.1 Sol: work a middle model would likely get wrong, such as "
+        "Opus 5.5: work a middle model would likely get wrong, such as "
         "open-ended design or research, a subtle bug whose cause is unknown, a change across "
-        "many parts of a system, or a paper"
+        "many parts of a system, or a paper (GPT-6.1 Sol and Argon are avoided)"
     ),
 }
 
@@ -77,9 +75,9 @@ EFFORT_MOVE_BAR: Final[float] = 0.6
 
 #: Who each tier's effort question is about.
 _TIER_MODELS: Final[dict[str, str]] = {
-    "economical": "an economical model (Haiku 5.5, GPT-6 Luna or Gemini Flash)",
+    "economical": "an economical model (GPT-6 Luna or Gemini Flash prioritized, or Haiku 5.5)",
     "middle": "a middle model (Sonnet 5.5)",
-    "top": "a top model (Opus 5.5 or GPT-6.1 Sol)",
+    "top": "a top model (Opus 5.5; GPT-6.1 Sol and Argon avoided)",
 }
 
 _EFFORT_CRITERIA: Final[dict[str, str]] = {
@@ -163,18 +161,29 @@ class TierDecision:
 def configured(hub_dir: pathlib.Path) -> Backend | None:
     """The decision model's endpoint while shadow decisions are on, else ``None``.
 
-    ``OMNIGENT_HUB_ROUTER_URL`` wins (``off`` turns it off); otherwise the
-    flag file ``<hub dir>/router-url`` turns it on, holding the URL or nothing.
+    ``OMNIGENT_HUB_ROUTER_URL`` wins (``off`` turns it off, a URL points at
+    an explicit Jev-compatible endpoint); otherwise the flag file
+    ``<hub dir>/router-url`` turns it on, holding a URL or nothing. With
+    nothing configured anywhere, the judge goes through the supervisor's
+    provider-model backend (OpenRouter Jev) instead of the old local reflex
+    server, which is not supposed to be running; without a supervisor key
+    either, there is nobody to ask and the judge stays off.
     """
+    from omnigent.supervisor import configured_backends
+
     raw = os.environ.get("OMNIGENT_HUB_ROUTER_URL", "").strip()
     if raw.lower() in ("off", "0", "false", "no"):
         return None
-    if not raw:
-        try:
-            raw = (hub_dir / FLAG_NAME).read_text(encoding="utf-8").strip() or DEFAULT_URL
-        except OSError:
-            return None
-    return Backend(name="reflex", url=raw, model="reflex")
+    if raw:
+        return Backend(name="custom", url=raw, model="custom")
+    try:
+        raw = (hub_dir / FLAG_NAME).read_text(encoding="utf-8").strip()
+    except OSError:
+        raw = ""
+    if raw:
+        return Backend(name="custom", url=raw, model="custom")
+    backends = configured_backends()
+    return backends[0] if backends else None
 
 
 def _clip(text: str, limit: int) -> str:

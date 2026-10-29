@@ -10,15 +10,13 @@ import {
 } from "@/lib/claudePermissionMode";
 
 describe("claudePermissionMode", () => {
-  it("offers only shift+tab-reachable modes for a running session", () => {
-    // dontAsk is never in Claude's cycle and bypassPermissions only joins it
-    // when the session launched into it — offering either would produce a
-    // switch the server rejects or the cycler can't reach.
+  it("offers bypass for running sessions, with a native resume fallback", () => {
     expect(CLAUDE_NATIVE_SWITCHABLE_PERMISSION_MODES.map((m) => m.value)).toEqual([
       "default",
       "auto",
       "acceptEdits",
       "plan",
+      "bypassPermissions",
     ]);
   });
 
@@ -45,7 +43,7 @@ describe("claudePermissionMode", () => {
   it("accepts only switchable modes", () => {
     expect(isSwitchableClaudePermissionMode("auto")).toBe(true);
     expect(isSwitchableClaudePermissionMode("dontAsk")).toBe(false);
-    expect(isSwitchableClaudePermissionMode("bypassPermissions")).toBe(false);
+    expect(isSwitchableClaudePermissionMode("bypassPermissions")).toBe(true);
     expect(isSwitchableClaudePermissionMode(undefined)).toBe(false);
   });
 

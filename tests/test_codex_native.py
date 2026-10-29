@@ -884,9 +884,6 @@ def test_codex_resume_permission_params_repairs_legacy_full_access_profile() -> 
         thread_id="thread_x",
         remote_url="ws://127.0.0.1:9876",
     ) == [
-        *args,
-        "-c",
-        'approval_policy="never"',
         "resume",
         "--remote",
         "ws://127.0.0.1:9876",
@@ -1178,7 +1175,6 @@ def test_materialized_codex_agent_spec_loads_as_valid_omnigent_yaml(
             "thread_local",
             "unix:///tmp/app-server.sock",
             [
-                *_AUTO_REVIEW_ARGS,
                 "resume",
                 "--remote",
                 "unix:///tmp/app-server.sock",
@@ -1201,7 +1197,7 @@ def test_materialized_codex_agent_spec_loads_as_valid_omnigent_yaml(
             (),
             "thread_host",
             "ws://127.0.0.1:9876",
-            [*_AUTO_REVIEW_ARGS, "resume", "--remote", "ws://127.0.0.1:9876", "thread_host"],
+            ["resume", "--remote", "ws://127.0.0.1:9876", "thread_host"],
         ),
         # Leading codex args are preserved ahead of the attach flags.
         (
@@ -1211,7 +1207,6 @@ def test_materialized_codex_agent_spec_loads_as_valid_omnigent_yaml(
             [
                 "--model",
                 "gpt-5.4-mini",
-                *_AUTO_REVIEW_ARGS,
                 "resume",
                 "--remote",
                 "ws://127.0.0.1:9876",
@@ -1272,7 +1267,6 @@ def test_build_codex_remote_args_passes_transport_verbatim(
                 'model="catalog-databricks-openai-default"',
                 "-c",
                 'model_provider="omnigent_databricks"',
-                *_AUTO_REVIEW_ARGS,
                 "resume",
                 "--remote",
                 "ws://127.0.0.1:9876",
@@ -1422,13 +1416,11 @@ def test_build_codex_remote_args_default_keeps_approval_flags_no_bypass() -> Non
                 "ws://127.0.0.1:9876",
             ],
         ),
-        # Resume path: the bypass flag is a global flag and MUST precede the
-        # ``resume`` subcommand, and a pre-existing bypass flag is de-duped.
+        # Remote resume inherits permissions from its already loaded thread.
         (
             ("--dangerously-bypass-approvals-and-sandbox", "--sandbox", "read-only"),
             "thread_x",
             [
-                "--dangerously-bypass-approvals-and-sandbox",
                 "resume",
                 "--remote",
                 "ws://127.0.0.1:9876",
@@ -11402,3 +11394,42 @@ def test_codex_discover_thread_login_required_clears_error_on_thread_start(
     state = read_bridge_state(bridge_dir)
     assert state is not None
     assert state.thread_id == "thread_after_signin"
+
+
+@pytest.mark.parametrize("config_flag", ["-c", "--config", "-c=", "--config="])
+def test_remote_resume_keeps_permissions_on_server_thread(config_flag: str) -> None:
+    """Stored permission presets must not terminate the remote TUI attach."""
+    permission_args = []
+    for assignment in (
+        'default_permissions=":workspace"',
+        'approval_policy="on-request"',
+        'approvals_reviewer="auto_review"',
+        'sandbox_mode="workspace-write"',
+    ):
+        permission_args.extend(
+            [config_flag + assignment] if config_flag.endswith("=") else [config_flag, assignment]
+        )
+    args = codex_native_app_server.build_codex_remote_args(
+        codex_args=(*permission_args, "-s", "read-only", "-a=on-request", "--model", "gpt"),
+        thread_id="thread-existing",
+        remote_url="ws://127.0.0.1:9876",
+        config_overrides=('approvals_reviewer="auto_review"', 'model_provider="test"'),
+        bypass_sandbox=True,
+        bypass_hook_trust=True,
+    )
+    assert args == [
+        "-c",
+        'model_provider="test"',
+        "--dangerously-bypass-hook-trust",
+        "--model",
+        "gpt",
+        "resume",
+        "--remote",
+        "ws://127.0.0.1:9876",
+        "thread-existing",
+    ]
+    assert codex_native_app_server._codex_resume_permission_params(permission_args) == {
+        "permissions": ":workspace",
+        "approvalPolicy": "on-request",
+        "approvalsReviewer": "auto_review",
+    }

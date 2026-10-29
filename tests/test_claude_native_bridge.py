@@ -4299,7 +4299,7 @@ class _FakeModeCycleTmux:
 
 @pytest.mark.parametrize(
     "target",
-    ["auto", "plan", "acceptEdits", "default"],
+    ["auto", "plan", "acceptEdits", "default", "bypassPermissions"],
 )
 def test_set_permission_mode_cycles_until_target_renders(
     tmp_path: Path,
@@ -4319,7 +4319,7 @@ def test_set_permission_mode_cycles_until_target_renders(
         socket_path=Path("/tmp/example/tmux.sock"),
         tmux_target="claude:0.0",
     )
-    fake = _FakeModeCycleTmux(["default", "acceptEdits", "plan", "auto"])
+    fake = _FakeModeCycleTmux(["default", "acceptEdits", "plan", "auto", "bypassPermissions"])
     monkeypatch.setattr("subprocess.run", fake.run)
 
     got = claude_native_bridge.set_permission_mode(bridge_dir, mode=target, timeout_s=5.0)
@@ -4387,9 +4387,56 @@ def test_set_permission_mode_is_a_noop_when_already_in_target(
     assert fake.presses == 0, f"Expected no shift+tab presses, got {fake.presses}."
 
 
+def test_set_permission_mode_can_leave_bypass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge_dir = tmp_path / "bridge"
+    write_tmux_target(bridge_dir, socket_path=Path("/tmp/example/tmux.sock"), tmux_target="main")
+    fake = _FakeModeCycleTmux(["default", "plan", "bypassPermissions"], start="bypassPermissions")
+    monkeypatch.setattr("subprocess.run", fake.run)
+    assert claude_native_bridge.set_permission_mode(bridge_dir, mode="default") == "default"
+    assert fake.presses == 1
+
+
+def test_set_permission_mode_accepts_the_bypass_dialog_instead_of_its_exit_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge_dir = tmp_path / "bridge"
+    write_tmux_target(bridge_dir, socket_path=Path("/tmp/example/tmux.sock"), tmux_target="main")
+    fake = _FakeModeCycleTmux(["default", "bypassPermissions"])
+    pending = False
+    accepted: list[str] = []
+
+    def run(cmd: list[str], **kwargs: object) -> object:
+        nonlocal pending
+        if "capture-pane" in cmd and pending:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="Bypass Permissions mode\n❯ 1. No, exit\n  2. Yes, I accept\n",
+                stderr="",
+            )
+        if cmd[-1] == "BTab":
+            pending = True
+        if pending and "send-keys" in cmd and cmd[-1] == "2":
+            accepted.append("2")
+        if pending and cmd[-1] == "Enter":
+            assert accepted == ["2"], "Enter alone would select No, exit"
+            pending = False
+        return fake.run(cmd, **kwargs)
+
+    monkeypatch.setattr("subprocess.run", run)
+    assert (
+        claude_native_bridge.set_permission_mode(bridge_dir, mode="bypassPermissions")
+        == "bypassPermissions"
+    )
+    assert accepted == ["2"]
+
+
+@pytest.mark.parametrize("mode", ["auto", "bypassPermissions"])
 def test_set_permission_mode_raises_when_target_not_in_cycle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    mode: str,
 ) -> None:
     """
     An unreachable mode fails loud instead of landing somewhere else.
@@ -4409,11 +4456,15 @@ def test_set_permission_mode_raises_when_target_not_in_cycle(
     fake = _FakeModeCycleTmux(["default", "acceptEdits", "plan"])
     monkeypatch.setattr("subprocess.run", fake.run)
 
-    with pytest.raises(RuntimeError, match="not available in this session's cycle"):
-        claude_native_bridge.set_permission_mode(bridge_dir, mode="auto", timeout_s=5.0)
+    with pytest.raises(
+        claude_native_bridge.ClaudePermissionModeUnavailable,
+        match="not available in this session's cycle",
+    ):
+        claude_native_bridge.set_permission_mode(bridge_dir, mode=mode, timeout_s=5.0)
+    assert fake.cycle[fake.index] == "default"
 
 
-@pytest.mark.parametrize("bad_mode", ["dontAsk", "bypassPermissions", "", "nonsense"])
+@pytest.mark.parametrize("bad_mode", ["dontAsk", "", "nonsense"])
 def test_set_permission_mode_rejects_non_cycleable_modes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4422,9 +4473,7 @@ def test_set_permission_mode_rejects_non_cycleable_modes(
     """
     Modes shift+tab can't reach are rejected before touching tmux.
 
-    ``dontAsk`` is never in the cycle and ``bypassPermissions`` only
-    joins it when the session launched into it — cycling toward either
-    would wander through unrelated modes and then fail.
+    ``dontAsk`` is never in the interactive mode cycle.
     """
     bridge_dir = tmp_path / "bridge"
     write_tmux_target(

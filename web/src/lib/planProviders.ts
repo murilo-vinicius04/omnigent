@@ -12,4 +12,5 @@ export const PLAN_PROVIDER_FAMILY: Record<string, string> = {
   gemini: "gemini",
   openai: "openai",
   grok: "grok",
+  muse: "muse",
 };

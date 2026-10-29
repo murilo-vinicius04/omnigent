@@ -504,7 +504,10 @@ async def synthesize_summary(text: str, *, language: str = "pt-BR") -> SummaryAu
     """
     if not tts_enabled():
         return None
-    speech = (text or "").strip()
+    from omnigent.server.spoken_summary import strip_markdown_for_speech
+
+    # The summary is laid out for the screen: bullets, emojis, line breaks.
+    speech = strip_markdown_for_speech(text or "")
     if not speech or len(speech) > TTS_MAX_CHARS:
         return None
     return await asyncio.to_thread(_synthesize_sync, speech, language)

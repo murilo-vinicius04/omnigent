@@ -59,6 +59,8 @@ from omnigent.host.frames import (
     HostImportLocalDoneFrame,
     HostImportLocalFrame,
     HostImportLocalSessionFrame,
+    HostInspectFrame,
+    HostInspectResultFrame,
     HostInstallHarnessFrame,
     HostInstallHarnessResultFrame,
     HostLaunchRunnerFrame,
@@ -4118,6 +4120,11 @@ class HostProcess:
             # off the event loop.
             credentials_result = await asyncio.to_thread(self._handle_detect_credentials, frame)
             await ws.send(encode_host_frame(credentials_result))
+        elif isinstance(frame, HostInspectFrame):
+            from omnigent.host.inspection import inspect
+
+            payload = await inspect(frame.payload)
+            await ws.send(encode_host_frame(HostInspectResultFrame(frame.request_id, payload)))
         elif isinstance(frame, HostCreateWorktreeFrame):
             await ws.send(encode_host_frame(await self._handle_create_worktree(frame)))
         elif isinstance(frame, HostRemoveWorktreeFrame):

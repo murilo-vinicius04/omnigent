@@ -10,12 +10,14 @@ import textwrap
 import time
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from omnigent.server import hub as hub_module
+from omnigent.server import hub_brief
 from omnigent.server.discussion import DiscussionRegistry, DiscussionUnavailable
 from omnigent.server.hub import (
     EMPTY_REPLY_NUDGE,
@@ -31,9 +33,12 @@ from omnigent.server.hub import (
     Said,
     TurnState,
     assign_handles,
+    clean_brief_todos,
     find_project,
     find_session,
+    latest_finished,
     parse_decision,
+    paused_line,
     project_line,
     session_line,
 )
@@ -119,9 +124,9 @@ def test_projects_are_found_by_handle_name_or_their_chats_title() -> None:
     assert find_project(projects, "kitchen") is None
 
 
-def test_a_project_without_a_chat_says_nothing_can_be_sent_to_it() -> None:
+def test_a_project_without_a_chat_is_told_to_the_router_as_taking_a_send() -> None:
     line = project_line(HubProject(id=P_BRASA, name="brasa", handle="bbbb"))
-    assert line == "[bbbb] brasa · no chat yet: nothing can be sent to it"
+    assert line == "[bbbb] brasa · no chat open: a send to it starts a new chat in its folder"
     many = project_line(
         HubProject(
             id=P_AMARRAS,
@@ -335,6 +340,11 @@ class _Server:
         )
 
 
+def _their_words(said: str, message: str) -> str:
+    """What a lane gets: their words, then the router's reading as labelled context."""
+    return f"{said}\n\n{hub_module.ROUTER_CONTEXT}\n{message}"
+
+
 def _hub(tmp_path, router: _Router, server: _Server) -> Hub:
     async def factory():
         return router
@@ -372,14 +382,21 @@ async def test_a_message_goes_to_the_project_it_is_about_and_comes_back(tmp_path
     await _settle(hub, until=lambda: any(e.kind == "finished" for e in hub.state.entries))
 
     # Sent to the project's chat; the router saw projects, not loose chats.
-    assert server.sent == [(AMARRAS, "Summarize the mean error.")]
+    assert server.sent == [
+        (
+            AMARRAS,
+            _their_words("manda a amarras resumir o erro médio", "Summarize the mean error."),
+        )
+    ]
     assert '[aaaa] amarras · "Project Analysis"' in router.prompts[0]
     assert "[bbbb] brasa" in router.prompts[0] and "Greeting" not in router.prompts[0]
     assert "manda a amarras" in router.prompts[0]
     kinds = [(e.role, e.kind) for e in hub.state.entries]
     assert kinds == [("you", "message"), ("hub", "sent"), ("hub", "finished")]
     sent, finished = hub.state.entries[1], hub.state.entries[2]
-    assert sent.text == "Mandei pra amarras." and sent.detail == "Summarize the mean error."
+    assert sent.text == "Mandei pra amarras." and sent.detail == _their_words(
+        "manda a amarras resumir o erro médio", "Summarize the mean error."
+    )
     assert (sent.session_id, sent.session_name) == (AMARRAS, "amarras")
     assert finished.text == "amarras finished: It fixed the scanner and all tests pass."
     # The newest reply, read after the chat stayed idle, is the one reported.
@@ -429,9 +446,12 @@ async def test_each_send_is_judged_in_shadow_with_the_projects_previous_request(
     await _settle(hub)
 
     first, second = judged
-    assert (first.request, first.previous) == ("Summarize the mean error.", "")
+    assert first.request == _their_words(
+        "manda a amarras resumir o erro médio", "Summarize the mean error."
+    )
+    assert first.previous == ""
     assert (first.project, first.model, first.effort) == ("amarras", "claude-opus-5-5", "high")
-    assert second.previous == "Summarize the mean error."
+    assert second.previous == first.request
     assert second.previous_result == "It fixed the scanner and all tests pass."
     lines = [
         json.loads(line)
@@ -446,7 +466,7 @@ async def test_each_send_is_judged_in_shadow_with_the_projects_previous_request(
     projects = await hub.projects(shown=hub_module.CHATS_SHOWN)
     amarras = next(p for p in projects if p.name == "amarras")
     assert amarras.route is not None
-    assert amarras.route["request"] == "That number is wrong, redo it."
+    assert amarras.route["request"].endswith("That number is wrong, redo it.")
     assert amarras.route["proposal"]["provider"] == "codex"
 
 
@@ -555,7 +575,9 @@ async def test_a_send_goes_in_the_language_the_hub_is_set_to(tmp_path, language,
     await _settle(hub, until=lambda: bool(server.sent))
     assert told in router.prompts[0]
     assert "English" not in router.prompts[0]
-    assert server.sent == [(AMARRAS, "Resuma o erro médio.")]
+    assert server.sent == [
+        (AMARRAS, _their_words("manda a amarras resumir o erro médio", "Resuma o erro médio."))
+    ]
     await hub.close()
 
 
@@ -704,8 +726,67 @@ async def test_a_message_goes_to_the_projects_newest_chat(tmp_path) -> None:
     hub = _hub(tmp_path, router, server)
     hub.submit("run it in brasa")
     await _settle(hub)
-    assert server.sent == [("loose0", "Run it.")]
+    assert server.sent == [("loose0", _their_words("run it in brasa", "Run it."))]
     await hub.close()
+
+
+async def test_a_send_moves_an_idle_lane_off_a_full_plan(tmp_path, monkeypatch) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from omnigent.server.hub_models import SessionRun
+
+    monkeypatch.setenv("OMNIGENT_DATA_DIR", str(tmp_path))
+    now = datetime.now(UTC)
+
+    def meter(name: str, five: float, week: float) -> None:
+        (tmp_path / name).write_text(
+            json.dumps(
+                {
+                    "windows": [
+                        {
+                            "kind": "session",
+                            "percent": five,
+                            "resets_at": (now + timedelta(hours=1)).isoformat(),
+                        },
+                        {
+                            "kind": "weekly",
+                            "percent": week,
+                            "resets_at": (now + timedelta(days=5)).isoformat(),
+                        },
+                    ],
+                    "as_of": now.isoformat(),
+                }
+            )
+        )
+
+    meter("plan-limits-claude.json", 100, 100)
+    meter("plan-limits-codex.json", 95, 95)
+    meter("plan-limits-muse.json", 3, 9)
+
+    server = _Server()
+    lane = replace(
+        server.sessions[0],
+        lane="docs",
+        run=SessionRun(provider="Claude Code", model="claude-sonnet-5-5", effort="high"),
+    )
+    server.sessions[0] = lane
+    moved: list[tuple] = []
+
+    async def migrate(session_id, provider, model, effort):
+        moved.append((session_id, provider, model, effort))
+
+    async def catalog(provider, like_id):
+        return {"muse": ["muse-spark-1.3", "muse-spark-1.2"]}.get(provider, [])
+
+    hub = _hub(tmp_path, _Router(), server)
+    hub.bind(replace(server.backend(), migrate=migrate, catalog=catalog))
+
+    entry = await hub.send_to(lane, "Summarize the docs.", via="typed")
+    await hub.close()
+
+    assert moved == [(AMARRAS, "muse", "muse-spark-1.3", "high")]
+    assert server.sent == [(AMARRAS, "Summarize the docs.")]
+    assert "moved to Muse Code" in entry.text
 
 
 async def test_an_unknown_project_sends_nothing(tmp_path) -> None:
@@ -1247,11 +1328,18 @@ def _projects_app(store: _ConvStore) -> tuple[FastAPI, list[tuple[str, str, obje
         calls.append(("POST", "/v1/projects", body))
         return rows[pid]
 
+    @app.get("/v1/projects/{pid}")
+    async def read(pid: str):
+        return rows[pid]
+
     @app.patch("/v1/projects/{pid}")
     async def rename(pid: str, body: dict):
         calls.append(("PATCH", f"/v1/projects/{pid}", body))
-        store.project_ids[body["name"]] = store.project_ids.pop(rows[pid]["name"])
-        rows[pid]["name"] = body["name"]
+        if "name" in body:
+            store.project_ids[body["name"]] = store.project_ids.pop(rows[pid]["name"])
+            rows[pid]["name"] = body["name"]
+        if "config" in body:
+            rows[pid]["config"] = body["config"]
         return rows[pid]
 
     @app.delete("/v1/projects/{pid}")
@@ -1307,6 +1395,34 @@ async def test_store_projects_go_through_the_projects_routes() -> None:
     assert [c.id for c in await backend.listing()] == [AMARRAS, BRASA]
 
 
+async def test_store_project_notes_merge_into_the_projects_config() -> None:
+    store = _ConvStore()
+    app, _ = _projects_app(store)
+    registry = DiscussionRegistry()
+    backend = hub_module.store_backend(
+        store, user_id="morys5", app=app, headers={}, companions=lambda: registry
+    )
+    assert backend.project_notes is not None
+    record = await backend.create_project("amarras", None)
+    assert await backend.project_notes(record.id, None) == {
+        "brief": None,
+        "brief_todos": None,
+        "living_brief": None,
+    }
+
+    living = {"overview": "Chain docs.", "status": "Halfway.", "progress": [], "updated_at": 7.0}
+    todo = {"id": "ab12", "content": "Measure", "status": "open", "by": "companion"}
+    got = await backend.project_notes(record.id, {"living_brief": living, "brief_todos": [todo]})
+    assert got["living_brief"] == living and got["brief_todos"] == [todo]
+
+    # Another note keeps what is already stored, and the project reads it back.
+    await backend.project_notes(record.id, {"brief": "Mine"})
+    [listed] = await backend.projects()
+    assert listed.brief == "Mine"
+    assert (listed.living.overview, listed.living.status) == ("Chain docs.", "Halfway.")
+    assert [(t["id"], t["by"]) for t in listed.brief_todos] == [("ab12", "companion")]
+
+
 # -- the routes ------------------------------------------------------------------
 
 
@@ -1335,7 +1451,7 @@ async def test_a_voice_ask_returns_what_the_hub_said_with_the_call_in_the_prompt
     assert [(e.kind, e.text) for e in said] == [("sent", "Mandei pra brasa.")]
     assert "[The voice call so far, oldest first]\nMe: a brasa quebrou" in router.prompts[0]
     assert "[They said, aloud, on a voice call]" in router.prompts[0]
-    assert server.sent == [(BRASA, "Run the tests.")]
+    assert server.sent == [(BRASA, _their_words("manda ela rodar", "Run the tests."))]
 
 
 # -- the router process ----------------------------------------------------------
@@ -1715,6 +1831,82 @@ async def test_a_lane_reported_late_is_followed_again_from_then(tmp_path) -> Non
     }
 
 
+async def test_a_hub_message_reports_a_lane_turn_nothing_watched(tmp_path) -> None:
+    # A lane driven only in its own chat (DMs): the hub never sent it work,
+    # so no watch and no follow exists. Its replies must still arrive when
+    # they talk to the hub — otherwise the lane goes dark after hours.
+    server = _Server()
+    server.sessions = [
+        replace(s, updated_at=time.time()) if s.id == BRASA else s for s in server.sessions
+    ]
+    done = TurnState(status="idle", reply="M0 ran on the dishes video.", summary="M0 rodado.")
+
+    async def turn(session_id, since, until=None):
+        return done if until is not None else TurnState(status="idle")
+
+    backend = server.backend()
+    hub = _hub(tmp_path, _Router('{"answer": "Oi!"}'), server)
+    hub.bind(replace(backend, turn=turn))
+    lane = HubSession(id=BRASA, title="brasa", nickname="brasa")
+
+    hub.submit("e ai?")
+    await _settle(
+        hub,
+        until=lambda: any(
+            e.kind == "finished" and e.session_id == lane.id for e in hub.state.entries
+        ),
+    )
+    await hub.close()
+
+    reported = [e for e in hub.state.entries if e.kind == "finished" and e.session_id == lane.id]
+    assert len(reported) == 1
+    assert reported[0].text == "brasa finished: M0 rodado."
+    # Live reporting resumes from the report, like a watch's follow.
+    assert HubState("u1", root=tmp_path).watches[BRASA]["follow"] is True
+
+
+async def test_a_catch_up_reports_each_missed_turn_on_its_own_entry(tmp_path) -> None:
+    # Two private replies at different moments must not land glued into one
+    # paired summary: each missed turn arrives as its own finished entry.
+    first = Said(
+        at=100.0,
+        reply="SSH is up; run this to install the key.",
+        summary="SSH no ar; rode isso para instalar a chave.",
+    )
+    second = Said(
+        at=200.0,
+        reply="VMs 100-102 removed; 1.84 TB free.",
+        summary="VMs removidas; 1,84 TB livres.",
+    )
+    done = TurnState(
+        status="idle",
+        reply="Which machine goes without a GPU?",
+        summary="Qual máquina fica sem GPU?",
+        earlier=(first, second),
+    )
+
+    async def turn(session_id, since, until=None):
+        return done if until is not None else TurnState(status="idle")
+
+    server = _Server()
+    backend = server.backend()
+    hub = _hub(tmp_path, _Router(), server)
+    hub.bind(replace(backend, turn=turn))
+    lane = HubSession(id=BRASA, title="brasa", nickname="brasa")
+
+    entry = await hub.report_turn(lane, 50.0, 300.0)
+    await hub.close()
+
+    reported = [e for e in hub.state.entries if e.kind == "finished" and e.session_id == lane.id]
+    assert [e.text for e in reported] == [
+        "brasa finished: SSH no ar; rode isso para instalar a chave.",
+        "brasa finished: VMs removidas; 1,84 TB livres.",
+        "brasa finished: Qual máquina fica sem GPU?",
+    ]
+    assert all("---" not in (e.detail or "") for e in reported)
+    assert entry is not None and entry.text == "brasa finished: Qual máquina fica sem GPU?"
+
+
 def test_an_approval_they_did_not_give_is_not_forwarded():
     # 10-15: after a lane asked "shall I start there?", "also look into X"
     # went out as "they approved the plan and also asked: X".
@@ -1755,6 +1947,40 @@ def test_a_message_claiming_no_approval_is_left_alone():
     assert hub_module.without_invented_yes(decision, "ve se o driver ta de pe") == decision
 
 
+def test_a_send_goes_with_their_words_first_and_the_routers_reading_after():
+    said = "to enjoado do resumo, sem emoji, sem linha, sem topico, saudades do claude antigo"
+    decision = hub_module.parse_decision(
+        json.dumps(
+            {"send": "4c23", "message": "Ajuste o resumo: sem emojis, sem tópicos, numa linha só."}
+        )
+    )
+    sent = hub_module.with_their_words(decision, said)
+    assert sent.message.startswith(said + "\n\n" + hub_module.ROUTER_CONTEXT)
+    assert sent.message.endswith("numa linha só.")
+    assert (sent.handle, sent.action) == ("4c23", "send")
+
+
+def test_a_restatement_of_their_words_is_not_sent_twice():
+    decision = hub_module.parse_decision(
+        json.dumps({"send": "4c23", "message": "Veja se o driver está de pé."})
+    )
+    assert hub_module.with_their_words(decision, "veja se o driver está de pé") == decision
+
+
+def test_tell_it_now_with_no_message_stays_empty():
+    decision = hub_module.parse_decision(json.dumps({"send": "4c23", "now": True}))
+    assert hub_module.with_their_words(decision, "manda agora") == decision
+
+
+def test_a_new_lane_also_carries_their_words():
+    decision = hub_module.parse_decision(
+        json.dumps({"new_lane": "4c23", "topic": "sweep", "message": "Rode o sweep da porca 6H."})
+    )
+    sent = hub_module.with_their_words(decision, "faz o sweep em paralelo")
+    assert sent.message.startswith("faz o sweep em paralelo\n\n")
+    assert sent.topic == "sweep"
+
+
 def test_the_routing_prompt_still_formats():
     # The rules are a format string: a stray brace would break every message.
     text = hub_module._DECIDE_PROMPT.format(
@@ -1762,3 +1988,415 @@ def test_the_routing_prompt_still_formats():
     )
     assert "Never add what they did not say" in text
     assert "not from which lane spoke last" in text
+
+
+# -- project briefs ---------------------------------------------------------------
+
+
+def test_clean_brief_todos_keeps_text_done_author_and_gives_ids() -> None:
+    cleaned = clean_brief_todos(
+        [
+            {"content": "  Ship it ", "status": "done"},
+            {"content": "Later", "status": "open", "id": "k1", "by": "companion"},
+            {"content": "", "status": "done"},
+            "nope",
+            {"content": "x" * 600, "status": "DONE", "by": "someone else"},
+        ]
+    )
+    assert [(t["content"], t["status"], t["by"]) for t in cleaned] == [
+        ("Ship it", "done", "you"),
+        ("Later", "open", "companion"),
+        ("x" * 500, "done", "you"),
+    ]
+    assert cleaned[1]["id"] == "k1"
+    assert len({t["id"] for t in cleaned}) == 3 and all(t["id"] for t in cleaned)
+    assert clean_brief_todos("not a list") == ()
+
+
+def test_latest_finished_lists_newest_first(tmp_path) -> None:
+    hub = _hub(tmp_path, _Router(), _Server())
+    hub.state.append(role="hub", kind="finished", text="first", session_id=AMARRAS)
+    hub.state.append(role="hub", kind="finished", text="other project", session_id=BRASA)
+    hub.state.append(
+        role="hub",
+        kind="finished",
+        text="second",
+        session_id=AMARRAS,
+        links=[["HANDOFF.md", "/tmp/HANDOFF.md"]],
+    )
+    got = latest_finished(hub.state.entries, [AMARRAS])
+    assert [(e["text"], e["links"]) for e in got] == [
+        ("second", [["HANDOFF.md", "/tmp/HANDOFF.md"]]),
+        ("first", []),
+    ]
+
+
+def test_paused_line_names_what_comes_first(tmp_path) -> None:
+    busy = HubSession(id="b", title="B", status="running", now="Bash: pytest")
+    assert paused_line([busy], []) == "Working · Bash: pytest"
+    waiting = replace(busy, status="idle", now="", pending_approvals=2)
+    assert paused_line([waiting], []) == "Waiting for your 2 approvals · B"
+    held = replace(waiting, pending_approvals=0, held=1)
+    assert paused_line([held], []) == "Holding 1 message for B until it finishes"
+    idle = replace(held, held=0)
+    assert paused_line([idle], [{"text": "All green"}]) == "Idle · last: All green"
+    assert paused_line([idle], []) == "Idle"
+    assert paused_line([], []) == "No chat yet"
+
+
+async def test_projects_carry_brief_latest_and_paused(tmp_path) -> None:
+    server = _Server()
+    server.projects = [
+        replace(
+            server.projects[0],
+            brief="Chains docs",
+            brief_todos=({"content": "Review", "status": "open"},),
+        ),
+        server.projects[1],
+    ]
+    hub = _hub(tmp_path, _Router(), server)
+    hub.state.append(
+        role="hub", kind="finished", text="Fixed scanner", session_id=AMARRAS,
+        session_name="amarras",
+    )
+    projects = await hub.projects(shown=4)
+    amarras = next(p for p in projects if p.name == "amarras")
+    assert amarras.brief == "Chains docs"
+    assert list(amarras.brief_todos) == [{"content": "Review", "status": "open"}]
+    assert [e["text"] for e in amarras.latest] == ["Fixed scanner"]
+    assert amarras.paused == "Idle · last: Fixed scanner"
+    assert amarras.as_dict()["paused"] == "Idle · last: Fixed scanner"
+
+
+async def test_project_brief_has_no_overview_until_someone_writes_one(tmp_path) -> None:
+    server = _Server()
+    server.sessions = [
+        replace(
+            server.sessions[0],
+            todos=({"content": "Run tests", "status": "in_progress"},),
+        ),
+        *server.sessions[1:],
+    ]
+    hub = _hub(tmp_path, _Router(), server)
+    hub.state.append(
+        role="hub",
+        kind="finished",
+        text="All green",
+        session_id=AMARRAS,
+        session_name="amarras",
+        links=[["HANDOFF.md", "/tmp/HANDOFF.md"]],
+    )
+    brief = await hub.project_brief(P_AMARRAS)
+    # The first request ("petrobras chains docs") is not an overview, and a raw
+    # tool line or a "finished:" report is not a status: neither is shown.
+    assert (brief["about"], brief["about_source"]) == ("", "")
+    assert (brief["status"], brief["progress"], brief["updated_at"]) == ("", [], 0.0)
+    assert "latest" not in brief and "paused" not in brief
+    assert brief["state"] == "idle"
+    assert brief["lanes"] == [{"id": AMARRAS, "name": "Project Analysis", "state": "idle"}]
+    assert brief["can_refresh"] is False
+    assert brief["handoff_files"] == [["HANDOFF.md", "/tmp/HANDOFF.md"]]
+    assert brief["lane_todos"] == [
+        {
+            "lane": "amarras",
+            "session_id": AMARRAS,
+            "items": [{"content": "Run tests", "status": "in_progress"}],
+        }
+    ]
+    assert brief["brief"] == "" and brief["brief_todos"] == []
+
+
+async def test_project_brief_prefers_their_own_words(tmp_path) -> None:
+    server = _Server()
+    server.projects = [
+        replace(server.projects[0], brief="What amarras is about"),
+        server.projects[1],
+    ]
+    hub = _hub(tmp_path, _Router(), server)
+    brief = await hub.project_brief(P_AMARRAS)
+    assert (brief["about"], brief["about_source"]) == ("What amarras is about", "written")
+
+
+async def test_project_brief_rejects_unknown_projects(tmp_path) -> None:
+    hub = _hub(tmp_path, _Router(), _Server())
+    with pytest.raises(LookupError, match="not one of your projects"):
+        await hub.project_brief("nope")
+    with pytest.raises(LookupError, match="not one of your projects"):
+        await hub.save_brief("nope", "About", [])
+
+
+async def test_save_brief_needs_a_backend_that_keeps_notes(tmp_path) -> None:
+    hub = _hub(tmp_path, _Router(), _Server())
+    with pytest.raises(ValueError, match="cannot keep project notes"):
+        await hub.save_brief(P_AMARRAS, "About", [{"content": "Todo", "status": "open"}])
+
+
+async def test_save_brief_keeps_notes_through_the_backend(tmp_path) -> None:
+    server = _Server()
+    kept: dict[str, Any] = {}
+
+    async def save_brief(project_id: str, brief: str, todos: list[dict[str, Any]]) -> None:
+        kept["args"] = (project_id, brief, todos)
+
+    backend = replace(server.backend(), save_brief=save_brief)
+    hub = _hub(tmp_path, _Router(), server)
+    hub.bind(backend)
+    saved = await hub.save_brief(
+        P_AMARRAS, "  What it is about  ", [{"content": "  Todo ", "status": "done"}]
+    )
+    [todo] = saved["brief_todos"]
+    assert (todo["content"], todo["status"], todo["by"]) == ("Todo", "done", "you")
+    assert todo["id"]
+    assert saved == {
+        "project_id": P_AMARRAS,
+        "brief": "What it is about",
+        "brief_todos": [todo],
+    }
+    assert kept["args"] == (P_AMARRAS, "What it is about", [todo])
+
+
+# -- the companion keeps the brief ----------------------------------------------------
+
+_BRIEF_ANSWER = json.dumps(
+    {
+        "overview": "Docs for the Petrobras mooring chains.",
+        "status": "Chapter two is in; chapter three waits on the measurements.",
+        "progress": "Wrote chapter two.",
+        "todo_add": ["Measure the chains", "Write chapter three"],
+        "todo_done": [],
+        "todo_drop": [],
+    }
+)
+
+
+class _Companion:
+    """Stands in for a lane's companion: answers each brief task from a script."""
+
+    def __init__(self, *answers: str | None) -> None:
+        self.answers = list(answers)
+        self.tasks: list[tuple[str, str]] = []
+        self.meanwhile: Any = None
+
+    async def __call__(self, session_id: str, prompt: str, timeout_s: float) -> str | None:
+        self.tasks.append((session_id, prompt))
+        if self.meanwhile is not None:
+            self.meanwhile()
+        return self.answers.pop(0) if self.answers else None
+
+
+def _keeping_notes(server: _Server) -> HubBackend:
+    """A backend that keeps project notes in the fake server's records."""
+
+    async def project_notes(project_id: str, patch: dict[str, Any] | None) -> dict[str, Any]:
+        if patch:
+            server.projects = [
+                replace(
+                    r,
+                    brief_todos=clean_brief_todos(patch["brief_todos"]),
+                    living=hub_brief.living_from(patch["living_brief"]),
+                )
+                if r.id == project_id
+                else r
+                for r in server.projects
+            ]
+        record = next(r for r in server.projects if r.id == project_id)
+        return {
+            "brief": record.brief,
+            "brief_todos": [dict(t) for t in record.brief_todos],
+            "living_brief": record.living.as_dict(),
+        }
+
+    return replace(server.backend(), project_notes=project_notes)
+
+
+def _hub_keeping_notes(tmp_path, server: _Server, companion: _Companion) -> Hub:
+    hub = _hub(tmp_path, _Router(), server)
+    hub.bind(_keeping_notes(server))
+    hub._brief_runner = companion
+    return hub
+
+
+async def test_a_lane_report_has_its_companion_rewrite_the_brief(tmp_path) -> None:
+    router = _Router(
+        '{"send": "aaaa", "message": "Write chapter two.", "say": "Mandei."}',
+    )
+    server = _Server()
+    server.sessions[0] = replace(
+        server.sessions[0],
+        last_ask=_their_words("manda a amarras escrever o capítulo dois", "Write chapter two."),
+    )
+    server.turns = [
+        TurnState(status="running"),
+        TurnState(status="idle", reply="Chapter two is in."),
+    ]
+    companion = _Companion(_BRIEF_ANSWER)
+    hub = _hub(tmp_path, router, server)
+    hub.bind(_keeping_notes(server))
+    hub._brief_runner = companion
+
+    hub.submit("manda a amarras escrever o capítulo dois")
+    await _settle(hub, until=lambda: bool(companion.tasks))
+    await _settle(hub)
+
+    [(session_id, task)] = companion.tasks
+    assert session_id == AMARRAS
+    # It is told what they asked, in their own words, and what the lane reported.
+    assert "manda a amarras escrever o capítulo dois" in task
+    assert hub_module.ROUTER_CONTEXT not in task and "Write chapter two." not in task
+    assert "It fixed the scanner and all tests pass." in task
+    assert "Chapter two is in." in task
+    brief = await hub.project_brief(P_AMARRAS)
+    assert (brief["about"], brief["about_source"]) == (
+        "Docs for the Petrobras mooring chains.",
+        "companion",
+    )
+    assert brief["status"] == "Chapter two is in; chapter three waits on the measurements."
+    assert [p["text"] for p in brief["progress"]] == ["Wrote chapter two."]
+    assert [(t["content"], t["by"], t["status"]) for t in brief["brief_todos"]] == [
+        ("Measure the chains", "companion", "open"),
+        ("Write chapter three", "companion", "open"),
+    ]
+    # The router was not used for it: its own lock is for the person's messages.
+    assert not any("Overview:" in t for t in router.performed)
+
+
+async def test_a_report_still_lands_when_the_companion_cannot_write_the_brief(tmp_path) -> None:
+    router = _Router('{"send": "aaaa", "message": "Go.", "say": "Mandei."}')
+    server = _Server()
+    server.turns = [TurnState(status="running"), TurnState(status="idle", reply="Done.")]
+    companion = _Companion(None)
+    hub = _hub(tmp_path, router, server)
+    hub.bind(_keeping_notes(server))
+    hub._brief_runner = companion
+
+    hub.submit("manda a amarras fazer")
+    await _settle(hub, until=lambda: any(e.kind == "finished" for e in hub.state.entries))
+    await _settle(hub)
+
+    assert len(companion.tasks) == 1
+    assert (await hub.project_brief(P_AMARRAS))["status"] == ""
+
+
+async def test_an_answer_that_is_not_json_changes_nothing(tmp_path) -> None:
+    server = _Server()
+    server.sessions[0] = replace(server.sessions[0], said="It is done.")
+    hub = _hub_keeping_notes(tmp_path, server, _Companion("Sure, here is the brief!"))
+    await hub.refresh_brief(P_AMARRAS)
+    brief = await hub.project_brief(P_AMARRAS)
+    assert (brief["about"], brief["status"], brief["brief_todos"]) == ("", "", [])
+    assert brief["updated_at"] == 0.0
+
+
+async def test_what_the_person_ticks_while_the_companion_thinks_is_kept(tmp_path) -> None:
+    server = _Server()
+    server.projects = [
+        replace(
+            server.projects[0],
+            brief_todos=(
+                {"id": "m1", "content": "Review the PDF", "status": "open", "by": "you"},
+            ),
+        ),
+        server.projects[1],
+    ]
+    server.sessions[0] = replace(server.sessions[0], said="Reviewed.")
+    companion = _Companion(_BRIEF_ANSWER.replace('"todo_done": []', '"todo_done": ["zzzz"]'))
+
+    def the_person_ticks_it() -> None:
+        server.projects = [
+            replace(
+                r,
+                brief_todos=(
+                    {"id": "m1", "content": "Review the PDF", "status": "done", "by": "you"},
+                ),
+            )
+            if r.id == P_AMARRAS
+            else r
+            for r in server.projects
+        ]
+
+    companion.meanwhile = the_person_ticks_it
+    hub = _hub_keeping_notes(tmp_path, server, companion)
+    await hub.refresh_brief(P_AMARRAS)
+
+    todos = (await hub.project_brief(P_AMARRAS))["brief_todos"]
+    assert [(t["content"], t["status"], t["by"]) for t in todos] == [
+        ("Review the PDF", "done", "you"),
+        ("Measure the chains", "open", "companion"),
+        ("Write chapter three", "open", "companion"),
+    ]
+
+
+async def test_a_pinned_overview_is_left_to_the_person(tmp_path) -> None:
+    server = _Server()
+    server.projects = [replace(server.projects[0], brief="Mine"), server.projects[1]]
+    server.sessions[0] = replace(server.sessions[0], said="Reviewed.")
+    companion = _Companion(_BRIEF_ANSWER)
+    hub = _hub_keeping_notes(tmp_path, server, companion)
+    await hub.refresh_brief(P_AMARRAS)
+
+    assert hub_brief._OVERVIEW_PINNED in companion.tasks[0][1]
+    brief = await hub.project_brief(P_AMARRAS)
+    assert (brief["about"], brief["about_source"]) == ("Mine", "written")
+    assert brief["status"].startswith("Chapter two is in")
+    projects = await hub.projects(shown=4)
+    assert next(p for p in projects if p.id == P_AMARRAS).living.overview == ""
+
+
+async def test_refresh_reads_the_lane_and_leaves_out_the_routers_context(tmp_path) -> None:
+    server = _Server()
+    server.sessions[0] = replace(
+        server.sessions[0],
+        summary="O capítulo dois ficou pronto.",
+        said="Chapter two is in.",
+        last_ask=_their_words("escreve o capítulo dois", "Write chapter two."),
+    )
+    companion = _Companion(_BRIEF_ANSWER)
+    hub = _hub_keeping_notes(tmp_path, server, companion)
+
+    async def language() -> str:
+        return "pt-BR"
+
+    hub.chat = SimpleNamespace(language=language)
+
+    brief = await hub.refresh_brief(P_AMARRAS)
+
+    [(session_id, task)] = companion.tasks
+    assert session_id == AMARRAS
+    assert "escreve o capítulo dois" in task and "Write chapter two." not in task
+    assert hub_module.ROUTER_CONTEXT not in task
+    assert "O capítulo dois ficou pronto." in task
+    assert "Brazilian Portuguese" in task
+    assert brief["can_refresh"] is True and brief["updated_at"] > 0
+
+
+async def test_refresh_says_why_it_cannot(tmp_path) -> None:
+    server = _Server()
+    hub = _hub_keeping_notes(tmp_path, server, _Companion(None))
+    with pytest.raises(LookupError, match="not one of your projects"):
+        await hub.refresh_brief("nope")
+    with pytest.raises(ValueError, match="has reported yet"):
+        await hub.refresh_brief(P_AMARRAS)
+    server.sessions[0] = replace(server.sessions[0], said="Done.")
+    with pytest.raises(DiscussionUnavailable, match="could not take it"):
+        await hub.refresh_brief(P_AMARRAS)
+    plain = _hub(tmp_path, _Router(), server)
+    with pytest.raises(ValueError, match="cannot keep project notes"):
+        await plain.refresh_brief(P_AMARRAS)
+
+
+async def test_updates_to_one_project_queue_up_and_build_on_each_other(tmp_path) -> None:
+    server = _Server()
+    server.sessions[0] = replace(server.sessions[0], said="Reviewed.")
+    first = json.dumps({"status": "First.", "progress": "One.", "todo_add": ["A"]})
+    second = json.dumps({"status": "Second.", "progress": "Two.", "todo_add": ["B"]})
+    companion = _Companion(first, second)
+    hub = _hub_keeping_notes(tmp_path, server, companion)
+
+    await asyncio.gather(hub.refresh_brief(P_AMARRAS), hub.refresh_brief(P_AMARRAS))
+
+    # The second saw what the first left: its prompt lists "A" and "One."
+    assert "One." in companion.tasks[1][1] and "A" in companion.tasks[1][1]
+    brief = await hub.project_brief(P_AMARRAS)
+    assert brief["status"] == "Second."
+    assert [p["text"] for p in brief["progress"]] == ["Two.", "One."]
+    assert [t["content"] for t in brief["brief_todos"]] == ["A", "B"]

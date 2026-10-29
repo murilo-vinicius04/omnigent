@@ -4732,7 +4732,10 @@ def test_switch_conversation_agent_cross_family_resets_and_relabels(
     # switch must touch (instance-scoped stopped marker + the old harness's
     # ui/wrapper) so we can assert they're handled correctly.
     conversation_store.update_conversation(
-        conv_id, model_override="claude-opus-4-7", reasoning_effort="high"
+        conv_id,
+        model_override="claude-opus-4-7",
+        reasoning_effort="high",
+        reported_model="claude-opus-4-7",
     )
     conversation_store.set_external_session_id(conv_id, "old-native-uuid")
     conversation_store.set_labels(
@@ -4787,6 +4790,8 @@ def test_switch_conversation_agent_cross_family_resets_and_relabels(
     # Cross-family → provider-bound model id is meaningless, so both reset.
     assert updated.model_override is None
     assert updated.reasoning_effort is None
+    assert updated.reported_model is None
+    assert conversation_store.get_conversation(conv_id).reported_model is None
     # Native runtime state belongs to the old harness → cleared so the next
     # turn cold-starts and rebuilds from items.
     assert updated.external_session_id is None
@@ -4830,7 +4835,10 @@ def test_switch_conversation_agent_same_family_keeps_model_settings(
     )
     conv_id = created.conversation.id
     conversation_store.update_conversation(
-        conv_id, model_override="claude-opus-4-7", reasoning_effort="high"
+        conv_id,
+        model_override="claude-opus-4-7",
+        reasoning_effort="high",
+        reported_model="claude-opus-4-7",
     )
     conversation_store.set_labels(
         conv_id,
@@ -4857,6 +4865,8 @@ def test_switch_conversation_agent_same_family_keeps_model_settings(
     # Same family → model settings carry over unchanged.
     assert updated.model_override == "claude-opus-4-7"
     assert updated.reasoning_effort == "high"
+    assert updated.reported_model is None
+    assert conversation_store.get_conversation(conv_id).reported_model is None
     # SDK target → terminal-first ui/wrapper labels removed (chat mode).
     assert UI_MODE_LABEL_KEY not in updated.labels
     assert WRAPPER_LABEL_KEY not in updated.labels

@@ -6,9 +6,16 @@ import { toast } from "sonner";
 import { Toaster } from "./sonner";
 import { showToast } from "./toast";
 
-afterEach(() => {
+afterEach(async () => {
   act(() => toast.dismiss());
   cleanup();
+  // Sonner schedules the toast removal TIME_BEFORE_UNMOUNT (200ms) after a
+  // dismiss. Drain it here, while jsdom is still alive: if it fires after
+  // the file's environment tears down, React's dispatch reads a dead
+  // `window` and vitest reports an unhandled error.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  });
 });
 
 describe("Toaster", () => {

@@ -1782,6 +1782,7 @@ class ConversationStore(ABC):
             switch stays in the same provider family). When ``False``,
             both are reset to ``None`` so the new agent's defaults
             apply (a cross-family switch — a model id is provider-bound).
+            The old agent's ``reported_model`` is always cleared.
         :param carry_history_into_native: When ``True``, stamp
             :data:`FORK_CARRY_HISTORY_LABEL_KEY` so a native target
             rebuilds its transcript from this session's own AP items on

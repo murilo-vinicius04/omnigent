@@ -1,9 +1,16 @@
-// ACP (Grok / Devin / acp:<slug>) permission stances. Distinct from Claude
-// Code's shift+tab cycle: ACP only has "ask" vs "don't ask".
+// ACP (Grok / Devin / Muse Code / acp:<slug>) permission stances. Distinct
+// from Claude Code's shift+tab cycle: ACP only has "ask" vs "don't ask".
 
 const ACP_PERMISSION_MODE_LABEL_KEY = "omnigent.acp.permission_mode";
 
-const ACP_PERMISSION_HARNESSES = new Set(["grok", "grok-build", "devin", "acp"]);
+const ACP_PERMISSION_HARNESSES = new Set([
+  "grok",
+  "grok-build",
+  "devin",
+  "acp",
+  "muse-code",
+  "muse",
+]);
 
 export interface AcpPermissionModeOption {
   value: string;
@@ -15,7 +22,7 @@ export const ACP_PERMISSION_MODES: AcpPermissionModeOption[] = [
   {
     value: "auto",
     label: "Ask",
-    description: "Prompts before tools Grok considers risky",
+    description: "Prompts before tools the agent considers risky",
   },
   {
     value: "bypassPermissions",

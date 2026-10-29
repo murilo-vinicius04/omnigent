@@ -294,6 +294,15 @@ describe("SettingsPage", () => {
     expect(toggle).toHaveAccessibleName(/Submit with (?:⌘|Ctrl) \+ Enter on desktop/);
   });
 
+  it("renders the Hub notification chime control in General and toggles it", () => {
+    renderPage("/settings/general");
+    const toggle = screen.getByTestId("hub-chime-settings-toggle");
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("hub-chime-volume-slider")).toBeInTheDocument();
+  });
+
   it("renders the Appearance section and applies a theme on card click", () => {
     renderPage("/settings/appearance");
     expect(screen.getByRole("heading", { name: "Appearance" })).toBeInTheDocument();

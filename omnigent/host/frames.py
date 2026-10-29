@@ -42,6 +42,8 @@ WORKSPACE_MISSING_ERROR_CODE = "workspace_missing"
 class HostFrameKind(str, Enum):
     """All host frame kinds; the value is the JSON wire string."""
 
+    INSPECT = "host.inspect"
+    INSPECT_RESULT = "host.inspect_result"
     HELLO = "host.hello"
     CONNECTION_ERROR = "host.connection_error"
     HARNESS_READINESS = "host.harness_readiness"
@@ -306,6 +308,20 @@ class HostRunnerStatusResultFrame:
 
     request_id: str
     status: str
+
+
+@dataclass
+class HostInspectFrame:
+    """Server → host: a read-only Hub operation on this machine."""
+
+    request_id: str
+    payload: _JsonObject
+
+
+@dataclass
+class HostInspectResultFrame:
+    request_id: str
+    payload: _JsonObject
 
 
 @dataclass
@@ -1002,6 +1018,8 @@ HostFrame = (
     | HostRunnerExitedFrame
     | HostRunnerStatusFrame
     | HostRunnerStatusResultFrame
+    | HostInspectFrame
+    | HostInspectResultFrame
     | HostStatFrame
     | HostStatResultFrame
     | HostListDirFrame
@@ -1392,6 +1410,16 @@ def encode_host_frame(frame: HostFrame) -> str:
                 "routable_models": frame.routable_models,
             }
         )
+    if isinstance(frame, (HostInspectFrame, HostInspectResultFrame)):
+        return _encode_payload(
+            {
+                "kind": HostFrameKind.INSPECT.value
+                if isinstance(frame, HostInspectFrame)
+                else HostFrameKind.INSPECT_RESULT.value,
+                "request_id": frame.request_id,
+                "payload": frame.payload,
+            }
+        )
     if isinstance(frame, HostPlanLimitsFrame):
         return _encode_payload(
             {
@@ -1581,6 +1609,12 @@ def _decode_known_host_frame(
             return _decode_model_options(msg)
         case HostFrameKind.MODEL_OPTIONS_RESULT:
             return _decode_model_options_result(msg)
+        case HostFrameKind.INSPECT | HostFrameKind.INSPECT_RESULT:
+            payload = msg.get("payload")
+            if not isinstance(payload, dict):
+                raise ValueError("inspection payload must be an object")
+            cls = HostInspectFrame if kind == HostFrameKind.INSPECT else HostInspectResultFrame
+            return cls(request_id=_required_str(msg, "request_id"), payload=payload)
         case HostFrameKind.PLAN_LIMITS:
             return HostPlanLimitsFrame(request_id=_required_str(msg, "request_id"))
         case HostFrameKind.PLAN_LIMITS_RESULT:

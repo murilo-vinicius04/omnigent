@@ -17,6 +17,7 @@ class _Server:
 
     def __init__(self, *, online: bool = True) -> None:
         self.online = online
+        self.hosts = None
         self.sessions: dict[str, dict[str, Any]] = {}
         self.terminals: dict[str, list[dict[str, Any]]] = {}
         self.app = FastAPI()
@@ -25,7 +26,11 @@ class _Server:
         @app.get("/v1/hosts")
         async def hosts() -> dict[str, Any]:
             status = "online" if self.online else "offline"
-            return {"hosts": [{"host_id": "h1", "name": "nexus", "status": status}]}
+            return {
+                "hosts": self.hosts
+                if self.hosts is not None
+                else [{"host_id": "h1", "name": "nexus", "status": status}]
+            }
 
         @app.get("/v1/hosts/{host_id}/filesystem")
         async def root(host_id: str) -> dict[str, Any]:
@@ -120,3 +125,37 @@ async def test_an_archived_session_is_replaced():
 async def test_no_machine_online_says_so():
     with pytest.raises(hub_terminal.TerminalUnavailable, match="online"):
         await _open(_Server(online=False), _Store())
+
+
+async def test_two_machines_require_selection_and_keep_independent_shells():
+    server = _Server()
+    server.hosts = [{"host_id": h, "name": h, "status": "online"} for h in ("h1", "h2")]
+    store = SimpleNamespace(
+        get_conversation=lambda sid: SimpleNamespace(
+            id=sid, archived=False, host_id=server.sessions[sid]["host_id"]
+        )
+    )
+    with pytest.raises(hub_terminal.TerminalUnavailable, match="choose a machine"):
+        await _open(server, store)
+
+    async def open_on(host):
+        return await hub_terminal.open_terminal(
+            "u1",
+            conversation_store=store,
+            app=server.app,
+            headers={},
+            new=False,
+            host_id=host,
+            workspace=f"/home/{host}",
+        )
+
+    first = await open_on("h1")
+    second = await open_on("h2")
+    assert first["session_id"] != second["session_id"]
+    assert await open_on("h1") == first
+    assert await open_on("h2") == second
+    assert server.sessions[first["session_id"]]["workspace"] == "/home/h1"
+    server.hosts[1]["status"] = "offline"
+    with pytest.raises(hub_terminal.TerminalUnavailable, match="offline"):
+        await open_on("h2")
+    assert await open_on("h1") == first

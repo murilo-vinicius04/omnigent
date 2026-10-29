@@ -222,3 +222,11 @@ describe("agentRootName", () => {
     expect(agentRootName("agent (fork pun) helper")).toBe("agent (fork pun) helper");
   });
 });
+
+describe("Muse ACP history replay", () => {
+  it.each(["muse", "muse-code"])("recognizes %s for switching and forking", (harness) => {
+    expect(harnessFamily(harness)).toBe("meta");
+    expect(switchTargetCarriesHistory(harness)).toBe(true);
+    expect(forkTargetCarriesHistory(harness)).toBe(true);
+  });
+});

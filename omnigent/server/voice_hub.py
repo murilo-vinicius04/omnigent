@@ -21,7 +21,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
-    from omnigent.server.hub import Hub, HubEntry, HubSession
+    from omnigent.server.hub import Hub, HubEntry, HubProject, HubSession
 
 #: Live statuses that mean Claude is in the middle of a turn.
 WORKING_STATUSES: Final[frozenset[str]] = frozenset({"running", "waiting"})
@@ -445,6 +445,31 @@ def with_their_words(message: str, heard: str, language: str = "") -> str:
 _ALL: Final[frozenset[str]] = frozenset({"all", "todos", "tudo", "todas", "every", "everything"})
 
 
+def _sent_note(project: str) -> str:
+    """What the voice is told after a send: the answer comes back in the hub chat."""
+    return (
+        f"{SENT_PREFIX}{project}. Its answer comes back in the hub chat, which "
+        "reads it out. Say that in one short sentence: the call ends right after."
+    )
+
+
+async def _ask_in_new_chat(
+    hub: Hub, project: HubProject, args: dict[str, Any], heard: str
+) -> tuple[str, str]:
+    """Open a chat in a project that has none and send the spoken request there."""
+    message = str(args.get("message", "")).strip()
+    if not message:
+        return project.name, "Nothing to send: the message was empty."
+    try:
+        message = await hub.complete_spoken(project.name, message, heard)
+        entry = await hub.open_lane(project, "", message, via="voice")
+    except Exception as exc:  # noqa: BLE001 - the voice must say something
+        return project.name, f"That failed ({type(exc).__name__}); nothing was done."
+    if entry.kind != "sent":
+        return project.name, entry.text
+    return project.name, _sent_note(project.name)
+
+
 async def run_hub_tool(
     hub: Hub, name: str, args: dict[str, Any], *, heard: str = ""
 ) -> tuple[str, str]:
@@ -458,7 +483,7 @@ async def run_hub_tool(
         transcribed; an ``ask_claude`` is rewritten from it so the message
         carries everything they asked.
     """
-    from omnigent.server.hub import find_session
+    from omnigent.server.hub import find_project, find_session
 
     spoken = str(args.get("session") or args.get("project") or "").strip()
     sessions = await hub.sessions()
@@ -468,6 +493,11 @@ async def run_hub_tool(
         parts = [f"{s.name}:\n{await backend.activity(s.id)}" for s in sessions]
         return "all", "\n\n".join(parts) or "There are no projects with a chat yet."
     session = find_session(sessions, spoken)
+    if session is None and name == "ask_claude":
+        # A project whose chats were all closed gets a new one for this request.
+        empty = find_project(await hub.projects(), spoken)
+        if empty is not None and empty.chat is None:
+            return await _ask_in_new_chat(hub, empty, args, heard)
     if session is None:
         return spoken, f"No project called '{spoken}'. Their projects: {known}. Ask which."
     try:
@@ -481,10 +511,7 @@ async def run_hub_tool(
             entry = await hub.send_to(session, message, via="voice")
             if entry.kind != "sent":
                 return session.name, entry.text
-            return session.name, (
-                f"{SENT_PREFIX}{session.name}. Its answer comes back in the hub chat, which "
-                "reads it out. Say that in one short sentence: the call ends right after."
-            )
+            return session.name, _sent_note(session.name)
         if name == "set_model":
             entry = await hub.set_model(
                 session,

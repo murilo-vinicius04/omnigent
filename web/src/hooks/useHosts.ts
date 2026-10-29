@@ -7,6 +7,7 @@ export interface Host {
   name: string;
   owner: string;
   status: "online" | "offline";
+  credential_expires_at?: number | null;
   /**
    * Sandbox provider backing a server-managed host (e.g. "modal");
    * null for user-connected hosts. Optional because older servers

@@ -56,6 +56,9 @@ def _clear_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     monkeypatch.setattr(plan_limits, "GROK_AUTH_PATH", tmp_path / "grok_auth.json", raising=False)
     monkeypatch.setattr(plan_limits, "CODEX_AUTH_PATH", tmp_path / "codex_auth.json")
     monkeypatch.setattr(plan_limits, "CODEX_CACHE_PATH", tmp_path / "plan-limits-codex.json")
+    monkeypatch.setattr(
+        plan_limits, "MUSE_CACHE_PATH", tmp_path / "plan-limits-muse.json", raising=False
+    )
     monkeypatch.setattr(plan_limits.grok_usage, "SESSIONS_ROOT", tmp_path / "grok_sessions")
     monkeypatch.setattr(
         plan_limits.grok_usage, "sessions_root", lambda: tmp_path / "grok_sessions"
@@ -70,6 +73,9 @@ def _clear_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     # cache; a previous test's reading must not leak into this one.
     plan_limits.usage_timeline._cache.clear()
     _stub_agy(monkeypatch, None)
+    monkeypatch.setattr(
+        plan_limits, "MUSE_CREDENTIALS_PATH", tmp_path / "muse_auth.json", raising=False
+    )
 
 
 def _stub_agy(monkeypatch: pytest.MonkeyPatch, summary: Any) -> None:
@@ -84,6 +90,35 @@ def _stub_agy(monkeypatch: pytest.MonkeyPatch, summary: Any) -> None:
 def _agy_summary(*buckets: dict[str, Any]) -> dict[str, Any]:
     """Wrap *buckets* in agy's group envelope."""
     return {"groups": [{"displayName": "Gemini Models", "buckets": list(buckets)}]}
+
+
+def _muse_login(tmp_path: Path, token: str = "dca:test") -> None:
+    """Write a Muse Code credential file with a device-code OAuth token."""
+    (tmp_path / "muse_auth.json").write_text(
+        json.dumps({"providers": {"meta": {"access_token": token, "mechanism": "oauth"}}})
+    )
+
+
+#: Quota endpoint payload mirroring the real shape (epoch-second resets).
+_MUSE_QUOTA = {
+    "is_subs_active": True,
+    "require_payment": False,
+    "subs_tier_name": "Muse Code Everyday Usage",
+    "user_email": "person@test.invalid",
+    "subs_usage": {
+        "window": {"used_percent": 42, "window_duration_mins": 300, "resets_at": 1791338400},
+        "weekly": {"used_percent": 7, "resets_at": 1791915414},
+    },
+}
+
+
+def _muse_only(handler: Any) -> Any:
+    """Answer Meta's key URL with *handler* and every other vendor with a 500."""
+
+    def route(request: httpx.Request) -> httpx.Response:
+        return handler(request) if "muse-code/key" in str(request.url) else httpx.Response(500)
+
+    return route
 
 
 def _collect() -> dict[str, Any]:
@@ -955,6 +990,14 @@ def test_every_provider_row_carries_todays_counted_tokens(
         "".join(
             json.dumps(event) + "\n"
             for event in (
+                {"at": at, "kind": "openai_call", "model": "gpt-6.1-sol", "tokens": 100},
+                {
+                    "at": at,
+                    "kind": "model_call",
+                    "model": "gpt-6.1-sol",
+                    "source": "native",
+                    "tokens": 200,
+                },
                 {"at": at, "kind": "model_call", "model": "claude-opus-5", "tokens": 12_000},
                 {"at": at, "kind": "model_call", "model": "Gemini 3.8 Flash", "tokens": 3_000},
                 {"at": at, "kind": "grok_call", "model": "grok-4.6-build", "tokens": 500},
@@ -993,9 +1036,8 @@ def test_every_provider_row_carries_todays_counted_tokens(
     # the tokens are the vendor's.
     assert _by_id(payload, "antigravity")["tokens_today"] == 3_000
     assert _by_id(payload, "grok")["tokens_today"] == 500
-    # The Codex plan row carries no token line: Omnigent's OpenAI counts also
-    # include API-key traffic that never touches the plan.
-    assert "tokens_today" not in _by_id(payload, "codex")
+    assert _by_id(payload, "codex")["tokens_today"] == 200
+    assert _by_id(payload, "openai")["tokens_today"] == 100
 
 
 def test_todays_token_line_is_not_appended_twice_to_a_replayed_row(
@@ -1083,7 +1125,7 @@ def test_codex_reports_five_hour_and_weekly_windows(
     assert codex["windows"][0]["resets_at"] == "2026-10-06T23:16:54Z"
 
 
-def test_codex_replaces_the_openai_pool_row(
+def test_codex_and_api_pools_are_independent_rows(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _codex_login(tmp_path)
@@ -1092,7 +1134,11 @@ def test_codex_replaces_the_openai_pool_row(
     ids = [p["id"] for p in _collect()["providers"]]
 
     assert "codex" in ids
-    assert "openai" not in ids
+    assert "openai" in ids
+    payload = _collect()
+    assert _by_id(payload, "openai")["meter_type"] == "api_usage"
+    assert _by_id(payload, "openai")["credit_balance"] is None
+    assert _by_id(payload, "codex")["meter_type"] == "subscription"
 
 
 def test_codex_without_a_chatgpt_login_is_signed_out(
@@ -1148,3 +1194,259 @@ def test_codex_window_labels_follow_the_window_length() -> None:
     assert plan_limits._codex_window_label(604800) == "week"
     assert plan_limits._codex_window_label(86400) == "1d"
     assert plan_limits._codex_window_label(None) == ""
+
+
+# --- muse provider -----------------------------------------------------------
+
+
+def test_muse_reports_window_and_weekly_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _muse_login(tmp_path)
+    _mock_transport(monkeypatch, _muse_only(lambda r: httpx.Response(200, json=_MUSE_QUOTA)))
+
+    muse = _by_id(_collect(), "muse")
+
+    assert muse["state"] == "ok"
+    assert muse["meter_type"] == "subscription"
+    assert muse["tier"] == "Muse Code Everyday Usage"
+    assert [(w["kind"], w["label"], w["percent"]) for w in muse["windows"]] == [
+        ("session", "5h", 42),
+        ("weekly", "week", 7),
+    ]
+    assert muse["windows"][0]["resets_at"] == plan_limits._muse_epoch_s_to_iso(1791338400)
+    # The reading is persisted for replay when the live read fails.
+    cached = json.loads((tmp_path / "plan-limits-muse.json").read_text(encoding="utf-8"))
+    assert [w["percent"] for w in cached["windows"]] == [42, 7]
+    assert cached["tier"] == "Muse Code Everyday Usage"
+    assert cached["as_of"]
+
+
+def test_muse_request_carries_device_credential(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The quota read authenticates like the CLI: bearer token, no prompt."""
+    token = "dca:abc123"
+    _muse_login(tmp_path, token=token)
+
+    seen: dict[str, Any] = {}
+
+    def capture(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["method"] = request.method
+        seen["auth"] = request.headers.get("authorization")
+        seen["version"] = request.headers.get("x-api-version")
+        return httpx.Response(200, json=_MUSE_QUOTA)
+
+    _mock_transport(monkeypatch, _muse_only(capture))
+
+    assert _by_id(_collect(), "muse")["state"] == "ok"
+    assert seen["url"] == "https://api.meta.ai/muse-code/key"
+    assert seen["method"] == "POST"
+    assert seen["auth"] == "Bearer dca:abc123"
+    assert seen["version"] == "1.0.0"
+
+
+def test_muse_without_login_is_signed_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_transport(monkeypatch, lambda r: httpx.Response(500))
+
+    payload = _collect()
+    muse = _by_id(payload, "muse")
+
+    assert muse["state"] == "signed-out"
+    assert muse["windows"] == []
+    # The other providers still get their own verdicts.
+    assert _by_id(payload, "claude")["state"] == "signed-out"
+
+
+def test_muse_api_key_login_has_no_plan_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Pay-as-you-go API keys bill per token: no subscription quota to ring."""
+    _muse_login(tmp_path, token="sk-live-key")
+    _mock_transport(monkeypatch, _muse_only(lambda r: httpx.Response(200, json=_MUSE_QUOTA)))
+
+    muse = _by_id(_collect(), "muse")
+
+    assert muse["state"] == "signed-out"
+    assert muse["windows"] == []
+
+
+def test_muse_login_expiry_is_signed_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _muse_login(tmp_path)
+    _mock_transport(monkeypatch, _muse_only(lambda r: httpx.Response(401)))
+
+    muse = _by_id(_collect(), "muse")
+
+    assert muse["state"] == "signed-out"
+    assert muse["windows"] == []
+
+
+def test_muse_inactive_subscription_is_unsupported(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _muse_login(tmp_path)
+
+    def inactive(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"is_subs_active": False})
+
+    _mock_transport(monkeypatch, _muse_only(inactive))
+
+    muse = _by_id(_collect(), "muse")
+
+    assert muse["state"] == "unsupported"
+    assert muse["windows"] == []
+
+
+def test_muse_billing_setup_incomplete_is_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _muse_login(tmp_path)
+
+    def unpaid(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"is_subs_active": False, "require_payment": True})
+
+    _mock_transport(monkeypatch, _muse_only(unpaid))
+
+    muse = _by_id(_collect(), "muse")
+
+    assert muse["state"] == "error"
+    assert muse["windows"] == []
+    assert "reason" in muse
+
+
+def test_muse_replays_the_last_reading_when_the_endpoint_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _muse_login(tmp_path)
+    # One mock for both polls: seeding succeeds, then the endpoint goes down.
+    answers = iter(
+        [httpx.Response(200, json=_MUSE_QUOTA), httpx.Response(500)],
+    )
+    _mock_transport(monkeypatch, _muse_only(lambda r: next(answers)))
+    _collect()
+    monkeypatch.setattr(plan_limits, "_cache", None)
+
+    muse = _by_id(_collect(), "muse")
+
+    assert muse["state"] == "stale"
+    assert [w["percent"] for w in muse["windows"]] == [42, 7]
+    assert muse["tier"] == "Muse Code Everyday Usage"
+    assert muse["as_of"]
+
+
+def test_muse_unreadable_login_replays_the_last_reading(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A locked-down credential file is transient: replay stale, don't vanish.
+
+    The tray hides every ``signed-out`` row, so reporting "signed out" when the
+    login merely became unreadable (e.g. a mode-000 ``~/.config/muse`` dir)
+    blanks the Muse ring with no explanation. An unreadable login must replay
+    the last good reading like any other transient read failure.
+    """
+    _muse_login(tmp_path)
+    _mock_transport(monkeypatch, _muse_only(lambda r: httpx.Response(200, json=_MUSE_QUOTA)))
+    _collect()  # seeds the on-disk cache while the login is still readable
+    monkeypatch.setattr(plan_limits, "_cache", None)
+
+    creds = tmp_path / "muse_auth.json"
+    real_read_text = Path.read_text
+
+    def _denied(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == creds:
+            raise PermissionError(13, "Permission denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _denied)
+
+    muse = _by_id(_collect(), "muse")
+
+    assert muse["state"] == "stale"
+    assert [w["percent"] for w in muse["windows"]] == [42, 7]
+    assert muse["tier"] == "Muse Code Everyday Usage"
+    assert muse["as_of"]
+
+    # Without a cached reading there is nothing to replay: degrade to error,
+    # never to a silent signed-out that hides the row's reason.
+    (tmp_path / "plan-limits-muse.json").unlink()
+    monkeypatch.setattr(plan_limits, "_cache", None)
+
+    muse = _by_id(_collect(), "muse")
+
+    assert muse["state"] == "error"
+    assert muse["windows"] == []
+    assert "reason" in muse
+
+
+def test_muse_endpoint_failure_without_cache_is_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failing endpoint must degrade the row, not 500 the whole tray."""
+    _muse_login(tmp_path)
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("offline", request=request)
+
+    _mock_transport(monkeypatch, _muse_only(boom))
+
+    payload = _collect()
+
+    assert _by_id(payload, "muse")["state"] == "error"
+    assert _by_id(payload, "claude")["id"] == "claude"
+
+
+def test_muse_response_without_usable_windows_reports_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A provider may null out windows that do not apply; those must vanish
+    # rather than render as a bogus 0%.
+    _muse_login(tmp_path)
+    _mock_transport(
+        monkeypatch,
+        _muse_only(lambda r: httpx.Response(200, json={"is_subs_active": True})),
+    )
+
+    muse = _by_id(_collect(), "muse")
+
+    assert muse["state"] == "error"
+    assert muse["windows"] == []
+
+
+def test_muse_window_labels_follow_the_window_length() -> None:
+    assert plan_limits._muse_window_label(300) == "5h"
+    assert plan_limits._muse_window_label(60) == "1h"
+    assert plan_limits._muse_window_label(45) == "45m"
+    assert plan_limits._muse_window_label(None) is None
+    assert plan_limits._muse_window_label(0) is None
+    assert plan_limits._muse_window_label(True) is None
+
+
+def test_muse_epoch_s_to_iso_rejects_non_stamps() -> None:
+    assert plan_limits._muse_epoch_s_to_iso(1791338400).endswith("Z")
+    assert plan_limits._muse_epoch_s_to_iso(None) is None
+    assert plan_limits._muse_epoch_s_to_iso(0) is None
+    assert plan_limits._muse_epoch_s_to_iso(True) is None
+
+
+def test_muse_token_reader_accepts_only_device_logins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = tmp_path / "muse_auth.json"
+
+    path.write_text(json.dumps({"providers": {"meta": {"access_token": "dca:abc"}}}))
+    assert plan_limits._read_muse_token() == "dca:abc"
+
+    path.write_text(json.dumps({"providers": {"meta": {"access_token": "sk-key"}}}))
+    assert plan_limits._read_muse_token() is None
+
+    path.write_text(json.dumps({"providers": {"meta": {"mechanism": "oauth"}}}))
+    assert plan_limits._read_muse_token() is None
+
+    path.write_text("broken")
+    assert plan_limits._read_muse_token() is None
+
+    path.unlink()
+    assert plan_limits._read_muse_token() is None

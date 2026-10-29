@@ -8,9 +8,8 @@ summary would drop.
 
 The sequence is the one the context threshold already uses, run on request:
 wait for the chat to be idle, ask for the write-up, wait for that turn to end,
-compact, wait for the compaction to land. Every wait is bounded and every
-failure ends in the same place -- the switch still happens, and the reply says
-what was and was not done.
+compact, wait for the compaction to land. Every wait is bounded. Callers must
+not switch models unless compaction is confirmed or the known context is small.
 """
 
 from __future__ import annotations
@@ -102,7 +101,7 @@ async def write_up_and_compact(
     """Ask a chat to write its context down, then compact it.
 
     Never raises for a chat that cannot be reached or compacted: the outcome
-    says so, and the caller carries on with the switch.
+    says so, and the caller can keep the current model when safety is unconfirmed.
 
     :param session_id: The chat's id.
     :param prompt: The write-up request to send.
@@ -115,7 +114,8 @@ async def write_up_and_compact(
         wait is asked anyway instead of being given up on.
     :param claimed: The caller already holds the chat (see
         :func:`omnigent.server.auto_compact.claim`) and releases it.
-    :returns: How it ended; only ``"compacted"`` means the context shrank.
+    :returns: How it ended; ``"compacted"`` confirms a shrink, ``"small"`` means
+        a known context below the threshold, and other outcomes must fail closed.
     """
     poll_s = POLL_S if poll_s is None else poll_s
     idle_wait_s = IDLE_WAIT_S if idle_wait_s is None else idle_wait_s
@@ -123,10 +123,11 @@ async def write_up_and_compact(
     compact_wait_s = COMPACT_WAIT_S if compact_wait_s is None else compact_wait_s
     start_grace_s = START_GRACE_S if start_grace_s is None else start_grace_s
     try:
-        if await compaction.context_tokens(session_id) < auto_compact.MIN_CONTEXT_TOKENS:
-            return "small"
-    except Exception:  # noqa: BLE001 - an unknown size is treated as not worth it
+        tokens = await compaction.context_tokens(session_id)
+    except Exception:  # noqa: BLE001 - an unknown size must not skip compaction
         _logger.debug("handoff: context size unavailable for %s", session_id, exc_info=True)
+        tokens = 0
+    if 0 < tokens < auto_compact.MIN_CONTEXT_TOKENS:
         return "small"
     if await compaction.why_blocked(session_id):
         return "blocked"

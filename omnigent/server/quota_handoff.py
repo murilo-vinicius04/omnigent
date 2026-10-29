@@ -34,6 +34,14 @@ PROVIDER_BY_WRAPPER: Final[dict[str, str]] = {
     "antigravity-native-ui": "gemini",
 }
 
+#: The label new lanes carry naming their provider outright. ACP lanes
+#: (Muse) have no wrapper label, so the quota rules could never see them;
+#: this one covers every provider the same way.
+PROVIDER_LABEL: Final[str] = "omnigent.provider"
+
+#: Every provider the quota rules know, for validating the label above.
+KNOWN_PROVIDERS: Final[frozenset[str]] = frozenset({"claude", "codex", "gemini", "muse"})
+
 _WRAPPER_LABEL: Final[str] = "omnigent.wrapper"
 
 #: A reading older than this says nothing about now.
@@ -94,7 +102,11 @@ def load_ceilings(hub_dir: pathlib.Path) -> Ceilings:
 
 def provider_of(labels: dict[str, str] | None) -> str | None:
     """The provider whose plan a session spends, or ``None`` when it has none here."""
-    return PROVIDER_BY_WRAPPER.get(str((labels or {}).get(_WRAPPER_LABEL, "")))
+    labels = labels or {}
+    explicit = str(labels.get(PROVIDER_LABEL, ""))
+    if explicit in KNOWN_PROVIDERS:
+        return explicit
+    return PROVIDER_BY_WRAPPER.get(str(labels.get(_WRAPPER_LABEL, "")))
 
 
 def _when(at: datetime, now: datetime) -> str:
@@ -162,6 +174,38 @@ def pressure_for(
     return max(found, key=lambda p: p.pct - p.limit, default=None)
 
 
+def full_window(
+    provider: str | None,
+    *,
+    data_dir: pathlib.Path,
+    now: datetime | None = None,
+) -> str | None:
+    """Say which window of a provider's plan is full, if one is.
+
+    :param provider: The quota-rules provider, e.g. ``"claude"``.
+    :param data_dir: Where the plan-limits cache files live.
+    :param now: Clock seam for tests.
+    :returns: e.g. ``"5h window full until 16:13"``, or ``None`` when no window
+        is known to be full (including when there is no reading to go by).
+    """
+    if provider is None:
+        return None
+    moment = now or datetime.now(UTC)
+    try:
+        meter = budget.read_meter(provider, data_dir)
+    except Exception:  # noqa: BLE001 - no reading means not known to be full
+        return None
+    if meter.as_of is None or (moment - meter.as_of).total_seconds() > MAX_FULL_READING_AGE_S:
+        return None
+    for window, pct, resets_at in (
+        ("5h", meter.five_hour, meter.five_hour_resets_at),
+        ("week", meter.weekly, meter.resets_at),
+    ):
+        if pct is not None and pct >= FULL_PCT and resets_at is not None and resets_at > moment:
+            return f"{window} window full until {_when(resets_at, moment).removeprefix('at ')}"
+    return None
+
+
 def exhausted(
     labels: dict[str, str] | None,
     *,
@@ -179,20 +223,4 @@ def exhausted(
     :returns: e.g. ``"5h window full until 16:13"``, or ``None`` when no window
         is known to be full (including when there is no reading to go by).
     """
-    provider = provider_of(labels)
-    if provider is None:
-        return None
-    moment = now or datetime.now(UTC)
-    try:
-        meter = budget.read_meter(provider, data_dir)
-    except Exception:  # noqa: BLE001 - no reading means not known to be full
-        return None
-    if meter.as_of is None or (moment - meter.as_of).total_seconds() > MAX_FULL_READING_AGE_S:
-        return None
-    for window, pct, resets_at in (
-        ("5h", meter.five_hour, meter.five_hour_resets_at),
-        ("week", meter.weekly, meter.resets_at),
-    ):
-        if pct is not None and pct >= FULL_PCT and resets_at is not None and resets_at > moment:
-            return f"{window} window full until {_when(resets_at, moment).removeprefix('at ')}"
-    return None
+    return full_window(provider_of(labels), data_dir=data_dir, now=now)

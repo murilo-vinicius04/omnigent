@@ -185,3 +185,25 @@ def test_reap_isolates_a_module_that_raises_on_import(
     # The broken module's import RuntimeError is swallowed; claude still runs.
     assert native_bridge_common.reap_orphaned_native_bridge_dirs() == 3
     assert called == ["claude"]
+
+
+def test_prune_keeps_the_conversation_home_of_a_dead_owner(tmp_path: Path) -> None:
+    """A runner that idled out leaves a resumable session: its home must survive."""
+    root = tmp_path / "bridge-root"
+    root.mkdir()
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    bridge = root / "idledout"
+    conversation = bridge / "agy-home" / ".gemini" / "antigravity-cli" / "conversations"
+    conversation.mkdir(parents=True)
+    (conversation / "796d454b-b489-468c-86fe-c8be914dca54.db").write_bytes(b"chat")
+    (bridge / "bridge.json").write_text('{"token": "secret"}', encoding="utf-8")
+    (bridge / "mcp").mkdir()
+    (bridge / native_bridge_common.OWNER_PID_FILENAME).write_text(str(dead.pid), encoding="utf-8")
+
+    assert native_bridge_common.prune_orphaned_dirs(root) == 1
+
+    assert (conversation / "796d454b-b489-468c-86fe-c8be914dca54.db").read_bytes() == b"chat"
+    assert sorted(p.name for p in bridge.iterdir()) == ["agy-home"]
+    # With its marker gone, later sweeps leave the kept home alone.
+    assert native_bridge_common.prune_orphaned_dirs(root) == 0

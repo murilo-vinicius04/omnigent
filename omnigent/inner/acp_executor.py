@@ -54,10 +54,11 @@ import os
 import secrets
 import shlex
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, TypeAlias
+from urllib.parse import unquote
 
 from omnigent.inner import _proc
 from omnigent.inner._acp_omnigent_mcp import OmnigentAcpMcp
@@ -66,6 +67,7 @@ from omnigent.inner.acp_subagents import SubAgentActivity, SubAgentStart, read_s
 from omnigent.inner.agent_env import clean_agent_env, declared_passthrough
 from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec
 from omnigent.inner.executor import (
+    EnqueuedContent,
     Executor,
     ExecutorConfig,
     ExecutorError,
@@ -104,6 +106,11 @@ _ElicitationHandler: TypeAlias = Callable[[str, _AcpJsonObject], Awaitable[bool]
 _ElicitationChoiceHandler: TypeAlias = Callable[
     [str, _AcpJsonObject, Sequence[str]], Awaitable[str | None]
 ]
+# Form elicitation (``elicitation/create``): the agent asks the user an open
+# question (Muse Code's ``userInput``). Takes the agent's ``message`` +
+# ``requestedSchema`` and returns the ACP ``CreateElicitationResponse``
+# (``{"action": "accept"|"decline"|"cancel", "content": {...}}``).
+_FormElicitationHandler: TypeAlias = Callable[[str, _AcpJsonObject], Awaitable[_AcpJsonObject]]
 _ToolExecutor: TypeAlias = Callable[[str, _AcpJsonObject], Awaitable[_AcpJsonObject]]
 
 # ACP error code an agent maps to a filesystem "not found" (ENOENT) when a
@@ -123,6 +130,9 @@ _CLIENT_NOTIFICATION_SESSION_CANCEL = "session/cancel"
 
 # Server-initiated request methods (agent → client).
 _AGENT_REQUEST_REQUEST_PERMISSION = "session/request_permission"
+_AGENT_REQUEST_ELICITATION_CREATE = "elicitation/create"
+# URL-elicitation completion arrives as a client notification (no id) — ignored.
+_AGENT_NOTIFICATION_ELICITATION_COMPLETE = "elicitation/complete"
 
 # session/update.update.sessionUpdate discriminator values we map.
 _UPDATE_AGENT_MESSAGE_CHUNK = "agent_message_chunk"
@@ -130,7 +140,37 @@ _UPDATE_AGENT_THOUGHT_CHUNK = "agent_thought_chunk"
 _UPDATE_TOOL_CALL = "tool_call"
 _UPDATE_TOOL_CALL_UPDATE = "tool_call_update"
 _UPDATE_USAGE = "usage_update"
+_UPDATE_SESSION_INFO = "session_info_update"
 _UPDATE_CONFIG_OPTION = "config_option_update"
+
+#: ACP client-capability extension Muse Code's adapter (``muse-code-acp``)
+#: requires before it forwards per-session token usage: without the client
+#: declaring ``{"muse/usage": 1}``, ``session/tokenUsage`` observations are
+#: silently dropped and the session's token spend is invisible to usage
+#: history. Other agents ignore unknown ``_meta`` keys.
+_MUSE_USAGE_EXTENSION = "muse/usage"
+
+#: Client opt-in for mid-turn steering: with ``_meta.steering`` declared, the
+#: adapter advertises it back and accepts ``_session/steering`` to inject a
+#: user message into the active turn (idle sessions are rejected, never started).
+_STEERING_CAPABILITY = "steering"
+_STEERING_METHOD = "_session/steering"
+#: Above the adapter's own 10 s acknowledgement deadline, so its verdict wins.
+_STEER_TIMEOUT_SECONDS = 15.0
+
+#: Task-control extension the same adapter gates its worker metadata behind:
+#: ``_meta["muse/asyncTasks"]`` only rides worker frames when the client
+#: declares ``{"muse/asyncTasks": 1}``. Omnigent does not (it implements no
+#: task controls), so live worker frames are recognized by shape instead.
+_MUSE_TASK_EXTENSION = "muse/asyncTasks"
+
+#: Muse background-worker kinds (``muse-code-acp`` async-task workerKinds).
+#: The adapter renders these as attribution cards — ``tool_call`` frames
+#: titled ``"<kind>: <status>"`` with no ``rawInput`` — for the session's own
+#: background workers (workflows, subagents, reminder children). They carry
+#: no user-meaningful tool semantics, so the executor drops them instead of
+#: opening tool cards that persist as transcript noise.
+_MUSE_WORKER_KINDS = frozenset({"workflow", "subagent", "reminderChild"})
 
 # ACP ``session/set_config_option`` — the standard warm-switch method. The
 # option id for the model, and the param name the agent expects (``configId``,
@@ -140,6 +180,75 @@ _CONFIG_OPTION_MODEL = "model"
 # Reasoning effort as a session config option (Grok Build advertises it with
 # category ``thought_level``); the value is a plain level id such as ``"low"``.
 _CONFIG_OPTION_REASONING_EFFORT = "reasoning_effort"
+# Muse Code's community adapter (``muse-code-acp``) spells the same option
+# ``reasoningEffort``; the value shape is identical (a plain level id), so the
+# executor accepts either spelling and always sends back the advertised one.
+_CONFIG_OPTION_REASONING_EFFORT_CAMEL = "reasoningEffort"
+
+
+def _normalize_model_id(value: str) -> str:
+    """Return the bare model id for a provider-qualified envelope.
+
+    Muse Code's ``muse-code-acp`` adapter identifies catalog models as
+    ``muse-model:<urlencoded [providerId, profileId, id]>``; a bare id never
+    equals that envelope, so comparisons must unwrap it first. Anything else
+    passes through unchanged.
+    """
+    prefix = "muse-model:"
+    if not value.startswith(prefix):
+        return value
+    try:
+        envelope = json.loads(unquote(value[len(prefix) :]))
+    except ValueError:
+        return value
+    if isinstance(envelope, list) and len(envelope) >= 3 and isinstance(envelope[2], str):
+        return envelope[2]
+    return value
+
+
+def _resolve_model_option_value(model: str, advertised: Sequence[str]) -> str:
+    """Pick the ``model`` option value to send for a requested bare id.
+
+    Prefers an exact advertised value, then an advertised provider-qualified
+    envelope whose embedded id matches, and falls back to the bare id (the
+    agent validates a manual id itself). Sending a bare id the catalog also
+    lists qualified would land on the adapter's manual-id path, which the
+    host may refuse — the adapter's own guidance is to choose a
+    provider-qualified catalog option.
+    """
+    if model in advertised:
+        return model
+    for candidate in advertised:
+        if _normalize_model_id(candidate) == model:
+            return candidate
+    return model
+
+
+def _is_muse_worker_frame(update: _AcpJsonObject) -> bool:
+    """True when a tool-call frame is a Muse background-worker attribution card.
+
+    The adapter renders its session's own background workers (workflows,
+    subagents, reminder children) as ``tool_call`` frames — titled
+    ``"<kind>: <status>"`` with no ``rawInput`` — so a client that maps every
+    frame to a tool card ends up narrating adapter bookkeeping as hundreds of
+    transcript items. Anything that names a worker kind, either through the
+    negotiated ``_meta["muse/asyncTasks"]`` marker or through the frame's own
+    ``name``/``title`` shape, is such a card. Anything misshapen reads as a
+    real tool call: dropping must never hide user-meaningful work.
+    """
+    meta = update.get("_meta")
+    if isinstance(meta, dict):
+        task = meta.get(_MUSE_TASK_EXTENSION)
+        if isinstance(task, dict) and task.get("kind") in _MUSE_WORKER_KINDS:
+            return True
+    name = update.get("name")
+    if isinstance(name, str) and name in _MUSE_WORKER_KINDS:
+        return True
+    title = update.get("title")
+    if isinstance(title, str) and title.split(":", 1)[0].strip() in _MUSE_WORKER_KINDS:
+        return True
+    return False
+
 
 # ACP tool-call lifecycle statuses (the terminal ones close a tool card).
 _TOOL_STATUS_COMPLETED = "completed"
@@ -147,19 +256,59 @@ _TOOL_STATUS_FAILED = "failed"
 
 # Idle (time-without-progress) timeout for a prompt turn, in seconds.
 # Some ACP agents stay silent while an external interaction is pending, so
-# this is configurable. Parsing is import-time and fail-loud: a malformed,
-# non-positive, or non-finite value aborts the ACP child at startup.
+# this is configurable. The default is generous on purpose: adapters that
+# wrap a second agent loop (notably Muse Code's ``muse-code-acp``, which
+# fronts ``muse serve``) can work for many minutes without emitting a single
+# ``session/update`` frame, and killing the turn then discards real work.
+# Parsing is import-time and fail-loud: a malformed, non-positive, or
+# non-finite value aborts the ACP child at startup.
 _PROMPT_TIMEOUT_ENV = "HARNESS_ACP_PROMPT_TIMEOUT_S"
 _PROMPT_TIMEOUT_ERR = f"{_PROMPT_TIMEOUT_ENV} must be a positive finite number of seconds"
 try:
-    _PROMPT_TIMEOUT_SECONDS = float(os.environ.get(_PROMPT_TIMEOUT_ENV, "300"))
+    _PROMPT_TIMEOUT_SECONDS = float(os.environ.get(_PROMPT_TIMEOUT_ENV, "1800"))
 except ValueError as exc:
     raise ValueError(_PROMPT_TIMEOUT_ERR) from exc
 if not math.isfinite(_PROMPT_TIMEOUT_SECONDS) or _PROMPT_TIMEOUT_SECONDS <= 0:
     raise ValueError(_PROMPT_TIMEOUT_ERR)
 
+# Idle budget override for Muse Code backends, in seconds. ``muse-code-acp``
+# fronts ``muse serve`` (a whole second agent loop over MSP): long tool /
+# reasoning phases with zero ACP frames are normal there, so a Muse turn gets
+# the *larger* of the generic budget above and this one. Env-overridable;
+# parsing is import-time and fail-loud like the generic budget.
+_MUSE_TIMEOUT_ENV = "HARNESS_ACP_MUSE_TIMEOUT_S"
+_MUSE_TIMEOUT_ERR = f"{_MUSE_TIMEOUT_ENV} must be a positive finite number of seconds"
+try:
+    _MUSE_TIMEOUT_SECONDS = float(os.environ.get(_MUSE_TIMEOUT_ENV, "3600"))
+except ValueError as exc:
+    raise ValueError(_MUSE_TIMEOUT_ERR) from exc
+if not math.isfinite(_MUSE_TIMEOUT_SECONDS) or _MUSE_TIMEOUT_SECONDS <= 0:
+    raise ValueError(_MUSE_TIMEOUT_ERR)
+
+
+def _is_muse_backend(command: str, name: str) -> bool:
+    """Whether an ACP agent config drives a Muse Code backend.
+
+    Matches the community ``muse-code-acp`` adapter command and the
+    ``"Muse Code"`` harness label (case-insensitive). Other agents never
+    contain the ``muse`` token in either field, so this stays targeted.
+    """
+    return "muse" in command.lower() or "muse" in name.lower()
+
+
+# Muse refuses a prompt while its saved session holds an unfinished turn or
+# pending input, and submits no model turn when it does.
+_MUSE_UNFINISHED_TURN = "unfinished turn or pending input"
+
+
 # Idle timeout for the initial ACP handshake (initialize / session setup).
 _INIT_TIMEOUT_SECONDS = 30.0
+
+# How often (seconds of turn silence) to log a stall warning while waiting
+# for the next ACP frame. Informational only — long silent stretches are
+# expected from some adapters, but the host log should show the stall
+# building instead of going quiet and then surfacing a timeout.
+_STALL_WARN_SECONDS = 60.0
 
 # Agent stderr kept for diagnostics: how many trailing lines to retain, how many
 # to quote in a turn error, and the per-line cap (a chatty CLI can emit one
@@ -345,6 +494,14 @@ class AcpExecutor(Executor):
         self._model_switch_supported: bool = True
         # The live ``reasoning_effort`` value, when the agent advertises one.
         self._active_effort: str | None = None
+        # Advertised ``model`` option values, so a requested bare id can be
+        # resolved to the provider-qualified envelope the agent lists.
+        self._model_option_values: list[str] = []
+        # Which spelling to send back in ``session/set_config_option``: the
+        # standard ``reasoning_effort`` when advertised, else the adapter's own
+        # (Muse Code's ``muse-code-acp`` uses ``reasoningEffort``). ``None``
+        # until an update advertises either.
+        self._effort_config_id: str | None = None
 
         # Parsed argv; the first token is the binary we resolve / sandbox.
         self._argv: list[str] = shlex.split(config.command)
@@ -370,6 +527,7 @@ class AcpExecutor(Executor):
         self._session_id: str | None = None
         self._initialized: bool = False
         self._image_supported: bool = False
+        self._steering_supported: bool = False
         self._system_prompt_sent: bool = False
 
         # ACP toolCallId → tool name / rawInput from the originating tool_call, so
@@ -381,6 +539,21 @@ class AcpExecutor(Executor):
         # Context-window size (tokens) reported via ``usage_update``; surfaced by
         # :meth:`max_context_tokens` so the UI context meter fills.
         self._context_window: int | None = None
+        # Live window occupancy (tokens) from the same ``usage_update`` frame
+        # (``used`` alongside ``size``). Carried on the turn usage as
+        # ``context_tokens`` so the UI ring divides real occupancy instead of
+        # the last response's billing total — which counts full-context cache
+        # re-reads and pegs heavy lanes at 100%.
+        self._context_used: int | None = None
+        # Last-seen cumulative Muse Code token totals
+        # (``{"input": N, "output": N, "total": N}``), from ``session_info_update``
+        # ``_meta["muse/usage"]`` observations. ``None`` until the adapter
+        # reports its first totals for the session.
+        self._muse_cumulative: dict[str, int] | None = None
+        # Totals already attributed to a completed turn; the next turn's
+        # spend is the growth past this watermark. ``None`` behaves as zeros,
+        # so a fresh session's first observation counts in full.
+        self._muse_attributed: dict[str, int] | None = None
 
         # Bridges the ExecutorAdapter installs (by attribute) so the agent's
         # mid-turn ``session/request_permission`` routes through Omnigent's
@@ -389,6 +562,9 @@ class AcpExecutor(Executor):
         self._policy_evaluator: _PolicyEvaluator | None = None
         self._elicitation_handler: _ElicitationHandler | None = None
         self._elicitation_choice_handler: _ElicitationChoiceHandler | None = None
+        # Form-elicitation bridge (``elicitation/create`` → user). ``None`` →
+        # decline so a turn never hangs waiting for an unwired question.
+        self._form_elicitation_handler: _FormElicitationHandler | None = None
         # Adapter-injected tool-execution bridge (the same ``_tool_executor``
         # attribute the SDK harnesses use); backs the Omnigent MCP relay.
         self._tool_executor: _ToolExecutor | None = None
@@ -416,6 +592,7 @@ class AcpExecutor(Executor):
         # subprocess died. ``_initialized`` is a one-way latch.
         self._initialized = False
         self._image_supported = False
+        self._steering_supported = False
         env = self._build_spawn_env()
         launch_path, argv = self._sandbox_launch(tuple(env.keys()))
         _STREAM_LIMIT = 16 * 1024 * 1024
@@ -484,6 +661,17 @@ class AcpExecutor(Executor):
             )
             return binary, rest
 
+    def _recent_stderr_tail(self) -> str | None:
+        """Newest stderr lines as one capped string, or None when empty."""
+        if not self._recent_stderr:
+            return None
+        tail = " | ".join(list(self._recent_stderr)[-_STDERR_QUOTED_LINES:])
+        # Cap here too, not just per line in the reader: this string ends up
+        # in a UI toast, and the ring can hold several long lines.
+        if len(tail) > _STDERR_QUOTED_LIMIT:
+            tail = tail[:_STDERR_QUOTED_LIMIT] + "...[truncated]"
+        return tail
+
     def _startup_error_message(self, exc: BaseException) -> str:
         """Describe a handshake failure, quoting the agent's own stderr.
 
@@ -493,17 +681,80 @@ class AcpExecutor(Executor):
         diagnosis — and the log file so the full traceback is findable.
         """
         detail = describe_exception(exc)
-        if self._recent_stderr:
-            tail = " | ".join(list(self._recent_stderr)[-_STDERR_QUOTED_LINES:])
-            # Cap here too, not just per line in the reader: this string ends up
-            # in a UI toast, and the ring can hold several long lines.
-            if len(tail) > _STDERR_QUOTED_LIMIT:
-                tail = tail[:_STDERR_QUOTED_LIMIT] + "...[truncated]"
+        tail = self._recent_stderr_tail()
+        if tail is not None:
             detail = f"{detail}; {self._config.name} stderr: {tail}"
         log_path = current_process_log_path()
         if log_path is not None:
             detail = f"{detail} (harness log: {display_log_path(log_path)})"
         return detail
+
+    def _idle_timeout_seconds(self) -> float:
+        """Idle (time-without-progress) budget for this agent's prompt turns.
+
+        Muse Code backends get the larger of the generic
+        ``HARNESS_ACP_PROMPT_TIMEOUT_S`` budget and the Muse-specific
+        ``HARNESS_ACP_MUSE_TIMEOUT_S`` one — ``muse-code-acp`` fronts
+        ``muse serve`` and routinely works many minutes without emitting a
+        single ``session/update`` frame. Every other agent uses the generic
+        budget unchanged.
+        """
+        if _is_muse_backend(" ".join(self._argv), self._config.name):
+            return max(_PROMPT_TIMEOUT_SECONDS, _MUSE_TIMEOUT_SECONDS)
+        return _PROMPT_TIMEOUT_SECONDS
+
+    async def _timeout_error_message(
+        self,
+        session_id: str,
+        req_id: int,
+        *,
+        silent_for: float,
+        streamed_chars: int,
+        idle_timeout: float,
+    ) -> str:
+        """Describe a silent-turn timeout, then park the dead turn.
+
+        Drops the in-flight ``session/prompt`` future (a late agent reply must
+        not resolve into a later turn) and best-effort sends ``session/cancel``
+        so the agent stops the abandoned loop instead of running it detached.
+        The message names the silence, what streamed so far, whether the
+        subprocess is even alive, and the agent's own stderr tail.
+        """
+        self._pending.pop(req_id, None)
+        if (
+            self._proc is not None
+            and self._proc.returncode is None
+            and self._session_id is not None
+        ):
+            with contextlib.suppress(Exception):
+                await self._send(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": _CLIENT_NOTIFICATION_SESSION_CANCEL,
+                        "params": {"sessionId": session_id},
+                    }
+                )
+        if self._proc is None:
+            state = "agent process was never started"
+        elif self._proc.returncode is None:
+            state = "agent process still alive but produced no ACP output"
+        else:
+            state = f"agent process had already exited (rc={self._proc.returncode})"
+        detail = (
+            f"ACP agent '{self._config.name}' silent for {silent_for:.0f}s "
+            f"(no output; {streamed_chars} chars streamed so far); {state}"
+        )
+        tail = self._recent_stderr_tail()
+        if tail is not None:
+            detail = f"{detail}; stderr: {tail}"
+        log_path = current_process_log_path()
+        if log_path is not None:
+            detail = f"{detail} (harness log: {display_log_path(log_path)})"
+        return (
+            f"{detail}. To allow longer silent stretches, set "
+            f"{_PROMPT_TIMEOUT_ENV} higher (current {int(idle_timeout)}s; "
+            f"Muse backends also honor {_MUSE_TIMEOUT_ENV})."
+        )
 
     async def _read_stderr(self) -> None:
         """Continuously drain the agent's stderr, logging each line at debug.
@@ -631,13 +882,20 @@ class AcpExecutor(Executor):
         read defensively rather than assumed present.
         """
         config = getattr(self, "_config", None)
-        return clean_agent_env(
+        env = clean_agent_env(
             allow_prefixes=(),
             extra_allowed=(
                 *getattr(config, "env_passthrough", ()),
                 *declared_passthrough(self._os_env),
             ),
         )
+        argv = getattr(self, "_argv", ()) or ()
+        if _is_muse_backend(" ".join(argv), getattr(config, "name", "") or ""):
+            # The adapter gates `sandbox: disabled` behind this variable; the
+            # name alone does not pass the deny-by-default filter, so without
+            # this every Muse session below would be rejected back to sandboxed.
+            env["MUSE_CODE_ACP_ALLOW_YOLO"] = "1"
+        return env
 
     def _warn_initialize_failed(self, reason: str) -> None:
         """Point a failed handshake at the env allowlist.
@@ -658,6 +916,13 @@ class AcpExecutor(Executor):
             reason,
         )
 
+    def _client_meta(self) -> _AcpJsonObject:
+        """Client ``_meta`` extensions; Muse backends also opt into mid-turn steering."""
+        meta: _AcpJsonObject = {_MUSE_USAGE_EXTENSION: 1}
+        if _is_muse_backend(" ".join(self._argv), self._config.name):
+            meta[_STEERING_CAPABILITY] = True
+        return meta
+
     async def _ensure_initialized(self) -> None:
         """Perform the ``initialize`` handshake if not already done."""
         if self._initialized:
@@ -674,6 +939,14 @@ class AcpExecutor(Executor):
                             "writeTextFile": self._fs_delegation,
                         },
                         "terminal": False,
+                        # Form elicitation: without ``{"form": {}}`` Muse Code's
+                        # adapter fails the turn ("did not advertise form
+                        # elicitation") instead of forwarding its user-input
+                        # questions to the user.
+                        "elicitation": {"form": {}},
+                        # Opt into Muse Code's token-usage forwarding; other
+                        # agents ignore unknown ``_meta`` keys.
+                        "_meta": self._client_meta(),
                     },
                 },
                 timeout=_INIT_TIMEOUT_SECONDS,
@@ -686,10 +959,12 @@ class AcpExecutor(Executor):
             message = resp["error"].get("message", resp["error"])
             self._warn_initialize_failed(str(message))
             raise RuntimeError(f"ACP initialize failed: {message}")
-        prompt_caps = (
-            (resp.get("result") or {}).get("agentCapabilities", {}).get("promptCapabilities", {})
-        )
+        result = resp.get("result") or {}
+        prompt_caps = result.get("agentCapabilities", {}).get("promptCapabilities", {})
         self._image_supported = bool(prompt_caps.get("image"))
+        # Extension offers ride the result's top-level ``_meta``, not ``agentCapabilities``.
+        steering = (result.get("_meta") or {}).get(_STEERING_CAPABILITY)
+        self._steering_supported = isinstance(steering, dict) and steering.get("supported") is True
         self._initialized = True
 
     async def _ensure_session(self) -> str:
@@ -733,6 +1008,26 @@ class AcpExecutor(Executor):
                 "ACP session/new response missing sessionId: " + json.dumps(resp)[:200]
             )
         self._session_id = session_id
+        if _is_muse_backend(self._config.command, self._config.name):
+            # Muse's proxy-only default cannot reach host LAN/Tailscale routes.
+            # Configure networking independently of approvals and filesystem isolation.
+            network = await self._rpc(
+                _AGENT_METHOD_SET_CONFIG_OPTION,
+                {"sessionId": session_id, "configId": "sandboxNetwork", "value": "enabled"},
+                timeout=_INIT_TIMEOUT_SECONDS,
+            )
+            if "error" in network:
+                self._session_id = None
+                raise RuntimeError(f"Muse host network configuration failed: {network['error']}")
+            access = await self._rpc(
+                _AGENT_METHOD_SET_CONFIG_OPTION,
+                {"sessionId": session_id, "configId": "sandbox", "value": "disabled"},
+                timeout=_INIT_TIMEOUT_SECONDS,
+            )
+            if "error" in access:
+                self._session_id = None
+                raise RuntimeError(f"Muse sandbox configuration failed: {access['error']}")
+            logger.info("Muse sandbox network enabled; OS sandbox disabled")
         return self._session_id
 
     def _session_mcp_servers(self) -> list[_AcpJsonObject]:
@@ -778,6 +1073,8 @@ class AcpExecutor(Executor):
         - ``session/request_permission`` — decide via Omnigent's TOOL_CALL policy
           + human-consent elicitation (:meth:`_decide_permission`), then select
           the matching allow/reject option. NOT a blind approve.
+        - ``elicitation/create`` — forward the agent's form question to the user
+          via the form-elicitation bridge; decline when unwired.
         - ``fs/read_text_file`` / ``fs/write_text_file`` — when fs delegation is
           advertised, execute through the Omnigent OSEnvironment so the spec's
           sandbox read/write roots are enforced. Off → never arrive.
@@ -795,6 +1092,8 @@ class AcpExecutor(Executor):
             if method == _AGENT_REQUEST_REQUEST_PERMISSION:
                 allow, option_id = await self._decide_permission(params)
                 result = self._permission_outcome(params, allow=allow, option_id=option_id)
+            elif method == _AGENT_REQUEST_ELICITATION_CREATE:
+                result = await self._handle_elicitation_create(params)
             elif method == "fs/read_text_file" and self._fs_delegation:
                 result = await self._handle_fs_read(params)
             elif method == "fs/write_text_file" and self._fs_delegation:
@@ -816,6 +1115,51 @@ class AcpExecutor(Executor):
         else:
             reply["result"] = result
         await self._send(reply)
+
+    async def _handle_elicitation_create(self, params: _AcpJsonObject) -> _AcpJsonObject:
+        """Forward an ``elicitation/create`` form question to the user.
+
+        Muse Code's adapter sends ``mode: "form"`` with a ``requestedSchema``
+        built from its user-input questions. The bridge returns the ACP
+        ``CreateElicitationResponse`` (``action`` + ``content``). Unwired
+        (standalone / unit tests) → ``decline`` so the turn degrades to a
+        cancelled question instead of hanging. URL-mode elicitations are
+        declined — Omnigent has no out-of-band URL flow for inner agents.
+        """
+        if params.get("mode", "form") != "form":
+            logger.debug(
+                "acp[%s] declining non-form elicitation mode=%r",
+                self._config.name,
+                params.get("mode"),
+            )
+            return {"action": "decline"}
+        handler = self._form_elicitation_handler
+        if handler is None:
+            logger.debug("acp[%s] elicitation/create with no bridge; declining", self._config.name)
+            return {"action": "decline"}
+        message = params.get("message")
+        if not isinstance(message, str) or not message:
+            message = f"{self._config.name} requested input"
+        schema = params.get("requestedSchema")
+        if not isinstance(schema, dict):
+            raise _AcpRequestError(
+                -32602, "elicitation/create requires a 'requestedSchema' object"
+            )
+        outcome = await handler(message, schema)
+        if not isinstance(outcome, dict):
+            raise _AcpRequestError(-32603, "elicitation bridge returned a non-object outcome")
+        action = outcome.get("action")
+        if action not in ("accept", "decline", "cancel"):
+            logger.warning(
+                "acp[%s] elicitation bridge returned bad action=%r", self._config.name, action
+            )
+            return {"action": "decline"}
+        if action == "accept":
+            content = outcome.get("content")
+            if not isinstance(content, dict):
+                raise _AcpRequestError(-32602, "accepted elicitation requires a 'content' object")
+            return {"action": "accept", "content": content}
+        return {"action": action}
 
     # ------------------------------------------------------------------
     # Filesystem delegation (agent → client, when fs capability advertised)
@@ -1205,6 +1549,37 @@ class AcpExecutor(Executor):
     def supports_streaming(self) -> bool:
         return True
 
+    def supports_live_message_queue(self) -> bool:
+        """True for Muse backends: ``_session/steering`` injects a message mid-turn."""
+        return _is_muse_backend(" ".join(self._argv), self._config.name)
+
+    async def enqueue_session_message(self, session_key: str, content: EnqueuedContent) -> bool:  # noqa: ARG002 — one ACP session per process
+        """Steer the active Muse turn with a new user message.
+
+        ``False`` (not negotiated, no active turn, or refused) leaves the message
+        queued for the next turn.
+        """
+        if not self._steering_supported or self._session_id is None:
+            return False
+        text = content if isinstance(content, str) else str(content)
+        try:
+            resp = await self._rpc(
+                _STEERING_METHOD,
+                {"sessionId": self._session_id, "prompt": [{"type": "text", "text": text}]},
+                timeout=_STEER_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort; failure falls back to queueing
+            logger.warning(
+                "acp[%s] steering failed: %s", self._config.name, describe_exception(exc)
+            )
+            return False
+        if "error" in resp:
+            reason = resp["error"].get("message", resp["error"])
+            logger.info("acp[%s] steering refused: %s", self._config.name, reason)
+            return False
+        logger.info("acp[%s] steered the active turn", self._config.name)
+        return True
+
     def max_context_tokens(self) -> int | None:
         """Return the agent's reported context-window size, if observed yet."""
         return self._context_window
@@ -1269,6 +1644,9 @@ class AcpExecutor(Executor):
     def _reset_session_state(self) -> None:
         """Forget state that is only valid for the current ACP session."""
         self._session_id = None
+        self._muse_cumulative = None
+        self._muse_attributed = None
+        self._context_used = None
         self._system_prompt_sent = False
         self._tool_names.clear()
         self._tool_inputs.clear()
@@ -1325,6 +1703,13 @@ class AcpExecutor(Executor):
             if text:
                 events.append(ReasoningChunk(delta=text, event_type="reasoning_text"))
         elif update_type == _UPDATE_TOOL_CALL:
+            if _is_muse_worker_frame(update):
+                logger.debug(
+                    "acp[%s] ignoring Muse worker frame %r",
+                    self._config.name,
+                    update.get("title"),
+                )
+                return events
             call_id = update.get("toolCallId")
             name = update.get("title") or update.get("kind") or "tool"
             raw_input = update.get("rawInput")
@@ -1340,6 +1725,13 @@ class AcpExecutor(Executor):
                     metadata["internally_executed"] = True
                 events.append(ToolCallRequest(name=str(name), args=args, metadata=metadata))
         elif update_type == _UPDATE_TOOL_CALL_UPDATE:
+            if _is_muse_worker_frame(update):
+                logger.debug(
+                    "acp[%s] ignoring Muse worker frame %r",
+                    self._config.name,
+                    update.get("title"),
+                )
+                return events
             call_id = update.get("toolCallId")
             status = update.get("status")
             if isinstance(call_id, str) and status in (
@@ -1364,6 +1756,15 @@ class AcpExecutor(Executor):
             size = update.get("size")
             if isinstance(size, int) and size > 0:
                 self._context_window = size
+            # The adapter's live occupancy (Muse Code reports it from
+            # ``session/contextUsage``). Kept for the turn usage below;
+            # garbage (negative, non-integer) never overwrites a good reading.
+            used = update.get("used")
+            if isinstance(used, int) and not isinstance(used, bool) and used >= 0:
+                self._context_used = used
+        elif update_type == _UPDATE_SESSION_INFO:
+            self._track_muse_usage(update.get("_meta"))
+            return []
 
         elif update_type == _UPDATE_CONFIG_OPTION:
             self._note_config_options(update.get("configOptions"))
@@ -1397,11 +1798,91 @@ class AcpExecutor(Executor):
             if not isinstance(current, str) or not current:
                 continue
             if opt_id == _CONFIG_OPTION_MODEL:
-                self._active_model = current
+                # Record the bare id: comparing a qualified echo against a
+                # later bare request would otherwise resend every turn.
+                self._active_model = _normalize_model_id(current)
                 model_value = current
-            elif opt_id == _CONFIG_OPTION_REASONING_EFFORT:
+                options = opt.get("options")
+                if isinstance(options, list):
+                    self._model_option_values = [
+                        item.get("value")
+                        for item in options
+                        if isinstance(item, dict) and isinstance(item.get("value"), str)
+                    ]
+            elif opt_id in (
+                _CONFIG_OPTION_REASONING_EFFORT,
+                _CONFIG_OPTION_REASONING_EFFORT_CAMEL,
+            ):
                 self._active_effort = current
+                if opt_id == _CONFIG_OPTION_REASONING_EFFORT or self._effort_config_id is None:
+                    self._effort_config_id = opt_id
         return model_value
+
+    @staticmethod
+    def _muse_count(value: object) -> int | None:
+        """Coerce a provider-reported token count, or ``None`` when unusable."""
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        return value
+
+    def _track_muse_usage(self, meta: object) -> None:
+        """Record Muse Code's cumulative token totals from an update's ``_meta``.
+
+        The adapter forwards its ``session/tokenUsage`` observations as
+        ``session_info_update`` with ``_meta["muse/usage"] =
+        {"scope": "rootSession", "cumulative": {...}}`` — but only when the
+        client declared the extension capability at initialize. Anything
+        misshapen is ignored: a forged or truncated count must never move
+        the watermark the next turn's growth is measured against.
+        """
+        if not isinstance(meta, dict):
+            return
+        payload = meta.get(_MUSE_USAGE_EXTENSION)
+        if not isinstance(payload, dict):
+            return
+        scope = payload.get("scope")
+        if scope is not None and scope != "rootSession":
+            return
+        cumulative = payload.get("cumulative")
+        if not isinstance(cumulative, dict):
+            return
+        prompt = self._muse_count(cumulative.get("promptTokens"))
+        output = self._muse_count(cumulative.get("outputTokens"))
+        total = self._muse_count(cumulative.get("totalTokens"))
+        if prompt is None or output is None or total is None:
+            return
+        self._muse_cumulative = {"input": prompt, "output": output, "total": total}
+
+    def _consume_muse_turn_usage(self, model: str | None) -> dict[str, Any] | None:
+        """Return this turn's Muse Code token growth, or ``None`` when empty.
+
+        Growth is the cumulative totals minus the watermark attributed to
+        earlier turns (zeros on a fresh session, so the first turn counts in
+        full), clamped at zero per leg so a lowered report can never claw
+        back tokens. Consuming advances the watermark: every token is
+        attributed exactly once. ``model`` names the model for per-model
+        attribution; ``None`` omits it and the server falls back to the
+        session's configured model.
+        """
+        current = self._muse_cumulative
+        if current is None:
+            return None
+        last = self._muse_attributed or {"input": 0, "output": 0, "total": 0}
+        growth = {
+            leg: max(0, int(current[leg]) - int(last.get(leg, 0)))
+            for leg in ("input", "output", "total")
+        }
+        self._muse_attributed = dict(current)
+        if not any(growth.values()):
+            return None
+        usage: dict[str, Any] = {
+            "input_tokens": growth["input"],
+            "output_tokens": growth["output"],
+            "total_tokens": growth["total"],
+        }
+        if model:
+            usage["model"] = model
+        return usage
 
     async def _apply_reasoning_effort(self, session_id: str, effort: str | None) -> None:
         """Set the agent's reasoning effort via ACP ``session/set_config_option``.
@@ -1414,17 +1895,13 @@ class AcpExecutor(Executor):
         :param session_id: The live ACP session to reconfigure.
         :param effort: Requested level, e.g. ``"low"``, or ``None`` to leave it.
         """
-        if (
-            not effort
-            or effort == self._active_effort
-            or _CONFIG_OPTION_REASONING_EFFORT not in self._config_option_ids
-        ):
+        if not effort or effort == self._active_effort or self._effort_config_id is None:
             return
         response = await self._rpc(
             _AGENT_METHOD_SET_CONFIG_OPTION,
             {
                 "sessionId": session_id,
-                "configId": _CONFIG_OPTION_REASONING_EFFORT,
+                "configId": self._effort_config_id,
                 "value": effort,
             },
         )
@@ -1472,9 +1949,10 @@ class AcpExecutor(Executor):
             )
             return
 
+        value = _resolve_model_option_value(model, self._model_option_values)
         response = await self._rpc(
             _AGENT_METHOD_SET_CONFIG_OPTION,
-            {"sessionId": session_id, "configId": _CONFIG_OPTION_MODEL, "value": model},
+            {"sessionId": session_id, "configId": _CONFIG_OPTION_MODEL, "value": value},
         )
         if "error" in response:
             self._model_switch_supported = False
@@ -1510,6 +1988,49 @@ class AcpExecutor(Executor):
         system_prompt: str,
         config: ExecutorConfig | None = None,
     ) -> AsyncIterator[ExecutorEvent]:
+        """Run one turn, resending it once when Muse refuses it as unfinished.
+
+        If that refusal is the turn's first event nothing reached the user and
+        no model turn ran, so the turn is sent again on a fresh session (the
+        history is replayed) instead of failing. Any other event, or a second
+        refusal, passes through unchanged.
+        """
+        resent = False
+        while True:
+            stream = self._run_turn_once(messages, tools, system_prompt, config)
+            try:
+                first = await anext(stream, None)
+                if (
+                    not resent
+                    and isinstance(first, ExecutorError)
+                    and _MUSE_UNFINISHED_TURN in first.message
+                    and _is_muse_backend(" ".join(self._argv), self._config.name)
+                ):
+                    resent = True
+                    logger.warning(
+                        "acp[%s] Muse refused the prompt (%s); resending once on a fresh session",
+                        self._config.name,
+                        _MUSE_UNFINISHED_TURN,
+                    )
+                    await self.interrupt_session("")
+                    self._reset_session_state()
+                    continue
+                if first is None:
+                    return
+                yield first
+                async for event in stream:
+                    yield event
+                return
+            finally:
+                await stream.aclose()
+
+    async def _run_turn_once(
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec],
+        system_prompt: str,
+        config: ExecutorConfig | None = None,
+    ) -> AsyncGenerator[ExecutorEvent, None]:
         """Run one turn of the agent loop via ACP.
 
         Sends ``session/prompt`` and yields streaming events (text, reasoning,
@@ -1626,13 +2147,27 @@ class AcpExecutor(Executor):
             }
         )
 
-        deadline = loop.time() + _PROMPT_TIMEOUT_SECONDS
+        # Muse Code backends get a larger idle budget (see
+        # :meth:`_idle_timeout_seconds`): ``muse-code-acp`` fronts ``muse
+        # serve`` and routinely works many minutes without emitting a frame.
+        idle_timeout = self._idle_timeout_seconds()
+        deadline = loop.time() + idle_timeout
+        last_progress_at = loop.time()
+        next_stall_warn_at = last_progress_at + _STALL_WARN_SECONDS
         accumulated_text: list[str] = []
 
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
-                yield ExecutorError(message="Timeout waiting for ACP response", retryable=True)
+                message = await self._timeout_error_message(
+                    session_id,
+                    req_id,
+                    silent_for=loop.time() - last_progress_at,
+                    streamed_chars=sum(len(part) for part in accumulated_text),
+                    idle_timeout=idle_timeout,
+                )
+                logger.warning("acp[%s] %s", self._config.name, message)
+                yield ExecutorError(message=message, retryable=True)
                 return
 
             # Complete only once the future is resolved AND the queue is drained,
@@ -1653,6 +2188,33 @@ class AcpExecutor(Executor):
                     return
                 result = response.get("result", {}) if isinstance(response, dict) else {}
                 usage = self._usage_from_result(result) if isinstance(result, dict) else None
+                # Muse Code reports spend as cumulative session totals on
+                # ``session_info_update`` (tracked above); fold this turn's
+                # growth in so usage history sees it like any other harness.
+                turn_model = _normalize_model_id(requested_model) if requested_model else None
+                muse_usage = self._consume_muse_turn_usage(turn_model or self._active_model)
+                if muse_usage is not None:
+                    usage = {**(usage or {}), **muse_usage}
+                # Prefer the adapter's live occupancy over the billing total:
+                # the UI ring divides ``context_tokens`` when present, and a
+                # billing total counts full-context cache re-reads — heavy
+                # lanes legitimately exceed the window and render 100%.
+                if (
+                    usage is not None
+                    and "context_tokens" not in usage
+                    and self._context_used is not None
+                ):
+                    usage = {**usage, "context_tokens": self._context_used}
+                # Carry the live window beside the occupancy: the server
+                # persists both as labels so the snapshot ring and
+                # auto-compact see them (inner ACP turns otherwise write
+                # no labels and auto-compact stays blind).
+                if (
+                    usage is not None
+                    and "context_window" not in usage
+                    and self._context_window is not None
+                ):
+                    usage = {**usage, "context_window": self._context_window}
                 yield TurnComplete(response="".join(accumulated_text), usage=usage)
                 return
 
@@ -1661,6 +2223,17 @@ class AcpExecutor(Executor):
                     self._queue.get(), timeout=min(remaining, 2.0)
                 )
             except asyncio.TimeoutError:
+                now = loop.time()
+                if now >= next_stall_warn_at:
+                    logger.warning(
+                        "acp[%s] no ACP output for %.0fs "
+                        "(%d chars streamed so far); still waiting up to %.0fs",
+                        self._config.name,
+                        now - last_progress_at,
+                        sum(len(part) for part in accumulated_text),
+                        idle_timeout,
+                    )
+                    next_stall_warn_at = now + _STALL_WARN_SECONDS
                 continue
 
             method = notification.get("method", "")
@@ -1673,12 +2246,13 @@ class AcpExecutor(Executor):
                         accumulated_text.append(event.text)
                     yield event
             elif notification.get("id") is not None and notification.get("method"):
-                # Server-initiated request (session/request_permission / fs/*):
+                # Server-initiated request (permission / elicitation / fs/*):
                 # routes through policy + elicitation. Blocks while the human decides.
                 await self._respond_to_agent_request(notification)
 
             # Inbound message = progress; reset the idle deadline.
-            deadline = loop.time() + _PROMPT_TIMEOUT_SECONDS
+            last_progress_at = loop.time()
+            deadline = last_progress_at + idle_timeout
 
     async def interrupt_session(self, session_key: str) -> bool:  # noqa: ARG002 — one ACP session per process
         """Abort the running turn via the ACP ``session/cancel`` notification.

@@ -46,6 +46,11 @@ COPILOT_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 # (grok-4.6; grok-4.5 drops ``xhigh``, and the agent itself rejects a level the
 # live model lacks).
 GROK_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
+# Muse Code (via the community `@bex-co/muse-code-acp` adapter) accepts these
+# as its ACP ``reasoning_effort`` session option; the adapter's docs pin this
+# ladder for the SDK backend (``muse exec`` 1.4.x refuses ``none`` on provider
+# models, and the agent itself rejects a level the live model lacks).
+MUSE_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
 # pi's ``--thinking`` ladder is ``off|minimal|low|medium|high|xhigh|max``. Its
 # ``off`` is omnigent's ``none`` — ``off`` is reserved here as a
 # clear-to-default sentinel — so :func:`to_pi_thinking_level` translates.
@@ -134,6 +139,7 @@ def efforts_by_family() -> dict[EffortFamily, frozenset[str]]:
         EffortFamily.COPILOT: COPILOT_EFFORTS,
         EffortFamily.PI: PI_EFFORTS,
         EffortFamily.GROK: GROK_EFFORTS,
+        EffortFamily.MUSE: MUSE_EFFORTS,
     }
 
 

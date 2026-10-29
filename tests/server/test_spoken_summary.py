@@ -278,9 +278,10 @@ def test_the_brief_asks_for_the_whole_answer_and_offers_the_blocks() -> None:
 
 def test_clamp_sentences() -> None:
     """Sentence clamping restricts text to at most max_sentences."""
-    four_sentences = "First sentence. Second sentence! Third sentence? Fourth sentence."
+    four_sentences = "First sentence. Second sentence! Third sentence. Fourth sentence."
     clamped = clamp_sentences(four_sentences, max_sentences=3)
-    assert clamped == "First sentence. Second sentence! Third sentence?"
+    # The ending is kept; the middle goes.
+    assert clamped == "First sentence. Third sentence. Fourth sentence."
 
     one_sentence = "Just one sentence."
     assert clamp_sentences(one_sentence, max_sentences=3) == "Just one sentence."
@@ -1223,7 +1224,9 @@ async def test_prompt_injection_delimiter_framing_and_instruction_separation() -
     call = client.calls[0]
     # Instructions passed in system instructions
     instructions = call.get("instructions", "")
-    assert "Rewrite this assistant reply the way a person would say it out loud" in instructions
+    assert (
+        "Rewrite this assistant reply the way a friend on the team would tell it" in instructions
+    )
     # User message contains delimiter framing
     user_content = call["input"][0]["content"]
     assert "UNTRUSTED_CONTENT_" in user_content
@@ -2544,7 +2547,8 @@ def test_rewrite_is_told_to_keep_the_reader_s_decision(tmp_path: Any) -> None:
     out = build_spoken_summary_instructions("pt-BR")
     assert "still phrased as a question" in out
     # And it must be told where to put it, so the ask is not buried mid-paragraph.
-    assert "END with" in out
+    assert "starting with `ASK:`" in out
+    assert "always said last" in out
 
 
 def test_only_real_tables_become_blocks() -> None:
@@ -2730,15 +2734,183 @@ def test_clamping_keeps_paragraph_breaks() -> None:
     clamped = clamp_sentences(long_rewrite, max_sentences=9, max_chars=1200)
     assert clamped is not None
     assert "\n\n" in clamped
-    # Still clamped: nine sentences kept, the rest dropped.
+    # Still clamped: nine sentences kept, the last paragraph whole.
     assert clamped.count(".") == 9
-    assert "Sentence 9." not in clamped
+    assert clamped.endswith("Sentence 9. Sentence 10. Sentence 11.")
+    assert "Sentence 6." not in clamped
+
+
+def test_an_overlong_rewrite_keeps_what_it_asks_of_the_reader() -> None:
+    """A cuRobo report hit the 1200 cap and lost its ending: press Back and
+    tell me, then the three-step plan. The reader saw only the diagnosis and
+    did not know anything was asked of them."""
+    diagnosis = (
+        "A taxa de cálculo não é o problema, o cuRobo tá rodando liso entre 46 e 55 "
+        "comandos por segundo com tempo de planejamento de 12 milissegundos e caminho "
+        "limpo sem comandos recusados.\n\n"
+        "O engasgo e o solavanco vêm na verdade do teleop: o log tá entupido de aviso "
+        "de que o braço não acompanhou, porque o atraso passa da coleira de 6 "
+        "centímetros a cada 2 segundos, e aí o teleop reseta o alvo puxando a "
+        "referência para trás com um tranco.\n\n"
+        "O cuRobo fica lerdo desse jeito porque replaneja a cada passo a partir da pose "
+        "e da velocidade medidas do braço real; como ele só manda o primeiro passo do "
+        "plano com limite de aceleração e filtro, ele é incapaz de embalar velocidade, "
+        "igual a um carro cujo acelerador reseta toda vez que lê o velocímetro.\n\n"
+        "Isso não apareceu no shadow run porque quem movia o braço era o controlador "
+        "cartesiano, então o cuRobo só acompanhava sem precisar gerar a dinâmica do "
+        "zero.\n\n"
+        "A solução nativa do MPC do cuRobo é planejar a partir do próprio comando "
+        "anterior mantendo a velocidade interna, usando a medição real só para checagem "
+        "e rearmando a partir do braço apenas se o desvio passar de 0.03 radianos, o "
+        "que é seguro já que o JointTrajectoryController segue a 5 milímetros."
+    )
+    ending = (
+        "Agora aperta Back e me avisa, que eu volto o braço pro cartesiano. "
+        "Depois eu implemento esse modo e testo no Newton, uns 15 minutos. "
+        "Aí voltamos pro robô pra comparar o atraso com os números de hoje."
+    )
+    rewrite = f"{diagnosis}\n\n{ending}"
+    assert len(rewrite) > 1200
+    clamped = clamp_sentences(rewrite, max_sentences=9, max_chars=1200)
+    assert clamped is not None
+    assert len(clamped) <= 1200
+    assert clamped.endswith(ending)
+    assert clamped.startswith("A taxa de cálculo")
+
+
+def test_a_question_mid_rewrite_survives_the_cut() -> None:
+    """A question is the reader's to answer, wherever the rewrite put it."""
+    text = (
+        "Fiz a primeira parte. Quer que eu use o limite de 1.2 rad/s? "
+        + "Detalhe longo da explicação. " * 30
+        + "Fico esperando."
+    )
+    clamped = clamp_sentences(text, max_sentences=9, max_chars=400)
+    assert clamped is not None
+    assert len(clamped) <= 400
+    assert "Quer que eu use o limite de 1.2 rad/s?" in clamped
+    assert clamped.endswith("Fico esperando.")
+
+
+def test_the_prompt_keeps_asks_steps_and_options() -> None:
+    """Calls to action and proposed next steps are spelled out, not only questions."""
+    prompt = build_spoken_summary_instructions()
+    assert "asks them to DO something" in prompt
+    assert "proposes next steps or options" in prompt
+    assert "every question, step and option it holds, in order" in prompt
+    assert "required this time" not in prompt
+    assert "required this time" in build_spoken_summary_instructions(ending_missed=True)
+
+
+def test_the_prompt_asks_for_a_buddy_laid_out_for_a_phone() -> None:
+    """One formal block read like a report; the reader wants a friend's message."""
+    prompt = build_spoken_summary_instructions()
+    assert "like a message from a buddy rather than a report" in prompt
+    assert "never as one block" in prompt
+    assert "give them as `- ` bullets" in prompt
+    assert "emojis" in prompt
+    assert "replace any earlier instruction to avoid lists" in prompt
+
+
+def test_emojis_and_bullets_are_spoken_as_plain_sentences() -> None:
+    """A summary laid out for the screen still reads aloud as separate sentences."""
+    cleaned = strip_markdown_for_speech(
+        "Deu bom 🔥\n\n- Vídeo salvo ✅\n- Porca assentou em 0.000 mm\n"
+        "- 760 passos.\n\nQuer rodar os 20? 👀"
+    )
+    assert cleaned == (
+        "Deu bom. Vídeo salvo. Porca assentou em 0.000 mm. 760 passos. Quer rodar os 20?"
+    )
+
+
+def test_the_ask_line_becomes_the_last_paragraph() -> None:
+    from omnigent.server.spoken_summary import end_with_ask
+
+    text, asks = end_with_ask(
+        "O problema é o teleop.\nASK: Aperta Back e me avisa.\nDepois eu testo no Newton."
+    )
+    assert text == "O problema é o teleop.\n\nAperta Back e me avisa. Depois eu testo no Newton."
+    assert asks
+    assert end_with_ask("Tudo pronto, quer testar?") == ("Tudo pronto, quer testar?", True)
+    assert end_with_ask("Tudo pronto.") == ("Tudo pronto.", False)
+
+
+def test_a_reply_s_closing_ask_is_recognised() -> None:
+    from omnigent.server.spoken_summary import closing_ask
+
+    plan = "1. Now: press Back and tell me.\n2. Then I implement it."
+    assert closing_ask(f"The leash resets the target.\n\n{plan}") == plan
+    assert closing_ask("Done.\n\nShould I push it?") == "Should I push it?"
+    assert closing_ask("Done.\n\nAll tests pass.") == ""
+    # A query string is not a question.
+    assert closing_ask("Done.\n\nSee https://x.test/c/1?file=a.md for it.") == ""
 
 
 def test_clamping_within_the_limit_is_left_alone() -> None:
     """Under the cap nothing is rewritten, paragraphs included."""
     text = "First point.\n\nSecond point.\n\nThird point."
     assert clamp_sentences(text, max_sentences=9, max_chars=1200) == text
+
+
+@pytest.mark.asyncio
+async def test_a_rewrite_that_drops_the_closing_ask_is_retried(monkeypatch):
+    """The cuRobo report kept the diagnosis and lost "press Back and tell me"."""
+    from omnigent.server import spoken_summary as module
+
+    prompts: list[str] = []
+
+    async def rewriter(prompt: str, **_: Any) -> str:
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return "O cuRobo replaneja do braço medido, por isso fica lento."
+        return "O cuRobo replaneja do braço medido.\nASK: Aperta Back e me avisa."
+
+    monkeypatch.setattr(module, "use_agy_backend", lambda *_a, **_k: True)
+    monkeypatch.setattr(module, "run_agy_prompt", rewriter)
+    reply = (
+        "cuRobo re-seeds from the measured arm every step, so it never builds speed.\n\n"
+        "Now: press Back and tell me, and I'll switch back to the Cartesian controller."
+    )
+    part, _ = await module.generate_spoken_summary(reply, language="pt-BR")
+    assert len(prompts) == 2
+    assert "required this time" in prompts[1]
+    assert part is not None
+    assert part["text"].endswith("Aperta Back e me avisa.")
+
+
+@pytest.mark.asyncio
+async def test_a_closing_ask_the_rewriter_keeps_dropping_is_appended(monkeypatch):
+    """Untranslated beats lost: the reader still sees what is asked of them."""
+    from omnigent.server import spoken_summary as module
+
+    async def rewriter(prompt: str, **_: Any) -> str:
+        return "Os testes passaram."
+
+    monkeypatch.setattr(module, "use_agy_backend", lambda *_a, **_k: True)
+    monkeypatch.setattr(module, "run_agy_prompt", rewriter)
+    reply = "All 228 tests pass on the branch.\n\nShould I push it to the fork?"
+    part, _ = await module.generate_spoken_summary(reply, language="pt-BR")
+    assert part is not None
+    assert part["text"] == "Os testes passaram.\n\nShould I push it to the fork?"
+
+
+@pytest.mark.asyncio
+async def test_a_reply_that_asks_nothing_is_rewritten_once(monkeypatch):
+    from omnigent.server import spoken_summary as module
+
+    calls: list[str] = []
+
+    async def rewriter(prompt: str, **_: Any) -> str:
+        calls.append(prompt)
+        return "Os testes passaram."
+
+    monkeypatch.setattr(module, "use_agy_backend", lambda *_a, **_k: True)
+    monkeypatch.setattr(module, "run_agy_prompt", rewriter)
+    part, _ = await module.generate_spoken_summary(
+        "All 228 tests pass on the branch, and the fork is up to date.", language="pt-BR"
+    )
+    assert len(calls) == 1
+    assert part is not None and part["text"] == "Os testes passaram."
 
 
 @pytest.mark.asyncio

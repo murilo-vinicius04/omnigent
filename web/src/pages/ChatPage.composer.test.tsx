@@ -1411,16 +1411,17 @@ describe("Composer claude-native permission mode", () => {
     expect(row).not.toHaveTextContent("classifier");
   });
 
-  it("omits the Permissions row when the mode could not be determined", async () => {
-    // Claude only renders its mode footer in some pane states (a todo list
-    // displaces it), so an unknown mode must not be shown as a guess.
+  it("allows selecting a mode without guessing an unknown current mode", async () => {
     useChatStore.setState({ conversationId: "conv_test", claudePermissionMode: "" });
 
     renderWithTooltips(<Composer {...composerProps({ showClaudePermissionMode: true })} />);
     fireEvent.click(screen.getByTestId("composer-config-gear"));
 
     expect(await screen.findByTestId("composer-config-modal")).toBeTruthy();
-    expect(screen.queryByTestId("composer-config-permission-mode")).toBeNull();
+    const row = screen.getByTestId("composer-config-permission-mode");
+    expect(row).toHaveTextContent("Set in Claude");
+    fireEvent.click(row);
+    expect(await screen.findByRole("option", { name: /Bypass permissions/ })).toBeTruthy();
   });
 
   it("keeps the gear reachable when the mode is the only config row", () => {
@@ -2007,6 +2008,22 @@ describe("Composer sub-agent tray", () => {
     // that some tray exists.
     expect(screen.getByText("check-account-eligibility")).toBeTruthy();
     expect(screen.getByText(/Chatting with sub-agent/)).toBeTruthy();
+  });
+});
+
+describe("Composer Hub chime button", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("renders the Hub chime button when isHubConversation is true", () => {
+    renderWithTooltips(<Composer {...composerProps({ isHubConversation: true })} />);
+    expect(screen.getByTestId("hub-chime-button")).toBeInTheDocument();
+  });
+
+  it("does not render the Hub chime button when isHubConversation is false", () => {
+    renderWithTooltips(<Composer {...composerProps({ isHubConversation: false })} />);
+    expect(screen.queryByTestId("hub-chime-button")).toBeNull();
   });
 });
 

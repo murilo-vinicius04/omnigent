@@ -9,6 +9,7 @@ so a shell costs no model quota.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import posixpath
 import secrets
@@ -38,13 +39,16 @@ def is_hub_terminal(conv: Any) -> bool:
     return labels.get(TERMINAL_LABEL) == "1"
 
 
-def _id_path(user_id: str | None):
-    return hub_module.HUB_DIR / hub_module.user_key(user_id) / "terminal.json"
+def _id_path(user_id: str | None, host_id: str = "", workspace: str = ""):
+    suffix = (
+        "-" + hashlib.sha256(f"{host_id}:{workspace}".encode()).hexdigest()[:24] if host_id else ""
+    )
+    return hub_module.HUB_DIR / hub_module.user_key(user_id) / f"terminal{suffix}.json"
 
 
-def _known_id(user_id: str | None) -> str | None:
+def _known_id(user_id: str | None, host_id: str = "", workspace: str = "") -> str | None:
     try:
-        raw = json.loads(_id_path(user_id).read_text(encoding="utf-8"))
+        raw = json.loads(_id_path(user_id, host_id, workspace).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     value = raw.get("id") if isinstance(raw, dict) else None
@@ -58,6 +62,8 @@ async def open_terminal(
     app: Any,
     headers: dict[str, str],
     new: bool,
+    host_id: str = "",
+    workspace: str = "",
 ) -> dict[str, Any]:
     """Open a shell for the hub, or return the one already open.
 
@@ -73,7 +79,9 @@ async def open_terminal(
         transport=httpx.ASGITransport(app=app), base_url="http://hub", timeout=60
     ) as client:
         async with _locks.setdefault(hub_module.user_key(user_id), asyncio.Lock()):
-            session_id = await _session(user_id, client, headers, conversation_store)
+            session_id = await _session(
+                user_id, client, headers, conversation_store, host_id, workspace
+            )
         if not new:
             running = await _running_shell(client, headers, session_id)
             if running is not None:
@@ -109,25 +117,37 @@ async def _session(
     client: httpx.AsyncClient,
     headers: dict[str, str],
     conversation_store: Any,
+    requested_host: str = "",
+    workspace: str = "",
 ) -> str:
     """The session holding the shells, made on the first online machine when missing."""
-    known = _known_id(user_id)
+    hosts = await client.get("/v1/hosts", headers=headers)
+    hosts.raise_for_status()
+    owned = [h for h in hosts.json().get("hosts") or [] if not h.get("sandbox_provider")]
+    online = [h for h in owned if h.get("status") == "online"]
+    if requested_host:
+        selected = next((h for h in online if h["host_id"] == requested_host), None)
+        if selected is None:
+            raise TerminalUnavailable("selected machine is offline or is not yours")
+    else:
+        if not online:
+            raise TerminalUnavailable("none of your machines is online")
+        if len(online) > 1:
+            raise TerminalUnavailable("choose a machine for this terminal")
+        selected = online[0]
+    host_id = str(selected["host_id"])
+    known = _known_id(user_id, requested_host, workspace)
     if known is not None:
         conv = await asyncio.to_thread(conversation_store.get_conversation, known)
         if conv is not None and not getattr(conv, "archived", False):
-            return known
-    hosts = await client.get("/v1/hosts", headers=headers)
-    hosts.raise_for_status()
-    online = [h for h in hosts.json().get("hosts") or [] if h.get("status") == "online"]
-    if not online:
-        raise TerminalUnavailable("none of your machines is online")
-    host_id = str(online[0]["host_id"])
+            if not requested_host or getattr(conv, "host_id", None) == host_id:
+                return known
     # The root listing is the home folder's contents.
     root = await client.get(f"/v1/hosts/{host_id}/filesystem", headers=headers)
     entries = root.json().get("data") or [] if root.status_code == 200 else []
     if not entries:
         raise TerminalUnavailable(f"could not read the home folder on {online[0].get('name')}")
-    home = posixpath.dirname(str(entries[0]["path"]))
+    home = workspace or posixpath.dirname(str(entries[0]["path"]))
     agents = await client.get("/v1/agents", params={"limit": 100}, headers=headers)
     agents.raise_for_status()
     agent_id = next(
@@ -150,7 +170,7 @@ async def _session(
     if made.status_code >= 400:
         raise TerminalUnavailable(_error_text(made))
     session_id = str(made.json()["id"])
-    path = _id_path(user_id)
+    path = _id_path(user_id, requested_host, workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"id": session_id}), encoding="utf-8")
     return session_id

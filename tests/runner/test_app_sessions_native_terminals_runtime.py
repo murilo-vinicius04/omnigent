@@ -2357,6 +2357,46 @@ async def test_auto_create_antigravity_resume_skips_cold_start(
 
 
 @pytest.mark.asyncio
+async def test_auto_create_antigravity_resume_continues_the_conversation_that_survived(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A resume id agy can no longer load is swapped for the one it started instead.
+
+    agy ignores ``--conversation`` for a missing store and mints a new chat; the
+    session's recorded id is set-once, so without the swap every later resume
+    would start yet another empty conversation.
+    """
+    from omnigent import antigravity_native_bridge as bridge_mod
+
+    session_id = "ace8787d3d954f8ab6dcb8f42b8d04c1"
+    lost_id = "796d454b-b489-468c-86fe-c8be914dca54"
+    survivor = "ba4b9b02-8092-4941-9444-7685b7793de5"
+    monkeypatch.setattr(bridge_mod, "_BRIDGE_ROOT", tmp_path / "antigravity-native")
+    store = (
+        bridge_mod.agy_gemini_dir(bridge_mod.bridge_dir_for_bridge_id(session_id))
+        / "antigravity-cli"
+        / "conversations"
+    )
+    store.mkdir(parents=True)
+    (store / f"{survivor}.db").write_bytes(b"chat")
+    launch_calls: list[dict[str, Any]] = []
+    state, start_cascade_calls, _reader_calls, _patch_calls = await _run_antigravity_auto_create(
+        tmp_path,
+        monkeypatch,
+        session_id=session_id,
+        snapshot={"external_session_id": lost_id},
+        candidate_ports=[52548],
+        build_agy_launch_calls=launch_calls,
+    )
+    assert start_cascade_calls == []
+    assert [call["conversation_id"] for call in launch_calls] == [survivor]
+    assert state is not None
+    assert state.conversation_id == survivor
+
+
+@pytest.mark.asyncio
 async def test_cold_start_agy_conversation_returns_early_on_real_id_in_bridge_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

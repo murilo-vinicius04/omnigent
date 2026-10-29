@@ -217,6 +217,38 @@ from omnigent.stores.project_store import ProjectStore
 from omnigent.version import VERSION
 
 
+async def _inject_local_antigravity_slash_command(
+    session_id: str,
+    labels: dict[str, str],
+    command: str,
+) -> Any:
+    """Fallback slash-command injection when a pre-update local runner returns 204."""
+    from omnigent.antigravity_native_bridge import (
+        ANTIGRAVITY_NATIVE_BRIDGE_ID_LABEL_KEY,
+        bridge_dir_for_bridge_id,
+        inject_slash_command_via_tui,
+        read_tmux_info,
+    )
+    from omnigent.server.routes._sessions.helpers import _RunnerForwardResult
+
+    bridge_id = labels.get(ANTIGRAVITY_NATIVE_BRIDGE_ID_LABEL_KEY) or session_id
+    bridge_dir = bridge_dir_for_bridge_id(bridge_id)
+    if read_tmux_info(bridge_dir) is None:
+        return None
+    try:
+        await asyncio.to_thread(
+            inject_slash_command_via_tui,
+            bridge_dir,
+            command=command,
+        )
+    except RuntimeError as exc:
+        return _RunnerForwardResult(
+            status_code=503,
+            body=json.dumps({"detail": str(exc)}),
+        )
+    return _RunnerForwardResult(status_code=200, body='{"status":"ok"}')
+
+
 def register_core_routes(
     router: APIRouter,
     *,
@@ -2220,7 +2252,7 @@ def register_core_routes(
         # runner-client fallback + non-2xx logging.
         live_forward = not body.silent
         if live_forward and (effort is not None or clear_effort):
-            await _forward_session_change_to_runner(
+            _effort_forward = await _forward_session_change_to_runner(
                 session_id,
                 runner_router,
                 {"type": "effort_change", "effort": updated.reasoning_effort},
@@ -2229,6 +2261,17 @@ def register_core_routes(
                 # command.
                 timeout_s=_TUI_INJECT_FORWARD_TIMEOUT_S,
             )
+            if (
+                _effort_forward is not None
+                and _effort_forward.status_code == 204
+                and updated.reasoning_effort
+                and updated.labels.get("omnigent.wrapper") == "antigravity-native-ui"
+            ):
+                await _inject_local_antigravity_slash_command(
+                    session_id,
+                    updated.labels,
+                    f"/effort {updated.reasoning_effort}",
+                )
         if live_forward and (model_override is not None or clear_model):
             _model_forward = await _forward_session_change_to_runner(
                 session_id,
@@ -2238,6 +2281,19 @@ def register_core_routes(
                 # confirming the dialog, which outlasts the default budget.
                 timeout_s=_TUI_INJECT_FORWARD_TIMEOUT_S,
             )
+            if (
+                _model_forward is not None
+                and _model_forward.status_code == 204
+                and updated.model_override
+                and updated.labels.get("omnigent.wrapper") == "antigravity-native-ui"
+            ):
+                _injected = await _inject_local_antigravity_slash_command(
+                    session_id,
+                    updated.labels,
+                    f"/model {updated.model_override}",
+                )
+                if _injected is not None:
+                    _model_forward = _injected
             # Append a durable [System: model changed to X] note for sessions
             # whose history Omnigent writes. Gate on the wrapper label (NOT
             # omnigent.ui, which chat-first SDK terminal-view sessions like
@@ -2283,6 +2339,7 @@ def register_core_routes(
                     "type": "permission_mode_change",
                     "permission_mode": requested_claude_permission_mode,
                 },
+                timeout_s=60.0,
             )
             # Raises unless the runner confirms the switch, so the label can
             # never claim a mode Claude isn't in. Stores the mode it reached.
@@ -2296,11 +2353,11 @@ def register_core_routes(
             # label above, so reflect the confirmed mode there too — otherwise a
             # relaunch reverts to the launch --permission-mode. Merge against
             # ``updated`` (the post-write row), not the pre-update snapshot, so a
-            # combined PATCH that also set terminal_launch_args keeps those. Only
-            # rewrites an existing --permission-mode; mirrors the shift+tab path.
+            # combined PATCH that also set terminal_launch_args keeps those.
             _merged_permission_args = _merge_claude_permission_launch_args(
                 updated.terminal_launch_args,
                 _confirmed_permission_mode,
+                explicit=True,
             )
             if updated.terminal_launch_args != _merged_permission_args:
                 await asyncio.to_thread(
@@ -3022,6 +3079,37 @@ def register_core_routes(
                 f"Session not found: {session_id!r}",
                 code=ErrorCode.NOT_FOUND,
             ) from exc
+
+        # Hub lanes are autonomous unattended workers; switching an agent on a
+        # lane configures the target native CLI to auto-approve / bypass permissions
+        # so the lane does not stall waiting for interactive approval on every tool.
+        from omnigent.server.hub_lanes import LANE_LABEL
+
+        if session.project_id or (session.labels and LANE_LABEL in session.labels):
+            if await asyncio.to_thread(_resolve_harness, updated, agent_store=agent_store) in {
+                "muse-code",
+                "muse",
+            }:
+                await asyncio.to_thread(
+                    conversation_store.set_labels,
+                    session_id,
+                    {_ACP_PERMISSION_MODE_LABEL_KEY: "bypassPermissions"},
+                )
+                updated.labels[_ACP_PERMISSION_MODE_LABEL_KEY] = "bypassPermissions"
+            wrapper = presentation_labels.get("omnigent.wrapper")
+            lane_args = None
+            if wrapper == "antigravity-native-ui":
+                lane_args = ["--dangerously-skip-permissions"]
+            elif wrapper == "claude-code-native-ui":
+                lane_args = ["--permission-mode", "bypassPermissions"]
+            elif wrapper == "codex-native-ui":
+                lane_args = ["--dangerously-bypass-approvals-and-sandbox"]
+            if lane_args is not None:
+                updated = await asyncio.to_thread(
+                    conversation_store.update_conversation,
+                    session_id,
+                    terminal_launch_args=lane_args,
+                )
 
         # The catalog cache is keyed by session, not harness family, and
         # outlives runner death — after a switch its rows may belong to the

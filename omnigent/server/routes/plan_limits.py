@@ -43,6 +43,13 @@ Sources, and why each is what it is:
   ChatGPT login Codex CLI persists in ``~/.codex/auth.json``. This is the call
   Codex's own ``/status`` makes, so the 5-hour and weekly windows match it.
 
+- ``muse`` — ``POST https://api.meta.ai/muse-code/key`` with the device-code
+  OAuth token Muse Code persists in ``~/.config/muse/auth.json``. The
+  endpoint answers the subscription quota (``subs_usage``) alongside the
+  key — the same windows Muse's own ``/status`` formats — and the read
+  costs no model call, so the tray polls it every minute like the other
+  vendors. An API-key login carries no plan windows and reports signed out.
+
 Percentages are whole numbers 0-100 and measure the share **consumed** (agy
 reports the reciprocal, ``remainingFraction``). ``resets_at`` is ISO-8601 UTC
 or ``None``.
@@ -113,6 +120,19 @@ CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 #: Last good Codex reading, replayed when the live read fails.
 CODEX_CACHE_PATH = state_dir() / "plan-limits-codex.json"
 
+#: Muse Code's login file, holding the Meta device-code OAuth credential
+#: (``dca:`` access token) under ``providers.meta``. An API-key login carries
+#: no subscription quota, so it reports signed out.
+MUSE_CREDENTIALS_PATH = Path.home() / ".config" / "muse" / "auth.json"
+
+#: Meta's key-issuance endpoint, which also reports the subscription quota —
+#: the same numbers Muse's own ``/status`` formats, read with the CLI login
+#: and costing no model call. (Thanks to CodexIsland for documenting it.)
+MUSE_KEY_URL = "https://api.meta.ai/muse-code/key"
+
+#: Last good Muse reading, replayed when the live read fails.
+MUSE_CACHE_PATH = state_dir() / "plan-limits-muse.json"
+
 _claude_cache: dict[str, Any] | None = None
 _claude_cooldown_until: float = 0.0
 _claude_had_failure: bool = False
@@ -142,7 +162,11 @@ def _get_claude_lock() -> asyncio.Lock:
 #: the group's own ``displayName`` ("Claude and GPT models") is too long for a
 #: tooltip line. Unknown prefixes fall through to the prefix itself, so a new
 #: model group still renders (just less prettily) instead of vanishing.
-ANTIGRAVITY_GROUP_LABELS = {"gemini": "Gemini", "3p": "Claude/GPT"}
+ANTIGRAVITY_GROUP_LABELS = {
+    "gemini": "Gemini",
+    "3p": "Claude/GPT",
+    "gemini-argon-wtu": "Gemini 4 Argon",
+}
 
 #: agy window token -> (window ``kind`` suffix is the bucket id itself, so this
 #: only supplies the short human label rendered in the tray).
@@ -541,7 +565,7 @@ def _antigravity_provider() -> dict[str, Any]:
     # last good reading, clearly marked, rather than dropping the pill.
     cached = _read_antigravity_cache()
     if cached is not None:
-        row["windows"] = cached["windows"]
+        row["windows"] = _normalize_antigravity_windows(cached["windows"])
         row["state"] = "stale"
         row["as_of"] = cached.get("as_of")
         row["reason"] = "no running Antigravity session to query"
@@ -550,6 +574,23 @@ def _antigravity_provider() -> dict[str, Any]:
     row["state"] = "unsupported"
     row["reason"] = "no running Antigravity session to query"
     return row
+
+
+def _normalize_antigravity_windows(windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Re-apply ``ANTIGRAVITY_GROUP_LABELS`` to cached or older-host window rows."""
+    normalized: list[dict[str, Any]] = []
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        kind = window.get("kind")
+        label = window.get("label")
+        if isinstance(kind, str) and "-" in kind and isinstance(label, str):
+            prefix = kind.rsplit("-", 1)[0]
+            group_label = ANTIGRAVITY_GROUP_LABELS.get(prefix)
+            if group_label and label.startswith(prefix):
+                window = {**window, "label": f"{group_label}{label[len(prefix):]}".strip()}
+        normalized.append(window)
+    return normalized
 
 
 def _openai_provider() -> dict[str, Any]:
@@ -562,7 +603,16 @@ def _openai_provider() -> dict[str, Any]:
     per-pool allowance. One window per free pool; tokens on models in no free
     pool are billed from the first one, so they are called out in the tier line.
     """
-    row: dict[str, Any] = {"id": "openai", "label": "OpenAI", "windows": []}
+    row: dict[str, Any] = {
+        "id": "openai",
+        "label": "OpenAI API",
+        "windows": [],
+        "meter_type": "api_usage",
+        "credit_balance": None,
+        "details": [
+            "Local API token pools only; credit balance unavailable. Separate from Codex."
+        ],
+    }
     try:
         pools = openai_token_budget.pool_usage()
     except Exception as exc:  # noqa: BLE001 - decorative route; never 500 the tray
@@ -574,7 +624,7 @@ def _openai_provider() -> dict[str, Any]:
     resets_at = (
         openai_token_budget.next_reset().replace(microsecond=0).isoformat().replace("+00:00", "Z")
     )
-    tier = "Omnigent's own count"
+    tier = "Local API count (UTC day)"
     for pool in pools:
         tokens = int(pool["tokens"])
         cap = pool["daily_tokens"]
@@ -698,7 +748,13 @@ async def _codex_provider(client: httpx.AsyncClient) -> dict[str, Any]:
     refresh token and would sign the Codex CLI itself out. A failed read
     replays the last good one, marked stale.
     """
-    row: dict[str, Any] = {"id": "codex", "label": "Codex", "windows": []}
+    row: dict[str, Any] = {
+        "id": "codex",
+        "label": "Codex",
+        "windows": [],
+        "meter_type": "subscription",
+        "details": ["ChatGPT subscription quota; independent of API credits."],
+    }
     login = _read_codex_login()
     if login is None:
         row["state"] = "signed-out"
@@ -1042,6 +1098,230 @@ async def _grok_provider(client: httpx.AsyncClient) -> dict[str, Any]:
         return row
 
 
+#: Reads the Meta device-code OAuth token (``dca:``) Muse Code signed in
+#: with. Only that login carries subscription quota; an API-key login bills
+#: pay-as-you-go with no plan windows.
+def _read_muse_token() -> str | None:
+    """Return Muse Code's stored Meta device-code OAuth token, or ``None``.
+
+    Only the ``dca:`` device login carries subscription quota: an API-key
+    login bills pay-as-you-go with no plan windows, so it reports signed out
+    rather than guessing. A missing or malformed credential file is "signed
+    out": this route is decorative, and a bad file must not surface as a 500
+    in the composer. A file that exists but cannot be read (locked-down
+    directory or permissions) raises :exc:`PermissionError` instead: that is
+    transient, and the caller replays the last good reading rather than
+    blanking the tray.
+    """
+    try:
+        blob = json.loads(MUSE_CREDENTIALS_PATH.read_text(encoding="utf-8"))
+    except PermissionError:
+        raise
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(blob, dict):
+        return None
+    providers = blob.get("providers")
+    meta = providers.get("meta") if isinstance(providers, dict) else None
+    if not isinstance(meta, dict):
+        return None
+    token = meta.get("access_token")
+    if not isinstance(token, str) or not token.startswith("dca:"):
+        return None
+    return token
+
+
+def _muse_epoch_s_to_iso(raw: Any) -> str | None:
+    """Format a provider epoch-seconds stamp as ISO-8601 UTC, or ``None``.
+
+    The key endpoint reports ``resets_at`` in whole seconds (unlike the MSP
+    ``usage/read`` shape, which used millis).
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw <= 0:
+        return None
+    return (
+        datetime.fromtimestamp(raw, UTC)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _muse_window_label(window_duration_mins: Any) -> str | None:
+    """Label a Muse window from its length in minutes: ``300`` -> ``5h``."""
+    if isinstance(window_duration_mins, bool) or not isinstance(
+        window_duration_mins, (int, float)
+    ):
+        return None
+    mins = int(window_duration_mins)
+    if mins <= 0:
+        return None
+    if mins % 60 == 0:
+        return f"{mins // 60}h"
+    return f"{mins}m"
+
+
+def _muse_windows(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+    """Normalize the key endpoint's ``subs_usage`` into the tray's flat windows.
+
+    :returns: ``(windows, tier)`` — the window list and the plan name verbatim
+        (e.g. ``"Muse Code Everyday Usage"``).
+    """
+    usage = payload.get("subs_usage")
+    windows: list[dict[str, Any]] = []
+    if isinstance(usage, dict):
+        window = usage.get("window")
+        if isinstance(window, dict):
+            normalized = _window(
+                "session",
+                _muse_window_label(window.get("window_duration_mins")) or "sess",
+                {
+                    "percent": window.get("used_percent"),
+                    "resets_at": _muse_epoch_s_to_iso(window.get("resets_at")),
+                },
+            )
+            if normalized is not None:
+                windows.append(normalized)
+        weekly = usage.get("weekly")
+        if isinstance(weekly, dict):
+            normalized = _window(
+                "weekly",
+                "week",
+                {
+                    "percent": weekly.get("used_percent"),
+                    "resets_at": _muse_epoch_s_to_iso(weekly.get("resets_at")),
+                },
+            )
+            if normalized is not None:
+                windows.append(normalized)
+    tier = payload.get("subs_tier_name")
+    if not isinstance(tier, str) or not tier:
+        tier = None
+    return windows, tier
+
+
+def _read_muse_cache() -> dict[str, Any] | None:
+    """Return the persisted last-good Muse reading, or ``None``."""
+    try:
+        blob = json.loads(MUSE_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(blob, dict) or not isinstance(blob.get("windows"), list):
+        return None
+    return blob
+
+
+def _write_muse_cache(windows: list[dict[str, Any]], tier: str | None, as_of: str | None) -> None:
+    """Persist a fresh Muse reading; write failures never break the route."""
+    payload = {
+        "windows": windows,
+        "tier": tier,
+        "as_of": as_of
+        or datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }
+    try:
+        MUSE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        MUSE_CACHE_PATH.write_text(json.dumps(payload), encoding="utf-8")
+    except OSError as exc:
+        logger.debug("muse plan-limit cache write failed: %s", exc)
+
+
+async def _muse_provider(client: httpx.AsyncClient) -> dict[str, Any]:
+    """Build the ``muse`` provider row from Meta's key endpoint.
+
+    A plain metadata read with the CLI login — the same windows Muse's own
+    ``/status`` formats — costing no model call, so the tray can poll it
+    every minute like the other vendors. The login's token is used as is,
+    never refreshed here. A failed read replays the last good one, marked
+    stale.
+    """
+    row: dict[str, Any] = {
+        "id": "muse",
+        "label": "Muse",
+        "windows": [],
+        "meter_type": "subscription",
+        "details": ["Muse subscription quota; matches Muse /status."],
+    }
+    try:
+        token = _read_muse_token()
+    except PermissionError:
+        # The login exists but the server cannot read it (locked-down
+        # directory or permissions). The tray hides ``signed-out`` rows, so
+        # that verdict would blank the Muse ring with no explanation;
+        # replay the last good reading instead, like any transient failure.
+        cached = _read_muse_cache()
+        if cached is not None:
+            row["windows"] = cached["windows"]
+            row["state"] = "stale"
+            row["as_of"] = cached.get("as_of")
+            if cached.get("tier"):
+                row["tier"] = cached["tier"]
+        else:
+            row["state"] = "error"
+        row["reason"] = "Muse login unreadable; the tray replays the last reading"
+        return row
+    if token is None:
+        row["state"] = "signed-out"
+        return row
+    try:
+        response = await client.post(
+            MUSE_KEY_URL,
+            json={},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "x-api-version": "1.0.0",
+                "Accept": "application/json",
+            },
+        )
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, dict):
+                if data.get("require_payment") is True:
+                    reason = "Muse billing setup incomplete; finish it at dev.meta.ai"
+                elif data.get("is_subs_active") is not True:
+                    # An API-key login (or lapsed subscription) bills
+                    # pay-as-you-go: no plan windows, nothing to ring.
+                    row["state"] = "unsupported"
+                    row["reason"] = "no active Muse Code subscription"
+                    return row
+                else:
+                    windows, tier = _muse_windows(data)
+                    if windows:
+                        _write_muse_cache(windows, tier, None)
+                        row["windows"] = windows
+                        row["state"] = "ok"
+                        if tier:
+                            row["tier"] = tier
+                        return row
+                    reason = "no usage windows in the quota response"
+            else:
+                reason = "quota endpoint answered with a non-object"
+        elif response.status_code in (401, 403):
+            # The device login lapsed; refreshing it here would rotate the
+            # token and sign the Muse CLI itself out. Report signed-out
+            # rather than error so the tray stays quiet.
+            row["state"] = "signed-out"
+            row["reason"] = "Muse login expired; run muse login again"
+            return row
+        else:
+            reason = f"quota endpoint answered {response.status_code}"
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.debug("muse plan-limit fetch failed: %s", exc)
+        reason = "quota endpoint unreachable"
+
+    cached = _read_muse_cache()
+    if cached is not None:
+        row["windows"] = cached["windows"]
+        row["state"] = "stale"
+        row["as_of"] = cached.get("as_of")
+        if cached.get("tier"):
+            row["tier"] = cached["tier"]
+    else:
+        row["state"] = "error"
+    row["reason"] = reason
+    return row
+
+
 def _with_tokens_today(providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return *providers* with today's counted token usage attached.
 
@@ -1076,6 +1356,25 @@ def _with_tokens_today(providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return annotated
 
 
+def _report_muse_token_growth_quietly() -> None:
+    """Sweep Muse session-store token growth into the usage history.
+
+    Runs off the event loop from :func:`collect_plan_limits`. Self-throttled
+    and non-raising by construction (see
+    :func:`omnigent.muse_native_usage.report_muse_token_growth`); this wrapper
+    only guards the import itself so a half-installed tree can never break
+    the plan-limits route.
+    """
+    try:
+        from omnigent import muse_native_usage
+    except ImportError:
+        return
+    try:
+        muse_native_usage.report_muse_token_growth()
+    except Exception:  # noqa: BLE001 — sampling must never break plan limits
+        logger.debug("muse token growth report failed", exc_info=True)
+
+
 async def collect_plan_limits() -> dict[str, Any]:
     """Fetch every provider's plan windows, honoring the process-wide cache.
 
@@ -1093,26 +1392,40 @@ async def collect_plan_limits() -> dict[str, Any]:
 
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
         # Antigravity's lookup does blocking port discovery (lsof / procfs), so
-        # it goes to a worker thread; running it concurrently with Claude's HTTP
-        # call keeps the route's latency at the slower of the two, not the sum.
-        # The Codex plan's windows replace the OpenAI API-pool row for now: the
-        # Codex worker runs on the ChatGPT plan, not the API key's free pools.
-        claude_row, antigravity_row, codex_row, grok_row = await asyncio.gather(
+        # it goes to a worker thread; running it concurrently with the HTTP
+        # calls keeps the route's latency at the slower of the pack, not the
+        # sum. API pools and subscription quotas are independent meters.
+        (
+            claude_row,
+            antigravity_row,
+            codex_row,
+            grok_row,
+            api_row,
+            muse_row,
+        ) = await asyncio.gather(
             _claude_provider(client),
             asyncio.to_thread(_antigravity_provider),
             _codex_provider(client),
             _grok_provider(client),
+            asyncio.to_thread(_openai_provider),
+            _muse_provider(client),
         )
         # Parsing the usage log is file work; keep it off the event loop.
         claude_row = _with_pro_equivalent(claude_row)
         providers = await asyncio.to_thread(
-            _with_tokens_today, [claude_row, antigravity_row, codex_row, grok_row]
+            _with_tokens_today,
+            [claude_row, antigravity_row, codex_row, grok_row, api_row, muse_row],
         )
 
     payload = {"providers": providers, "fetched_at": time.time()}
     # Debug history: what each provider read, throttled to one line per
     # provider every few minutes (every tab polls this route).
     usage_history.append_plan_limits(providers, now=time.monotonic())
+    # Muse Code token usage has no per-turn server hook: the local session
+    # store is the only record. Sweep it here (file work, off the event
+    # loop) so token growth lands in the same history as the quota readings
+    # above. Self-throttled; never raises.
+    await asyncio.to_thread(_report_muse_token_growth_quietly)
 
     ttl = _CACHE_TTL_SECONDS
     now_wall = time.time()
@@ -1138,6 +1451,54 @@ _user_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 #: A user with no answering host gets an empty reading, cached briefly so a
 #: host that comes online shows up without waiting out the full TTL.
 _EMPTY_CACHE_TTL_SECONDS = 15.0
+
+
+def _plan_limit_row_score(row: dict[str, Any]) -> int:
+    """Prefer a live provider reading over stale or unavailable host data."""
+    state = row.get("state")
+    windows = row.get("windows")
+    has_windows = isinstance(windows, list) and bool(windows)
+    if state is None:
+        # Backward compatibility with older host frames that predate row state.
+        return 3
+    if state == "ok":
+        return 4 if has_windows else 2
+    if state == "stale":
+        return 3 if has_windows else 1
+    if state == "error" and row.get("reason") == "rate_limited":
+        return 1
+    return 0
+
+
+def _merge_host_plan_limits(payloads: list[dict[str, Any]]) -> dict[str, Any]:
+    """Merge per-provider readings, keeping the newest usable row per provider."""
+    providers: dict[str, dict[str, Any]] = {}
+    for payload in payloads:  # Hosts are ordered newest first; ties keep that row.
+        rows = payload.get("providers", [])
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("id"), str):
+                continue
+            provider_id = row["id"]
+            if provider_id == "antigravity" and isinstance(row.get("windows"), list):
+                row = {**row, "windows": _normalize_antigravity_windows(row["windows"])}
+            current = providers.get(provider_id)
+            if current is None or _plan_limit_row_score(row) > _plan_limit_row_score(current):
+                providers[provider_id] = row
+    fetched_at = max(
+        (payload.get("fetched_at", 0.0) for payload in payloads),
+        default=0.0,
+    )
+    return {"providers": list(providers.values()), "fetched_at": fetched_at}
+
+
+def _host_plan_limits_need_fallback(payload: dict[str, Any]) -> bool:
+    """Whether another host might have live data for a provider missing here."""
+    rows = payload.get("providers", [])
+    return not isinstance(rows, list) or not rows or any(
+        isinstance(row, dict) and _plan_limit_row_score(row) < 3 for row in rows
+    )
 
 
 async def _request_host_plan_limits(host_registry: Any, host_conn: Any) -> dict[str, Any] | None:
@@ -1209,11 +1570,38 @@ async def plan_limits_for_user(request: Request, user_id: str) -> dict[str, Any]
             if (conn := host_registry.get(host_id)) is not None and conn.owner == user_id
         ]
         conns.sort(key=lambda conn: conn.connected_at, reverse=True)
+        readings: list[dict[str, Any]] = []
         for conn in conns:
             payload = await _request_host_plan_limits(host_registry, conn)
             if payload is not None:
-                _user_cache[user_id] = (now + _CACHE_TTL_SECONDS, payload)
-                return payload
+                # An older local runner may omit the API meter. Read the same
+                # OS account in the server without restarting active sessions.
+                rows = payload.get("providers", [])
+                ids = {row.get("id") for row in rows if isinstance(row, dict)}
+                if "codex" in ids and "openai" not in ids:
+                    from omnigent.host.identity import load_host_identity_if_present
+
+                    identity = await asyncio.to_thread(load_host_identity_if_present)
+                    if (
+                        identity is not None
+                        and identity.host_id == conn.host_id
+                        and await asyncio.to_thread(_owns_server_machine_host, request, user_id)
+                    ):
+                        payload = await collect_plan_limits()
+                readings.append(payload)
+                # Usually the newest host is sufficient. If it reports a
+                # provider as signed out, unsupported, stale, or failed, ask
+                # older hosts too; a different machine may hold that login.
+                if not _host_plan_limits_need_fallback(payload):
+                    break
+        if readings:
+            payload = _merge_host_plan_limits(readings)
+            if _host_plan_limits_need_fallback(payload) and await asyncio.to_thread(
+                _owns_server_machine_host, request, user_id
+            ):
+                payload = _merge_host_plan_limits([*readings, await collect_plan_limits()])
+            _user_cache[user_id] = (now + _CACHE_TTL_SECONDS, payload)
+            return payload
 
     if await asyncio.to_thread(_owns_server_machine_host, request, user_id):
         return await collect_plan_limits()

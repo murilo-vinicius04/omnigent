@@ -2898,7 +2898,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         :param reported_model: The model the harness last reported the
             session is actually on, verbatim, e.g.
             ``"claude-opus-4-8[1m]"``. ``None`` leaves unchanged.
-            No ``_unset`` variant — reports only ever move forward.
+            Cleared when the conversation is rebound to another agent.
         :param cost_control_mode_override: Per-session cost-control
             switch, ``"on"`` or ``"off"``. ``None`` leaves unchanged.
         :param _unset_cost_control_mode_override: When ``True``, clear
@@ -4248,6 +4248,8 @@ class SqlAlchemyConversationStore(ConversationStore):
             if not copy_model_settings:
                 overrides["model_override"] = None
                 overrides["reasoning_effort"] = None
+            # Runtime reports belong to the old agent, even within one family.
+            overrides["reported_model"] = None
             # The brain-harness override never survives a rebind.
             overrides["harness_override"] = None
             row.session_overrides = _encode_session_overrides(overrides)

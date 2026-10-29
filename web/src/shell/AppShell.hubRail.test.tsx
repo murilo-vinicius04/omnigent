@@ -1,4 +1,4 @@
-// The hub conversation's right rail: its Projects panel, nothing else.
+// The hub's Projects rail also hosts file and shell tabs from other sessions.
 
 import type * as UseTerminalsModule from "@/hooks/useTerminals";
 import type * as UseChildSessionsModule from "@/hooks/useChildSessions";
@@ -8,11 +8,32 @@ import type * as UseGithubModule from "@/hooks/useGithub";
 import type * as HubApiModule from "@/lib/hubApi";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { writeSessionWorkspaceState } from "@/lib/sessionWorkspaceState";
+
+const { deleteTerminal } = vi.hoisted(() => ({ deleteTerminal: vi.fn() }));
+
+vi.mock("./HubMachineDialog", () => ({
+  HubMachineDialog: ({
+    onSave,
+  }: {
+    onSave: (machine: { host_id: string; workspace: string }) => Promise<void>;
+  }) => (
+    <button
+      data-testid="choose-terminal-machine"
+      onClick={() => void onSave({ host_id: "remote", workspace: "/home/murilo" })}
+    >
+      Choose remote machine
+    </button>
+  ),
+}));
+
+async function chooseTerminalMachine() {
+  fireEvent.click(await screen.findByTestId("choose-terminal-machine"));
+}
 
 vi.mock("@/hooks/useConversations", async (importOriginal) => ({
   ...(await importOriginal<typeof UseConversationsModule>()),
@@ -24,6 +45,7 @@ vi.mock("@/hooks/useTerminals", async (importOriginal) => ({
   // network-backed hook is replaced.
   ...(await importOriginal<typeof UseTerminalsModule>()),
   useTerminals: vi.fn(() => ({ terminals: [], isLoading: false, error: null })),
+  useDeleteTerminal: vi.fn(() => ({ mutate: deleteTerminal, isPending: false })),
 }));
 vi.mock("@/hooks/useWorkspaceChangedFiles", () => ({
   useWorkspaceEnvironment: vi.fn(() => ({
@@ -89,9 +111,18 @@ vi.mock("./TerminalsPanel", () => ({
     />
   ),
 }));
+vi.mock("@/components/blocks/TerminalView", () => ({
+  TerminalView: ({ sessionId, terminalId }: { sessionId: string; terminalId: string }) => (
+    <div data-testid="terminal-view" data-chat={sessionId} data-terminal={terminalId} />
+  ),
+}));
 vi.mock("@/lib/hubApi", async (importOriginal) => ({
   ...(await importOriginal<typeof HubApiModule>()),
-  openHubTerminal: vi.fn(async () => ({ sessionId: "conv_term", terminalId: "terminal_bash_hub" })),
+  openHubTerminal: vi.fn(async () => ({
+    sessionId: "conv_term",
+    terminalId: "terminal_bash_hub",
+    terminal: { id: "terminal_bash_hub", name: "bash", session: "hub", running: true },
+  })),
 }));
 
 import { FilePathAwareMessageResponse } from "@/components/blocks/ChatMarkdown";
@@ -99,6 +130,7 @@ import { AppShell } from "./AppShell";
 import { useGithubInfo } from "@/hooks/useGithub";
 import { useConversations } from "@/hooks/useConversations";
 import { openHubTerminal } from "@/lib/hubApi";
+import { terminalsQueryKey, useDeleteTerminal, useTerminals } from "@/hooks/useTerminals";
 
 const useGithubInfoMock = vi.mocked(useGithubInfo);
 
@@ -109,6 +141,28 @@ beforeEach(() => {
   // localStorage; clear it so one test's writes can't leak into another.
   localStorage.clear();
   sessionStorage.clear();
+  vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+    matches: query === "(min-width: 768px)",
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }));
+  vi.mocked(useTerminals).mockImplementation((id) => ({
+    terminals:
+      id === "conv_term"
+        ? [
+            { id: "terminal_bash_hub", name: "bash", session: "hub", running: true },
+            { id: "terminal_claude_main", name: "claude", session: "main", running: true },
+          ]
+        : [],
+    isLoading: false,
+    error: null,
+  }));
+  deleteTerminal.mockClear();
   useGithubInfoMock.mockReset();
   useGithubInfoMock.mockReturnValue({ data: undefined, isLoading: true } as ReturnType<
     typeof useGithubInfo
@@ -143,7 +197,7 @@ beforeEach(() => {
 
 function renderShell(chat: React.ReactNode = <div>chat</div>) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const result = render(
     <QueryClientProvider client={qc}>
       <TooltipProvider>
         <MemoryRouter initialEntries={["/c/conv_ws"]}>
@@ -156,6 +210,7 @@ function renderShell(chat: React.ReactNode = <div>chat</div>) {
       </TooltipProvider>
     </QueryClientProvider>,
   );
+  return { ...result, queryClient: qc };
 }
 
 describe("the hub's rail", () => {
@@ -200,18 +255,54 @@ describe("the hub's rail", () => {
 describe("the hub's terminal", () => {
   beforeEach(() => vi.mocked(openHubTerminal).mockClear());
 
-  it("opens the shell already open on the machine from the header button", async () => {
+  it("attaches from the open response while the machine's terminal list is still loading", async () => {
+    const { queryClient } = renderShell();
+    vi.mocked(useTerminals).mockImplementation((id) => ({
+      terminals: id
+        ? (queryClient.getQueryData<UseTerminalsModule.TerminalInfo[]>(terminalsQueryKey(id)) ?? [])
+        : [],
+      isLoading: true,
+      error: null,
+    }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open a terminal" }));
+    await chooseTerminalMachine();
+    const rail = await screen.findByRole("complementary", { name: "Workspace" });
+    const terminal = await within(rail).findByTestId("terminal-view");
+    expect(terminal).toHaveAttribute("data-terminal", "terminal_bash_hub");
+    expect(terminal).toHaveAttribute("data-chat", "conv_term");
+    expect(screen.queryByTestId("terminals-panel")).toBeNull();
+  });
+
+  it("opens the machine's shell in the existing rail beside the chat", async () => {
+    writeSessionWorkspaceState("conv_ws", { open: false });
     renderShell();
     expect(screen.queryByTestId("terminals-panel")).toBeNull();
 
     fireEvent.click(await screen.findByRole("button", { name: "Open a terminal" }));
+    await chooseTerminalMachine();
 
-    // Beside the hub chat, attached to the session that holds the shells.
-    const panel = await screen.findByTestId("terminals-panel");
+    const rail = await screen.findByRole("complementary", { name: "Workspace" });
+    const panel = await within(rail).findByTestId("terminal-view");
     expect(panel).toHaveAttribute("data-chat", "conv_term");
-    expect(panel).toHaveAttribute("data-key", "terminal:terminal_bash_hub");
-    expect(openHubTerminal).toHaveBeenCalledWith(false);
+    expect(panel).toHaveAttribute("data-terminal", "terminal_bash_hub");
+    expect(openHubTerminal).toHaveBeenCalledWith(false, {
+      host_id: "remote",
+      workspace: "/home/murilo",
+    });
+    expect(screen.queryByTestId("terminals-panel")).toBeNull();
+    expect(screen.queryByRole("button", { name: /claude · main/ })).toBeNull();
     expect(screen.getByText("chat")).toBeVisible();
+
+    // Projects and the shell share one content slot in the same rail.
+    fireEvent.mouseDown(within(rail).getByRole("tab", { name: "Projects" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    await within(rail).findByTestId("hub-projects-panel");
+    expect(screen.queryByTestId("terminal-view")).toBeNull();
+    fireEvent.click(within(rail).getByTitle("bash · hub"));
+    await within(rail).findByTestId("terminal-view");
+    expect(openHubTerminal).toHaveBeenCalledTimes(1);
   });
 
   it("opens a new shell with the new-shell shortcut", async () => {
@@ -219,8 +310,82 @@ describe("the hub's terminal", () => {
     await screen.findByRole("button", { name: "Open a terminal" });
 
     fireEvent.keyDown(document, { key: "t", code: "KeyT", ctrlKey: true, altKey: true });
+    await chooseTerminalMachine();
 
-    await screen.findByTestId("terminals-panel");
-    expect(openHubTerminal).toHaveBeenCalledWith(true);
+    const rail = await screen.findByRole("complementary", { name: "Workspace" });
+    await within(rail).findByTestId("terminal-view");
+    expect(screen.queryByTestId("terminals-panel")).toBeNull();
+    expect(openHubTerminal).toHaveBeenCalledWith(true, {
+      host_id: "remote",
+      workspace: "/home/murilo",
+    });
+  });
+
+  it("keeps earlier shell tabs when the shortcut opens another shell", async () => {
+    renderShell();
+    fireEvent.click(await screen.findByRole("button", { name: "Open a terminal" }));
+    await chooseTerminalMachine();
+    await screen.findByTestId("terminal-view");
+
+    vi.mocked(openHubTerminal).mockResolvedValueOnce({
+      sessionId: "conv_term",
+      terminalId: "terminal_bash_new",
+      terminal: { id: "terminal_bash_new", name: "bash", session: "new", running: true },
+    });
+    vi.mocked(useTerminals).mockImplementation((id) => ({
+      terminals:
+        id === "conv_term"
+          ? [
+              { id: "terminal_bash_hub", name: "bash", session: "hub", running: true },
+              { id: "terminal_bash_new", name: "bash", session: "new", running: true },
+            ]
+          : [],
+      isLoading: false,
+      error: null,
+    }));
+    fireEvent.keyDown(document, { key: "t", code: "KeyT", ctrlKey: true, altKey: true });
+    await chooseTerminalMachine();
+    await waitFor(() =>
+      expect(screen.getByTestId("terminal-view")).toHaveAttribute(
+        "data-terminal",
+        "terminal_bash_new",
+      ),
+    );
+    fireEvent.click(screen.getByTitle("bash · hub"));
+    await waitFor(() =>
+      expect(screen.getByTestId("terminal-view")).toHaveAttribute(
+        "data-terminal",
+        "terminal_bash_hub",
+      ),
+    );
+    expect(screen.queryByTestId("terminals-panel")).toBeNull();
+    expect(screen.getByText("chat")).toBeVisible();
+  });
+
+  it("closes a shell in the machine session after confirmation", async () => {
+    renderShell();
+    fireEvent.click(await screen.findByRole("button", { name: "Open a terminal" }));
+    await chooseTerminalMachine();
+    fireEvent.click(await screen.findByRole("button", { name: "Close bash · hub" }));
+    expect(deleteTerminal).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("button", { name: "Close shell" }));
+    expect(useDeleteTerminal).toHaveBeenLastCalledWith("conv_term");
+    expect(deleteTerminal).toHaveBeenCalledWith("terminal_bash_hub");
+  });
+
+  it("keeps the shell accessible through the drawer on phones", async () => {
+    const mediaQuery = window.matchMedia("all");
+    vi.mocked(window.matchMedia).mockImplementation((query) => ({
+      ...mediaQuery,
+      matches: false,
+      media: query,
+    }));
+    renderShell();
+    fireEvent.click(await screen.findByRole("button", { name: "Open a terminal" }));
+    await chooseTerminalMachine();
+    const panel = await screen.findByTestId("terminals-panel");
+    expect(panel).toHaveAttribute("data-chat", "conv_term");
+    expect(panel).toHaveAttribute("data-key", "terminal:terminal_bash_hub");
+    expect(screen.queryByTestId("inline-terminals-section")).toBeNull();
   });
 });

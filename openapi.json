@@ -2744,6 +2744,112 @@
         "title": "HeartbeatEvent",
         "type": "object"
       },
+      "HostEnrollmentIn": {
+        "properties": {
+          "host_id": {
+            "format": "uuid",
+            "title": "Host Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^\\S(?:.*\\S)?$",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "host_id",
+          "name"
+        ],
+        "title": "HostEnrollmentIn",
+        "type": "object"
+      },
+      "HostInspectionIn": {
+        "properties": {
+          "action": {
+            "pattern": "^(identity|command|repos|report)$",
+            "title": "Action",
+            "type": "string"
+          },
+          "command": {
+            "default": "",
+            "maxLength": 8000,
+            "title": "Command",
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Paths",
+            "type": "array"
+          },
+          "reply": {
+            "default": "",
+            "maxLength": 40000,
+            "title": "Reply",
+            "type": "string"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "format": "double",
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "timeout_s": {
+            "default": 15,
+            "exclusiveMinimum": 0.0,
+            "format": "double",
+            "maximum": 30.0,
+            "title": "Timeout S",
+            "type": "number"
+          },
+          "touched": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Touched",
+            "type": "array"
+          },
+          "workspace": {
+            "default": "",
+            "maxLength": 4096,
+            "title": "Workspace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "HostInspectionIn",
+        "type": "object"
+      },
+      "HostRenameIn": {
+        "properties": {
+          "name": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^\\S(?:.*\\S)?$",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "HostRenameIn",
+        "type": "object"
+      },
       "HubChatIn": {
         "description": "A chat to put in a project.",
         "properties": {
@@ -2775,6 +2881,13 @@
       "HubLaneIn": {
         "description": "A new lane: what it works on and its first request.",
         "properties": {
+          "host_id": {
+            "default": "",
+            "maxLength": 64,
+            "pattern": "^(?:[0-9a-f]{32})?$",
+            "title": "Host Id",
+            "type": "string"
+          },
           "message": {
             "maxLength": 20000,
             "minLength": 1,
@@ -2792,12 +2905,41 @@
             "maxLength": 100,
             "title": "Use",
             "type": "string"
+          },
+          "workspace": {
+            "default": "",
+            "maxLength": 4096,
+            "title": "Workspace",
+            "type": "string"
           }
         },
         "required": [
           "message"
         ],
         "title": "HubLaneIn",
+        "type": "object"
+      },
+      "HubMachineIn": {
+        "properties": {
+          "host_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Host Id",
+            "type": "string"
+          },
+          "workspace": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Workspace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "host_id",
+          "workspace"
+        ],
+        "title": "HubMachineIn",
         "type": "object"
       },
       "HubModelIn": {
@@ -2917,10 +3059,23 @@
       "HubTerminalIn": {
         "description": "A shell to open from the hub.",
         "properties": {
+          "host_id": {
+            "default": "",
+            "maxLength": 64,
+            "pattern": "^(?:[0-9a-f]{32})?$",
+            "title": "Host Id",
+            "type": "string"
+          },
           "new": {
             "default": false,
             "title": "New",
             "type": "boolean"
+          },
+          "workspace": {
+            "default": "",
+            "maxLength": 4096,
+            "title": "Workspace",
+            "type": "string"
           }
         },
         "title": "HubTerminalIn",
@@ -9413,8 +9568,22 @@
               }
             ],
             "default": null,
-            "description": "Context-fill estimate for the next turn \u2014 set only by executors that make multiple LLM sub-calls per turn (e.g. `openai-agents`). For single-call executors this is absent and `total_tokens` serves the same purpose. The toolbar context ring and `/context` command use this field when present, falling back to `total_tokens`.",
+            "description": "Context-fill estimate for the next turn \u2014 set only by executors that make multiple LLM sub-calls per turn (e.g. `openai-agents`). For single-call executors this is absent and `total_tokens` serves the same purpose. The toolbar context ring and `/context` command use this field when present, falling back to `total_tokens`. ACP executors set it to the adapter's live occupancy (`used`) when reported, which excludes billing-only cache re-reads.",
             "title": "Context Tokens"
+          },
+          "context_window": {
+            "anyOf": [
+              {
+                "format": "int64",
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Live window size in tokens reported by the agent alongside `context_tokens` (ACP `usage_update`). Persisted as the window label so snapshots and auto-compact see the observed denominator; `None` when unreported.",
+            "title": "Context Window"
           },
           "cost_usd": {
             "anyOf": [
@@ -10573,7 +10742,89 @@
         ]
       }
     },
+    "/v1/hosts/enroll": {
+      "post": {
+        "description": "Enroll an external machine with a revocable, host-only credential.",
+        "operationId": "enroll_host_v1_hosts_enroll_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HostEnrollmentIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Enroll Host V1 Hosts Enroll Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enroll Host",
+        "tags": [
+          "hosts"
+        ]
+      }
+    },
     "/v1/hosts/{host_id}": {
+      "delete": {
+        "operationId": "delete_host_v1_hosts__host_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "title": "Host Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Host",
+        "tags": [
+          "hosts"
+        ]
+      },
       "get": {
         "description": "Get details for a single host.\n\n**Returns:** Host details dict \u2014 the `list_hosts` fields (including `gateway_inference`, `None` when unreported) plus `runners`.\n\n**Raises**\n\n- `HTTPException` \u2014 404 if the host does not exist.",
         "operationId": "get_host_v1_hosts__host_id__get",
@@ -10614,6 +10865,100 @@
           }
         },
         "summary": "Get Host",
+        "tags": [
+          "hosts"
+        ]
+      },
+      "patch": {
+        "operationId": "rename_host_v1_hosts__host_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "title": "Host Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HostRenameIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rename Host",
+        "tags": [
+          "hosts"
+        ]
+      }
+    },
+    "/v1/hosts/{host_id}/credential": {
+      "delete": {
+        "operationId": "revoke_host_v1_hosts__host_id__credential_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "title": "Host Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Revoke Host V1 Hosts  Host Id  Credential Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Host",
         "tags": [
           "hosts"
         ]
@@ -11161,6 +11506,60 @@
           }
         },
         "summary": "Get Host Model Options",
+        "tags": [
+          "hosts"
+        ]
+      }
+    },
+    "/v1/hosts/{host_id}/inspect": {
+      "post": {
+        "operationId": "inspect_host_v1_hosts__host_id__inspect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "title": "Host Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HostInspectionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Inspect Host V1 Hosts  Host Id  Inspect Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inspect Host",
         "tags": [
           "hosts"
         ]
@@ -11883,6 +12282,57 @@
           }
         },
         "summary": "Hub Open Lane",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
+    "/v1/hub/projects/{project_id}/machine": {
+      "put": {
+        "description": "Choose where future lanes start; existing sessions stay on their hosts.",
+        "operationId": "hub_project_machine_v1_hub_projects__project_id__machine_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HubMachineIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hub Project Machine",
         "tags": [
           "hub"
         ]

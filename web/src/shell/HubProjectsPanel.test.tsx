@@ -10,14 +10,18 @@ import {
   closeHubLane,
   createHubProject,
   deleteHubProject,
+  getHubProjectBrief,
   listHubBudgets,
   listHubChats,
   listHubProjects,
   openHubLane,
+  refreshHubProjectBrief,
   renameHubLane,
   renameHubProject,
+  saveHubProjectBrief,
   setHubProjectModel,
   type HubBudget,
+  type HubProjectBrief,
   type HubProjectRow,
   type HubSessionRow,
 } from "@/lib/hubApi";
@@ -30,6 +34,9 @@ vi.mock("@/lib/hubApi", async (importOriginal) => ({
   renameHubLane: vi.fn(),
   createHubProject: vi.fn(),
   deleteHubProject: vi.fn(),
+  getHubProjectBrief: vi.fn(),
+  saveHubProjectBrief: vi.fn(),
+  refreshHubProjectBrief: vi.fn(),
   listHubBudgets: vi.fn(),
   listHubChats: vi.fn(),
   listHubProjects: vi.fn(),
@@ -52,6 +59,30 @@ const budgetsMock = vi.mocked(listHubBudgets);
 const openLaneMock = vi.mocked(openHubLane);
 const renameLaneMock = vi.mocked(renameHubLane);
 const closeLaneMock = vi.mocked(closeHubLane);
+const briefMock = vi.mocked(getHubProjectBrief);
+const saveBriefMock = vi.mocked(saveHubProjectBrief);
+const refreshMock = vi.mocked(refreshHubProjectBrief);
+
+/** A project's brief as the server sends it, empty unless a test fills it in. */
+function makeBrief(over: Partial<HubProjectBrief> = {}): HubProjectBrief {
+  return {
+    project_id: "p_amarras",
+    name: "amarras",
+    about: "",
+    about_source: "",
+    status: "",
+    progress: [],
+    updated_at: 0,
+    state: "idle",
+    lanes: [],
+    lane_todos: [],
+    brief: "",
+    brief_todos: [],
+    handoff_files: [],
+    can_refresh: false,
+    ...over,
+  };
+}
 
 const CLAUDE_CHAT: HubSessionRow = {
   id: "s_claude",
@@ -257,7 +288,9 @@ beforeEach(() => {
   for (const mock of [listMock, setMock, createMock, chatsMock, deleteMock, renameMock, addMock]) {
     mock.mockReset();
   }
-  for (const mock of [openLaneMock, renameLaneMock, closeLaneMock]) mock.mockReset();
+  for (const mock of [openLaneMock, renameLaneMock, closeLaneMock, briefMock, saveBriefMock, refreshMock]) {
+    mock.mockReset();
+  }
   listMock.mockResolvedValue([AMARRAS, NESSIE, EMPTY]);
   budgetsMock.mockReset();
   budgetsMock.mockResolvedValue(BUDGETS);
@@ -266,6 +299,44 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("HubProjectsPanel", () => {
+  it("offers Muse model and effort changes from the lane controls", async () => {
+    const muse: HubSessionRow = {
+      ...CODEX_CHAT,
+      id: "s_muse",
+      title: "Muse work",
+      lane: "Muse work",
+      run: {
+        provider: "Muse Code",
+        model: "muse-spark-1.3",
+        model_label: "Muse Spark 1.3",
+        requested: "",
+        requested_label: "",
+        effort: "high",
+        selected: "muse-spark-1.3",
+        models: [
+          { id: "muse-spark-1.3", label: "Muse Spark 1.3", efforts: [] },
+          { id: "muse-wonder-1.0", label: "Muse Wonder", efforts: [] },
+        ],
+        efforts: ["low", "high", "ultra"],
+      },
+    };
+    listMock.mockResolvedValue([{ ...AMARRAS, chat: muse, lanes: [muse] }]);
+    setMock.mockResolvedValue({ changed: true, text: "Updated Muse." });
+    renderPanel();
+    await screen.findByTestId("hub-chat-row-s_muse");
+    openChanges("s_muse");
+    openSelect("hub-chat-model-s_muse");
+    fireEvent.click(screen.getByRole("option", { name: "Muse Wonder" }));
+    await waitFor(() =>
+      expect(setMock).toHaveBeenCalledWith("p_amarras", { model: "muse-wonder-1.0" }, "s_muse"),
+    );
+    openSelect("hub-chat-effort-s_muse");
+    fireEvent.click(screen.getByRole("option", { name: "ultra" }));
+    await waitFor(() =>
+      expect(setMock).toHaveBeenCalledWith("p_amarras", { effort: "ultra" }, "s_muse"),
+    );
+  });
+
   it("lists a project's chats, each with its own provider, model, effort and state", async () => {
     renderPanel();
     const card = await screen.findByTestId("hub-project-p_amarras");
@@ -317,7 +388,7 @@ describe("HubProjectsPanel", () => {
     );
     expect(screen.queryByTestId("hub-project-route-p_arm")).toBeNull();
     expect((await screen.findByTestId("hub-budget-claude")).textContent).toBe(
-      "Claude · 21.3% left today",
+      "Claude · 21.3% of week available today",
     );
     expect(screen.getByTestId("hub-budget-claude").getAttribute("title")).toContain(
       "spent 3.0% of 24.3% today",
@@ -325,6 +396,22 @@ describe("HubProjectsPanel", () => {
     expect(screen.getByTestId("hub-budget-gemini").textContent).toBe(
       "Gemini · no reading since its reset",
     );
+  });
+
+  it("distinguishes the local Hub rollover from the subscription reset", async () => {
+    budgetsMock.mockResolvedValue([
+      {
+        ...BUDGETS[0],
+        daily_resets_at: "2026-10-17T04:00:00Z",
+        daily_timezone: "America/Sao_Paulo",
+      },
+    ]);
+    renderPanel();
+    const badge = await screen.findByTestId("hub-budget-claude");
+    expect(badge).toHaveTextContent("renews 01:00");
+    expect(badge.getAttribute("title")).toContain("subscription week resets");
+    expect(badge.getAttribute("title")).toContain("America/Sao_Paulo");
+    expect(badge.getAttribute("title")).toContain("API credits are separate");
   });
 
   it("offers to start a chat in a project that has none", async () => {
@@ -566,5 +653,190 @@ describe("HubProjectsPanel", () => {
     openMenu("p_amarras");
     const item = await screen.findByRole("menuitem", { name: "New chat in amarras" });
     expect(item.getAttribute("href")).toBe("/?project=amarras");
+  });
+
+  it("renders the notification chime button in the header and toggles it", async () => {
+    renderPanel();
+    const chimeBtn = await screen.findByTestId("hub-chime-button");
+    expect(chimeBtn).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(chimeBtn);
+    expect(chimeBtn).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("previews where a project stands and opens a brief that reads like an overview", async () => {
+    briefMock.mockResolvedValue(
+      makeBrief({
+        about: "Documentation for the Petrobras mooring chains.",
+        about_source: "companion",
+        status: "Chapter two is written; chapter three waits on the measurements.",
+        progress: [{ at: 0, text: "Wrote chapter two.", lane: "docs" }],
+        lanes: [{ id: "s_claude", name: "docs", state: "working" }],
+        lane_todos: [
+          {
+            lane: "amarras",
+            session_id: "s_claude",
+            items: [{ content: "Run tests", status: "in_progress" }],
+          },
+        ],
+        updated_at: 1,
+        can_refresh: true,
+      }),
+    );
+    listMock.mockResolvedValue([
+      {
+        ...AMARRAS,
+        living: {
+          overview: "Documentation for the Petrobras mooring chains.",
+          status: "Chapter two is written; chapter three waits on the measurements.",
+          progress: [],
+          updated_at: 1,
+        },
+      },
+      NESSIE,
+      EMPTY,
+    ]);
+    renderPanel();
+    const toggle = await screen.findByTestId("hub-brief-toggle-p_amarras");
+    expect(toggle.textContent).toContain("Chapter two is written");
+    fireEvent.click(toggle);
+    expect(await screen.findByText("Documentation for the Petrobras mooring chains.")).toBeTruthy();
+    expect(screen.getByTestId("hub-brief-standing-p_amarras").textContent).toBe(
+      "Chapter two is written; chapter three waits on the measurements.",
+    );
+    expect(screen.getByTestId("hub-brief-progress").textContent).toContain("Wrote chapter two.");
+    expect(screen.getByText("docs · working")).toBeTruthy();
+    expect(screen.getByText("Run tests")).toBeTruthy();
+    expect(briefMock).toHaveBeenCalledWith("p_amarras");
+  });
+
+  it("previews a project with no brief yet by its state, never by a tool command", async () => {
+    listMock.mockResolvedValue([AMARRAS, NESSIE, EMPTY]);
+    renderPanel();
+    const toggle = await screen.findByTestId("hub-brief-toggle-p_amarras");
+    expect(toggle.textContent).toContain("Working");
+    expect(toggle.textContent).not.toContain("pytest");
+  });
+
+  it("says plainly that nothing is written yet and offers to write it", async () => {
+    briefMock.mockResolvedValue(makeBrief({ state: "idle", can_refresh: true }));
+    renderPanel();
+    fireEvent.click(await screen.findByTestId("hub-brief-toggle-p_amarras"));
+    expect(await screen.findByText(/Not written yet. The companion writes it/)).toBeTruthy();
+    expect(screen.getByText("Not updated yet")).toBeTruthy();
+    expect(screen.getByTestId("hub-brief-refresh-p_amarras")).not.toBeDisabled();
+  });
+
+  it("updates the brief on request and shows what the companion wrote", async () => {
+    briefMock.mockResolvedValue(makeBrief({ can_refresh: true }));
+    refreshMock.mockResolvedValue(
+      makeBrief({
+        about: "A scanner for chains.",
+        about_source: "companion",
+        status: "Calibrating.",
+        updated_at: 1,
+        can_refresh: true,
+      }),
+    );
+    renderPanel();
+    fireEvent.click(await screen.findByTestId("hub-brief-toggle-p_amarras"));
+    fireEvent.click(await screen.findByTestId("hub-brief-refresh-p_amarras"));
+    expect(await screen.findByText("A scanner for chains.")).toBeTruthy();
+    expect(refreshMock).toHaveBeenCalledWith("p_amarras");
+    expect(screen.getByTestId("hub-brief-standing-p_amarras").textContent).toBe("Calibrating.");
+  });
+
+  it("says why it could not update", async () => {
+    briefMock.mockResolvedValue(makeBrief({ can_refresh: true }));
+    refreshMock.mockRejectedValue(new Error("no chat of this project has reported yet"));
+    renderPanel();
+    fireEvent.click(await screen.findByTestId("hub-brief-toggle-p_amarras"));
+    fireEvent.click(await screen.findByTestId("hub-brief-refresh-p_amarras"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn't update it: no chat of this project has reported yet",
+    );
+  });
+
+  it("disables the update when there is nothing to read", async () => {
+    briefMock.mockResolvedValue(makeBrief({ state: "empty", can_refresh: false }));
+    renderPanel();
+    fireEvent.click(await screen.findByTestId("hub-brief-toggle-p_amarras"));
+    expect(await screen.findByTestId("hub-brief-refresh-p_amarras")).toBeDisabled();
+    expect(screen.getByText("No chat yet.")).toBeTruthy();
+  });
+
+  it("pins the person's own overview", async () => {
+    briefMock.mockResolvedValue(
+      makeBrief({ about: "Mine", about_source: "written", brief: "Mine" }),
+    );
+    saveBriefMock.mockResolvedValue({
+      project_id: "p_amarras",
+      brief: "Chains docs",
+      brief_todos: [],
+    });
+    renderPanel();
+    fireEvent.click(await screen.findByTestId("hub-brief-toggle-p_amarras"));
+    expect(
+      await screen.findByText("Your words. The companion leaves this one alone."),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByTestId("hub-brief-write-p_amarras"));
+    fireEvent.change(await screen.findByTestId("hub-brief-edit-p_amarras"), {
+      target: { value: "Chains docs" },
+    });
+    fireEvent.click(screen.getByTestId("hub-brief-save-p_amarras"));
+    await waitFor(() =>
+      expect(saveBriefMock).toHaveBeenCalledWith("p_amarras", {
+        brief: "Chains docs",
+        brief_todos: [],
+      }),
+    );
+    expect(await screen.findByText("Brief saved.")).toBeTruthy();
+  });
+
+  it("keeps a companion item's id and author when the person ticks it", async () => {
+    briefMock.mockResolvedValue(
+      makeBrief({
+        brief_todos: [
+          { id: "ab12", content: "Measure the chains", status: "open", by: "companion" },
+          { id: "cd34", content: "Review the PDF", status: "open", by: "you" },
+        ],
+      }),
+    );
+    saveBriefMock.mockResolvedValue({ project_id: "p_amarras", brief: "", brief_todos: [] });
+    renderPanel();
+    fireEvent.click(await screen.findByTestId("hub-brief-toggle-p_amarras"));
+    expect(await screen.findByText("added by the companion")).toBeTruthy();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Measure the chains" }));
+    await waitFor(() =>
+      expect(saveBriefMock).toHaveBeenCalledWith("p_amarras", {
+        brief: "",
+        brief_todos: [
+          { id: "ab12", content: "Measure the chains", status: "done", by: "companion" },
+          { id: "cd34", content: "Review the PDF", status: "open", by: "you" },
+        ],
+      }),
+    );
+  });
+
+  it("adds a to-do to the project's list", async () => {
+    briefMock.mockResolvedValue(makeBrief());
+    saveBriefMock.mockResolvedValue({
+      project_id: "p_amarras",
+      brief: "",
+      brief_todos: [{ content: "Review", status: "open" }],
+    });
+    renderPanel();
+    const card = await screen.findByTestId("hub-project-p_amarras");
+    fireEvent.click(screen.getByTestId("hub-brief-toggle-p_amarras"));
+    expect(await screen.findByText(/Nothing on the list/)).toBeTruthy();
+    fireEvent.change(screen.getByTestId("hub-brief-add-p_amarras"), {
+      target: { value: "Review" },
+    });
+    fireEvent.click(within(card).getByRole("button", { name: "Add" }));
+    await waitFor(() =>
+      expect(saveBriefMock).toHaveBeenCalledWith("p_amarras", {
+        brief: "",
+        brief_todos: [{ content: "Review", status: "open" }],
+      }),
+    );
   });
 });

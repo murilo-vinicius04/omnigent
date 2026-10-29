@@ -88,6 +88,26 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("SwitchAgentDialog", () => {
+  it("offers Muse from Codex and warns that model settings reset", () => {
+    setAgents({ id: "ag_codex_native", name: "codex-native-ui", harness: "codex-native" });
+    useAvailableAgentsMock.mockReturnValue({
+      data: [
+        ...AVAILABLE_AGENTS,
+        {
+          id: "ag_muse",
+          name: "muse-code",
+          display_name: "Muse Code",
+          description: null,
+          harness: "muse-code",
+        },
+      ],
+    } as unknown as ReturnType<typeof useAvailableAgents>);
+    renderDialog();
+    openAgentSelect();
+    fireEvent.click(screen.getByTestId("switch-agent-option-ag_muse"));
+    expect(screen.getByTestId("switch-agent-reset-warning")).toBeInTheDocument();
+  });
+
   it("offers history-preserving targets including cross-family codex-native", () => {
     // Current harness is claude-sdk (anthropic): every classifiable target
     // carries history — SDK targets as replayed context, native targets via

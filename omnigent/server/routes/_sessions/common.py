@@ -224,10 +224,10 @@ _CLAUDE_NATIVE_PERMISSION_MODE_LABEL_KEY = "omnigent.claude_native.permission_mo
 
 # Permission modes switchable on a running session — the ones Claude
 # Code's shift+tab cycle can reach. Mirrors
-# ``claude_native_bridge.CYCLEABLE_PERMISSION_MODES``; ``dontAsk`` and
-# ``bypassPermissions`` are launch-only and rejected on PATCH.
+# ``claude_native_bridge.CYCLEABLE_PERMISSION_MODES``. Bypass may require
+# resuming the same native session with the enabling launch flag.
 _CLAUDE_NATIVE_PERMISSION_MODES: frozenset[str] = frozenset(
-    {"default", "acceptEdits", "plan", "auto"}
+    {"default", "acceptEdits", "plan", "auto", "bypassPermissions"}
 )
 
 _ACP_PERMISSION_MODE_LABEL_KEY = ACP_PERMISSION_MODE_LABEL_KEY
@@ -336,6 +336,9 @@ _HERMES_NATIVE_HARNESS = HERMES_NATIVE_CODING_AGENT.harness
 
 
 _ANTIGRAVITY_NATIVE_HARNESS = ANTIGRAVITY_NATIVE_CODING_AGENT.harness
+
+
+_ANTIGRAVITY_NATIVE_WRAPPER_LABEL_VALUE = ANTIGRAVITY_NATIVE_CODING_AGENT.wrapper_label
 
 
 _KIRO_NATIVE_WRAPPER_LABEL_VALUE = KIRO_NATIVE_CODING_AGENT.wrapper_label
@@ -799,6 +802,7 @@ _MODEL_OPTIONS_ENDPOINT_BY_WRAPPER: dict[str, str] = {
     _CURSOR_NATIVE_WRAPPER_LABEL_VALUE: "cursor-model-options",
     _KIRO_NATIVE_WRAPPER_LABEL_VALUE: "kiro-model-options",
     _OPENCODE_NATIVE_WRAPPER_LABEL_VALUE: "codex-model-options",
+    _ANTIGRAVITY_NATIVE_WRAPPER_LABEL_VALUE: "antigravity-model-options",
     # pi-native is deliberately NOT here: its catalog is PUSHED by the resident
     # extension (``external_model_options`` → ``_pushed_model_options_cache``),
     # not fetched from a runner route, so the picker works in every auth path
@@ -981,6 +985,7 @@ __all__ = [
     "_NATIVE_TERMINAL_ENSURE_FAILED_CODE",
     "_NATIVE_TERMINAL_START_FAILED_CODE",
     "_OPENCODE_NATIVE_WRAPPER_LABEL_VALUE",
+    "_ANTIGRAVITY_NATIVE_WRAPPER_LABEL_VALUE",
     "_PI_NATIVE_WRAPPER_LABEL_VALUE",
     "_RACE_TASK_REAP_TIMEOUT_S",
     "_RETRY_SESSION_TYPE",

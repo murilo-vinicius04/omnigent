@@ -157,6 +157,18 @@ def test_interrupting_uses_the_higher_ceiling(tmp_path) -> None:
     assert found is not None and found.limit == 95.0
 
 
+MUSE = {"omnigent.provider": "muse"}
+
+
+def test_a_muse_lane_is_covered_by_the_handoff(tmp_path) -> None:
+    assert quota_handoff.provider_of(MUSE) == "muse"
+    _meter(tmp_path, "plan-limits-muse.json", 3, 9)
+    assert _full(tmp_path, MUSE) is None
+    _meter(tmp_path, "plan-limits-muse.json", 3, 100)
+    found = _full(tmp_path, MUSE)
+    assert found is not None and found.startswith("week window full until ")
+
+
 def test_the_interrupt_settings_can_be_changed_and_ignore_nonsense(tmp_path) -> None:
     (tmp_path / "budget.json").write_text(
         json.dumps({"handoff": {"interrupt_five_hour_pct": 99, "interrupt": "yes"}})

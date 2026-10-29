@@ -79,6 +79,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { SummaryShowKindsControl } from "@/components/chat/SummaryShowKindsControl";
+import { HubChimeSettingsControl } from "@/components/HubChimeSettingsControl";
 import {
   Select,
   SelectContent,
@@ -1315,7 +1316,11 @@ function GeneralSection() {
           <div className="mt-4 border-t border-border pt-4">
             <SummaryShowKindsControl />
           </div>
-          <div className="mt-4 border-t border-border pt-4"></div>
+        </div>
+
+        <h2 className="mt-2 text-ui font-medium">Hub</h2>
+        <div className="rounded-xl border border-border bg-card p-4">
+          <HubChimeSettingsControl />
         </div>
       </div>
     </Section>

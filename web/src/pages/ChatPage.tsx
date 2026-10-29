@@ -175,6 +175,7 @@ import {
 import { ComposerMicButton } from "@/components/ComposerMicButton";
 import { LiveVoiceEnginePicker } from "@/components/LiveVoiceEnginePicker";
 import { ComposerNarrateButton } from "@/components/ComposerNarrateButton";
+import { HubChimeButton } from "@/components/HubChimeButton";
 import { ComposerSummaryLanguageButton } from "@/components/ComposerSummaryLanguageButton";
 import { ComposerNarrateVolume } from "@/components/ComposerNarrateVolume";
 import { ComposerVoicePicker } from "@/components/ComposerVoicePicker";
@@ -674,6 +675,8 @@ export function ChatPage() {
 
   // Hoisted above the early-return guards so the title-update effect can read them.
   const activeConv = urlConvId ? conversations?.find((c) => c.id === urlConvId) : null;
+  const isHubConversation =
+    (activeSession?.labels?.["omnigent.hub"] ?? activeConv?.labels?.["omnigent.hub"]) === "1";
 
   // `isWorking` gates the parent's OWN turn (Stop/Interrupt) and must NOT
   // include child-session activity. `showsWorking` is display-only (tab title
@@ -1068,6 +1071,7 @@ export function ChatPage() {
       subagentRoutingEligible={subagentRoutingEligible}
       subAgentLabel={subAgentLabel}
       wrapperLabel={capabilitySource.labels[WRAPPER_LABEL_KEY] ?? null}
+      isHubConversation={isHubConversation}
     />
   );
 
@@ -1333,6 +1337,8 @@ interface MainAgentSurfaceProps {
   subAgentLabel: string | null;
   /** The session's ``omnigent.wrapper`` label; see ``ComposerProps``. */
   wrapperLabel: string | null;
+  /** True for the pinned Hub conversation; shows the notification-sound toggle. */
+  isHubConversation?: boolean;
 }
 
 /**
@@ -1467,6 +1473,7 @@ const MainAgentSurface = memo(function MainAgentSurfaceImpl({
   subagentRoutingEligible,
   subAgentLabel,
   wrapperLabel,
+  isHubConversation = false,
 }: MainAgentSurfaceProps) {
   const terminalFirst = useTerminalFirst();
   // Streaming-hot subscriptions and the bubble pipeline live in <Transcript>.
@@ -1798,6 +1805,7 @@ const MainAgentSurface = memo(function MainAgentSurfaceImpl({
             wrapperLabel={wrapperLabel}
             onViewportShrinkPinScroll={pinScrollOnComposerGrowth}
             workerControl={workerControl}
+            isHubConversation={isHubConversation}
           />
 
           {/* Reconnect-or-fork banner when unreachable, nothing otherwise.
@@ -1973,6 +1981,8 @@ interface ComposerProps {
   onViewportShrinkPinScroll?: () => void;
   /** The Worker control (nexus), or null when the agent offers no worker choices. */
   workerControl?: WorkerControl | null;
+  /** Whether the session belongs to the Hub ("omnigent.hub" label is "1"). */
+  isHubConversation?: boolean;
 }
 
 /**
@@ -2132,6 +2142,7 @@ export function composerHarnessLabel(
   if (modelPickerKind === "cursor") return "Cursor";
   if (modelPickerKind === "kiro") return "Kiro";
   if (modelPickerKind === "opencode") return "OpenCode";
+  if (modelPickerKind === "antigravity") return "Antigravity";
   const display = agentName ? agentDisplayLabel(agentName) : null;
   const harness = sessionHarness ? (harnessLabels[sessionHarness] ?? null) : null;
   if (display && harness) return `${display} (${harness})`;
@@ -2520,6 +2531,7 @@ function ComposerImpl({
   wrapperLabel = null,
   onViewportShrinkPinScroll,
   workerControl = null,
+  isHubConversation = false,
 }: ComposerProps) {
   const [value, setValue] = useState("");
   const [submitWithModEnter] = useState(() => readSubmitWithModEnter());
@@ -3679,6 +3691,14 @@ function ComposerImpl({
               <PaperclipIcon className="size-4" data-icon-size="16" />
               <span className="sr-only">Attach files</span>
             </Button>
+            {isHubConversation && (
+              <HubChimeButton
+                className="size-9 md:size-8"
+                iconClassName="size-4"
+                disabled={disabled || isReadOnly}
+                componentId="chat.composer.hub_chime"
+              />
+            )}
             <ComposerNarrateButton disabled={disabled || isReadOnly} />
             <ComposerSummaryLanguageButton disabled={disabled || isReadOnly} />
             <ComposerNarrateVolume disabled={disabled || isReadOnly} />
@@ -4087,7 +4107,14 @@ const PI_NATIVE_EFFORT_LEVELS = [
   "max",
 ] as const;
 
-type NativeModelPickerKind = "claude" | "codex" | "cursor" | "kiro" | "opencode" | "pi";
+type NativeModelPickerKind =
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "kiro"
+  | "opencode"
+  | "pi"
+  | "antigravity";
 
 type LabelSource = { labels?: Record<string, string | null> | null } | null | undefined;
 
@@ -4189,7 +4216,12 @@ export function modelPickerKindForConv(
       // ``/model`` picks back to ``model_override`` via the extension's
       // model_select handler, so the picker surfaces that as the live model.
       return "pi";
+    case "antigravity-native-ui":
+      return "antigravity";
     default:
+      if (conv?.labels?.["omnigent.wrapper"] == null && conv?.harness === "antigravity-native") {
+        return "antigravity";
+      }
       return isLabelLessCodexNative(conv) ? "codex" : null;
   }
 }
@@ -4540,6 +4572,7 @@ function SessionConfigModal({
         // sequence rather than firing concurrently.
         if (
           (showClaudePermissionMode || showAcpPermissionMode) &&
+          draftPermissionMode !== "" &&
           draftPermissionMode !== claudePermissionMode
         )
           await store.setClaudePermissionMode(draftPermissionMode);
@@ -4670,9 +4703,7 @@ function SessionConfigModal({
               </Select>
             </ConfigRow>
           )}
-          {/* Hidden when the mode is unknown — Claude only renders its mode
-              footer in some pane states, and a guess would misreport it. */}
-          {showClaudePermissionMode && claudePermissionMode !== "" && (
+          {showClaudePermissionMode && (
             <ConfigRow label="Permissions" description="How much Claude asks before acting">
               <Select
                 value={draftPermissionMode}
@@ -4685,7 +4716,9 @@ function SessionConfigModal({
                   data-testid="composer-config-permission-mode"
                   aria-label="Permission mode"
                 >
-                  <SelectValue>{claudePermissionModeLabel(draftPermissionMode)}</SelectValue>
+                  <SelectValue placeholder="Set in Claude">
+                    {claudePermissionModeLabel(draftPermissionMode) || undefined}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent position="popper" align="start">
                   {CLAUDE_NATIVE_SWITCHABLE_PERMISSION_MODES.map((mode) => (
@@ -5077,7 +5110,8 @@ function useResolvedComposerModel(
     modelPickerKind === "cursor" ||
     modelPickerKind === "kiro" ||
     modelPickerKind === "pi" ||
-    modelPickerKind === "opencode";
+    modelPickerKind === "opencode" ||
+    modelPickerKind === "antigravity";
   const modelOptions: readonly {
     id: string;
     label?: string;
@@ -5124,7 +5158,9 @@ function useResolvedComposerModel(
   const effectiveModel = nativeVendorOwnsModel
     ? modelPickerKind === "cursor" || modelPickerKind === "kiro"
       ? sessionModelOverride
-      : modelPickerKind === "opencode" || modelPickerKind === "pi"
+      : modelPickerKind === "opencode" ||
+          modelPickerKind === "pi" ||
+          modelPickerKind === "antigravity"
         ? (sessionModelOverride ?? llmModel)
         : null
     : isReportedModelPicker

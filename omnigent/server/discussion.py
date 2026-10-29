@@ -1006,6 +1006,7 @@ class DiscussionSession:
         *,
         cwd: str | None = None,
         timeout_s: float | None = None,
+        command_runner: Any = None,
     ) -> CheckResult:
         """Find something out by running read-only commands, then answer.
 
@@ -1091,7 +1092,7 @@ class DiscussionSession:
                     if step.run and len(ran) < MAX_CHECK_COMMANDS:
                         self._set_activity("running", question=text, command=step.run)
                         try:
-                            result = await companion_commands.run(
+                            result = await (command_runner or companion_commands.run)(
                                 step.run,
                                 cwd=cwd,
                                 timeout_s=max(

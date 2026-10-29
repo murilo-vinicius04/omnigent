@@ -198,6 +198,14 @@ class ExecutorAdapter(HarnessApp):
             executor._elicitation_choice_handler = (  # type: ignore[attr-defined]
                 self._stable_elicitation_choice_handler
             )
+        # ACP form elicitation (Muse Code user-input questions) — same gate.
+        if (
+            hasattr(executor, "_form_elicitation_handler")
+            and executor._form_elicitation_handler is None  # type: ignore[attr-defined]
+        ):
+            executor._form_elicitation_handler = (  # type: ignore[attr-defined]
+                self._stable_form_elicitation_handler
+            )
         if getattr(executor, "_policy_evaluator", None) is None:
             executor._policy_evaluator = self._stable_policy_evaluator  # type: ignore[attr-defined]
         self._current_ctx = ctx
@@ -662,6 +670,47 @@ class ExecutorAdapter(HarnessApp):
             return None
         answer = (result.content or {}).get("answer")
         return answer if isinstance(answer, str) else None
+
+    async def _stable_form_elicitation_handler(
+        self,
+        message: str,
+        requested_schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Stable bridge for ACP form elicitation (Muse Code user-input).
+
+        Forwards the agent's ``elicitation/create`` question to the user as an
+        approval card and maps the reply back to the ACP
+        ``CreateElicitationResponse`` shape. A declined/cancelled card or a
+        missing turn context degrades to ``decline`` so the adapter cancels
+        that question instead of failing the turn; the turn itself stays alive.
+        """
+        ctx = self._current_ctx
+        if ctx is None:
+            _logger.error("form elicitation fired with no active turn context; declining")
+            return {"action": "decline"}
+        elicitation_id = f"elicit_{secrets.token_hex(16)}"
+        params = ElicitationRequestParams(
+            mode="form",
+            message=message,
+            requestedSchema=requested_schema,
+            url=None,
+            phase="user_input",
+            policy_name=f"{self._harness_label.lower()}_form_elicitation",
+            content_preview=message[:300],
+        )
+        try:
+            result = await ctx.elicit(elicitation_id, params)
+        except Exception:
+            _logger.exception("form elicitation failed; declining")
+            return {"action": "decline"}
+        if result.action == "accept":
+            content = result.content or {}
+            if not isinstance(content, dict):
+                return {"action": "decline"}
+            return {"action": "accept", "content": content}
+        if result.action in ("decline", "cancel"):
+            return {"action": result.action}
+        return {"action": "decline"}
 
     async def _stable_policy_evaluator(
         self,

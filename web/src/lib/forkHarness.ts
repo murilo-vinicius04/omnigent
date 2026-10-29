@@ -24,7 +24,7 @@
 /** Provider family a harness consumes, or null when unknown. */
 export function harnessFamily(
   harness: string | null | undefined,
-): "anthropic" | "openai" | "gemini" | null {
+): "anthropic" | "openai" | "gemini" | "meta" | null {
   if (!harness) return null;
   switch (harness) {
     case "claude-native":
@@ -39,6 +39,10 @@ export function harnessFamily(
     case "openai-agents-sdk":
     case "agents_sdk":
       return "openai";
+    // Muse ACP replays prior turns on the first prompt of a fresh session.
+    case "muse-code":
+    case "muse":
+      return "meta";
     // Antigravity is Gemini-family: the native CLI (`antigravity-native`, `agy-native`)
     // and the in-process SDK (`antigravity`, `agy`, plus reversed spellings) all
     // consume Gemini models.

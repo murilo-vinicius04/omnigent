@@ -5,18 +5,28 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+
+import httpx
 from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
 
-from omnigent.server import budget, hub_lanes, hub_place, model_router
+from omnigent.server import budget, hub_lanes, hub_place, model_router, voice_hub
 from omnigent.server import hub as hub_module
 from omnigent.server.discussion import DiscussionRegistry
 from omnigent.server.hub import HubProject, HubSession, HubState, TurnState, project_line
 from omnigent.server.hub_lanes import BusyLane, LaneRun, LaneSpec
-from tests.server.test_hub import AMARRAS, P_AMARRAS, _hub, _Router, _Server, _settle
+from tests.server.test_hub import (
+    AMARRAS,
+    P_AMARRAS,
+    _hub,
+    _Router,
+    _Server,
+    _settle,
+    _their_words,
+)
 
 SIM = "5151aaaa5151aaaa5151aaaa5151aaaa"
 NEW = "9e9e0000000000000000000000000000"
@@ -32,6 +42,7 @@ class _LaneServer(_Server):
         self.renamed: list[tuple[str, str]] = []
         self.paths: dict[str, list[str]] = {}
         self.steps: dict[str, list[str]] = {}
+        self.places: dict[str, tuple[str, str]] = {}
         self.catalogs = {
             "claude": ["sonnet", "opus", "haiku", "opus[1m]"],
             "codex": ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-luna"],
@@ -72,9 +83,13 @@ class _LaneServer(_Server):
             self.closed.append(session_id)
             self.sessions = [s for s in self.sessions if s.id != session_id]
 
+        async def last_place(name):
+            return self.places.get(name, ("", ""))
+
         return replace(
             base,
             status=status,
+            last_place=last_place,
             open_chat=open_chat,
             catalog=catalog,
             paths_in_use=paths_in_use,
@@ -205,15 +220,17 @@ async def test_a_send_naming_a_lane_goes_to_that_lane(tmp_path) -> None:
     await _settle(hub, until=lambda: server.sent)
     await hub.close()
 
-    assert server.sent == [(AMARRAS, "Fix the docs.")]
+    assert server.sent == [
+        (AMARRAS, _their_words("manda a amarras arrumar a doc", "Fix the docs."))
+    ]
     assert "lane [5151] amarras · sim" in router.prompts[0]
     sent = hub.state.entries[-1]
     assert (sent.kind, sent.session_name) == ("sent", "amarras · Project Analysis")
 
 
 async def test_a_message_for_a_busy_lane_waits_until_it_finishes(tmp_path, monkeypatch) -> None:
-    # The router decides alone (it has learned where their messages go).
-    monkeypatch.setattr(hub_place, "trusted", lambda path: True)
+    # Even with the router trusted, confidence mode is off: the hub asks.
+    monkeypatch.setattr(hub_place, "trusted", lambda path, place="": True)
     router = _Router(
         '{"send": "5151", "message": "Also log the gains.", "say": "Vai quando terminar."}',
         '{"send": "5151", "message": "And plot them.", "say": "Vai quando terminar."}',
@@ -228,10 +245,20 @@ async def test_a_message_for_a_busy_lane_waits_until_it_finishes(tmp_path, monke
     hub.submit("e plotar")
     await _settle(hub, until=lambda: len([e for e in hub.state.entries if e.kind == "held"]) == 2)
     assert server.sent == []
+    # Confidence mode is off: with no place from the router the hub asks
+    # where each message goes instead of queuing it silently.
+    ask = (
+        "Where should this go: into amarras · sim's work now, after it finishes, "
+        "or to a new lane? If you don't pick, it goes when amarras · sim finishes."
+    )
     held = [e for e in hub.state.entries if e.kind == "held"]
     assert [(e.text, e.detail, e.session_id) for e in held] == [
-        ("Vai quando terminar.", "Also log the gains.", SIM),
-        ("Vai quando terminar.", "And plot them.", SIM),
+        (
+            ask,
+            _their_words("e manda logar os ganhos", "Also log the gains."),
+            SIM,
+        ),
+        (ask, _their_words("e plotar", "And plot them."), SIM),
     ]
     # Kept on disk, so a restart does not lose them.
     assert json.loads((tmp_path / "u1" / "held.json").read_text())[SIM]["name"] == "amarras · sim"
@@ -241,7 +268,14 @@ async def test_a_message_for_a_busy_lane_waits_until_it_finishes(tmp_path, monke
     await hub.close()
 
     # Both go together, once, after the lane stayed idle.
-    assert server.sent == [(SIM, "Also log the gains.\n\nAnd plot them.")]
+    assert server.sent == [
+        (
+            SIM,
+            _their_words("e manda logar os ganhos", "Also log the gains.")
+            + "\n\n"
+            + _their_words("e plotar", "And plot them."),
+        )
+    ]
     assert hub.state.held == {}
     assert hub.state.entries[-1].kind == "sent"
 
@@ -259,7 +293,9 @@ async def test_tell_it_now_goes_into_the_busy_lane_at_once(tmp_path) -> None:
     await _settle(hub, until=lambda: server.sent)
     await hub.close()
 
-    assert server.sent == [(SIM, "Stop, the gains are wrong.")]
+    assert server.sent == [
+        (SIM, _their_words("fala agora pra ele parar", "Stop, the gains are wrong."))
+    ]
     assert not any(e.kind == "held" for e in hub.state.entries)
 
 
@@ -280,7 +316,9 @@ async def test_tell_it_now_delivers_what_was_held_once_and_never_again(tmp_path)
     await _settle(hub, until=lambda: hub.state.held)
     hub.submit("fala agora")
     await _settle(hub, until=lambda: server.sent)
-    assert server.sent == [(SIM, "Are the two ZEDs placed for coverage?")]
+    assert server.sent == [
+        (SIM, _their_words("as zeds estão otimizadas?", "Are the two ZEDs placed for coverage?"))
+    ]
     assert hub.state.held == {}
     # Told "now", the router saw what was held; afterwards nothing is.
     hub.submit("e o que mais?")
@@ -416,7 +454,8 @@ async def test_new_work_beside_a_busy_lane_opens_a_lane_on_the_routers_pick(
     assert spec.like == SIM and spec.branch == ""
     # The request goes first, then the brief; the hub chat quotes only the request.
     ((sent_to, text),) = server.sent
-    assert sent_to == NEW and text.startswith("Plan the joystick work.\n\n[The hub opened")
+    assert sent_to == NEW and text.startswith("abre outra frente pra planejar o joystick\n\n")
+    assert "Plan the joystick work.\n\n[The hub opened" in text
     assert f"writing in {repo}" in text
     lane, sent = hub.state.entries[-2:]
     assert (lane.kind, lane.session_id, lane.session_name) == (
@@ -427,7 +466,7 @@ async def test_new_work_beside_a_busy_lane_opens_a_lane_on_the_routers_pick(
     assert lane.text.startswith("New lane: joystick plan, on Codex · gpt-6-luna · high.")
     assert (sent.kind, sent.detail, sent.text) == (
         "sent",
-        "Plan the joystick work.",
+        _their_words("abre outra frente pra planejar o joystick", "Plan the joystick work."),
         "Abri uma frente nova no amarras.",
     )
     # Judged once, logged once, beside what the lane runs on.
@@ -502,7 +541,7 @@ async def test_no_lane_opens_when_no_provider_has_budget_for_its_tier(
     (_, spec), *_ = server.opened
     assert (spec.topic, spec.run.provider, spec.run.model) == ("docs", "claude", "sonnet")
     assert spec.run.reason == "You asked for Sonnet. Claude: today's budget is spent."
-    assert server.sent and server.sent[-1][1].startswith("Write docs.")
+    assert server.sent and server.sent[-1][1].startswith("abre uma frente pra doc")
 
 
 async def test_a_tier_nobody_has_room_for_moves_to_the_nearest_that_has(
@@ -567,6 +606,72 @@ async def test_without_the_decision_model_a_lane_runs_like_the_projects_newest(t
     assert run.reason == "Same as amarras · sim: the router is off."
 
 
+@pytest.mark.parametrize("use", ["", "Gemini", "Argon"])
+async def test_argon_requires_a_named_model_even_beside_an_argon_lane(tmp_path, use) -> None:
+    server = _LaneServer()
+    _two_lanes(server)
+    server.catalogs["gemini"].append("gemini-4-argon-high")
+    hub = _hub(tmp_path, _Router(), server)
+    like = replace(
+        server.sessions[-1],
+        run=hub_module.SessionRun(provider="Antigravity", requested="gemini-4-argon-high"),
+    )
+    project = HubProject(id=P_AMARRAS, name="amarras", chat=like)
+    try:
+        picked = await hub._lane_run(project, like, "Write documentation.", use)
+    finally:
+        await hub.close()
+    assert picked.run is not None
+    expected = "gemini-4-argon-high" if use == "Argon" else "gemini-3.8-flash-high"
+    assert picked.run.model == expected
+
+
+async def test_sol_lane_redirects_to_luna_beside_a_sol_lane(tmp_path) -> None:
+    server = _LaneServer()
+    _two_lanes(server)
+    hub = _hub(tmp_path, _Router(), server)
+    like = replace(
+        server.sessions[-1],
+        run=hub_module.SessionRun(provider="Codex", requested="gpt-6.1-sol"),
+    )
+    project = HubProject(id=P_AMARRAS, name="amarras", chat=like)
+    try:
+        picked = await hub._lane_run(project, like, "Write documentation.", "")
+    finally:
+        await hub.close()
+    assert picked.run is not None
+    assert picked.run.model == "gpt-6-luna"
+    assert "Sol is disabled" in picked.run.reason
+
+
+async def test_automatic_top_tier_never_uses_flash_quota_for_argon(
+    tmp_path, judged, monkeypatch
+) -> None:
+    async def judge(task, backend):
+        return model_router.TierDecision(tier="top", effort="high")
+
+    monkeypatch.setattr(model_router, "judge", judge)
+    monkeypatch.setattr(hub_module, "_agy_models", ("gemini-4-argon-high",))
+    monkeypatch.setattr(
+        budget, "today", lambda _: [budget.ProviderBudget("gemini", 0.0, None, remaining=90.0)]
+    )
+    server = _LaneServer()
+    _two_lanes(server)
+    server.catalogs["gemini"].append("gemini-4-argon-high")
+    hub = _hub(tmp_path, _Router(), server)
+    hub._judge_tiers = True
+    like = server.sessions[-1]
+    try:
+        picked = await hub._lane_run(
+            HubProject(id=P_AMARRAS, name="amarras", chat=like), like, "Design a new system.", ""
+        )
+    finally:
+        await hub.close()
+    assert picked.run is not None
+    assert picked.run.model == "gemini-3.8-flash-high"
+    assert picked.run.tier == "economical"
+
+
 async def test_a_lanes_folder_that_is_a_busy_checkout_gets_its_own_worktree(tmp_path) -> None:
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
@@ -585,7 +690,201 @@ async def test_a_lanes_folder_that_is_a_busy_checkout_gets_its_own_worktree(tmp_
     assert server.opened[0][1].branch == "hub/fix-ci"
 
 
+def _all_chats_closed(server: _LaneServer) -> None:
+    """amarras has no open chat left, as after the idle sweep closed its last one."""
+    server.sessions = [s for s in server.sessions if s.id != AMARRAS]
+    server.projects[0] = replace(server.projects[0], chat_ids=())
+    server.places["amarras"] = ("local", "/home/nexus/amarras")
+
+
+async def test_a_request_to_a_project_with_every_chat_closed_opens_a_new_one(tmp_path) -> None:
+    router = _Router('{"send": "aaaa", "message": "Carry on with the docs.", "say": "Aberto."}')
+    server = _LaneServer()
+    _all_chats_closed(server)
+    hub = _hub(tmp_path, router, server)
+
+    hub.submit("continua os docs do amarras")
+    await _settle(hub, until=lambda: server.sent)
+    await hub.close()
+
+    # It starts where the newest closed chat ran, beside nothing.
+    project_id, spec = server.opened[0]
+    assert project_id == P_AMARRAS and spec.like == ""
+    assert (spec.host_id, spec.workspace) == ("local", "/home/nexus/amarras")
+    ((sent_to, text),) = server.sent
+    assert sent_to == NEW and text.startswith("continua os docs do amarras")
+    assert hub.state.entries[-1].kind == "sent"
+
+
+async def test_a_project_with_no_stored_place_opens_in_its_own_folder(tmp_path) -> None:
+    router = _Router('{"new_lane": "aaaa", "message": "Start it.", "say": "Ok."}')
+    server = _LaneServer()
+    _all_chats_closed(server)
+    server.places.clear()
+    server.projects[0] = replace(server.projects[0], folder="/srv/amarras", host_id="box")
+    hub = _hub(tmp_path, router, server)
+
+    hub.submit("abre uma frente nova no amarras")
+    await _settle(hub, until=lambda: server.sent)
+    await hub.close()
+
+    assert (server.opened[0][1].host_id, server.opened[0][1].workspace) == ("box", "/srv/amarras")
+
+
+async def test_a_project_that_never_had_a_place_still_asks_for_a_chat(tmp_path) -> None:
+    router = _Router('{"send": "aaaa", "message": "Start it.", "say": "Ok."}')
+    server = _LaneServer()
+    _all_chats_closed(server)
+    server.places.clear()
+    hub = _hub(tmp_path, router, server)
+
+    hub.submit("manda isso pro amarras")
+    await _settle(hub)
+    await hub.close()
+
+    assert server.opened == [] and server.sent == []
+    last = hub.state.entries[-1]
+    assert last.kind == "attention" and "amarras has no chat yet" in last.text
+
+
+async def test_a_status_question_to_a_project_with_no_chat_opens_nothing(tmp_path) -> None:
+    router = _Router('{"status": "aaaa"}')
+    server = _LaneServer()
+    _all_chats_closed(server)
+    hub = _hub(tmp_path, router, server)
+
+    hub.submit("como está o amarras?")
+    await _settle(hub)
+    await hub.close()
+
+    assert server.opened == [] and server.sent == []
+    last = hub.state.entries[-1]
+    assert last.kind == "attention" and "amarras has no chat open" in last.text
+
+
+async def test_a_spoken_request_to_a_project_with_no_chat_opens_one(tmp_path) -> None:
+    server = _LaneServer()
+    _all_chats_closed(server)
+    hub = _hub(tmp_path, _Router(), server)
+
+    name, out = await voice_hub.run_hub_tool(
+        hub, "ask_claude", {"session": "amarras", "message": "write the docs"}
+    )
+    await hub.close()
+
+    assert name == "amarras" and out.startswith("Sent to amarras.")
+    assert server.opened[0][1].workspace == "/home/nexus/amarras"
+    ((sent_to, text),) = server.sent
+    assert sent_to == NEW and text.startswith("write the docs")
+
+
 # -- renaming and closing lanes ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "busy_host, expected_branch", [("local", ""), ("remote", "hub/remote-work")]
+)
+async def test_machine_selection_separates_identical_paths_and_remote_worktrees(
+    tmp_path, busy_host, expected_branch
+):
+    server = _LaneServer()
+    _two_lanes(server)
+    server.sessions = [
+        replace(s, host_id=busy_host, workspace="/same/repo") for s in server.sessions
+    ]
+    server.turns = [TurnState(status="running")]
+    hub = _hub(tmp_path, _Router(), server)
+    inspected = []
+
+    async def inspect_host(host_id, payload):
+        inspected.append((host_id, payload))
+        return {"repos": dict.fromkeys(payload.get("paths", []), "/same/repo")}
+
+    hub.bind(replace(hub.require_backend(), inspect_host=inspect_host))
+    project = next(
+        p for p in await hub.projects(shown=hub_module.CHATS_SHOWN) if p.id == P_AMARRAS
+    )
+    server.paths[SIM] = ["/same/repo/file.py"]
+    await hub.open_lane(
+        project,
+        "remote work",
+        "Read the remote project",
+        via="panel",
+        host_id="remote",
+        workspace="/same/repo",
+    )
+    await hub.close()
+    spec = server.opened[0][1]
+    assert (spec.host_id, spec.workspace, spec.branch) == ("remote", "/same/repo", expected_branch)
+    assert inspected and all(h == "remote" for h, _ in inspected)
+
+
+async def test_a_busy_lane_with_more_paths_than_the_endpoint_takes_still_opens(tmp_path) -> None:
+    server = _LaneServer()
+    _two_lanes(server)
+    server.sessions = [
+        replace(s, host_id="remote", workspace="/same/repo") for s in server.sessions
+    ]
+    # 250 touched paths: the inspect endpoint takes at most 100.
+    server.paths[SIM] = [f"/same/repo/file{i}.py" for i in range(250)]
+    hub = _hub(tmp_path, _Router(), server)
+    inspected = []
+
+    async def inspect_host(host_id, payload):
+        inspected.append((host_id, payload))
+        return {"repos": dict.fromkeys(payload.get("paths", []), "/same/repo")}
+
+    hub.bind(replace(hub.require_backend(), inspect_host=inspect_host))
+    project = next(
+        p for p in await hub.projects(shown=hub_module.CHATS_SHOWN) if p.id == P_AMARRAS
+    )
+    await hub.open_lane(
+        project,
+        "remote work",
+        "Read the remote project",
+        via="panel",
+        host_id="remote",
+        workspace="/same/repo",
+    )
+    await hub.close()
+
+    assert server.opened and all(
+        len(payload.get("paths", [])) <= 100 for _, payload in inspected
+    )
+
+
+async def test_a_rejected_inspect_names_the_status_instead_of_crying_offline(tmp_path) -> None:
+    server = _LaneServer()
+    _two_lanes(server)
+    server.sessions = [
+        replace(s, host_id="remote", workspace="/same/repo") for s in server.sessions
+    ]
+    hub = _hub(tmp_path, _Router(), server)
+
+    async def inspect_host(host_id, payload):
+        request = httpx.Request("POST", f"http://hub/v1/hosts/{host_id}/inspect")
+        response = httpx.Response(
+            422, json={"detail": "paths: too many items"}, request=request
+        )
+        raise httpx.HTTPStatusError("422", request=request, response=response)
+
+    hub.bind(replace(hub.require_backend(), inspect_host=inspect_host))
+    project = next(
+        p for p in await hub.projects(shown=hub_module.CHATS_SHOWN) if p.id == P_AMARRAS
+    )
+    entry = await hub.open_lane(
+        project,
+        "remote work",
+        "Read the remote project",
+        via="panel",
+        host_id="remote",
+        workspace="/same/repo",
+    )
+    await hub.close()
+
+    assert entry.kind == "error" and server.opened == []
+    assert "HTTP 422" in entry.text and "paths" in entry.text
+    assert "Check that it is online" not in entry.text
 
 
 async def test_a_lane_is_renamed_and_closed_after_its_handoff_note(tmp_path) -> None:
@@ -626,10 +925,185 @@ async def test_a_working_lane_is_not_closed(tmp_path) -> None:
     assert server.closed == []
 
 
+async def test_idle_hub_lanes_close_automatically_after_handoff(tmp_path) -> None:
+    server = _LaneServer()
+    _two_lanes(server, sim="idle")
+    now = time.time()
+    idle_since = now - hub_module.AUTO_CLOSE_IDLE_S - 60.0
+    server.sessions = [
+        replace(s, updated_at=now, status="idle")
+        if s.id == AMARRAS
+        else replace(s, updated_at=idle_since, status="idle")
+        if s.id == SIM
+        else s
+        for s in server.sessions
+    ]
+    server.projects[0] = replace(server.projects[0], chat_ids=(AMARRAS, SIM))
+    server.turns = [
+        TurnState(status="running"),
+        TurnState(status="idle", reply="Wrote HANDOFF.md."),
+    ]
+    hub = _hub(tmp_path, _Router(), server)
+
+    entries = await hub.auto_close_idle_lanes()
+    await _settle(hub, until=lambda: server.closed != [])
+    await hub.close()
+
+    assert server.sent == [(SIM, hub_module.HANDOFF_REQUEST)]
+    assert server.closed == [SIM]
+    assert [e.kind for e in entries] == ["sent"]
+
+
+async def test_every_idle_lane_closes_even_the_newest(tmp_path) -> None:
+    server = _LaneServer()
+    _two_lanes(server, sim="idle")
+    now = time.time()
+    old, older = now - hub_module.AUTO_CLOSE_IDLE_S - 3600.0, now - hub_module.AUTO_CLOSE_IDLE_S - 7200.0
+    server.sessions = [
+        replace(s, updated_at=older, status="idle")
+        if s.id == SIM
+        else replace(s, updated_at=old, status="idle", lane="amarras work")
+        if s.id == AMARRAS
+        else s
+        for s in server.sessions
+    ]
+    server.projects[0] = replace(server.projects[0], chat_ids=(AMARRAS, SIM))
+    server.turns = [
+        TurnState(status="running"),
+        TurnState(status="idle", reply="Wrote HANDOFF.md."),
+    ]
+    hub = _hub(tmp_path, _Router(), server)
+
+    entries = await hub.auto_close_idle_lanes()
+    # The handoff request lands, bumping the dying lane above the newest,
+    # the way the real backend reorders chats by activity: both still close.
+    server.sessions = [
+        replace(s, updated_at=time.time()) if s.id == SIM else s for s in server.sessions
+    ]
+    server.projects[0] = replace(server.projects[0], chat_ids=(SIM, AMARRAS))
+    entries += await hub.auto_close_idle_lanes()
+    await _settle(hub, until=lambda: len(server.closed) == 2)
+    await hub.close()
+
+    assert [e.kind for e in entries] == ["sent", "sent"]
+    assert sorted(server.closed) == sorted([SIM, AMARRAS])
+
+
+async def test_idle_project_chat_without_lane_label_closes_too(tmp_path) -> None:
+    server = _LaneServer()
+    _two_lanes(server, sim="idle")
+    now = time.time()
+    server.sessions = [
+        replace(s, updated_at=now, status="idle")
+        if s.id == SIM
+        else replace(s, updated_at=now - hub_module.AUTO_CLOSE_IDLE_S - 60.0, status="idle")
+        if s.id == AMARRAS
+        else s
+        for s in server.sessions
+    ]
+    assert next(s.lane for s in server.sessions if s.id == AMARRAS) == ""
+    server.projects[0] = replace(server.projects[0], chat_ids=(SIM, AMARRAS))
+    server.turns = [
+        TurnState(status="running"),
+        TurnState(status="idle", reply="Wrote HANDOFF.md."),
+    ]
+    hub = _hub(tmp_path, _Router(), server)
+
+    entries = await hub.auto_close_idle_lanes()
+    await _settle(hub, until=lambda: server.closed != [])
+    await hub.close()
+
+    assert [e.kind for e in entries] == ["sent"]
+    assert server.sent == [(AMARRAS, hub_module.HANDOFF_REQUEST)]
+    assert server.closed == [AMARRAS]
+
+
+def _loose(i: int, idle_s: float) -> HubSession:
+    now = time.time()
+    return HubSession(
+        id=f"{i:032d}",
+        title=f"loose eval {i}",
+        status="idle",
+        updated_at=now - idle_s,
+    )
+
+
+async def test_idle_unfiled_chat_gets_handoff_then_closes(tmp_path) -> None:
+    server = _LaneServer()
+    loose = _loose(1, hub_module.AUTO_CLOSE_IDLE_S + 60.0)
+    server.turns = [
+        TurnState(status="running"),
+        TurnState(status="idle", reply="Wrote HANDOFF.md."),
+    ]
+    hub = _hub(tmp_path, _Router(), server)
+
+    async def unfiled(limit: int) -> list[HubSession]:
+        return [loose][:limit]
+
+    hub.bind(replace(server.backend(), unfiled=unfiled))
+
+    entries = await hub.auto_close_idle_lanes()
+    await _settle(hub, until=lambda: server.closed != [])
+    await hub.close()
+
+    assert [e.kind for e in entries] == ["sent"]
+    assert server.sent == [(loose.id, hub_module.HANDOFF_REQUEST)]
+    assert server.closed == [loose.id]
+
+
+async def test_ancient_unfiled_chat_archives_without_waking(tmp_path) -> None:
+    server = _LaneServer()
+    loose = _loose(2, hub_module.AUTO_CLOSE_DIRECT_S + 60.0)
+    hub = _hub(tmp_path, _Router(), server)
+
+    async def unfiled(limit: int) -> list[HubSession]:
+        return [loose][:limit]
+
+    hub.bind(replace(server.backend(), unfiled=unfiled))
+
+    entries = await hub.auto_close_idle_lanes()
+    await _settle(hub)
+    await hub.close()
+
+    assert server.sent == []
+    assert server.closed == [loose.id]
+    assert [e.kind for e in entries] == ["project"]
+    assert "without a handoff note" in entries[0].text
+
+
+async def test_direct_archive_stops_at_the_per_sweep_cap(tmp_path) -> None:
+    server = _LaneServer()
+    olds = [_loose(i, hub_module.AUTO_CLOSE_DIRECT_S + 3600.0 + i) for i in range(25)]
+    hub = _hub(tmp_path, _Router(), server)
+
+    async def unfiled(limit: int) -> list[HubSession]:
+        return olds[:limit]
+
+    hub.bind(replace(server.backend(), unfiled=unfiled))
+
+    entries = await hub.auto_close_idle_lanes()
+    await _settle(hub)
+    await hub.close()
+
+    assert server.sent == []
+    assert len(server.closed) == hub_module.AUTO_CLOSE_DIRECT_PER_SWEEP
+    assert len(entries) == hub_module.AUTO_CLOSE_DIRECT_PER_SWEEP
+
+
 # -- the store backend -------------------------------------------------------------
 
 
-async def test_a_lane_is_created_through_the_sessions_route_beside_its_chat() -> None:
+@pytest.mark.parametrize(
+    ("provider", "launch_args"),
+    [
+        ("claude", ["--permission-mode", "bypassPermissions"]),
+        ("codex", None),
+        ("gemini", ["--dangerously-skip-permissions"]),
+    ],
+)
+async def test_a_lane_is_created_through_the_sessions_route_beside_its_chat(
+    provider: str, launch_args: list[str] | None
+) -> None:
     like = SimpleNamespace(id=SIM, host_id="host1", workspace="/home/u", labels={})
     store = SimpleNamespace(get_conversation=lambda sid: like if sid == SIM else None)
     app = FastAPI()
@@ -637,7 +1111,7 @@ async def test_a_lane_is_created_through_the_sessions_route_beside_its_chat() ->
 
     @app.get("/v1/agents")
     async def agents():
-        return {"data": [{"id": "ag-codex", "name": "codex-native-ui"}]}
+        return {"data": [{"id": "ag-picked", "name": hub_module.hub_lanes.AGENT_NAMES[provider]}]}
 
     @app.post("/v1/sessions")
     async def create(body: dict):
@@ -648,24 +1122,26 @@ async def test_a_lane_is_created_through_the_sessions_route_beside_its_chat() ->
     backend = hub_module.store_backend(
         store, user_id="morys5", app=app, headers={}, companions=lambda: registry
     )
-    run = LaneRun(provider="codex", model="gpt-6-luna", effort="high")
+    run = LaneRun(provider=provider, model="chosen-model", effort="high")
 
     made = await backend.open_chat(P_AMARRAS, LaneSpec(topic="joystick", run=run, like=SIM))
 
     assert made == NEW
     assert created == [
         {
-            "agent_id": "ag-codex",
+            "agent_id": "ag-picked",
             "project_id": P_AMARRAS,
             "host_id": "host1",
             "workspace": "/home/u",
             "title": "joystick",
             "labels": {
                 "omnigent.ui": "terminal",
-                "omnigent.wrapper": "codex-native-ui",
+                "omnigent.wrapper": hub_module.hub_lanes.WRAPPERS[provider],
+                hub_module.quota_handoff.PROVIDER_LABEL: provider,
                 "omnigent.hub.lane": "joystick",
             },
-            "model_override": "gpt-6-luna",
+            **({"terminal_launch_args": launch_args} if launch_args is not None else {}),
+            "model_override": "chosen-model",
             "reasoning_effort": "high",
         }
     ]
@@ -709,7 +1185,7 @@ async def test_a_lane_name_the_router_cannot_give_is_the_requests_start(
     await hub.close()
 
     _, spec = server.opened[0]
-    assert spec.topic == "Write the docs for the API."
+    assert spec.topic == "abre uma frente pros docs"
 
 
 class _NamingRouter(_Router):
@@ -809,3 +1285,135 @@ def test_a_lanes_steps_are_its_tool_calls_descriptions_newest_first() -> None:
         "/home/u/franka_mpc/run.sh",
     ]
     assert hub_module.step_lines(items, limit=1) == ["Run the attraction batch in Isaac"]
+
+
+async def test_muse_lane_uses_acp_without_a_terminal_or_tier_catalog(tmp_path) -> None:
+    server = _LaneServer()
+    _two_lanes(server)
+    hub = _hub(tmp_path, _Router(), server)
+    like = server.sessions[-1]
+    project = HubProject(id=P_AMARRAS, name="amarras", chat=like)
+    try:
+        picked = await hub._lane_run(project, like, "Write documentation.", "Muse Code")
+    finally:
+        await hub.close()
+    assert picked.run is not None
+    assert picked.run.provider == "muse"
+    assert picked.run.model == ""
+    assert picked.run.effort == "xhigh"
+    assert picked.run.tier == ""
+
+    store = SimpleNamespace(
+        get_conversation=lambda sid: SimpleNamespace(host_id="host1", workspace="/home/u")
+    )
+    app = FastAPI()
+    created: list[dict] = []
+
+    @app.get("/v1/agents")
+    async def agents():
+        return {"data": [{"id": "muse-agent", "name": "muse-code"}]}
+
+    @app.post("/v1/sessions")
+    async def create(body: dict):
+        created.append(body)
+        return {"id": NEW}
+
+    registry = DiscussionRegistry()
+    backend = hub_module.store_backend(
+        store, user_id="morys5", app=app, headers={}, companions=lambda: registry
+    )
+    made = await backend.open_chat(
+        P_AMARRAS, LaneSpec(topic="Muse documentation", run=picked.run, like=SIM)
+    )
+    assert made == NEW
+    assert created[0]["agent_id"] == "muse-agent"
+    assert created[0]["labels"] == {
+        "omnigent.hub.lane": "Muse documentation",
+        "omnigent.acp.permission_mode": "bypassPermissions",
+        hub_module.quota_handoff.PROVIDER_LABEL: "muse",
+    }
+    assert "terminal_launch_args" not in created[0]
+    assert "model_override" not in created[0]
+    assert created[0]["reasoning_effort"] == "xhigh"
+
+
+def _lane_labels(topic="Câmeras ZED no lab"):
+    return {"omnigent.hub.lane": topic}
+
+
+def _user_content(text="e aí, como tá a câmera?"):
+    return [{"type": "input_text", "text": text}]
+
+
+def test_direct_message_on_lane_returns_its_topic():
+    """A user-direct message in a lane's own chat pulls the hub into watching it.
+
+    **What breaks if this fails**: lanes only report back to the hub when the
+    hub itself sent the request — everything typed directly in the lane's chat
+    never reaches the project.
+    """
+    assert (
+        hub_lanes.direct_message_lane_topic(
+            body_type="message",
+            content=_user_content(),
+            labels=_lane_labels(),
+        )
+        == "Câmeras ZED no lab"
+    )
+
+
+def test_direct_slash_command_on_lane_returns_its_topic():
+    assert (
+        hub_lanes.direct_message_lane_topic(
+            body_type="slash_command",
+            content=None,
+            labels=_lane_labels(),
+        )
+        == "Câmeras ZED no lab"
+    )
+
+
+def test_hub_marked_message_is_not_a_direct_message():
+    """The hub's own sends carry force_claude and are already watched."""
+    assert (
+        hub_lanes.direct_message_lane_topic(
+            body_type="message",
+            content=[{"type": "force_claude"}, *_user_content()],
+            labels=_lane_labels(),
+        )
+        is None
+    )
+
+
+def test_message_outside_a_lane_is_not_watched():
+    assert (
+        hub_lanes.direct_message_lane_topic(
+            body_type="message",
+            content=_user_content(),
+            labels={},
+        )
+        is None
+    )
+
+
+def test_non_work_events_are_not_watched():
+    for body_type in ("interrupt", "approval", "function_call_output", "input"):
+        assert (
+            hub_lanes.direct_message_lane_topic(
+                body_type=body_type,
+                content=_user_content(),
+                labels=_lane_labels(),
+            )
+            is None
+        )
+
+
+def test_blank_lane_topic_is_not_watched():
+    assert (
+        hub_lanes.direct_message_lane_topic(
+            body_type="message",
+            content=_user_content(),
+            labels={"omnigent.hub.lane": "   "},
+        )
+        is None
+    )

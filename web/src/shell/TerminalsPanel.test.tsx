@@ -107,6 +107,30 @@ afterEach(() => {
 });
 
 describe("TerminalsPanel navigation", () => {
+  it("keeps the requested shell selected until the initial list finishes loading", async () => {
+    useTerminalsMock.mockReturnValue({ terminals: [], isLoading: true, error: null });
+    const onClose = vi.fn();
+    const props = {
+      open: true,
+      conversationId: "conv_terminal",
+      initialTerminalKey: "terminal:terminal_worker",
+      onClose,
+    };
+    const { rerender } = render(<TerminalsPanel {...props} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Loading shells");
+    expect(onClose).not.toHaveBeenCalled();
+
+    mockTerminalList([makeTerminal("terminal_worker", "worker", "s2")]);
+    rerender(<TerminalsPanel {...props} />);
+    await act(async () => vi.advanceTimersByTime(180));
+    expect(screen.getByTestId("terminal-view")).toHaveAttribute(
+      "data-terminal-id",
+      "terminal_worker",
+    );
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
   it("opens to the list view with all terminals visible and no terminal mounted", () => {
     renderPanel();
 

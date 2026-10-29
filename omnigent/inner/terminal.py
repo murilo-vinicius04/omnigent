@@ -974,6 +974,8 @@ class TerminalInstance:
     # meaningful with ``keep_alive_after_exit`` / ``remain-on-exit``). ``None``
     # until the process exits or when tmux reports no numeric status.
     _last_exit_status: int | None = field(default=None, repr=False)
+    # The effective executable includes the original sandbox launcher, if any.
+    _launch_executable: str | None = field(default=None, repr=False)
 
     @property
     def tmux_target(self) -> str:
@@ -1222,6 +1224,19 @@ class TerminalInstance:
 
         self.running = True
         self.launch_cwd = effective_cwd
+        self._launch_executable = inner_cmd[0]
+
+    async def respawn(self, *, args: list[str]) -> None:
+        """Replace the pane process while retaining its sandbox, env and clients."""
+        if not self.running or self._launch_executable is None or self.launch_cwd is None:
+            raise RuntimeError("Cannot respawn a terminal without its original launch context")
+        command = " ".join(_shell_quote(arg) for arg in [self._launch_executable, *args])
+        await self._tmux(
+            "respawn-pane", "-k", "-t", self.tmux_target, "-c", self.launch_cwd, command
+        )
+        self.args = list(args)
+        self._last_exit_status = None
+        self._last_pane_snapshot = None
 
     async def send(
         self,

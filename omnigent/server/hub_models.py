@@ -14,6 +14,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
+from omnigent.reasoning_effort import MUSE_EFFORTS
+
 #: The chat's own name for each terminal wrapper.
 PROVIDERS: Final[dict[str, str]] = {
     "claude-code-native-ui": "Claude Code",
@@ -37,6 +39,7 @@ _PICKER_WRAPPERS: Final[dict[str, str]] = {
     "kiro-native-ui": "kiro",
     "opencode-native-ui": "opencode",
     "pi-native-ui": "pi",
+    "antigravity-native-ui": "antigravity",
 }
 
 #: Efforts by picker kind; Codex's come per model from its catalog.
@@ -46,7 +49,11 @@ _EFFORTS: Final[dict[str, tuple[str, ...]]] = {
 }
 
 #: The host harness whose catalog stands in until the session reports its own.
-HOST_CATALOG_HARNESS: Final[dict[str, str]] = {"claude": "claude-native", "codex": "codex-native"}
+HOST_CATALOG_HARNESS: Final[dict[str, str]] = {
+    "claude": "claude-native",
+    "codex": "codex-native",
+    "antigravity": "antigravity-native",
+}
 
 #: Spoken names for efforts, folded to the catalog's spelling.
 _EFFORT_WORDS: Final[dict[str, str]] = {
@@ -214,8 +221,22 @@ def _choices(options: Sequence[Any]) -> tuple[ModelChoice, ...]:
     return tuple(out)
 
 
+# Same pre-session fallback as web/src/lib/museCodeModels.ts; live options win.
+_MUSE_MODELS: Final[tuple[ModelChoice, ...]] = tuple(
+    ModelChoice(id=model, label=label)
+    for model, label in (
+        ("muse-wonder-1.0", "Muse Wonder"),
+        ("muse-wonder-full-1.0", "Muse Wonder Full"),
+        ("muse-spark-1.3", "Muse Spark 1.3"),
+        ("muse-spark-1.2", "Muse Spark 1.2"),
+    )
+)
+
+
 def picker_kind(snapshot: dict[str, Any]) -> str:
     """The chat's model picker kind for a session snapshot; empty for none."""
+    if snapshot.get("harness") in ("muse-code", "muse"):
+        return "muse"
     labels = snapshot.get("labels") or {}
     wrapper = labels.get("omnigent.wrapper")
     if wrapper is None and snapshot.get("harness") == "codex-native":
@@ -229,6 +250,11 @@ def provider_name(snapshot: dict[str, Any]) -> str:
     wrapper = str(labels.get("omnigent.wrapper") or "")
     if wrapper in PROVIDERS:
         return PROVIDERS[wrapper]
+    if (
+        snapshot.get("harness") in ("muse-code", "muse")
+        or snapshot.get("agent_name") == "muse-code"
+    ):
+        return "Muse Code"
     if picker_kind(snapshot) == "codex":
         return "Codex"
     return str(snapshot.get("agent_name") or snapshot.get("harness") or "")
@@ -246,19 +272,27 @@ def run_from_snapshot(
     override = str(snapshot.get("model_override") or "")
     reported = str(snapshot.get("llm_model") or "")
     requested = ""
-    if kind in ("claude", "codex"):
+    if kind in ("claude", "codex", "antigravity"):
         model = reported or override
     elif kind in ("cursor", "kiro"):
         model = override
     else:
         model = override or reported
     models = _choices(snapshot.get("model_options") or fallback_options) if kind else ()
-    if kind == "codex":
+    if kind == "muse" and not models:
+        models = _MUSE_MODELS
+    if kind in ("codex", "muse"):
         current = find_choice(models, model)
         efforts = current.efforts if current is not None else ()
+        if kind == "muse" and not efforts:
+            efforts = tuple(
+                e
+                for e in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+                if e in MUSE_EFFORTS
+            )
     else:
         efforts = _EFFORTS.get(kind, ())
-    if kind in ("claude", "codex") and reported and override:
+    if kind in ("claude", "codex", "antigravity") and reported and override:
         # Asked for and reported can spell one model two ways ("opus" and
         # "claude-opus-5-5"); only a different model is still on its way.
         asked = find_choice(models, override)

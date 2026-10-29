@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PlanLimitPills } from "./PlanLimitPills";
@@ -23,6 +23,46 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("PlanLimitPills", () => {
+  it("keeps an exhausted API pool outside the Codex subscription quota group", async () => {
+    fetchPlanLimitsMock.mockResolvedValueOnce({
+      fetched_at: Date.now(),
+      providers: [
+        {
+          id: "codex",
+          label: "Codex",
+          state: "ok",
+          meter_type: "subscription",
+          windows: [{ kind: "weekly", label: "week", percent: 14, resets_at: null }],
+        },
+        {
+          id: "openai",
+          label: "OpenAI API",
+          state: "ok",
+          meter_type: "api_usage",
+          credit_balance: null,
+          windows: [{ kind: "daily", label: "local pool", percent: 100, resets_at: null }],
+        },
+      ],
+    });
+    render(
+      <TooltipProvider delayDuration={0}>
+        <PlanLimitPills />
+      </TooltipProvider>,
+    );
+    const codex = await screen.findByTestId("plan-limit-codex");
+    const subscriptions = screen.getByRole("group", { name: "Subscription quotas" });
+    const api = screen.getByRole("group", { name: "API usage" });
+    expect(within(subscriptions).getByTestId("plan-limit-codex")).toBe(codex);
+    expect(within(subscriptions).queryByTestId("plan-limit-openai")).toBeNull();
+    expect(within(api).getByTestId("plan-limit-openai")).toHaveTextContent("credits unavailable");
+    expect(codex).toHaveTextContent("14%");
+    fireEvent.focus(screen.getByTestId("plan-limit-openai"));
+    await waitFor(() =>
+      expect(document.querySelector('[data-slot="tooltip-content"]')).toHaveTextContent(
+        "Credit balance unavailable",
+      ),
+    );
+  });
   it("renders the stale Claude pill with reduced opacity and rate limit retry tooltip", async () => {
     fetchPlanLimitsMock.mockResolvedValueOnce({
       fetched_at: Date.now(),

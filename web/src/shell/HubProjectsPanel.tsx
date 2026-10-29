@@ -1,3 +1,6 @@
+import { HubMachinesDialog } from "./HubMachinesDialog";
+import { HubMachineDialog } from "./HubMachineDialog";
+import { HubMachinePicker, HubMachineName, type HubMachine } from "./HubMachinePicker";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
@@ -19,6 +22,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { PlanLimitPills } from "@/components/PlanLimitPills";
 import { RunningDot } from "@/components/RunningDot";
+import { HubChimeButton } from "@/components/HubChimeButton";
 import {
   Command,
   CommandEmpty,
@@ -59,17 +63,24 @@ import {
   closeHubLane,
   createHubProject,
   deleteHubProject,
+  getHubProjectBrief,
   listHubBudgets,
   listHubChats,
   listHubProjects,
   openHubLane,
   projectChatLink,
+  refreshHubProjectBrief,
   renameHubLane,
   renameHubProject,
+  saveHubProjectBrief,
   setHubProjectModel,
+  setHubProjectMachine,
+  type HubBriefLane,
   type HubCandidate,
+  type HubProjectBrief,
   type HubProjectRow,
   type HubSessionRow,
+  type HubTodoItem,
 } from "@/lib/hubApi";
 import { relativeTime } from "@/lib/relativeTime";
 import { cn } from "@/lib/utils";
@@ -127,14 +138,16 @@ export function HubProjectsPanel() {
       className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2"
       data-testid="hub-projects"
     >
-      <div className="flex items-center justify-between gap-2 px-1">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-1">
         <span className="text-xs text-muted-foreground">
           {rows.length === 1 ? "1 project" : `${rows.length} projects`}
         </span>
         {/* The plan limits every project draws on: a chat shows them under its composer. */}
-        <span className="ml-auto flex items-center" data-testid="hub-plan-limits">
+        <span className="ml-auto flex items-center gap-1" data-testid="hub-plan-limits">
+          <HubChimeButton />
           <PlanLimitPills />
         </span>
+        <HubMachinesDialog />
         <NewProjectDialog />
       </div>
       <BudgetStrip />
@@ -550,18 +563,25 @@ const PROVIDER_LABELS: Record<string, string> = {
   claude: "Claude",
   codex: "Codex",
   gemini: "Gemini",
+  muse: "Muse Code",
 };
 
 function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider] ?? provider;
 }
 
-/** "Fri 08:59" in their own time zone. */
-function shortWhen(iso: string | null): string {
+/** Provider reset or Hub rollover, with an explicit zone when configured. */
+function shortWhen(iso: string | null, timeZone?: string | null): string {
   if (!iso) return "";
   const when = new Date(iso);
   if (Number.isNaN(when.getTime())) return "";
-  return when.toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  return when.toLocaleString(undefined, {
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    ...(timeZone ? { timeZone } : {}),
+  });
 }
 
 const HUB_BUDGETS_QUERY_KEY = ["hub-budgets"] as const;
@@ -582,15 +602,20 @@ function BudgetStrip() {
       {data.map((b) => {
         let text: string;
         if (b.free_until) text = `${b.remaining.toFixed(0)}% left until ${shortWhen(b.free_until)}`;
-        else if (b.blocked) text = b.blocked;
-        else text = `${b.remaining.toFixed(1)}% left today`;
+        else if (b.blocked)
+          text = b.blocked === "today's budget is spent" ? "Hub daily budget spent" : b.blocked;
+        else text = `${b.remaining.toFixed(1)}% of week available today`;
         const detail = [
           b.week_used !== null ? `${b.week_used.toFixed(0)}% of the week used` : "",
           b.free_until ? "" : `day ${b.day + 1} of 7`,
           b.free_until || b.week_used === null
             ? ""
             : `spent ${b.spent.toFixed(1)}% of ${b.allowed.toFixed(1)}% today`,
-          b.resets_at ? `resets ${shortWhen(b.resets_at)}` : "",
+          b.daily_resets_at
+            ? `Hub day renews ${shortWhen(b.daily_resets_at, b.daily_timezone)} (${b.daily_timezone ?? "local time"})`
+            : "",
+          b.resets_at ? `subscription week resets ${shortWhen(b.resets_at)}` : "",
+          "Subscription budget; API credits are separate",
         ]
           .filter(Boolean)
           .join(" · ");
@@ -605,6 +630,18 @@ function BudgetStrip() {
             data-testid={`hub-budget-${b.provider}`}
           >
             <span className="font-medium">{b.label}</span> · {text}
+            {b.daily_resets_at && (
+              <span>
+                {" "}
+                · renews{" "}
+                {new Date(b.daily_resets_at).toLocaleTimeString(undefined, {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  hourCycle: "h23",
+                  ...(b.daily_timezone ? { timeZone: b.daily_timezone } : {}),
+                })}
+              </span>
+            )}
           </span>
         );
       })}
@@ -637,6 +674,397 @@ function RouteLine({ row }: { row: HubProjectRow }) {
   );
 }
 
+/** A to-do row: the project's items toggle and delete, a lane's own are read only. */
+function TodoRow({
+  item,
+  note,
+  onToggle,
+  onDelete,
+}: {
+  item: HubTodoItem;
+  note?: string;
+  onToggle?: () => void;
+  onDelete?: () => void;
+}) {
+  const done = item.status === "done";
+  return (
+    <li className="flex items-start gap-2 text-xs">
+      {onToggle ? (
+        <input
+          type="checkbox"
+          checked={done}
+          onChange={onToggle}
+          aria-label={item.content}
+          className="mt-0.5"
+        />
+      ) : (
+        <span aria-hidden className="mt-0.5 inline-block size-2 shrink-0 rounded-full border border-border" />
+      )}
+      <span className={cn("min-w-0 flex-1", done && "text-muted-foreground line-through")}>
+        {item.content}
+        {note && <span className="block text-[11px] text-muted-foreground">{note}</span>}
+      </span>
+      {onDelete && (
+        <button
+          type="button"
+          className="shrink-0 text-xs text-muted-foreground hover:text-destructive"
+          onClick={onDelete}
+          aria-label={`Delete ${item.content}`}
+        >
+          ×
+        </button>
+      )}
+    </li>
+  );
+}
+
+/** What a project is doing, from its rows alone: for a preview before any brief exists. */
+function standingOf(row: HubProjectRow): string {
+  const lanes = row.lanes?.length ? row.lanes : row.chat ? [row.chat] : [];
+  if (lanes.length === 0) return "";
+  if (lanes.some((lane) => lane.working)) return "Working";
+  if (lanes.some((lane) => lane.pending_approvals > 0)) return "Waiting for your approval";
+  return "Idle";
+}
+
+const LANE_STATE_LABEL: Record<HubBriefLane["state"], string> = {
+  working: "working",
+  waiting: "waiting for you",
+  holding: "holding a message",
+  idle: "idle",
+};
+
+/**
+ * The project's brief, written by its companion as the work goes: what the
+ * project is, where it stands, what it got done lately, and what is left. The
+ * to-do list is shared: the companion adds and ticks its own items, and the
+ * person's items stay theirs. Their own overview, when they write one, is
+ * pinned and the companion leaves it.
+ */
+function ProjectBrief({
+  row,
+  onChanged,
+}: {
+  row: HubProjectRow;
+  onChanged: (text: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [adding, setAdding] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const brief = useQuery({
+    queryKey: ["hub-brief", row.id],
+    queryFn: () => getHubProjectBrief(row.id),
+    enabled: open,
+    refetchInterval: open ? POLL_MS * 5 : false,
+  });
+  const data: HubProjectBrief | undefined = brief.data;
+  const todos = data?.brief_todos ?? row.brief_todos ?? [];
+
+  async function persist(nextBrief: string, nextTodos: HubTodoItem[]): Promise<void> {
+    setSaving(true);
+    setFailed(null);
+    try {
+      const saved = await saveHubProjectBrief(row.id, {
+        brief: nextBrief,
+        brief_todos: nextTodos,
+      });
+      onChanged(
+        saved.brief || saved.brief_todos.length > 0 ? "Brief saved." : "Brief cleared.",
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["hub-brief", row.id] }),
+        queryClient.invalidateQueries({ queryKey: HUB_PROJECTS_QUERY_KEY }),
+      ]);
+    } catch (err) {
+      setFailed(`Couldn't save it: ${message(err)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function refresh(): Promise<void> {
+    setRefreshing(true);
+    setFailed(null);
+    try {
+      queryClient.setQueryData(["hub-brief", row.id], await refreshHubProjectBrief(row.id));
+      await queryClient.invalidateQueries({ queryKey: HUB_PROJECTS_QUERY_KEY });
+    } catch (err) {
+      setFailed(`Couldn't update it: ${message(err)}`);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  const preview = row.living?.status || row.brief?.trim() || standingOf(row);
+
+  return (
+    <div className="rounded-md border border-border" data-testid={`hub-brief-${row.id}`}>
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-2 py-1.5 text-left"
+        onClick={() => setOpen((was) => !was)}
+        aria-expanded={open}
+        data-testid={`hub-brief-toggle-${row.id}`}
+      >
+        <span className="shrink-0 text-xs font-medium">Brief</span>
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{preview}</span>
+        <span aria-hidden className="ml-auto shrink-0 text-xs text-muted-foreground">
+          {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open && (
+        <div className="flex flex-col gap-3 border-t border-border px-2 py-2">
+          {brief.isLoading && (
+            <p className="text-xs text-muted-foreground">Reading its brief…</p>
+          )}
+          {brief.error && (
+            <p className="text-xs text-destructive">
+              Couldn't read its brief: {message(brief.error)}
+            </p>
+          )}
+          {data && (
+            <>
+              <div>
+                <p className="text-xs font-medium">About</p>
+                {editing ? (
+                  <form
+                    className="mt-1 flex flex-col gap-1"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void persist(draft ?? "", todos).then(() => setEditing(false));
+                    }}
+                  >
+                    <Textarea
+                      autoFocus
+                      value={draft ?? ""}
+                      maxLength={2000}
+                      rows={3}
+                      onChange={(event) => setDraft(event.target.value)}
+                      placeholder="What this project is. Leave empty to let the companion write it."
+                      aria-label={`About ${row.name}`}
+                      className="text-xs"
+                      data-testid={`hub-brief-edit-${row.id}`}
+                    />
+                    <div className="flex gap-1">
+                      <Button
+                        type="submit"
+                        size="xs"
+                        className="text-xs"
+                        disabled={saving}
+                        data-testid={`hub-brief-save-${row.id}`}
+                      >
+                        Save
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="xs"
+                        className="text-xs"
+                        onClick={() => {
+                          setEditing(false);
+                          setDraft(null);
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="mt-0.5 flex items-start justify-between gap-2">
+                    <p
+                      className="min-w-0 flex-1 text-xs"
+                      data-testid={`hub-brief-about-${row.id}`}
+                    >
+                      {data.about || (
+                        <span className="text-muted-foreground">
+                          Not written yet. The companion writes it after the project's next
+                          report, or press Update now.
+                        </span>
+                      )}
+                      {data.about_source === "written" && (
+                        <span className="block text-[11px] text-muted-foreground">
+                          Your words. The companion leaves this one alone.
+                        </span>
+                      )}
+                    </p>
+                    <button
+                      type="button"
+                      className="shrink-0 text-xs text-primary hover:underline"
+                      onClick={() => {
+                        setDraft(data.brief);
+                        setEditing(true);
+                      }}
+                      data-testid={`hub-brief-write-${row.id}`}
+                    >
+                      {data.brief ? "Edit" : "Write my own"}
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div>
+                <p className="text-xs font-medium">Where it stands</p>
+                <p className="mt-0.5 text-xs" data-testid={`hub-brief-standing-${row.id}`}>
+                  {data.status || (
+                    <span className="text-muted-foreground">
+                      {data.state === "empty" ? "No chat yet." : "Not written yet."}
+                    </span>
+                  )}
+                </p>
+                {data.lanes.length > 0 && (
+                  <ul className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                    {data.lanes.map((lane) => (
+                      <li key={lane.id} className="text-[11px] text-muted-foreground">
+                        {lane.name} · {LANE_STATE_LABEL[lane.state]}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              {data.progress.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium">Recent progress</p>
+                  <ul className="mt-0.5 flex flex-col gap-1">
+                    {data.progress.map((line, index) => (
+                      <li
+                        // eslint-disable-next-line react/no-array-index-key
+                        key={`${line.at}-${index}`}
+                        className="text-xs"
+                        data-testid="hub-brief-progress"
+                      >
+                        {line.text}
+                        <span className="block text-[11px] text-muted-foreground">
+                          {[line.lane, relativeTime(line.at * 1000)].filter(Boolean).join(" · ")}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <div>
+                <p className="text-xs font-medium">To-do</p>
+                {todos.length > 0 || data.lane_todos.length > 0 ? (
+                  <ul className="mt-0.5 flex flex-col gap-1">
+                    {todos.map((item, index) => (
+                      <TodoRow
+                        // eslint-disable-next-line react/no-array-index-key
+                        key={item.id ?? `todo-${index}`}
+                        item={item}
+                        note={item.by === "companion" ? "added by the companion" : undefined}
+                        onToggle={() => {
+                          const next = todos.map((todo, at) =>
+                            at === index
+                              ? { ...todo, status: todo.status === "done" ? "open" : "done" }
+                              : todo,
+                          );
+                          void persist(data.brief, next);
+                        }}
+                        onDelete={() => {
+                          const next = todos.filter((_, at) => at !== index);
+                          void persist(data.brief, next);
+                        }}
+                      />
+                    ))}
+                    {data.lane_todos.map((lane) =>
+                      lane.items.map((item, index) => (
+                        <TodoRow
+                          // eslint-disable-next-line react/no-array-index-key
+                          key={`${lane.session_id}-${index}`}
+                          item={item}
+                          note={lane.lane}
+                        />
+                      )),
+                    )}
+                  </ul>
+                ) : (
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    Nothing on the list. The companion adds what the project still has to do;
+                    you can add your own below.
+                  </p>
+                )}
+                <form
+                  className="mt-1 flex items-center gap-1"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const content = adding.trim();
+                    if (!content) return;
+                    setAdding("");
+                    void persist(data.brief, [...todos, { content, status: "open" }]);
+                  }}
+                >
+                  <Input
+                    value={adding}
+                    maxLength={500}
+                    onChange={(event) => setAdding(event.target.value)}
+                    placeholder="Add a to-do"
+                    aria-label={`Add a to-do to ${row.name}`}
+                    className="h-7 text-xs"
+                    data-testid={`hub-brief-add-${row.id}`}
+                  />
+                  <Button
+                    type="submit"
+                    size="xs"
+                    className="text-xs"
+                    disabled={saving || !adding.trim()}
+                  >
+                    Add
+                  </Button>
+                </form>
+              </div>
+              {data.handoff_files.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium">Files it handed over</p>
+                  <ul className="mt-0.5 flex flex-col gap-0.5">
+                    {data.handoff_files.map(([label, path]) => (
+                      <li
+                        key={path}
+                        className="truncate font-mono text-[11px] text-muted-foreground"
+                        title={path}
+                      >
+                        {label}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <div className="flex items-center justify-between gap-2 border-t border-border pt-2">
+                <span
+                  className="text-[11px] text-muted-foreground"
+                  data-testid={`hub-brief-updated-${row.id}`}
+                >
+                  {data.updated_at
+                    ? `Updated ${relativeTime(data.updated_at * 1000)}`
+                    : "Not updated yet"}
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  className="text-xs"
+                  disabled={refreshing || !data.can_refresh}
+                  onClick={() => void refresh()}
+                  data-testid={`hub-brief-refresh-${row.id}`}
+                >
+                  {refreshing ? "Updating…" : "Update now"}
+                </Button>
+              </div>
+              {failed && (
+                <p className="text-xs text-destructive" role="alert">
+                  {failed}
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function HubProjectCard({ row }: { row: HubProjectRow }) {
   const queryClient = useQueryClient();
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
@@ -644,6 +1072,7 @@ function HubProjectCard({ row }: { row: HubProjectRow }) {
   const [deleting, setDeleting] = useState(false);
   const [adding, setAdding] = useState(false);
   const [openingLane, setOpeningLane] = useState(false);
+  const [choosingMachine, setChoosingMachine] = useState(false);
   // The menu traps focus until it has closed, then hands it back to its
   // button; after Rename it goes to the name field instead.
   const keepFocus = useRef(false);
@@ -684,6 +1113,20 @@ function HubProjectCard({ row }: { row: HubProjectRow }) {
               <span className="truncate">{row.name}</span>
             </h3>
           )}
+          <button
+            type="button"
+            className="text-xs text-primary hover:underline"
+            onClick={() => setChoosingMachine(true)}
+            aria-label={`Machine for ${row.name}`}
+          >
+            {row.host_id ? (
+              <>
+                <HubMachineName hostId={row.host_id} /> · Change machine
+              </>
+            ) : (
+              "Choose machine"
+            )}
+          </button>
           {row.folder && (
             <p className="truncate font-mono text-[11px] text-muted-foreground" title={row.folder}>
               {row.folder}
@@ -691,7 +1134,7 @@ function HubProjectCard({ row }: { row: HubProjectRow }) {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {chat ? (
+          {chat || row.host_id ? (
             <Button
               variant="ghost"
               size="sm"
@@ -799,6 +1242,7 @@ function HubProjectCard({ row }: { row: HubProjectRow }) {
           {older === 1 ? "1 older chat" : `${older} older chats`}
         </p>
       )}
+      <ProjectBrief row={row} onChanged={said} />
       <RouteLine row={row} />
 
       {note && (
@@ -811,6 +1255,17 @@ function HubProjectCard({ row }: { row: HubProjectRow }) {
       )}
 
       <DeleteDialog row={row} open={deleting} onOpenChange={setDeleting} onDeleted={said} />
+      {choosingMachine && (
+        <HubMachineDialog
+          title={`Machine for ${row.name}`}
+          initial={{ host_id: row.host_id ?? "", workspace: row.folder }}
+          onClose={() => setChoosingMachine(false)}
+          onSave={async (machine) => {
+            await setHubProjectMachine(row.id, machine);
+            await refreshAll(queryClient);
+          }}
+        />
+      )}
       <NewLaneDialog
         row={row}
         open={openingLane}
@@ -833,7 +1288,9 @@ const LANE_MODELS: { value: string; label: string }[] = [
   { value: "Haiku", label: "Claude Haiku" },
   { value: "Sol", label: "Codex · GPT Sol" },
   { value: "Luna", label: "Codex · GPT Luna" },
+  { value: "Argon", label: "Gemini Argon (agy)" },
   { value: "Flash", label: "Gemini Flash (agy)" },
+  { value: "Muse", label: "Muse Code · default model" },
 ];
 const LANE_PICK_HUB = "hub";
 
@@ -849,6 +1306,7 @@ function NewLaneDialog({
   onOpenChange: (open: boolean) => void;
   onOpened: (said: string, ok: boolean) => void;
 }) {
+  const [machine, setMachine] = useState<HubMachine>({ host_id: "", workspace: "" });
   const [topic, setTopic] = useState("");
   const [request, setRequest] = useState("");
   const [use, setUse] = useState(LANE_PICK_HUB);
@@ -862,6 +1320,7 @@ function NewLaneDialog({
     setFailed(null);
     try {
       const result = await openHubLane(row.id, {
+        ...(machine.host_id ? machine : {}),
         topic: topic.trim(),
         message: request.trim(),
         use: use === LANE_PICK_HUB ? "" : use,
@@ -894,6 +1353,7 @@ function NewLaneDialog({
               in.
             </DialogDescription>
           </DialogHeader>
+          <HubMachinePicker value={machine} onChange={setMachine} allowInherited />
           <Row label="Topic">
             <Input
               value={topic}
@@ -943,7 +1403,9 @@ function NewLaneDialog({
             </Button>
             <Button
               type="submit"
-              disabled={busy || !request.trim()}
+              disabled={
+                busy || !request.trim() || (!!machine.host_id && !machine.workspace.startsWith("/"))
+              }
               data-testid={`hub-lane-open-${row.id}`}
             >
               {busy ? "Opening…" : "Open lane"}
@@ -1194,6 +1656,12 @@ function ChatItem({
             {runSummary(chat)}
           </p>
           <div className="text-xs">
+            {chat.host_id && (
+              <p className="truncate text-[11px] text-muted-foreground" title={chat.workspace}>
+                <HubMachineName hostId={chat.host_id} />
+                {chat.workspace ? ` · ${chat.workspace}` : ""}
+              </p>
+            )}
             <StatusLine chat={chat} />
           </div>
         </div>

@@ -145,6 +145,7 @@ from omnigent.server.routes._session_create_validation import (
 # ``__all__`` and the facade's explicit re-exports, preserving its real runtime
 # bindings so a facade-level monkeypatch is honoured in this module too.
 from omnigent.server.routes._sessions.common import (  # noqa: F401
+    _ANTIGRAVITY_NATIVE_WRAPPER_LABEL_VALUE,
     _CLAUDE_NATIVE_MESSAGE_TIMEOUT_S,
     _CLAUDE_NATIVE_MODEL,
     _CLAUDE_NATIVE_UI_LABEL_KEY,
@@ -1394,6 +1395,33 @@ def _accumulate_session_usage(
         )
     # Per-user daily rollup (policy-gated; this is the per-turn delta).
     _record_daily_cost(conv, cost_delta, conversation_store)
+    # Persist the live occupancy the executor reported so the snapshot ring
+    # and auto-compact see it. Inner ACP turns otherwise write no
+    # ``last_context_*`` labels (only native forwarders post
+    # ``external_session_usage``), which leaves auto-compact blind and
+    # reloads ring-less — the ZED-camera lane sat at a live 100% with no
+    # durable trace. Best-effort: a label failure must never fail the
+    # turn's cost accounting.
+    _live_labels: dict[str, str] = {}
+    _live_tokens = usage_obj.get("context_tokens")
+    if isinstance(_live_tokens, bool):
+        _live_tokens = None
+    if isinstance(_live_tokens, int) and _live_tokens >= 0:
+        _live_labels[_LAST_CONTEXT_TOKENS_LABEL_KEY] = str(_live_tokens)
+    _live_window = usage_obj.get("context_window")
+    if isinstance(_live_window, bool):
+        _live_window = None
+    if isinstance(_live_window, int) and _live_window > 0:
+        _live_labels[_LAST_CONTEXT_WINDOW_LABEL_KEY] = str(_live_window)
+    if _live_labels:
+        try:
+            conversation_store.set_labels(session_id, _live_labels)
+        except Exception:  # noqa: BLE001
+            _logger.exception(
+                "Failed to persist live context labels for session=%s",
+                session_id,
+                extra={"session_id": session_id},
+            )
     return _priced_cost_for_display(new_current)
 
 
@@ -5014,6 +5042,7 @@ async def _forward_event_to_runner(
     has_mcp_servers: bool = False,
     created_by: str | None = None,
     host_store: HostStore | None = None,
+    forward_content: Any | None = None,
 ) -> str:
     """
     Persist a user event and forward it to the runner.
@@ -5072,6 +5101,8 @@ async def _forward_event_to_runner(
     # harness don't have access to the server's file store — the
     # LLM endpoint needs the actual content, not an internal ID.
     forwarded_data = dict(body.data)
+    if forward_content is not None:
+        forwarded_data["content"] = forward_content
     if (
         file_store is not None
         and artifact_store is not None
@@ -6407,6 +6438,45 @@ async def _dispatch_session_event_to_runner_impl(
                     decision_id=_native_decision_id,
                 )
         return _SessionEventDispatchResult(item_id=None, pending_id=pending_id)
+    companion_forward_content: Any | None = None
+    if body.type == "message" and _resolve_harness(conv) == "muse-code":
+        content, forced_to_claude = _strip_force_claude(body.data.get("content"))
+        if forced_to_claude:
+            body.data["content"] = content
+        routed = (
+            await _route_through_companion(session_id, content, conversation_store)
+            if isinstance(content, list) and content and not forced_to_claude
+            else None
+        )
+        if routed is not None and not routed.forward and routed.answer:
+            item_id = await _persist_companion_answer(
+                session_id,
+                conv,
+                body,
+                conversation_store,
+                answer=routed.answer,
+                asked=_message_text([b for b in content if isinstance(b, dict)]) or "",
+                created_by=created_by,
+            )
+            return _SessionEventDispatchResult(item_id=item_id, pending_id=None)
+        if routed is not None and routed.english:
+            companion_forward_content, _translated = _swap_first_text(content, routed.english)
+        elif isinstance(content, list) and content:
+            companion_forward_content, _translated = await _translate_inbound_content(
+                session_id, content, conversation_store
+            )
+        if routed is None and isinstance(content, list) and content:
+            from omnigent.server import discussion
+
+            asked = _message_text([b for b in content if isinstance(b, dict)])
+            if asked:
+                discussion.note(session_id, "activity", f"they asked their coding agent: {asked}")
+
+    _forward_kwargs = (
+        {"forward_content": companion_forward_content}
+        if companion_forward_content is not None
+        else {}
+    )
     item_id = await _forward_event_to_runner(
         session_id,
         conv,
@@ -6419,6 +6489,7 @@ async def _dispatch_session_event_to_runner_impl(
         has_mcp_servers=has_mcp_servers,
         created_by=created_by,
         host_store=host_store,
+        **_forward_kwargs,
     )
     return _SessionEventDispatchResult(item_id=item_id, pending_id=None)
 
@@ -10532,11 +10603,18 @@ async def _fetch_model_options(
         # session's host — the same pre-launch source the new-session
         # picker uses — so fill it from there in the background.
         if (
-            wrapper == _CLAUDE_NATIVE_WRAPPER_LABEL_VALUE
+            wrapper in (_CLAUDE_NATIVE_WRAPPER_LABEL_VALUE, _ANTIGRAVITY_NATIVE_WRAPPER_LABEL_VALUE)
             and conv.host_id is not None
             and session_id not in _model_options_inflight
         ):
-            task = asyncio.create_task(_load_model_options_from_host(session_id, conv.host_id))
+            _host_harness = (
+                "antigravity-native"
+                if wrapper == _ANTIGRAVITY_NATIVE_WRAPPER_LABEL_VALUE
+                else "claude-native"
+            )
+            task = asyncio.create_task(
+                _load_model_options_from_host(session_id, conv.host_id, harness=_host_harness)
+            )
             _model_options_inflight[session_id] = task
 
             def _clear_host_options_inflight(_task: asyncio.Task[None]) -> None:
@@ -10549,12 +10627,23 @@ async def _fetch_model_options(
     if session_id not in _model_options_inflight:
         # Unified route first; the harness-named route is the fallback for
         # an older runner (deprecated aliases, removed in 0.11.0).
+        _runner_host_harness = (
+            "antigravity-native"
+            if wrapper == _ANTIGRAVITY_NATIVE_WRAPPER_LABEL_VALUE and conv.host_id is not None
+            else None
+        )
+        _load_kwargs: dict[str, Any] = {
+            "fallback_path": f"/v1/sessions/{session_id}/{endpoint}",
+        }
+        if _runner_host_harness is not None:
+            _load_kwargs["host_id"] = conv.host_id
+            _load_kwargs["host_harness"] = _runner_host_harness
         task = asyncio.create_task(
             _load_model_options(
                 runner_client,
                 session_id,
                 f"/v1/sessions/{session_id}/model-options",
-                fallback_path=f"/v1/sessions/{session_id}/{endpoint}",
+                **_load_kwargs,
             )
         )
         _model_options_inflight[session_id] = task

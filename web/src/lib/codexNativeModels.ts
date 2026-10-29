@@ -45,7 +45,9 @@ export function findNativeModelOption(
 ): NativeModelOption | null {
   const raw = model?.trim();
   if (!raw) return null;
-  const exact = options.find((option) => option.id === raw || option.model === raw);
+  const exact = options.find(
+    (option) => option.id === raw || option.model === raw || option.displayName === raw,
+  );
   if (exact !== undefined) return exact;
   const target = comparableModelId(raw);
   return (

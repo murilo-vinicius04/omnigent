@@ -141,6 +141,7 @@ import {
   useBrainHarnessLabels,
   useHarnessEfforts,
 } from "@/lib/agentLabels";
+import { MUSE_CODE_MODELS } from "@/lib/museCodeModels";
 import {
   SMART_ROUTING_ARMS,
   hostBacksHarnessWithGateway,
@@ -315,6 +316,7 @@ function createdHarnessOptions({
     options.mode = cursorExecMode;
   } else if (supportsAgySkipPermissions) {
     options.mode = agySkipMode;
+    options.effort = pickedEffort;
   }
 
   if (smartRoutingEligible) {
@@ -1872,6 +1874,7 @@ function SubAgentConfigRow({
 /**
  * Harness-configuration modal opened from the composer's gear icon. Shows the
  * selected agent's run-config knobs — Claude: model / effort / permissions;
+ * Muse Code (ACP): model / effort;
  * Pi: model;
  * Codex/OpenCode: approval mode (+ Codex's dangerous full-bypass opt-in);
  * Cursor: exec mode; bundle agents: brain-harness override. On the fully-auto
@@ -1906,6 +1909,9 @@ function HarnessConfigModal({
   codexModelsError,
   piModelOptions,
   piModelsLoading,
+  antigravityModelOptions = [],
+  antigravityModelsLoading = false,
+  antigravityModelsError = null,
   pickedEffort,
   pickedHarness,
   pickedSubHarness,
@@ -1948,6 +1954,9 @@ function HarnessConfigModal({
   codexModelsError: string | null;
   piModelOptions: readonly { id: string; displayName: string }[];
   piModelsLoading: boolean;
+  antigravityModelOptions?: readonly Pick<NativeModelOption, "id" | "displayName" | "isDefault">[];
+  antigravityModelsLoading?: boolean;
+  antigravityModelsError?: string | null;
   pickedEffort: string;
   pickedHarness: string | null;
   // Harness per sub-agent, keyed by the sub-agent's declared name. Empty
@@ -1993,6 +2002,12 @@ function HarnessConfigModal({
   const hasAgySkip = nativeAgentHasCapability(agent, "skipPermissions");
   const hasModelPicker = nativeAgentHasCapability(agent, "modelPicker");
   const isCodex = entryHarness === "codex-native";
+  // Muse Code runs through the generic ACP harness (not a native wrapper),
+  // so it has no native capabilities — its Model / Effort rows are gated on
+  // the harness id directly, with the effort vocabulary read from the
+  // server catalog like the per-head row.
+  const isMuseCode = agent.harness === "muse-code";
+  const museEffortValues = harnessEfforts["muse-code"] ?? [];
   const brainDefault =
     agent.harness != null && agent.harness in brainHarnessLabels ? agent.harness : null;
 
@@ -2063,6 +2078,14 @@ function HarnessConfigModal({
     () => codexModelOptions.map((m) => ({ id: m.id, label: nativeModelLabel(m) })),
     [codexModelOptions],
   );
+  const antigravityModelSelectOptions = useMemo(
+    () => antigravityModelOptions.map((m) => ({ id: m.id, label: nativeModelLabel(m) })),
+    [antigravityModelOptions],
+  );
+  const museModelSelectOptions = useMemo(
+    () => MUSE_CODE_MODELS.map((m) => ({ id: m.id, label: m.label })),
+    [],
+  );
   // The host catalog re-polls while the modal is open (a provider switch under
   // it). A draft the new catalog no longer lists would render a blank trigger,
   // so it falls back to Default.
@@ -2070,7 +2093,11 @@ function HarnessConfigModal({
     ? claudeModelSelectOptions
     : hasApproval
       ? codexModelSelectOptions
-      : piModelOptions;
+      : hasAgySkip
+        ? antigravityModelSelectOptions
+        : isMuseCode
+          ? museModelSelectOptions
+          : piModelOptions;
   useEffect(() => {
     if (!open || !draftModel || draftModelOptions.length === 0) return;
     if (!draftModelOptions.some((m) => m.id === draftModel)) setDraftModel("");
@@ -2136,8 +2163,23 @@ function HarnessConfigModal({
       setCursorExecMode(draftCursor);
       if (entryHarness) writeHarnessOption(entryHarness, { mode: draftCursor });
     } else if (hasAgySkip) {
+      setPickedModel(draftModel);
+      setPickedEffort(draftEffort);
       setAgySkipMode(draftAgySkip);
-      if (entryHarness) writeHarnessOption(entryHarness, { mode: draftAgySkip });
+      if (entryHarness) {
+        writeHarnessOption(entryHarness, {
+          model: draftModel,
+          effort: draftEffort,
+          mode: draftAgySkip,
+        });
+      }
+    } else if (isMuseCode) {
+      // No harness-option write: Muse Code is an ACP agent, not a native
+      // wrapper — the picks ride the create as model_override /
+      // reasoning_effort, which the generic ACP executor applies when the
+      // adapter advertises the option.
+      setPickedModel(draftModel);
+      setPickedEffort(draftEffort);
     } else if (brainDefault) {
       // Picking the spec default clears the override so the session tracks it.
       setPickedHarness(draftHarness === brainDefault ? null : draftHarness, agent.id);
@@ -2412,6 +2454,28 @@ function HarnessConfigModal({
 
           {!autoRouting && hasAgySkip && (
             <>
+              <ConfigRow label="Model" description="Underlying LLM">
+                <RoutingModelSelect
+                  value={modelValue}
+                  onValueChange={onModelChange}
+                  offerSmartRouting={false}
+                  testId="new-chat-landing-config-model"
+                  models={antigravityModelSelectOptions}
+                  defaultLabel={defaultModelLabel(antigravityModelOptions)}
+                  contentClassName="[&_[data-slot=select-item]]:pl-2.5"
+                  componentId="new_chat.config.model"
+                >
+                  {antigravityModelsLoading && (
+                    <div className="px-2.5 py-1 text-sm text-muted-foreground">Loading models…</div>
+                  )}
+                  {!antigravityModelsLoading && antigravityModelOptions.length === 0 && (
+                    <div className="px-2.5 py-1 text-sm text-muted-foreground">
+                      {antigravityModelsError ?? "Models unavailable"}
+                    </div>
+                  )}
+                </RoutingModelSelect>
+              </ConfigRow>
+
               <ConfigRow label="Permissions" description="What the agent can do without asking">
                 <DescribedSelect
                   value={draftAgySkip}
@@ -2437,6 +2501,54 @@ function HarnessConfigModal({
                     It can edit any file and run any command without asking.
                   </span>
                 </div>
+              )}
+            </>
+          )}
+
+          {!autoRouting && isMuseCode && (
+            <>
+              <ConfigRow label="Model" description="Muse model">
+                <RoutingModelSelect
+                  value={modelValue}
+                  onValueChange={onModelChange}
+                  offerSmartRouting={false}
+                  testId="new-chat-landing-config-muse-model"
+                  models={museModelSelectOptions}
+                  defaultLabel="Default"
+                  contentClassName="[&_[data-slot=select-item]]:pl-2.5"
+                  componentId="new_chat.config.muse_model"
+                />
+              </ConfigRow>
+              {/* The effort vocabulary comes from the server's harness
+              catalog (like the per-head row): an absent entry means the
+              server declares no effort plumbing, so there is no row. */}
+              {museEffortValues.length > 0 && (
+                <ConfigRow label="Effort" description="Reasoning effort">
+                  <Select
+                    value={draftEffort || EFFORT_SELECT_NONE}
+                    onValueChange={(v) => setDraftEffort(v === EFFORT_SELECT_NONE ? "" : v)}
+                  >
+                    <SelectTrigger
+                      className="w-full cursor-pointer"
+                      data-testid="new-chat-landing-config-muse-effort"
+                      aria-label="Reasoning effort"
+                    >
+                      <SelectValue placeholder={EFFORT_UNAVAILABLE_PLACEHOLDER} />
+                    </SelectTrigger>
+                    <SelectContent
+                      position="popper"
+                      align="start"
+                      className="w-(--radix-select-trigger-width) [&_[data-slot=select-item]]:pl-2.5"
+                    >
+                      <SelectItem value={EFFORT_SELECT_NONE}>Default</SelectItem>
+                      {museEffortValues.map((value) => (
+                        <SelectItem key={value} value={value}>
+                          {value}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </ConfigRow>
               )}
             </>
           )}
@@ -2955,6 +3067,11 @@ export function NewChatLandingScreen() {
     "pi-native",
     !sandboxSelected,
   );
+  const {
+    data: hostAntigravityModelOptions,
+    isLoading: hostAntigravityModelsLoading,
+    error: hostAntigravityModelsError,
+  } = useHostModelOptions(selectedHostId, "antigravity-native", !sandboxSelected);
   const claudeModelOptions = useMemo(
     () =>
       sandboxSelected
@@ -2986,6 +3103,10 @@ export function NewChatLandingScreen() {
             source: option.source,
           })),
     [hostPiModelOptions, sandboxSelected],
+  );
+  const antigravityModelOptions = useMemo(
+    () => (sandboxSelected ? [] : (hostAntigravityModelOptions ?? [])),
+    [hostAntigravityModelOptions, sandboxSelected],
   );
   // Desktop-shell host status for THIS machine (null outside Electron), so the
   // picker can tag the current machine and offer to auto-connect it.
@@ -3634,12 +3755,26 @@ export function NewChatLandingScreen() {
   // (drives the gear icon's visibility). Bundle agents with an overridable
   // brain harness qualify, as does any routing-eligible agent — Smart Routing
   // lives only in the modal, so an agent with just that still needs the gear.
+  // Muse Code is an ACP agent (no native capabilities); its Model / Effort
+  // rows are gated on the harness id, mirroring the modal.
+  const isMuseCodeSelected = selectedAgent?.harness === "muse-code";
+  // A stale pick from another harness must never ride a Muse create: the
+  // muse picker only offers MUSE_CODE_MODELS ids, so anything else in the
+  // shared state predates the switch and is dropped (Muse runs its default).
+  // A stale effort is always a legal muse level (every native ladder is a
+  // subset of the muse one), so only the model needs this guard.
+  const museModelPick =
+    isMuseCodeSelected && MUSE_CODE_MODELS.some((m) => m.id === pickedModel)
+      ? pickedModel
+      : "";
+  const createModel = isMuseCodeSelected ? museModelPick : pickedModel;
   const selectedAgentHasKnobs =
     supportsPermissionMode ||
     supportsApprovalMode ||
     supportsCursorMode ||
     supportsAgySkipPermissions ||
     supportsModelPicker ||
+    isMuseCodeSelected ||
     smartRoutingEligible ||
     (selectedAgent?.worker_choices?.length ?? 0) > 0 ||
     (selectedAgent?.harness != null && selectedAgent.harness in brainHarnessLabelsAll);
@@ -3678,6 +3813,14 @@ export function NewChatLandingScreen() {
       const modelValue =
         piModelOptions.find((model) => model.id === pickedModel)?.displayName ?? "Default";
       return [{ label: "Model", value: modelValue }, ...sourceRows(piModelOptions)];
+    }
+    if (isMuseCodeSelected) {
+      const modelValue =
+        MUSE_CODE_MODELS.find((model) => model.id === pickedModel)?.label ?? "Default";
+      return [
+        { label: "Model", value: modelValue },
+        { label: "Effort", value: pickedEffort || "Default" },
+      ];
     }
     if (supportsPermissionMode) {
       const modelValue = routingOn
@@ -3741,9 +3884,18 @@ export function NewChatLandingScreen() {
       return [{ label: "Mode", value: modeValue }, ...routingRow];
     }
     if (supportsAgySkipPermissions) {
+      const pickedAgyRow = antigravityModelOptions.find((m) => m.id === pickedModel);
+      const modelValue = pickedAgyRow
+        ? nativeModelLabel(pickedAgyRow)
+        : defaultModelLabel(antigravityModelOptions);
       const skipValue =
         AGY_NATIVE_SKIP_MODES.find((m) => m.value === agySkipMode)?.label ?? agySkipMode;
-      return [{ label: "Permissions", value: skipValue }, ...routingRow];
+      return [
+        { label: "Model", value: modelValue },
+        { label: "Permissions", value: skipValue },
+        ...sourceRows(antigravityModelOptions),
+        ...routingRow,
+      ];
     }
     if (selectedAgent?.harness != null && selectedAgent.harness in brainHarnessLabelsAll) {
       const active = pickedHarness ?? selectedAgent.harness;
@@ -3767,6 +3919,7 @@ export function NewChatLandingScreen() {
     claudeModelOptions,
     codexModelOptions,
     piModelOptions,
+    antigravityModelOptions,
     pickedEffort,
     permissionMode,
     approvalMode,
@@ -3823,7 +3976,9 @@ export function NewChatLandingScreen() {
         ? claudeModelOptions
         : selectedNativeHarness === "codex-native"
           ? codexModelOptions
-          : [];
+          : selectedNativeHarness === "antigravity-native"
+            ? antigravityModelOptions
+            : [];
   const projectDefaultModelValid =
     projectDefaultModel != null && projectModelVocab.some((m) => m.id === projectDefaultModel)
       ? projectDefaultModel
@@ -3921,6 +4076,12 @@ export function NewChatLandingScreen() {
       setCursorExecMode(resolve(CURSOR_NATIVE_EXEC_MODES, CURSOR_NATIVE_DEFAULT_EXEC_MODE));
     } else if (supportsAgySkipPermissions) {
       setAgySkipMode(resolve(AGY_NATIVE_SKIP_MODES, AGY_NATIVE_DEFAULT_SKIP_MODE));
+      setPickedModel(
+        projectSeed(antigravityModelOptions) ??
+          (stored.model != null && antigravityModelOptions.some((m) => m.id === stored.model)
+            ? stored.model
+            : ""),
+      );
     }
     // Reseed on harness changes, when the selected host's catalog resolves,
     // and when the project's configured default model settles (its config
@@ -3932,6 +4093,7 @@ export function NewChatLandingScreen() {
     claudeModelOptions,
     codexModelOptions,
     piModelOptions,
+    antigravityModelOptions,
     projectDefaultModel,
   ]);
   // Smart Routing is remembered per harness alongside the mode/model
@@ -5021,21 +5183,26 @@ export function NewChatLandingScreen() {
                       : undefined,
             // Model + reasoning effort, persisted on the session row before
             // the runner launches. Claude, Codex, and Pi read model_override at
-            // terminal launch; an unselected ("") knob is omitted so the
+            // terminal launch; Muse Code reads it through the generic ACP
+            // executor's warm switch. An unselected ("") knob is omitted so the
             // harness keeps its own configured/default model.
             model_override:
               !smartRoutingHarnessSelected &&
               !routingOwnsModel &&
               (agentSupportsModelPicker ||
+                agentSupportsAgySkip ||
                 nativeAgent?.harness === "codex-native" ||
-                agentIsBundleBrain) &&
-              pickedModel
-                ? pickedModel
+                agentIsBundleBrain ||
+                museModelPick) &&
+              createModel
+                ? createModel
                 : undefined,
             reasoning_effort:
               !smartRoutingHarnessSelected &&
               !routingOwnsModel &&
-              (agentSupportsPermissionMode || selectedNativeHarness === "pi-native") &&
+              (agentSupportsPermissionMode ||
+                selectedNativeHarness === "pi-native" ||
+                isMuseCodeSelected) &&
               pickedEffort
                 ? pickedEffort
                 : undefined,
@@ -5123,7 +5290,10 @@ export function NewChatLandingScreen() {
           supportsApprovalMode: agentSupportsApprovalMode,
           supportsCursorMode: agentSupportsCursorMode,
           supportsAgySkipPermissions: agentSupportsAgySkip,
-          supportsModelPicker: agentSupportsModelPicker || nativeAgent?.harness === "codex-native",
+          supportsModelPicker:
+            agentSupportsModelPicker ||
+            agentSupportsAgySkip ||
+            nativeAgent?.harness === "codex-native",
           supportsEffortPicker: selectedNativeHarness === "pi-native",
           permissionMode,
           approvalMode,
@@ -5712,6 +5882,13 @@ export function NewChatLandingScreen() {
                     piModelOptions={piModelOptions}
                     piModelsLoading={
                       !sandboxSelected && selectedHostId !== null && hostPiModelsLoading
+                    }
+                    antigravityModelOptions={antigravityModelOptions}
+                    antigravityModelsLoading={
+                      !sandboxSelected && selectedHostId !== null && hostAntigravityModelsLoading
+                    }
+                    antigravityModelsError={
+                      !sandboxSelected ? (hostAntigravityModelsError?.message ?? null) : null
                     }
                     pickedEffort={pickedEffort}
                     pickedHarness={pickedHarness}

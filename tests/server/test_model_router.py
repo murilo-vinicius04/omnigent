@@ -134,10 +134,19 @@ async def test_an_answer_without_tier_numbers_is_an_error(monkeypatch) -> None:
 
 def test_shadow_decisions_are_on_only_when_switched_on(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("OMNIGENT_HUB_ROUTER_URL", raising=False)
+    monkeypatch.setenv("OMNIGENT_SUPERVISOR_KEY_FILE", str(tmp_path / "no-key"))
     assert model_router.configured(tmp_path) is None
 
+    # An empty flag file no longer means the local reflex server: without a
+    # supervisor key there is still nobody to ask.
     (tmp_path / model_router.FLAG_NAME).write_text("")
-    assert model_router.configured(tmp_path).url == model_router.DEFAULT_URL
+    assert model_router.configured(tmp_path) is None
+
+    # With a supervisor key, the judge goes through a provider model instead.
+    (tmp_path / "openrouter-key").write_text("k")
+    monkeypatch.setenv("OMNIGENT_SUPERVISOR_KEY_FILE", str(tmp_path / "openrouter-key"))
+    backend = model_router.configured(tmp_path)
+    assert backend is not None and backend.url == supervisor.DEFAULT_URL
 
     (tmp_path / model_router.FLAG_NAME).write_text("http://gpu:9000/v1/systemone\n")
     assert model_router.configured(tmp_path).url == "http://gpu:9000/v1/systemone"

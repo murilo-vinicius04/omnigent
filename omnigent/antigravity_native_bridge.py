@@ -1254,6 +1254,53 @@ def _run_tmux(socket_path: str, *args: str) -> None:
         raise RuntimeError(f"tmux command failed (rc={proc.returncode}): {detail}")
 
 
+def _ensure_agy_delivery_size(socket_path: str, tmux_target: str) -> None:
+    """Recover a readable composer when a narrow attached client shrinks agy."""
+    try:
+        proc = subprocess.run(
+            [
+                "tmux",
+                "-S",
+                socket_path,
+                "display-message",
+                "-p",
+                "-t",
+                tmux_target,
+                "#{pane_width} #{pane_height}",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_TMUX_SEND_TIMEOUT_S,
+        )
+        if proc.returncode != 0:
+            return
+        width, height = (int(value) for value in proc.stdout.split())
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return
+    if width >= 80 and height >= 24:
+        return
+    # resize-window selects manual sizing, so a stale narrow client cannot
+    # shrink the composer again between the paste and its verification.
+    _run_tmux(
+        socket_path,
+        "resize-window",
+        "-t",
+        tmux_target,
+        "-x",
+        str(max(width, 80)),
+        "-y",
+        str(max(height, 24)),
+    )
+    _logger.info(
+        "Recovered agy delivery size from %sx%s to %sx%s",
+        width,
+        height,
+        max(width, 80),
+        max(height, 24),
+    )
+
+
 def _capture_pane(socket_path: str, tmux_target: str) -> str:
     """
     Capture the visible pane contents; ``""`` on any failure (treat as not-ready).
@@ -1332,8 +1379,9 @@ class _SubmitNeedle(str):
     """
 
     needles: tuple[str, ...]
+    tail_fragment: str
 
-    def __new__(cls, head: str, *extra_needles: str) -> _SubmitNeedle:
+    def __new__(cls, head: str, *extra_needles: str, tail_fragment: str = "") -> _SubmitNeedle:
         obj = super().__new__(cls, head)
         needles = [head]
         for extra in extra_needles:
@@ -1341,6 +1389,7 @@ class _SubmitNeedle(str):
             if stripped and stripped not in needles:
                 needles.append(stripped)
         obj.needles = tuple(needles)
+        obj.tail_fragment = tail_fragment
         return obj
 
 
@@ -1362,7 +1411,7 @@ def _submit_needle(content: str) -> str:
     last = qualifying[-1]
     tail = last[-24:].strip()
     tail_head = last[:24].strip()
-    return _SubmitNeedle(head, tail, tail_head)
+    return _SubmitNeedle(head, tail, tail_head, tail_fragment=last[-8:].strip())
 
 
 def _redact_pane_secrets(text: str) -> str:
@@ -1435,6 +1484,9 @@ def _agy_input_region(pane: str) -> str:
         start = separator_indexes[start_idx] + 1
         end = separator_indexes[end_idx]
         return "\n".join(lines[start:end])
+    if len(separator_indexes) == 1:
+        # A tall draft can scroll its opening rule and prompt out of the viewport.
+        return "\n".join(lines[: separator_indexes[0]])
     return "\n".join(lines[-8:])
 
 
@@ -1485,18 +1537,45 @@ def _draft_in_input_region(pane: str, needle: str, baseline_region: str) -> bool
         return bool(candidates)
     norm_lines = [" ".join(line.split()) for line in candidates]
     norm_region = " ".join(norm_lines)
+    compact_region = "".join(norm_region.split())
     for n in needles:
         norm_needle = " ".join(n.split())
         if not norm_needle:
             continue
         if norm_needle in norm_region:
             return True
+        if "".join(norm_needle.split()) in compact_region:
+            return True
         if any(
             line == norm_needle or line.startswith(norm_needle) or norm_needle in line
             for line in norm_lines
         ):
             return True
+    if isinstance(needle, _SubmitNeedle):
+        separators = sum(_agy_separator_line(line) for line in pane.splitlines())
+        fragment = "".join(needle.tail_fragment.split())
+        footer_visible = _agy_footer_has_marker(pane, _AGY_IDLE_MARKER) or _agy_footer_has_marker(
+            pane, _AGY_ACTIVE_MARKER
+        )
+        if (
+            separators == 1
+            and footer_visible
+            and len(fragment) >= 4
+            and compact_region.endswith(fragment)
+        ):
+            return True
     return False
+
+
+def _agy_footer_has_marker(pane: str, marker: str) -> bool:
+    """Recognize footer text clipped by a narrow pane, excluding the composer."""
+    lines = pane.splitlines()
+    separators = [i for i, line in enumerate(lines) if _agy_separator_line(line)]
+    footer = lines[separators[-1] + 1 :] if separators else lines[-1:]
+    return any(
+        marker in line or (len(line.strip()) >= 8 and marker.startswith(line.strip()))
+        for line in footer
+    )
 
 
 def _agy_draft_candidate_lines(region: str) -> list[str]:
@@ -1519,7 +1598,9 @@ def _agy_draft_candidate_lines(region: str) -> list[str]:
             if draft:
                 candidates.append(draft)
             continue
-        if _AGY_IDLE_MARKER in line or _AGY_ACTIVE_MARKER in line:
+        if _agy_footer_has_marker(line, _AGY_IDLE_MARKER) or _agy_footer_has_marker(
+            line, _AGY_ACTIVE_MARKER
+        ):
             continue
         if "Generating" in line:
             continue
@@ -1545,10 +1626,13 @@ def _wait_for_agy_prompt_ready(socket_path: str, tmux_target: str, *, timeout_s:
     :param timeout_s: Maximum seconds to wait for a footer to render.
     :returns: None.
     """
+    _ensure_agy_delivery_size(socket_path, tmux_target)
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         pane = _capture_pane(socket_path, tmux_target)
-        if _AGY_IDLE_MARKER in pane or _AGY_ACTIVE_MARKER in pane:
+        if _agy_footer_has_marker(pane, _AGY_IDLE_MARKER) or _agy_footer_has_marker(
+            pane, _AGY_ACTIVE_MARKER
+        ):
             return
         time.sleep(_TMUX_POLL_INTERVAL_S)
 
@@ -1594,7 +1678,7 @@ def _submit_and_verify(
     # Mid-turn steer: a turn is already running, so verifying via draft
     # disappearance is unreliable and a re-sent Enter could queue an empty turn.
     # Deliver one best-effort Enter and return (see the docstring).
-    if _AGY_ACTIVE_MARKER in _capture_pane(socket_path, tmux_target):
+    if _agy_footer_has_marker(_capture_pane(socket_path, tmux_target), _AGY_ACTIVE_MARKER):
         _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
         return
     if not draft_seen:
@@ -1654,10 +1738,12 @@ def _account_verification_rejected(socket_path: str, tmux_target: str) -> bool:
     pane = ""
     while True:
         pane = _capture_pane(socket_path, tmux_target) or pane
-        if _AGY_ACTIVE_MARKER in pane:
+        if _agy_footer_has_marker(pane, _AGY_ACTIVE_MARKER):
             return False
         if time.monotonic() >= deadline:
-            return _AGY_VERIFYING_MARKER in pane.lower() and _AGY_IDLE_MARKER in pane
+            return _AGY_VERIFYING_MARKER in pane.lower() and _agy_footer_has_marker(
+                pane, _AGY_IDLE_MARKER
+            )
         time.sleep(_TMUX_POLL_INTERVAL_S)
 
 
@@ -1684,6 +1770,8 @@ def _paste_and_submit(
     :raises RuntimeError: When the TUI has exited, a tmux command fails, the
         pasted draft never renders, or the submit never starts a turn.
     """
+    _ensure_agy_delivery_size(socket_path, tmux_target)
+    mid_turn = _agy_footer_has_marker(_capture_pane(socket_path, tmux_target), _AGY_ACTIVE_MARKER)
     # Clear any leftover draft before typing: Home (C-a) + kill-to-end (C-k).
     _run_tmux(socket_path, "send-keys", "-t", tmux_target, "C-a")
     _run_tmux(socket_path, "send-keys", "-t", tmux_target, "C-k")
@@ -1725,7 +1813,6 @@ def _paste_and_submit(
     # The render hard-fail below is for the idle/sequential case, where a paste
     # that never lands in the composer (e.g. eaten by an unhooked modal such as
     # the first-run trust gate) must fail loudly instead of vanishing.
-    mid_turn = _AGY_ACTIVE_MARKER in _capture_pane(socket_path, tmux_target)
     draft_seen = False
     last_commit_pane = ""
     commit_deadline = time.monotonic() + _PASTE_COMMIT_TIMEOUT_S
@@ -1830,6 +1917,47 @@ def inject_user_message_via_tui(
             _VERIFY_RETRY_INTERVAL_S,
         )
         time.sleep(_VERIFY_RETRY_INTERVAL_S)
+
+
+def inject_slash_command_via_tui(
+    bridge_dir: Path,
+    *,
+    command: str,
+    timeout_s: float = _TMUX_READY_TIMEOUT_S,
+) -> None:
+    """
+    Deliver a slash command (such as ``/model <id>`` or ``/effort <level>``)
+    into the agy TUI via a tmux bracketed paste + Enter.
+
+    Unlike :func:`inject_user_message_via_tui`, slash commands in agy execute
+    locally and instantaneously without starting an agent turn, so this helper
+    does not wait for the ``"esc to cancel"`` turn-active footer in
+    :func:`_account_verification_rejected`.
+
+    :param bridge_dir: Native Antigravity bridge directory holding ``tmux.json``.
+    :param command: Slash command string starting with ``"/"``, e.g.
+        ``"/effort high"`` or ``"/model gemini-4-argon-high"``.
+    :param timeout_s: Total readiness budget shared across the ``tmux.json``
+        and prompt-ready gates.
+    :returns: None.
+    :raises RuntimeError: When the command is not a slash command, the tmux
+        target is not advertised, the agy TUI has exited, or submission fails.
+    """
+    normalized = command.strip()
+    if not normalized.startswith("/"):
+        raise RuntimeError("antigravity-native slash command must start with '/'")
+    deadline = time.monotonic() + timeout_s
+    info = _wait_for_tmux_info(bridge_dir, timeout_s=timeout_s)
+    socket_path = info["socket_path"]
+    tmux_target = info["tmux_target"]
+    if not _session_alive(socket_path, tmux_target):
+        raise RuntimeError(
+            "the agy terminal is no longer running (the TUI exited); restart the session"
+        )
+    _wait_for_agy_prompt_ready(
+        socket_path, tmux_target, timeout_s=max(0.0, deadline - time.monotonic())
+    )
+    _paste_and_submit(bridge_dir, socket_path, tmux_target, content=normalized)
 
 
 def send_interaction_keys_via_tui(

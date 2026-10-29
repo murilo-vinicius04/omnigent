@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from omnigent.server import budget
 from omnigent.server.budget import BudgetSettings, Meter, ProviderBudget
 
@@ -96,10 +98,11 @@ def test_the_provider_with_the_most_of_todays_budget_left_takes_the_task() -> No
     top = budget.pick("top", "high", budgets)
     cheap = budget.pick("economical", "xhigh", budgets)
 
-    # Gemini has no top tier until agy lists Argon.
+    # Argon is explicit-only: Flash's meter must never authorize its separate quota.
     assert (top.provider, top.model, top.effort) == ("codex", "Sol", "high")
     assert (cheap.provider, cheap.model, cheap.effort) == ("gemini", "Flash", "high")
-    assert budget.pick("top", "high", budgets, agy_models=("gemini-4-argon",)).model == "Argon"
+    assert budget.pick("top", "high", budgets, agy_models=("gemini-4-argon",)).model == "Sol"
+    assert "top" not in budget.offered_tiers("gemini", ("gemini-4-argon-high",))
     # Only Claude has a middle tier.
     assert budget.pick("middle", "medium", budgets).provider == "claude"
 
@@ -208,3 +211,150 @@ def test_a_busy_five_hour_window_loses_to_a_quieter_provider() -> None:
 
     assert claude.capacity < codex.capacity
     assert got.provider == "codex" and "5-hour window 0% used" in got.reason
+
+
+def test_local_one_am_renews_hub_day_without_resetting_subscription() -> None:
+    settings = BudgetSettings(daily_reset_hour=1, daily_timezone="America/Sao_Paulo")
+    reset = datetime(2026, 10, 22, 20, 22, 43, tzinfo=UTC)
+    before = datetime(2026, 10, 16, 3, 59, tzinfo=UTC)
+    after = before + timedelta(minutes=1)
+    readings = [(reset - timedelta(days=7) + timedelta(minutes=1), 1), (before, 14)]
+    old = budget.provider_budget(Meter("codex", 14, 21, reset, before), readings, settings, before)
+    new = budget.provider_budget(Meter("codex", 14, 21, reset, after), readings, settings, after)
+    assert old.blocked == "today's budget is spent"
+    assert new.blocked == "" and new.remaining == 10.29
+    assert new.spent == 0 and new.week_used == 14 and new.five_hour == 21
+    assert new.daily_resets_at == "2026-10-17T04:00:00Z"
+    assert new.resets_at == "2026-10-22T20:22:43Z"
+
+
+def test_local_day_still_respects_the_weekly_reserve_and_five_hour_limit() -> None:
+    now = RESET - timedelta(hours=4)
+    settings = BudgetSettings(daily_reset_hour=1)
+    readings = [(now - timedelta(hours=1), 84)]
+    got = budget.provider_budget(_meter(84, as_of=now), readings, settings, now)
+    assert got.remaining == 1 and got.allowed == 1
+    full = budget.provider_budget(_meter(85, as_of=now), readings, settings, now)
+    assert full.remaining <= 0 and full.blocked
+    busy = budget.provider_budget(_meter(10, five_hour=90, as_of=now), [], settings, now)
+    assert busy.blocked == "5-hour window at 90%"
+
+
+def test_provider_week_reset_mid_day_does_not_inherit_last_weeks_spend() -> None:
+    now = RESET + timedelta(hours=2)
+    settings = BudgetSettings(daily_reset_hour=1)
+    meter = Meter("claude", 2, 5, RESET + timedelta(days=7), now)
+    got = budget.provider_budget(
+        meter, [(RESET - timedelta(minutes=1), 85), (RESET, 0)], settings, now
+    )
+    assert got.day == 0 and got.spent == 2 and got.remaining == 10.14
+    assert got.daily_started_at == "2026-10-16T12:00:00Z"
+    assert got.daily_resets_at == "2026-10-17T04:00:00Z"
+
+
+@pytest.mark.parametrize("hour,zone", [(25, "UTC"), (True, "UTC"), (1, "invalid-zone")])
+def test_invalid_daily_clock_keeps_legacy_boundaries(tmp_path, hour, zone) -> None:
+    (tmp_path / budget.SETTINGS_NAME).write_text(
+        json.dumps({"daily_reset_hour": hour, "daily_timezone": zone})
+    )
+    assert budget.load_settings(tmp_path).daily_reset_hour is None
+
+
+def test_subscription_budget_ignores_api_pool_ledger_and_clock(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OMNIGENT_DATA_DIR", str(tmp_path))
+    hub = tmp_path / "hub"
+    hub.mkdir()
+    (hub / "budget.json").write_text(
+        json.dumps({"daily_reset_hour": 1, "daily_timezone": "America/Sao_Paulo"})
+    )
+    now = datetime(2026, 10, 16, 15, tzinfo=UTC)
+    (tmp_path / "plan-limits-codex.json").write_text(
+        json.dumps(
+            {
+                "as_of": now.isoformat(),
+                "windows": [
+                    {"kind": "weekly", "percent": 14, "resets_at": "2026-10-22T20:22:43Z"},
+                    {"kind": "session", "percent": 21, "resets_at": "2026-10-16T19:13:05Z"},
+                ],
+            }
+        )
+    )
+    original = budget.today(hub, now=now)
+    (tmp_path / "openai-token-ledger.json").write_text('{"tokens":999999999999,"reset":"00:00Z"}')
+    (tmp_path / "plan-limits-openai.json").write_text(
+        '{"windows":[{"kind":"daily","percent":100}]}'
+    )
+    assert budget.today(hub, now=now) == original
+    assert [row.provider for row in original] == ["claude", "codex", "gemini", "muse"]
+
+
+def test_avoid_models_excludes_sol_and_argon_and_prioritizes_luna_and_flash(tmp_path) -> None:
+    settings_data = {
+        "avoid_models": ["Argon", "Sol"],
+        "priority_models": ["Luna", "Flash"],
+    }
+    (tmp_path / budget.SETTINGS_NAME).write_text(json.dumps(settings_data))
+    settings = budget.load_settings(tmp_path)
+    assert settings.avoid_models == ("Argon", "Sol")
+    assert settings.priority_models == ("Luna", "Flash")
+
+    # Sol and Argon excluded from offered tiers
+    codex_tiers = budget.offered_tiers("codex", avoid_models=settings.avoid_models)
+    assert "top" not in codex_tiers
+    assert codex_tiers == {"economical": "Luna"}
+
+    gemini_tiers = budget.offered_tiers("gemini", avoid_models=settings.avoid_models)
+    assert "top" not in gemini_tiers
+    assert gemini_tiers == {"economical": "Flash"}
+
+    budgets = [
+        _budget("claude", 50.0, five_hour=2.0),
+        _budget("codex", 10.0, five_hour=2.0),
+        _budget("gemini", 15.0, five_hour=2.0),
+    ]
+
+    # Top tier must pick Claude Opus since Sol and Argon are avoided
+    top = budget.pick("top", "high", budgets, avoid_models=settings.avoid_models)
+    assert top.provider == "claude" and top.model == "Opus"
+
+    # Economical tier must prioritize Luna and Flash over Claude Haiku
+    # even with Claude having more remaining budget
+    cheap = budget.pick(
+        "economical",
+        "medium",
+        budgets,
+        avoid_models=settings.avoid_models,
+        priority_models=settings.priority_models,
+    )
+    assert cheap.provider == "gemini" and cheap.model == "Flash"
+
+
+def test_muse_joins_the_quota_rules_with_spark_preferred() -> None:
+    assert budget.METERS["muse"] == ("plan-limits-muse.json", "muse", "weekly", "session")
+    assert budget.offered_tiers("muse") == {
+        "top": "Wonder",
+        "middle": "Spark",
+        "economical": "Spark",
+    }
+    assert budget.fit_effort("muse", "xhigh") == "xhigh"
+    assert budget.PROVIDER_LABELS["muse"] == "Muse"
+
+
+def test_a_spent_provider_fails_over_to_muse_spark() -> None:
+    budgets = [
+        _budget("claude", 0.0, five_hour=100.0, blocked="5-hour window at 100%"),
+        _budget("muse", 10.0, five_hour=3.0),
+    ]
+    proposal = budget.failover_proposal(
+        "claude", "claude-sonnet-5-5", "xhigh", budgets, priority_models=("Spark",)
+    )
+    assert proposal is not None
+    assert (proposal.provider, proposal.model, proposal.effort) == ("muse", "Spark", "xhigh")
+
+
+def test_failover_has_nowhere_to_go_when_every_provider_is_spent() -> None:
+    budgets = [
+        _budget("claude", 0.0, blocked="today's budget is spent"),
+        _budget("muse", 0.0, blocked="today's budget is spent"),
+    ]
+    assert budget.failover_proposal("claude", "opus", "high", budgets) is None

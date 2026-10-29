@@ -177,3 +177,66 @@ def test_host_reading_is_cached_per_user(monkeypatch: pytest.MonkeyPatch) -> Non
     asyncio.run(plan_limits.plan_limits_for_user(request, "bob"))
 
     assert registry.asked == ["h-bob"]
+
+
+def test_old_local_runner_can_gain_api_separation_without_restart(monkeypatch) -> None:
+    _machine_host(monkeypatch, "h-alice")
+    _server_side_reading(monkeypatch)
+    old = {"providers": [{"id": "codex"}], "fetched_at": 1.0}
+    registry = _FakeRegistry([_conn("h-alice", "alice")], {"h-alice": old})
+    request = _request(registry, {"h-alice": "alice"})
+    assert asyncio.run(plan_limits.plan_limits_for_user(request, "alice")) == _payload(
+        "server-os-user"
+    )
+
+
+def test_old_remote_runner_never_gains_another_accounts_api_reading(monkeypatch) -> None:
+    _machine_host(monkeypatch, "h-alice")
+    _server_side_reading(monkeypatch)
+    old = {"providers": [{"id": "codex"}], "fetched_at": 1.0}
+    registry = _FakeRegistry([_conn("h-bob", "bob")], {"h-bob": old})
+    request = _request(registry, {"h-alice": "alice", "h-bob": "bob"})
+    assert asyncio.run(plan_limits.plan_limits_for_user(request, "bob")) == old
+
+
+def test_machine_owner_merges_server_reading_when_host_misses_antigravity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the local host daemon reports antigravity as unavailable (e.g. missing
+    env credentials), the machine owner merges the server-side reading."""
+    _machine_host(monkeypatch, "h-alice")
+
+    async def fake_collect() -> dict[str, Any]:
+        return {
+            "providers": [
+                {"id": "claude", "state": "ok", "windows": [{"id": "5h"}], "tag": "server-claude"},
+                {
+                    "id": "antigravity",
+                    "state": "ok",
+                    "windows": [{"id": "gemini-argon-wtu"}],
+                    "tag": "server-agy",
+                },
+            ],
+            "fetched_at": 2.0,
+        }
+
+    monkeypatch.setattr(plan_limits, "collect_plan_limits", fake_collect)
+    partial = {
+        "providers": [
+            {"id": "claude", "state": "ok", "windows": [{"id": "5h"}], "tag": "host-claude"},
+            {"id": "antigravity", "state": "unavailable", "reason": "signed_out", "windows": []},
+        ],
+        "fetched_at": 1.0,
+    }
+    registry = _FakeRegistry([_conn("h-alice", "alice")], {"h-alice": partial})
+    request = _request(registry, {"h-alice": "alice"})
+
+    got = asyncio.run(plan_limits.plan_limits_for_user(request, "alice"))
+    by_id = {p["id"]: p for p in got["providers"]}
+    assert by_id["claude"]["tag"] == "host-claude"
+    assert by_id["antigravity"]["tag"] == "server-agy"
+
+
+def test_antigravity_argon_group_label_is_mapped() -> None:
+    """gemini-argon-wtu maps to 'Gemini 4 Argon' in ANTIGRAVITY_GROUP_LABELS."""
+    assert plan_limits.ANTIGRAVITY_GROUP_LABELS["gemini-argon-wtu"] == "Gemini 4 Argon"

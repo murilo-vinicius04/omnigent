@@ -12,7 +12,8 @@
 import { authenticatedFetch } from "@/lib/identity";
 
 /** Vendor families the server groups model ids into. */
-export type ProviderId = "claude" | "gemini" | "openai" | "grok" | "other";
+export type ProviderId =
+  "claude" | "gemini" | "codex" | "openai" | "openai-other" | "grok" | "other";
 
 /**
  * Chart colour per vendor, resolved from the theme.
@@ -25,12 +26,22 @@ export const PROVIDER_COLORS: Record<ProviderId, string> = {
   claude: "var(--provider-claude)",
   gemini: "var(--provider-gemini)",
   openai: "var(--provider-openai)",
+  codex: "var(--chart-2)",
+  "openai-other": "var(--provider-other)",
   grok: "var(--provider-grok)",
   other: "var(--provider-other)",
 };
 
 /** Stacking / legend order, matching the server's provider order. */
-export const PROVIDER_ORDER: ProviderId[] = ["claude", "gemini", "openai", "grok", "other"];
+export const PROVIDER_ORDER: ProviderId[] = [
+  "claude",
+  "gemini",
+  "codex",
+  "openai",
+  "openai-other",
+  "grok",
+  "other",
+];
 
 /** Colour for a provider id, falling back to the catch-all hue. */
 export function providerColor(id: string): string {

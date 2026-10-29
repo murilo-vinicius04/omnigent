@@ -345,3 +345,69 @@ def test_every_hub_voice_has_the_tool() -> None:
     assert "set_model" in {
         t["function"]["name"] for t in voice_hub.openai_tools(voice_hub.HUB_TOOLS)
     }
+
+
+@pytest.mark.parametrize("harness", ["muse-code", "muse"])
+def test_muse_hub_offers_models_and_the_existing_harness_efforts(harness) -> None:
+    from omnigent.reasoning_effort import MUSE_EFFORTS
+
+    run = run_from_snapshot(
+        {
+            "harness": harness,
+            "llm_model": "muse-spark-1.3",
+            "reasoning_effort": "high",
+        }
+    )
+    assert run.kind == "muse"
+    assert run.provider == "Muse Code"
+    assert [m.id for m in run.models] == [
+        "muse-wonder-1.0",
+        "muse-wonder-full-1.0",
+        "muse-spark-1.3",
+        "muse-spark-1.2",
+    ]
+    assert set(run.efforts) == MUSE_EFFORTS
+
+
+def test_muse_hub_uses_live_model_options_and_per_model_efforts() -> None:
+    run = run_from_snapshot(
+        {
+            "harness": "muse-code",
+            "model_override": "muse-live",
+            "model_options": [
+                {
+                    "id": "muse-live",
+                    "displayName": "Muse Live",
+                    "supportedReasoningEfforts": _efforts("low", "high"),
+                }
+            ],
+        }
+    )
+    assert [m.id for m in run.models] == ["muse-live"]
+    assert run.efforts == ("low", "high")
+
+
+async def test_muse_hub_can_change_model_and_effort_and_clear_both(tmp_path) -> None:
+    from dataclasses import replace
+
+    server = _Server()
+    server.sessions[0] = replace(
+        server.sessions[0],
+        run=run_from_snapshot(
+            {
+                "harness": "muse-code",
+                "llm_model": "muse-spark-1.3",
+                "reasoning_effort": "high",
+            }
+        ),
+    )
+    hub = _hub(tmp_path, _Router(), server)
+    try:
+        session = server.sessions[0]
+        changed = await hub.set_model(session, "Muse Wonder", "ultra", via="panel")
+        assert changed.kind == "model"
+        assert server.configured == [(AMARRAS, "muse-wonder-1.0", "ultra")]
+        await hub.set_model(session, "default", "default", via="panel")
+        assert server.configured[-1] == (AMARRAS, "default", "default")
+    finally:
+        await hub.close()

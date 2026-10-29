@@ -27,7 +27,12 @@ import pytest
 from omnigent.inner import _proc
 from omnigent.inner import acp_executor as acp_executor_module
 from omnigent.inner._acp_omnigent_mcp import OmnigentAcpMcp, _to_acp_mcp_servers
-from omnigent.inner.acp_executor import AcpAgentConfig, AcpExecutor
+from omnigent.inner.acp_executor import (
+    AcpAgentConfig,
+    AcpExecutor,
+    _normalize_model_id,
+    _resolve_model_option_value,
+)
 from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec
 from omnigent.inner.executor import (
     ExecutorError,
@@ -306,6 +311,341 @@ def test_usage_update_sets_context_window() -> None:
     assert ex.max_context_tokens() is None
     ex._handle_session_update({"sessionUpdate": "usage_update", "size": 200000})
     assert ex.max_context_tokens() == 200000
+
+
+def test_usage_update_records_live_occupancy() -> None:
+    """The adapter's ``used`` is the occupancy numerator the ring needs.
+
+    ``size`` alone only sizes the denominator — without ``used`` the ring
+    falls back to the last response's billing total, which counts full-context
+    cache re-reads and pegs heavy lanes at 100%.
+    """
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    assert ex._context_used is None
+    ex._handle_session_update({"sessionUpdate": "usage_update", "used": 12345, "size": 1000000})
+    assert ex._context_used == 12345
+    assert ex.max_context_tokens() == 1000000
+
+
+@pytest.mark.parametrize("used", [-1, "many", None, True])
+def test_usage_update_ignores_bad_used_value(used: object) -> None:
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    ex._handle_session_update({"sessionUpdate": "usage_update", "used": used})
+    assert ex._context_used is None
+
+
+_CONTEXT_USED_ACP_AGENT = """\
+import json
+import sys
+import threading
+import time
+
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\\n")
+    sys.stdout.flush()
+
+
+state = {}
+
+
+def finish_prompt(mid):
+    time.sleep(0.2)
+    send(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "fake-session-context",
+                "update": {
+                    "sessionUpdate": "usage_update",
+                    "used": 12345,
+                    "size": 1000000,
+                },
+            },
+        }
+    )
+    send(
+        {
+            "jsonrpc": "2.0",
+            "id": mid,
+            "result": {
+                "stopReason": "end_turn",
+                "usage": {
+                    "inputTokens": 500000,
+                    "outputTokens": 100,
+                    "totalTokens": 500100,
+                },
+            },
+        }
+    )
+
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    mid, method = msg.get("id"), msg.get("method")
+    if method == "initialize":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": mid,
+                "result": {
+                    "protocolVersion": 1,
+                    "agentCapabilities": {"promptCapabilities": {}},
+                },
+            }
+        )
+    elif method == "session/new":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "fake-session-context"}})
+    elif method == "session/prompt":
+        threading.Thread(target=finish_prompt, args=(mid,), daemon=True).start()
+"""
+
+
+@pytest.mark.asyncio
+async def test_turn_usage_carries_adapter_occupancy(tmp_path: Path) -> None:
+    """TurnComplete prefers the adapter's live ``used`` over billing totals.
+
+    **What breaks if this fails**: the context ring divides the last
+    response's billing total (cache re-reads included — heavy Muse lanes
+    legitimately exceed the window) instead of the agent's real occupancy,
+    and every heavy lane renders 100%.
+    """
+    agent_path = tmp_path / "context_used_acp_agent.py"
+    agent_path.write_text(_CONTEXT_USED_ACP_AGENT)
+    command = shlex.join([sys.executable, str(agent_path)])
+
+    ex = AcpExecutor(AcpAgentConfig(command=command))
+    completions: list[TurnComplete] = []
+    try:
+        async for ev in ex.run_turn([{"role": "user", "content": "hi"}], [], ""):
+            if isinstance(ev, TurnComplete):
+                completions.append(ev)
+    finally:
+        await ex.close()
+
+    assert len(completions) == 1
+    assert completions[0].usage is not None
+    assert completions[0].usage["context_tokens"] == 12345
+    assert completions[0].usage["total_tokens"] == 500100
+
+
+@pytest.mark.asyncio
+async def test_turn_usage_carries_adapter_window(tmp_path: Path) -> None:
+    """TurnComplete carries the adapter's ``size`` so the server can persist it.
+
+    **What breaks if this fails**: the snapshot and auto-compact only know
+    the window from the static spec — a lane whose live window differs keeps
+    a wrong denominator, and the labels auto-compact reads are never written.
+    """
+    agent_path = tmp_path / "context_window_acp_agent.py"
+    agent_path.write_text(_CONTEXT_USED_ACP_AGENT)
+    command = shlex.join([sys.executable, str(agent_path)])
+
+    ex = AcpExecutor(AcpAgentConfig(command=command))
+    completions: list[TurnComplete] = []
+    try:
+        async for ev in ex.run_turn([{"role": "user", "content": "hi"}], [], ""):
+            if isinstance(ev, TurnComplete):
+                completions.append(ev)
+    finally:
+        await ex.close()
+
+    assert len(completions) == 1
+    assert completions[0].usage is not None
+    assert completions[0].usage["context_window"] == 1000000
+
+
+def test_muse_worker_tool_call_is_ignored() -> None:
+    """Muse background-worker cards are adapter bookkeeping, not tool calls.
+
+    **What breaks if this fails**: every ``reminderChild``/``workflow``/
+    ``subagent`` attribution frame the adapter emits renders a tool card and
+    persists a transcript item — hundreds of noise items per lane that keep
+    turns looking busy and starve the hub report.
+    """
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    events = ex._handle_session_update(
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "w1",
+            "title": "reminderChild: inProgress",
+            "kind": "other",
+        }
+    )
+    assert events == []
+    assert "w1" not in ex._tool_names
+
+
+def test_muse_worker_tool_call_update_is_ignored() -> None:
+    """A worker card closing must not emit a completion for a call never opened."""
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    events = ex._handle_session_update(
+        {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "w1",
+            "status": "completed",
+            "title": "reminderChild: completed",
+        }
+    )
+    assert events == []
+
+
+def test_muse_worker_meta_marker_is_ignored() -> None:
+    """The adapter's ``_meta["muse/asyncTasks"]`` kind marks worker frames explicitly."""
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    events = ex._handle_session_update(
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "w2",
+            "title": "something else entirely",
+            "kind": "other",
+            "_meta": {"muse/asyncTasks": {"kind": "subagent", "observedStatus": "inProgress"}},
+        }
+    )
+    assert events == []
+    assert "w2" not in ex._tool_names
+
+
+def test_muse_worker_frames_do_not_shadow_real_tools() -> None:
+    """Worker noise leaves real tool correlation untouched."""
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    assert (
+        ex._handle_session_update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "w9",
+                "title": "reminderChild: inProgress",
+                "kind": "other",
+            }
+        )
+        == []
+    )
+    opened = ex._handle_session_update(
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "real-1",
+            "title": "Bash",
+            "kind": "execute",
+            "rawInput": {"command": "ls"},
+        }
+    )
+    assert len(opened) == 1 and isinstance(opened[0], ToolCallRequest)
+    closed = ex._handle_session_update(
+        {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "real-1",
+            "status": "completed",
+        }
+    )
+    assert len(closed) == 1 and isinstance(closed[0], ToolCallComplete)
+
+
+_MUSE_WORKER_NOISE_ACP_AGENT = """\
+import json
+import sys
+import threading
+import time
+
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\\n")
+    sys.stdout.flush()
+
+
+state = {}
+
+
+def finish_prompt(mid):
+    time.sleep(0.2)
+    send(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "fake-session-worker-noise",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "worker-1",
+                    "title": "reminderChild: inProgress",
+                    "kind": "other",
+                },
+            },
+        }
+    )
+    send(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "fake-session-worker-noise",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "done"},
+                },
+            },
+        }
+    )
+    send(
+        {
+            "jsonrpc": "2.0",
+            "id": mid,
+            "result": {"stopReason": "end_turn"},
+        }
+    )
+
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    mid, method = msg.get("id"), msg.get("method")
+    if method == "initialize":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": mid,
+                "result": {
+                    "protocolVersion": 1,
+                    "agentCapabilities": {"promptCapabilities": {}},
+                },
+            }
+        )
+    elif method == "session/new":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "fake-session-worker-noise"}})
+    elif method == "session/prompt":
+        threading.Thread(target=finish_prompt, args=(mid,), daemon=True).start()
+"""
+
+
+@pytest.mark.asyncio
+async def test_turn_with_worker_noise_yields_no_tool_events(tmp_path: Path) -> None:
+    """A turn interleaved with worker frames completes with text and no tool cards.
+
+    **What breaks if this fails**: adapter-internal worker chatter leaks into
+    the transcript as function calls, bloating history replays and holding
+    the hub watch past the visible reply.
+    """
+    agent_path = tmp_path / "worker_noise_acp_agent.py"
+    agent_path.write_text(_MUSE_WORKER_NOISE_ACP_AGENT)
+    command = shlex.join([sys.executable, str(agent_path)])
+
+    ex = AcpExecutor(AcpAgentConfig(command=command))
+    seen: list[object] = []
+    try:
+        async for ev in ex.run_turn([{"role": "user", "content": "hi"}], [], ""):
+            seen.append(ev)
+    finally:
+        await ex.close()
+
+    assert not [ev for ev in seen if isinstance(ev, (ToolCallRequest, ToolCallComplete))]
+    completions = [ev for ev in seen if isinstance(ev, TurnComplete)]
+    assert len(completions) == 1
+    assert completions[0].response == "done"
 
 
 def test_usage_maps_cached_reads_to_the_canonical_key() -> None:
@@ -1279,6 +1619,154 @@ async def test_reasoning_effort_is_set_via_set_config_option() -> None:
     assert ex._active_effort == "low"
 
 
+def _camel_effort_option(current: str) -> dict:
+    """A ``config_option_update`` payload with Muse Code's ``reasoningEffort`` spelling."""
+    return {
+        "sessionUpdate": "config_option_update",
+        "configOptions": [
+            {"id": "reasoningEffort", "currentValue": current},
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_honors_the_camel_case_spelling() -> None:
+    """
+    An agent advertising ``reasoningEffort`` (Muse Code's ``muse-code-acp``
+    adapter) gets the value sent back under that same id.
+
+    **What breaks if this fails**: the effort picker offers eight levels for
+    Muse and every one silently no-ops — the adapter never sees an id it
+    recognizes.
+    """
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    ex._handle_session_update(_camel_effort_option("high"))
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_rpc(method, params, timeout=30.0):
+        calls.append((method, params))
+        return {
+            "result": {
+                "configOptions": [{"id": "reasoningEffort", "currentValue": params["value"]}]
+            }
+        }
+
+    ex._rpc = fake_rpc  # type: ignore[assignment]
+    await ex._apply_reasoning_effort("s1", "low")
+
+    assert calls == [
+        (
+            "session/set_config_option",
+            {"sessionId": "s1", "configId": "reasoningEffort", "value": "low"},
+        )
+    ]
+    assert ex._active_effort == "low"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_prefers_the_standard_spelling() -> None:
+    """
+    When an agent advertises both spellings, the standard ``reasoning_effort``
+    id is sent — the camelCase form is only a fallback.
+
+    **What breaks if this fails**: an agent accepting both gets the
+    non-standard id, which a strict implementation may reject.
+    """
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    ex._handle_session_update(_camel_effort_option("high"))
+    ex._handle_session_update(_effort_option("high"))
+    ex._rpc = AsyncMock(return_value={"result": {}})  # type: ignore[assignment]
+
+    await ex._apply_reasoning_effort("s1", "low")
+
+    ex._rpc.assert_awaited_once()
+    assert ex._rpc.await_args.args[1]["configId"] == "reasoning_effort"
+
+
+# Muse's provider-qualified envelope, exactly as the adapter echoes it.
+MUSE_QUALIFIED_CONTRIBUTOR = (
+    "muse-model:%5B%22meta%22%2Cnull%2C%22muse-spark-1.3-contributor%22%5D"
+)
+
+
+def test_normalize_model_id_unwraps_the_qualified_envelope() -> None:
+    assert _normalize_model_id(MUSE_QUALIFIED_CONTRIBUTOR) == "muse-spark-1.3-contributor"
+
+
+def test_normalize_model_id_passes_anything_else_through() -> None:
+    assert _normalize_model_id("muse-spark-1.3") == "muse-spark-1.3"
+    assert _normalize_model_id("muse-model:not-json") == "muse-model:not-json"
+    assert _normalize_model_id("muse-model:%7B%22a%22%3A1%7D") == "muse-model:%7B%22a%22%3A1%7D"
+
+
+def test_resolve_model_option_value_prefers_exact_then_envelope_then_bare() -> None:
+    advertised = [MUSE_QUALIFIED_CONTRIBUTOR, "muse-spark-1.2"]
+    assert _resolve_model_option_value("muse-spark-1.2", advertised) == "muse-spark-1.2"
+    assert (
+        _resolve_model_option_value("muse-spark-1.3-contributor", advertised)
+        == MUSE_QUALIFIED_CONTRIBUTOR
+    )
+    assert _resolve_model_option_value("muse-wonder-1.0", advertised) == "muse-wonder-1.0"
+
+
+def _muse_model_option(current: str) -> dict:
+    """A ``config_option_update`` advertising the model catalog entry."""
+    return {
+        "sessionUpdate": "config_option_update",
+        "configOptions": [
+            {
+                "id": "model",
+                "currentValue": current,
+                "options": [
+                    {"value": MUSE_QUALIFIED_CONTRIBUTOR, "label": "Spark 1.3 Contributor"},
+                    {"value": "muse-spark-1.2", "label": "Spark 1.2"},
+                ],
+            },
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_switch_sends_the_qualified_catalog_value() -> None:
+    """
+    A bare requested id that the catalog lists qualified is sent qualified.
+
+    **What breaks if this fails**: the adapter takes the bare-id manual path
+    and the Muse host refuses to confirm it — every picked model fails the
+    turn with "Muse did not confirm the requested model/provider".
+    """
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    ex._handle_session_update(_muse_model_option("muse-spark-1.2"))
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_rpc(method, params, timeout=30.0):
+        calls.append((method, params))
+        return {
+            "result": {
+                "configOptions": [{"id": "model", "currentValue": MUSE_QUALIFIED_CONTRIBUTOR}]
+            }
+        }
+
+    ex._rpc = fake_rpc  # type: ignore[assignment]
+    await ex._apply_model_override("s1", "muse-spark-1.3-contributor")
+
+    assert calls == [
+        (
+            "session/set_config_option",
+            {
+                "sessionId": "s1",
+                "configId": "model",
+                "value": MUSE_QUALIFIED_CONTRIBUTOR,
+            },
+        )
+    ]
+    # The active model is the bare id, so the next turn's identical request
+    # is a no-op instead of resending the switch every turn.
+    assert ex._active_model == "muse-spark-1.3-contributor"
+    await ex._apply_model_override("s1", "muse-spark-1.3-contributor")
+    assert len(calls) == 1
+
+
 @pytest.mark.asyncio
 async def test_reasoning_effort_skipped_without_the_option_and_rejection_is_not_fatal() -> None:
     """
@@ -1995,3 +2483,550 @@ async def test_close_reaps_the_agents_forked_children(tmp_path: Path) -> None:
     while _proc.process_alive(grandchild):
         assert time.monotonic() < deadline, f"agent child {grandchild} survived close()"
         await asyncio.sleep(0.05)
+
+
+# ---------------------------------------------------------------------------
+# Muse Code usage forwarding (``muse/usage`` extension)
+# ---------------------------------------------------------------------------
+
+
+def _muse_update(prompt: int, output: int, total: int) -> dict:
+    return {
+        "sessionUpdate": "session_info_update",
+        "_meta": {
+            "muse/usage": {
+                "scope": "rootSession",
+                "cumulative": {
+                    "promptTokens": prompt,
+                    "outputTokens": output,
+                    "totalTokens": total,
+                },
+            }
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_initialize_advertises_muse_usage_extension() -> None:
+    """The adapter only forwards token usage to clients declaring the extension."""
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    captured: dict = {}
+
+    async def fake_rpc(method, params, timeout=30.0):
+        captured["params"] = params
+        return {"result": {}}
+
+    ex._rpc = fake_rpc  # type: ignore[assignment]
+    await ex._ensure_initialized()
+
+    assert captured["params"]["clientCapabilities"]["_meta"] == {"muse/usage": 1}
+
+
+def test_muse_session_info_update_tracks_cumulative() -> None:
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    assert ex._handle_session_update(_muse_update(100, 20, 120)) == []
+    assert ex._muse_cumulative == {"input": 100, "output": 20, "total": 120}
+
+    usage = ex._consume_muse_turn_usage("muse-spark-1.3")
+
+    assert usage == {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "total_tokens": 120,
+        "model": "muse-spark-1.3",
+    }
+    # Consuming a second time without new observations attributes nothing.
+    assert ex._consume_muse_turn_usage("muse-spark-1.3") is None
+
+
+def test_muse_growth_splits_across_turns() -> None:
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    ex._handle_session_update(_muse_update(100, 20, 120))
+    assert ex._consume_muse_turn_usage("m") == {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "total_tokens": 120,
+        "model": "m",
+    }
+    ex._handle_session_update(_muse_update(150, 45, 195))
+    assert ex._consume_muse_turn_usage("m") == {
+        "input_tokens": 50,
+        "output_tokens": 25,
+        "total_tokens": 75,
+        "model": "m",
+    }
+
+
+def test_muse_growth_clamps_negative_and_keeps_watermark() -> None:
+    """A lowered report never claws tokens back; the watermark still advances."""
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    ex._handle_session_update(_muse_update(100, 20, 120))
+    ex._consume_muse_turn_usage("m")
+    ex._handle_session_update(_muse_update(90, 15, 105))
+    assert ex._consume_muse_turn_usage("m") is None
+
+
+def test_muse_usage_ignores_malformed_observations() -> None:
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    for bad in (
+        {"sessionUpdate": "session_info_update"},
+        {"sessionUpdate": "session_info_update", "_meta": None},
+        {"sessionUpdate": "session_info_update", "_meta": {"muse/usage": None}},
+        {"sessionUpdate": "session_info_update", "_meta": {"muse/usage": {"scope": "subagent"}}},
+        {"sessionUpdate": "session_info_update", "_meta": {"muse/usage": {"cumulative": {}}}},
+        {
+            "sessionUpdate": "session_info_update",
+            "_meta": {
+                "muse/usage": {
+                    "cumulative": {"promptTokens": -1, "outputTokens": 0, "totalTokens": 0}
+                }
+            },
+        },
+        {
+            "sessionUpdate": "session_info_update",
+            "_meta": {
+                "muse/usage": {
+                    "cumulative": {"promptTokens": True, "outputTokens": 0, "totalTokens": 0}
+                }
+            },
+        },
+    ):
+        assert ex._handle_session_update(bad) == []
+    assert ex._muse_cumulative is None
+    assert ex._consume_muse_turn_usage("m") is None
+
+
+def test_muse_state_resets_with_session() -> None:
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    ex._handle_session_update(_muse_update(100, 20, 120))
+    ex._reset_session_state()
+    assert ex._muse_cumulative is None
+    assert ex._consume_muse_turn_usage("m") is None
+
+
+# ---------------------------------------------------------------------------
+# Silent-agent timeout: diagnostics + cancel instead of a bare message
+# ---------------------------------------------------------------------------
+
+_SILENT_ACP_AGENT = """\
+import json
+import sys
+import threading
+import time
+
+marker = sys.argv[1]
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\\n")
+    sys.stdout.flush()
+
+state = {}
+
+def finish_prompt():
+    time.sleep(30)
+    mid = state.get("prompt_id")
+    if mid is not None:
+        send({"jsonrpc": "2.0", "id": mid,
+              "result": {"stopReason": "cancelled"}})
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    mid, method = msg.get("id"), msg.get("method")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {
+            "protocolVersion": 1,
+            "agentCapabilities": {"promptCapabilities": {"image": False}}}})
+    elif method == "session/new":
+        send({"jsonrpc": "2.0", "id": mid,
+              "result": {"sessionId": "fake-session-silent"}})
+    elif method == "session/prompt":
+        state["prompt_id"] = mid
+        threading.Thread(target=finish_prompt, daemon=True).start()
+    elif method == "session/cancel":
+        with open(marker, "w") as fh:
+            fh.write("cancel\\n")
+"""
+
+
+@pytest.mark.asyncio
+async def test_silent_agent_timeout_reports_diagnostics_and_cancels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A turn with zero ACP output must fail with a diagnostic error and a
+    best-effort session/cancel, and must not leave the prompt pending."""
+    monkeypatch.setattr(acp_executor_module, "_PROMPT_TIMEOUT_SECONDS", 0.5)
+    agent_path = tmp_path / "silent_acp_agent.py"
+    agent_path.write_text(_SILENT_ACP_AGENT)
+    marker = tmp_path / "cancel.marker"
+    command = shlex.join([sys.executable, str(agent_path), str(marker)])
+
+    ex = AcpExecutor(AcpAgentConfig(command=command, name="Silent"))
+    errors: list[ExecutorError] = []
+    try:
+        async for ev in ex.run_turn([{"role": "user", "content": "hi"}], [], ""):
+            if isinstance(ev, ExecutorError):
+                errors.append(ev)
+        assert ex._pending == {}
+    finally:
+        await ex.close()
+
+    assert len(errors) == 1
+    assert errors[0].retryable is True
+    assert "silent" in errors[0].message.lower()
+    for _ in range(50):
+        if marker.exists():
+            break
+        await asyncio.sleep(0.1)
+    assert marker.exists(), "the silent agent never received session/cancel"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fails", [False, True])
+async def test_muse_session_configures_host_network_before_prompt(fails: bool) -> None:
+    ex = AcpExecutor(AcpAgentConfig(command="muse-code-acp", omnigent_mcp=False))
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_rpc(method, params, timeout=30.0):
+        calls.append((method, params))
+        if method == "session/new":
+            return {"result": {"sessionId": "muse-42"}}
+        return {"error": {"message": "unsupported"}} if fails else {"result": {}}
+
+    ex._rpc = fake_rpc  # type: ignore[assignment]
+    if fails:
+        with pytest.raises(RuntimeError, match="Muse host network configuration failed"):
+            await ex._ensure_session()
+        assert ex._session_id is None
+        assert [method for method, _ in calls] == ["session/new", "session/set_config_option"]
+        return
+    assert await ex._ensure_session() == "muse-42"
+    await ex._ensure_session()
+    assert [method for method, _ in calls] == [
+        "session/new",
+        "session/set_config_option",
+        "session/set_config_option",
+    ]
+    assert calls[-2][1] == {
+        "sessionId": "muse-42", "configId": "sandboxNetwork", "value": "enabled"
+    }
+    assert calls[-1][1] == {
+        "sessionId": "muse-42", "configId": "sandbox", "value": "disabled"
+    }
+
+
+@pytest.mark.asyncio
+async def test_muse_session_fails_when_sandbox_cannot_be_disabled() -> None:
+    ex = AcpExecutor(AcpAgentConfig(command="muse-code-acp", omnigent_mcp=False))
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_rpc(method, params, timeout=30.0):
+        calls.append((method, params))
+        if method == "session/new":
+            return {"result": {"sessionId": "muse-42"}}
+        if params.get("configId") == "sandbox":
+            return {"error": {"message": "nope"}}
+        return {"result": {}}
+
+    ex._rpc = fake_rpc  # type: ignore[assignment]
+    with pytest.raises(RuntimeError, match="Muse sandbox configuration failed"):
+        await ex._ensure_session()
+    assert ex._session_id is None
+
+
+def test_spawn_env_grants_muse_the_sandbox_opt_out() -> None:
+    ex = AcpExecutor(AcpAgentConfig(command="muse-code-acp"))
+    assert ex._build_spawn_env().get("MUSE_CODE_ACP_ALLOW_YOLO") == "1"
+
+
+def test_spawn_env_withholds_the_opt_out_from_other_agents() -> None:
+    ex = AcpExecutor(AcpAgentConfig(command="agent stdio", name="Grok"))
+    assert "MUSE_CODE_ACP_ALLOW_YOLO" not in ex._build_spawn_env()
+
+
+# ---------------------------------------------------------------------------
+# Muse Code mid-turn steering (``_session/steering`` extension)
+# ---------------------------------------------------------------------------
+
+
+def test_steering_is_negotiated_only_for_muse_backends() -> None:
+    muse = AcpExecutor(AcpAgentConfig(command="muse-code-acp"))
+    other = AcpExecutor(AcpAgentConfig(command="gemini --experimental-acp"))
+
+    assert muse._client_meta() == {"muse/usage": 1, "steering": True}
+    assert other._client_meta() == {"muse/usage": 1}
+    assert muse.supports_live_message_queue() is True
+    assert other.supports_live_message_queue() is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        ({"_meta": {"steering": {"supported": True, "idle": "reject"}}}, True),
+        ({"_meta": {"steering": {"supported": False}}}, False),
+        ({"_meta": {}}, False),
+        ({}, False),
+        # The adapter offers extensions in the result's ``_meta``, never here.
+        ({"agentCapabilities": {"_meta": {"steering": {"supported": True}}}}, False),
+    ],
+)
+async def test_initialize_records_whether_the_agent_offers_steering(
+    result: dict, expected: bool
+) -> None:
+    ex = AcpExecutor(AcpAgentConfig(command="muse-code-acp"))
+
+    async def fake_rpc(method, params, timeout=30.0):
+        return {"result": result}
+
+    ex._rpc = fake_rpc  # type: ignore[assignment]
+    await ex._ensure_initialized()
+
+    assert ex._steering_supported is expected
+
+
+@pytest.mark.asyncio
+async def test_enqueue_declines_without_negotiated_steering_or_session() -> None:
+    ex = AcpExecutor(AcpAgentConfig(command="muse-code-acp"))
+    ex._rpc = AsyncMock()  # type: ignore[assignment]
+
+    ex._session_id = "s1"
+    assert await ex.enqueue_session_message("k", "hi") is False  # not negotiated
+    ex._steering_supported = True
+    ex._session_id = None
+    assert await ex.enqueue_session_message("k", "hi") is False  # no session yet
+
+    ex._rpc.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        ({"result": {"outcome": "injected"}}, True),
+        ({"error": {"message": "No active turn; steering never starts a new turn"}}, False),
+        (TimeoutError("no acknowledgement"), False),
+    ],
+)
+async def test_enqueue_steers_the_active_turn(reply: object, expected: bool) -> None:
+    """Only an accepted injection returns True; refusals fall back to next-turn delivery."""
+    ex = AcpExecutor(AcpAgentConfig(command="muse-code-acp"))
+    ex._session_id = "s1"
+    ex._steering_supported = True
+    ex._rpc = AsyncMock(  # type: ignore[assignment]
+        side_effect=[reply] if isinstance(reply, Exception) else None,
+        return_value=None if isinstance(reply, Exception) else reply,
+    )
+
+    assert await ex.enqueue_session_message("k", "change course") is expected
+
+    ex._rpc.assert_awaited_once_with(
+        "_session/steering",
+        {"sessionId": "s1", "prompt": [{"type": "text", "text": "change course"}]},
+        timeout=acp_executor_module._STEER_TIMEOUT_SECONDS,
+    )
+
+
+# A Muse-shaped agent: it offers steering when the client opts in, holds the
+# prompt open, and finishes the turn only after a steering message arrives.
+_FAKE_STEERABLE_AGENT = r"""
+import sys, json
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+def chunk(sid, text):
+    send({"jsonrpc": "2.0", "method": "session/update", "params": {
+        "sessionId": sid,
+        "update": {"sessionUpdate": "agent_message_chunk",
+                   "content": {"type": "text", "text": text}}}})
+
+prompt_id = sid = None
+for line in sys.stdin:
+    msg = json.loads(line)
+    mid, method = msg.get("id"), msg.get("method")
+    if method == "initialize":
+        opted_in = msg["params"]["clientCapabilities"].get("_meta", {}).get("steering") is True
+        result = {"protocolVersion": 1,
+                  "agentCapabilities": {"promptCapabilities": {"image": False}}}
+        if opted_in:
+            result["_meta"] = {"steering": {"supported": True, "idle": "reject"}}
+        send({"jsonrpc": "2.0", "id": mid, "result": result})
+    elif method == "session/new":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "steer-session"}})
+    elif method == "session/prompt":
+        prompt_id, sid = mid, msg["params"]["sessionId"]
+        chunk(sid, "working ")
+    elif method == "_session/steering":
+        text = msg["params"]["prompt"][0]["text"]
+        send({"jsonrpc": "2.0", "id": mid, "result": {"outcome": "injected"}})
+        chunk(sid, "steered:" + text)
+        send({"jsonrpc": "2.0", "id": prompt_id, "result": {"stopReason": "end_turn"}})
+    elif mid is not None:
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+"""
+
+
+@pytest.mark.asyncio
+async def test_steering_message_reaches_a_running_turn_end_to_end(tmp_path: Path) -> None:
+    """A message sent mid-turn is injected into the live turn, not held for the next one."""
+    agent_path = tmp_path / "steerable_acp_agent.py"
+    agent_path.write_text(_FAKE_STEERABLE_AGENT)
+    command = shlex.join([sys.executable, str(agent_path)])
+    ex = AcpExecutor(AcpAgentConfig(command=command, name="Muse", omnigent_mcp=False))
+    events: list = []
+    accepted: list[bool] = []
+
+    async def drive() -> None:
+        async for ev in ex.run_turn([{"role": "user", "content": "hi"}], [], ""):
+            events.append(ev)
+            if isinstance(ev, TextChunk) and not accepted:
+                accepted.append(await ex.enqueue_session_message("k", "change course"))
+
+    try:
+        await asyncio.wait_for(drive(), timeout=30)
+    finally:
+        await ex.close()
+
+    assert accepted == [True]
+    assert "".join(e.text for e in events if isinstance(e, TextChunk)) == (
+        "working steered:change course"
+    )
+    assert [e for e in events if isinstance(e, TurnComplete)]
+    assert not [e for e in events if isinstance(e, ExecutorError)]
+
+
+# ---------------------------------------------------------------------------
+# Muse Code: a prompt refused for an unfinished turn is resent once
+# ---------------------------------------------------------------------------
+
+_UNFINISHED_ACP_AGENT = """\
+import json
+import sys
+
+log_path, mode = sys.argv[1], sys.argv[2]
+sessions = 0
+REFUSAL = (
+    "The saved Muse session has an unfinished turn or pending input; resolve it "
+    "in Muse before continuing. No model turn was submitted by this operation."
+)
+
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\\n")
+    sys.stdout.flush()
+
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    mid, method = msg.get("id"), msg.get("method")
+    with open(log_path, "a") as log:
+        log.write(method + "\\n")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1}})
+    elif method == "session/new":
+        sessions += 1
+        send({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": f"s-{sessions}"}})
+    elif method == "session/prompt":
+        refused = mode == "always" or sessions == 1
+        if refused and mode == "streamed":
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": "s-1",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": "partial"},
+                        },
+                    },
+                }
+            )
+        if refused:
+            send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32000, "message": REFUSAL}})
+        else:
+            send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
+    elif mid is not None:
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+"""
+
+
+async def _run_unfinished_agent(
+    tmp_path: Path, agent_name: str, mode: str
+) -> tuple[list, list[str]]:
+    """Run one turn against the scripted adapter; return its events and the methods it saw."""
+    agent_path = tmp_path / agent_name
+    agent_path.write_text(_UNFINISHED_ACP_AGENT)
+    log_path = tmp_path / "calls.log"
+    command = shlex.join([sys.executable, str(agent_path), str(log_path), mode])
+    ex = AcpExecutor(AcpAgentConfig(command=command, omnigent_mcp=False))
+    events: list = []
+    try:
+        async for ev in ex.run_turn([{"role": "user", "content": "hi"}], [], ""):
+            events.append(ev)
+    finally:
+        await ex.close()
+    return events, log_path.read_text().split()
+
+
+@pytest.mark.asyncio
+async def test_muse_resends_a_turn_refused_for_an_unfinished_turn(tmp_path: Path) -> None:
+    """The refusal submitted no model turn, so the turn runs again on a fresh session.
+
+    **What breaks if this fails**: a Muse lane whose saved session holds an
+    unfinished turn fails the next message and the user has to send it again.
+    """
+    events, calls = await _run_unfinished_agent(tmp_path, "muse_agent.py", "once")
+
+    assert [e for e in events if isinstance(e, TurnComplete)]
+    assert not [e for e in events if isinstance(e, ExecutorError)]
+    assert calls.count("session/new") == 2
+    assert calls.count("session/prompt") == 2
+    assert "session/cancel" in calls  # the abandoned session is told to stop
+
+
+@pytest.mark.asyncio
+async def test_muse_resends_only_once(tmp_path: Path) -> None:
+    """A second refusal reaches the user instead of looping.
+
+    **What breaks if this fails**: a session Muse keeps refusing retries forever.
+    """
+    events, calls = await _run_unfinished_agent(tmp_path, "muse_agent.py", "always")
+
+    errors = [e for e in events if isinstance(e, ExecutorError)]
+    assert len(errors) == 1 and "unfinished turn or pending input" in errors[0].message
+    assert calls.count("session/prompt") == 2
+
+
+@pytest.mark.asyncio
+async def test_muse_does_not_resend_after_output_reached_the_user(tmp_path: Path) -> None:
+    """Once text streamed, a resend would show the answer twice.
+
+    **What breaks if this fails**: a turn refused after partial output restarts
+    and repeats what the user already read.
+    """
+    events, calls = await _run_unfinished_agent(tmp_path, "muse_agent.py", "streamed")
+
+    assert [e.text for e in events if isinstance(e, TextChunk)] == ["partial"]
+    assert [e for e in events if isinstance(e, ExecutorError)]
+    assert calls.count("session/prompt") == 1
+
+
+@pytest.mark.asyncio
+async def test_other_adapters_keep_the_refusal(tmp_path: Path) -> None:
+    """Only Muse is resent; the same text from another agent is an ordinary error.
+
+    **What breaks if this fails**: any ACP agent that quotes the sentence gets
+    its turns replayed.
+    """
+    events, calls = await _run_unfinished_agent(tmp_path, "plain_agent.py", "once")
+
+    assert [e for e in events if isinstance(e, ExecutorError)]
+    assert calls.count("session/prompt") == 1

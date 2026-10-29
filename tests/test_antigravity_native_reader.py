@@ -5586,3 +5586,74 @@ async def test_normal_no_task_turn_closes_immediately_as_before(
     )
 
     assert sink.statuses() == ["running", "idle"]
+
+
+def _resumed_bridge_dir(tmp_path: Path, cascade_id: str) -> Path:
+    """A bridge dir whose state names a resumed (real) conversation id."""
+    bridge_dir = tmp_path / "bridge"
+    bridge_dir.mkdir()
+    (bridge_dir / "state.json").write_text(
+        f'{{"session_id": "conv_sess", "conversation_id": "{cascade_id}", '
+        '"active_turn_id": null}',
+        encoding="utf-8",
+    )
+    return bridge_dir
+
+
+_LOST = "796d454b-b489-468c-86fe-c8be914dca54"
+_STARTED = "ba4b9b02-8092-4941-9444-7685b7793de5"
+
+
+def test_a_lost_conversation_is_replaced_by_the_one_agy_started(tmp_path: Path) -> None:
+    """agy ignored --conversation for a missing store and began another."""
+    bridge_dir = _resumed_bridge_dir(tmp_path, _LOST)
+    _write_agy_conversation(bridge_dir, _STARTED)
+    assert reader.replacement_for_missing_cascade(bridge_dir, _LOST) == _STARTED
+
+
+def test_a_conversation_still_on_disk_is_not_replaced(tmp_path: Path) -> None:
+    bridge_dir = _resumed_bridge_dir(tmp_path, _LOST)
+    _write_agy_conversation(bridge_dir, _LOST)
+    _write_agy_conversation(bridge_dir, _STARTED)
+    assert reader.replacement_for_missing_cascade(bridge_dir, _LOST) is None
+
+
+def test_two_candidates_for_a_lost_conversation_are_too_ambiguous(tmp_path: Path) -> None:
+    bridge_dir = _resumed_bridge_dir(tmp_path, _LOST)
+    _write_agy_conversation(bridge_dir, _STARTED)
+    _write_agy_conversation(bridge_dir, "52a5d26b-f238-4c64-9135-585da809ea40")
+    assert reader.replacement_for_missing_cascade(bridge_dir, _LOST) is None
+
+
+def _discover_once(bridge_dir: Path) -> tuple[str, int] | None:
+    return asyncio.run(reader._discover(bridge_dir, poll_interval_s=0.0, stop=lambda: True))
+
+
+def test_discovery_adopts_the_conversation_a_live_agy_hosts_instead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bound to a lost id, the reader would otherwise wait forever."""
+    bridge_dir = _resumed_bridge_dir(tmp_path, _LOST)
+    _write_agy_conversation(bridge_dir, _STARTED)
+    monkeypatch.setattr(
+        reader, "_resolve_rpc_port", lambda cid, _tok=None: 42253 if cid == _STARTED else None
+    )
+
+    assert _discover_once(bridge_dir) == (_STARTED, 42253)
+    state = antigravity_native_bridge.read_bridge_state(bridge_dir)
+    assert state is not None
+    assert state.conversation_id == _STARTED
+
+
+def test_discovery_keeps_waiting_until_agy_hosts_the_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Before agy is up, a missing file alone is no proof the id is lost."""
+    bridge_dir = _resumed_bridge_dir(tmp_path, _LOST)
+    _write_agy_conversation(bridge_dir, _STARTED)
+    monkeypatch.setattr(reader, "_resolve_rpc_port", lambda cid, _tok=None: None)
+
+    assert _discover_once(bridge_dir) is None
+    state = antigravity_native_bridge.read_bridge_state(bridge_dir)
+    assert state is not None
+    assert state.conversation_id == _LOST

@@ -1,7 +1,8 @@
 """Each provider's budget for today, and which provider takes a task: plain arithmetic.
 
-Each provider's week starts at its own reset, so "day 3" is three days after
-that provider's reset, not a calendar day. The weekly meter is spread evenly
+The subscription week always follows its provider's reset. The Hub's day
+can instead follow a configured local clock, independently of API pools.
+The weekly meter is spread evenly
 over the week, keeping a buffer for the end: a day's budget is
 ``(100% - buffer) / 7`` of the week. A quiet day leaves room for the next and
 a heavy day takes it from the next, with the carry-over capped. A provider
@@ -22,6 +23,7 @@ import pathlib
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from omnigent.install_ledger import state_dir
 
@@ -39,14 +41,16 @@ METERS: Final[dict[str, tuple[str, str, str, str]]] = {
     "claude": ("plan-limits-claude.json", "claude", "weekly", "session"),
     "codex": ("plan-limits-codex.json", "codex", "weekly", "session"),
     "gemini": ("plan-limits-antigravity.json", "antigravity", "gemini-weekly", "gemini-5h"),
+    "muse": ("plan-limits-muse.json", "muse", "weekly", "session"),
 }
 
 #: What each provider runs at each tier, as words its model picker matches.
-#: Google's top tier is offered only while ``agy models`` lists Argon.
+#: Argon has an independent quota and is reserved for explicit model choices.
 TIER_MODELS: Final[dict[str, dict[str, str]]] = {
     "claude": {"top": "Opus", "middle": "Sonnet", "economical": "Haiku"},
     "codex": {"top": "Sol", "economical": "Luna"},
     "gemini": {"top": "Argon", "economical": "Flash"},
+    "muse": {"top": "Wonder", "middle": "Spark", "economical": "Spark"},
 }
 
 #: Efforts each provider takes, lowest first; Gemini through agy stops at high.
@@ -54,9 +58,15 @@ PROVIDER_EFFORTS: Final[dict[str, tuple[str, ...]]] = {
     "claude": ("low", "medium", "high", "xhigh", "max"),
     "codex": ("low", "medium", "high", "xhigh"),
     "gemini": ("low", "medium", "high"),
+    "muse": ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"),
 }
 
-PROVIDER_LABELS: Final[dict[str, str]] = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini"}
+PROVIDER_LABELS: Final[dict[str, str]] = {
+    "claude": "Claude",
+    "codex": "Codex",
+    "gemini": "Gemini",
+    "muse": "Muse",
+}
 
 #: When no provider has room at a tier, the tiers tried next, nearest first
 #: and upward before downward.
@@ -139,6 +149,11 @@ class BudgetSettings:
     spend_freely_until: dict[str, datetime] = field(default_factory=dict)
     #: Provider -> a plan smaller than the one it is on, to see how routing behaves.
     plan_mocks: dict[str, PlanMock] = field(default_factory=dict)
+    #: None preserves provider-aligned days; an hour selects local calendar days.
+    daily_reset_hour: int | None = None
+    daily_timezone: str = "America/Sao_Paulo"
+    avoid_models: tuple[str, ...] = ()
+    priority_models: tuple[str, ...] = ()
 
     @property
     def daily_pct(self) -> float:
@@ -179,13 +194,29 @@ def load_settings(hub_dir: pathlib.Path) -> BudgetSettings:
         for provider, entry in (raw.get("plan_mocks") or {}).items()
         if (mock := _plan_mock(entry)) is not None
     }
+    avoid = tuple(str(m) for m in (raw.get("avoid_models") or []) if isinstance(m, str))
+    priority = tuple(str(m) for m in (raw.get("priority_models") or []) if isinstance(m, str))
+    clock: dict[str, Any] = {}
+    hour = raw.get("daily_reset_hour")
+    zone = raw.get("daily_timezone", defaults.daily_timezone)
+    if isinstance(hour, int) and not isinstance(hour, bool) and 0 <= hour <= 23:
+        try:
+            ZoneInfo(zone)
+        except (ZoneInfoNotFoundError, ValueError, TypeError):
+            _logger.warning("Invalid Hub daily timezone; retaining provider-aligned days")
+        else:
+            clock = {"daily_reset_hour": hour, "daily_timezone": zone}
     return BudgetSettings(
-        **{
-            **asdict(defaults),
-            **numbers,
-            "spend_freely_until": free,
-            "plan_mocks": mocks,
-        }
+        buffer_pct=numbers.get("buffer_pct", defaults.buffer_pct),
+        carry_days=numbers.get("carry_days", defaults.carry_days),
+        five_hour_guard_pct=numbers.get("five_hour_guard_pct", defaults.five_hour_guard_pct),
+        stale_after_s=numbers.get("stale_after_s", defaults.stale_after_s),
+        spend_freely_until=free,
+        plan_mocks=mocks,
+        daily_reset_hour=clock.get("daily_reset_hour"),
+        daily_timezone=clock.get("daily_timezone", defaults.daily_timezone),
+        avoid_models=avoid,
+        priority_models=priority,
     )
 
 
@@ -297,6 +328,9 @@ class ProviderBudget:
     stale: bool = False
     free_until: str | None = None
     blocked: str = ""
+    daily_started_at: str | None = None
+    daily_resets_at: str | None = None
+    daily_timezone: str | None = None
 
     #: How full the 5-hour window may get before it waits, from the settings.
     five_hour_cap: float = 85.0
@@ -326,6 +360,25 @@ def _iso(when: datetime | None) -> str | None:
     return when.astimezone(UTC).isoformat().replace("+00:00", "Z") if when else None
 
 
+def daily_window(
+    week_start: datetime, now: datetime, settings: BudgetSettings
+) -> tuple[int, datetime, datetime]:
+    """Hub day boundaries, while weekly capacity remains provider-owned."""
+    if settings.daily_reset_hour is None:
+        day = min(6, max(0, int((now - week_start) / DAY)))
+        start = week_start + day * DAY
+        return day, start, start + DAY
+    hour = settings.daily_reset_hour
+    zone = ZoneInfo(settings.daily_timezone)
+    local_now = now.astimezone(zone)
+    start = local_now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if start > local_now:
+        start -= DAY
+    first_day = (week_start.astimezone(zone) - timedelta(hours=hour)).date()
+    day = min(6, max(0, (start.date() - first_day).days))
+    return day, max(week_start, start.astimezone(UTC)), (start + DAY).astimezone(UTC)
+
+
 def provider_budget(
     meter: Meter,
     readings: list[tuple[datetime, float]],
@@ -352,8 +405,7 @@ def provider_budget(
         return ProviderBudget(**base, stale=True, blocked="no reading since its reset")
     stale = (now - meter.as_of).total_seconds() > settings.stale_after_s
     week_start = meter.resets_at - WEEK
-    day = min(6, max(0, int((now - week_start) / DAY)))
-    day_start = week_start + day * DAY
+    day, day_start, day_end = daily_window(week_start, now, settings)
     this_week = [(at, pct) for at, pct in readings if week_start <= at <= now]
     before = [pct for at, pct in this_week if at <= day_start]
     after = [pct for at, pct in this_week if at > day_start]
@@ -386,6 +438,9 @@ def provider_budget(
         stale=stale,
         free_until=free_until,
         blocked=blocked,
+        daily_started_at=_iso(day_start),
+        daily_resets_at=_iso(day_end),
+        daily_timezone=settings.daily_timezone if settings.daily_reset_hour is not None else None,
     )
 
 
@@ -414,11 +469,24 @@ class Proposal:
         return asdict(self)
 
 
-def offered_tiers(provider: str, agy_models: tuple[str, ...] = ()) -> dict[str, str]:
-    """The tiers a provider has now; Google's top only while agy lists Argon."""
+def offered_tiers(
+    provider: str,
+    agy_models: tuple[str, ...] = (),
+    avoid_models: tuple[str, ...] = (),
+) -> dict[str, str]:
+    """Tiers eligible for automatic selection using this provider's quota meter.
+
+    The Gemini meter covers Flash, not Argon's separate weekly quota. Argon
+    remains selectable by name through the live catalog, never by this budget.
+    Any models named in avoid_models are excluded from automatic tiers.
+    """
+    _ = agy_models
     tiers = dict(TIER_MODELS.get(provider, {}))
-    if provider == "gemini" and not any("argon" in m.lower() for m in agy_models):
+    if provider == "gemini":
         tiers.pop("top", None)
+    avoid_lower = {m.lower() for m in avoid_models}
+    if avoid_lower:
+        tiers = {t: m for t, m in tiers.items() if m.lower() not in avoid_lower}
     return tiers
 
 
@@ -433,25 +501,84 @@ def fit_effort(provider: str, effort: str) -> str:
     return lower[-1] if lower else (efforts[0] if efforts else effort)
 
 
+def tier_of_model(provider: str, model: str) -> str:
+    """The tier a model belongs to on its provider, from the quota rules.
+
+    A model id carries its family word (``"sonnet"``, ``"spark"``), so the
+    tier is read off :data:`TIER_MODELS`; unknown models sit in the middle.
+    """
+    wanted = (model or "").lower()
+    for tier in ("top", "middle", "economical"):
+        word = TIER_MODELS.get(provider, {}).get(tier, "")
+        if word and word.lower() in wanted:
+            return tier
+    return "middle"
+
+
+def failover_proposal(
+    provider: str,
+    model: str,
+    effort: str,
+    budgets: list[ProviderBudget],
+    *,
+    agy_models: tuple[str, ...] = (),
+    avoid_models: tuple[str, ...] = (),
+    priority_models: tuple[str, ...] = (),
+) -> Proposal | None:
+    """Where a spent provider's work goes without being asked again.
+
+    The nearest tier with room on any other provider, or ``None`` when no
+    other provider can take it. The spent provider is out of the running;
+    :func:`pick` still skips the ones that are blocked themselves.
+    """
+    if provider not in TIER_MODELS:
+        return None
+    others = [b for b in budgets if b.provider != provider]
+    if not others:
+        return None
+    tier = tier_of_model(provider, model)
+    for near in NEAREST_TIERS.get(tier, (tier,)):
+        proposal = pick(
+            near,
+            effort,
+            others,
+            agy_models=agy_models,
+            avoid_models=avoid_models,
+            priority_models=priority_models,
+        )
+        if proposal.provider:
+            return proposal
+    return None
+
+
 def pick(
     tier: str,
     effort: str,
     budgets: list[ProviderBudget],
     *,
     agy_models: tuple[str, ...] = (),
+    avoid_models: tuple[str, ...] = (),
+    priority_models: tuple[str, ...] = (),
 ) -> Proposal:
     """The provider with the most of today's budget left among those with this tier.
 
     A provider whose reading is old is used only when no provider with a
     current reading can take the task.
     """
-    having = [b for b in budgets if tier in offered_tiers(b.provider, agy_models)]
+    tiers_map = {b.provider: offered_tiers(b.provider, agy_models, avoid_models) for b in budgets}
+    having = [b for b in budgets if tier in tiers_map[b.provider]]
     if not having:
         return Proposal(reason=f"no provider has the {tier} tier")
     ready = [b for b in having if not b.blocked]
     if ready:
-        # The tighter of its two windows decides; days of weekly budget break a tie.
-        best = max(ready, key=lambda b: (round(b.capacity, 3), b.headroom))
+        prio_lower = {m.lower() for m in priority_models}
+
+        def _sort_key(b: ProviderBudget) -> tuple[int, float, float]:
+            model = tiers_map[b.provider].get(tier, "")
+            pref = 1 if model.lower() in prio_lower else 0
+            return (pref, round(b.capacity, 3), b.headroom)
+
+        best = max(ready, key=_sort_key)
         week = (
             "spending the week's leftover before its reset"
             if best.free_until
@@ -469,7 +596,7 @@ def pick(
     label = PROVIDER_LABELS.get(best.provider, best.provider)
     return Proposal(
         provider=best.provider,
-        model=offered_tiers(best.provider, agy_models)[tier],
+        model=tiers_map[best.provider][tier],
         effort=fit_effort(best.provider, effort),
         reason=f"{label}: {why}",
     )

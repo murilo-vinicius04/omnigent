@@ -563,6 +563,8 @@ function RailTerminalView({
 interface WorkspacePanelProps {
   /** Active session id — panels read the workspace against it. */
   conversationId: string;
+  /** Session holding the shells when the hub uses a separate machine session. */
+  terminalConversationId?: string;
   /** Current rail width (px), driven by the resize handle. */
   width: number;
   /** Whether the panel is closed/collapsed (hides it from keyboard nav + assistive tech). */
@@ -581,7 +583,7 @@ interface WorkspacePanelProps {
   onRightRailTabChange: (next: RightRailTab) => void;
   /** Whether the Files/Changes tabs are available (agent spec exposes an os_env). */
   showFilesPanel: boolean;
-  /** Whether this is the hub, whose rail is its Projects tab alone. */
+  /** Whether this is the hub, whose fixed navigation tab is Projects. */
   showHubSessions?: boolean;
   /** Whether the GitHub tab is available (same on-disk-workspace gate as Files). */
   showGithubTab: boolean;
@@ -677,6 +679,7 @@ interface WorkspacePanelProps {
  */
 function WorkspacePanelImpl({
   conversationId,
+  terminalConversationId = conversationId,
   width,
   handleProps,
   inert,
@@ -730,7 +733,7 @@ function WorkspacePanelImpl({
   );
   // Resolve shell tab keys to display labels. The terminals list is already
   // fetched elsewhere for the session, so this shares the same query cache.
-  const { terminals } = useTerminals(conversationId);
+  const { terminals } = useTerminals(terminalConversationId);
   const terminalLabelFor = useCallback(
     (key: string) => {
       const t = terminals.find((term) => terminalTabKey(term) === key);
@@ -971,7 +974,7 @@ function WorkspacePanelImpl({
                 overflow, and hugs the last tab when they fit. ml-[2px] keeps the
                 same gap the scroller's gap-0.5 gives between tabs. */}
             <NewTabMenu
-              conversationId={conversationId}
+              conversationId={terminalConversationId}
               onCreateError={onShellCreateFailed}
               onOpenTerminal={openTerminalTab}
               onCreateStart={onShellCreateStart}
@@ -986,7 +989,7 @@ function WorkspacePanelImpl({
             to nothing when the agent has no terminal access. */}
         {openFiles.length === 0 && openTerminals.length === 0 && (
           <NewTabMenu
-            conversationId={conversationId}
+            conversationId={terminalConversationId}
             onOpenTerminal={openTerminalTab}
             onCreateStart={onShellCreateStart}
             onCreateError={onShellCreateFailed}
@@ -1025,7 +1028,7 @@ function WorkspacePanelImpl({
           // list), so during a transient terminals-list churn this falls back to
           // the default view and the xterm reappears when the terminal returns.
           <RailTerminalView
-            conversationId={conversationId}
+            conversationId={terminalConversationId}
             terminalKey={selectedTerminalKey}
             readOnly={!isOwnerLevel(permissionLevel)}
             autoFocus={autoFocusSelectedTerminal}

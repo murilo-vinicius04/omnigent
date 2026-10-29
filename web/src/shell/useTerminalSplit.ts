@@ -14,7 +14,7 @@ import { useTerminalStatuses } from "./useTerminalStatuses";
 // derive their badge from the resource ``running`` flag alone (see
 // ``deriveTerminalStatus``).
 export function useTerminalSplit(conversationId: string) {
-  const { terminals: allTerminals } = useTerminals(conversationId);
+  const { terminals: allTerminals, isLoading } = useTerminals(conversationId);
   // Inventory view: the agent's own terminal (SDK REPL / native vendor
   // pane) backs the pill's Terminal view and must not appear as a
   // shell row here.
@@ -39,12 +39,13 @@ export function useTerminalSplit(conversationId: string) {
   // Clear activeKey if the selected terminal is removed. Do NOT
   // auto-select — null is the intentional "no terminal selected" state.
   useEffect(() => {
-    if (activeKey === null) return;
+    if (isLoading || activeKey === null) return;
     if (!terminals.some((t) => terminalTabKey(t) === activeKey)) setActiveKey(null);
-  }, [terminals, activeKey]);
+  }, [terminals, activeKey, isLoading]);
 
   return {
     terminals,
+    isLoading,
     activeKey,
     setActiveKey,
     activeTerminal,

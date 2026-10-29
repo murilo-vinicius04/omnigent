@@ -3007,9 +3007,11 @@ async def test_claude_native_session_discoverable_with_terminal_metadata(
     assert snap["external_session_id"] == "11111111-2222-3333-4444-555555555555"
 
 
+@pytest.mark.parametrize("old_model", ["Gemini 4 Argon (High)", "claude-opus-5-5"])
 async def test_get_session_agent_name_is_spec_name_after_switch(
     client: httpx.AsyncClient,
     db_uri: str,
+    old_model: str,
 ) -> None:
     """After an in-place agent switch the snapshot reports the spec's name.
 
@@ -3027,11 +3029,20 @@ async def test_get_session_agent_name_is_spec_name_after_switch(
     # Source session bound to a session-scoped "nessie" agent.
     source_agent = await create_test_agent(client, name="nessie")
     session_id = source_agent["_session_id"]
+    conversation_store = SqlAlchemyConversationStore(db_uri)
+    conversation_store.update_conversation(session_id, reported_model=old_model)
+    before = (await client.get(f"/v1/sessions/{session_id}")).json()
+    assert before["llm_model"] == old_model
 
     # Materialize a real claude-native-ui bundle in the artifact store
     # (via a throwaway session-scoped agent), then register a TEMPLATE
     # (built-in, the only kind the switch route binds) sharing it.
-    target_agent = await create_test_agent(client, name="claude-native-ui")
+    target_agent = await create_test_agent(
+        client,
+        name="claude-native-ui",
+        executor={"type": "omnigent", "config": {"harness": "claude-native"}},
+        include_llm=False,
+    )
     agent_store = SqlAlchemyAgentStore(db_uri)
     target_row = agent_store.get(target_agent["id"])
     assert target_row is not None and target_row.bundle_location is not None
@@ -3062,6 +3073,27 @@ async def test_get_session_agent_name_is_spec_name_after_switch(
     # The suffixed name here means clients (REPL toolbar, sidebar)
     # would display "claude-native-ui (switch ag_…)" to the user.
     assert snap["agent_name"] == "claude-native-ui"
+    assert snap["llm_model"] != old_model
+    stored = conversation_store.get_conversation(session_id)
+    assert stored is not None and stored.reported_model is None
+
+    response = await client.patch(
+        f"/v1/sessions/{session_id}", json={"model_override": "sonnet", "silent": True}
+    )
+    assert response.status_code == 200, response.text
+    from omnigent.server.hub_models import run_from_snapshot
+
+    snap = (await client.get(f"/v1/sessions/{session_id}")).json()
+    run = run_from_snapshot(snap)
+    assert (run.provider, run.model, run.requested) == ("Claude Code", "sonnet", "")
+
+    response = await client.post(
+        f"/v1/sessions/{session_id}/events",
+        json={"type": "external_model_change", "data": {"model": "claude-sonnet-5-5"}},
+    )
+    assert response.status_code == 202, response.text
+    snap = (await client.get(f"/v1/sessions/{session_id}")).json()
+    assert snap["llm_model"] == "claude-sonnet-5-5"
 
 
 async def test_list_sessions_exposes_pending_elicitations_count(
@@ -7521,7 +7553,7 @@ async def test_post_external_permission_mode_change_is_quiet_when_unchanged(
 @pytest.mark.parametrize(
     "mode",
     [
-        "bypassPermissions",  # real CLI mode, but not one shift+tab can reach
+        "dontAsk",  # not an interactive mode
         "turbo",  # not a mode at all
         "",
     ],
@@ -9442,8 +9474,10 @@ async def test_post_external_codex_approval_mode_change_requires_a_field(
     assert resp.status_code == 400, resp.text
 
 
+@pytest.mark.parametrize("mode", ["auto", "bypassPermissions"])
 async def test_patch_permission_mode_persists_label_and_forwards_event(
     client: httpx.AsyncClient,
+    mode: str,
 ) -> None:
     """
     PATCH ``permission_mode`` forwards the switch and persists what landed.
@@ -9466,7 +9500,7 @@ async def test_patch_permission_mode_persists_label_and_forwards_event(
         if request.content:
             body = json.loads(request.content)
         captured.append(_ForwardedEffort(url=str(request.url), body=body))
-        return httpx.Response(200, json={"permission_mode": "auto"})
+        return httpx.Response(200, json={"permission_mode": mode})
 
     fake_runner = httpx.AsyncClient(
         transport=httpx.MockTransport(_handler),
@@ -9487,20 +9521,18 @@ async def test_patch_permission_mode_persists_label_and_forwards_event(
 
         resp = await client.patch(
             f"/v1/sessions/{session['id']}",
-            json={"permission_mode": "auto"},
+            json={"permission_mode": mode},
         )
     finally:
         await fake_runner.aclose()
         set_runner_client(None)
 
     assert resp.status_code == 200, resp.text
-    assert resp.json()["labels"]["omnigent.claude_native.permission_mode"] == "auto"
-    # No launch --permission-mode to rewrite, so none is fabricated (see the
-    # rewrite-existing test below for the persist-to-launch-args case).
-    assert resp.json()["terminal_launch_args"] is None
+    assert resp.json()["labels"]["omnigent.claude_native.permission_mode"] == mode
+    assert resp.json()["terminal_launch_args"] == ["--permission-mode", mode]
     forwards = [f for f in captured if f.url.endswith(f"/v1/sessions/{session['id']}/events")]
     assert len(forwards) == 1, f"Expected one runner forward, got {captured!r}"
-    assert forwards[0].body == {"type": "permission_mode_change", "permission_mode": "auto"}
+    assert forwards[0].body == {"type": "permission_mode_change", "permission_mode": mode}
 
 
 async def test_patch_permission_mode_rewrites_launch_arg_and_keeps_other_args(
@@ -9655,7 +9687,7 @@ async def test_patch_permission_mode_silent_skips_the_switch_without_crashing(
     assert "omnigent.claude_native.permission_mode" not in snapshot["labels"]
 
 
-@pytest.mark.parametrize("bad_mode", ["dontAsk", "bypassPermissions", "nonsense"])
+@pytest.mark.parametrize("bad_mode", ["dontAsk", "nonsense"])
 async def test_patch_permission_mode_rejects_modes_the_cycle_cannot_reach(
     client: httpx.AsyncClient,
     bad_mode: str,
@@ -9663,10 +9695,7 @@ async def test_patch_permission_mode_rejects_modes_the_cycle_cannot_reach(
     """
     Launch-only modes are rejected rather than forwarded.
 
-    ``dontAsk`` is never in Claude's shift+tab cycle and
-    ``bypassPermissions`` only joins it when the session launched into it, so
-    a live switch toward either would wander through unrelated modes before
-    failing. Reject up front, before touching the runner.
+    ``dontAsk`` is never in Claude's interactive mode cycle.
     """
     agent = await create_test_agent(client)
     session = await _create_session(

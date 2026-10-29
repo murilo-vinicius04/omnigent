@@ -31,6 +31,12 @@ from tests.runner.conftest import (
 from tests.runner.helpers import NullServerClient
 
 
+@pytest.fixture(autouse=True)
+def _no_native_mcp_client_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Control-event tests have no external Claude MCP client to notify."""
+    monkeypatch.setattr(claude_native_bridge, "post_tools_changed", lambda *_a, **_kw: None)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "effort_value",
@@ -272,8 +278,10 @@ async def test_events_effort_change_on_non_native_session_is_204_noop(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode_value", ["auto", "bypassPermissions"])
 async def test_events_permission_mode_change_on_native_session_switches_and_echoes_mode(
     monkeypatch: pytest.MonkeyPatch,
+    mode_value: str,
 ) -> None:
     """
     ``permission_mode_change`` cycles the pane and returns the settled mode.
@@ -326,12 +334,12 @@ async def test_events_permission_mode_change_on_native_session_switches_and_echo
 
         resp = await client.post(
             "/v1/sessions/2f77519bd9daa4e9bc2df649fe468500/events",
-            json={"type": "permission_mode_change", "permission_mode": "auto"},
+            json={"type": "permission_mode_change", "permission_mode": mode_value},
         )
 
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"permission_mode": "auto"}
-    assert calls == ["auto"], f"Expected one switch to auto, got {calls!r}"
+    assert resp.json() == {"permission_mode": mode_value}
+    assert calls == [mode_value]
 
 
 @pytest.mark.asyncio

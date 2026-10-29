@@ -13,18 +13,58 @@ from __future__ import annotations
 import pathlib
 import re
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final
 
 #: The label that marks a chat the hub opened as a lane; its value is the topic.
 LANE_LABEL: Final[str] = "omnigent.hub.lane"
 
+#: Content block type the hub stamps on the sends it makes itself. Those are
+#: already watched explicitly, so they must not trigger a second watch.
+_HUB_SEND_MARKER: Final[str] = "force_claude"
+
+#: Event types that start lane work (and so deserve a hub report when they end).
+_WORK_EVENT_TYPES: Final[frozenset[str]] = frozenset({"message", "slash_command"})
+
+
+def direct_message_lane_topic(
+    *,
+    body_type: str,
+    content: object,
+    labels: Mapping[str, str] | None,
+) -> str | None:
+    """Lane topic when an ingress event should pull the lane's hub into watching.
+
+    Lanes only report back to the hub project when the hub itself sent the
+    request. A message typed directly in the lane's own chat starts the same
+    work but no watch, so its reply never reaches the project. This is the
+    decision half of closing that gap: it returns the lane's topic when the
+    event is user-direct work on a hub lane, else ``None``.
+
+    :param body_type: The ingress event type, e.g. ``"message"``.
+    :param content: The message content blocks (``body.data["content"]``), or
+        ``None`` for events without content.
+    :param labels: The session's labels, carrying :data:`LANE_LABEL` on lanes.
+    :returns: The stripped lane topic, or ``None`` to leave watching alone.
+    """
+    if body_type not in _WORK_EVENT_TYPES:
+        return None
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == _HUB_SEND_MARKER:
+                return None
+    topic = (labels or {}).get(LANE_LABEL, "")
+    topic = topic.strip() if isinstance(topic, str) else ""
+    return topic or None
+
+
 #: Each provider's native terminal wrapper, as the session's ``omnigent.wrapper`` label.
 WRAPPERS: Final[dict[str, str]] = {
     "claude": "claude-code-native-ui",
     "codex": "codex-native-ui",
     "gemini": "antigravity-native-ui",
+    "muse": "muse-code",
 }
 
 #: The built-in agent that runs each provider's wrapper, by agent name.
@@ -32,6 +72,7 @@ AGENT_NAMES: Final[dict[str, str]] = {
     "claude": "claude-native-ui",
     "codex": "codex-native-ui",
     "gemini": "antigravity-native-ui",
+    "muse": "muse-code",
 }
 
 #: The harness whose host catalog lists each provider's models.
@@ -39,6 +80,7 @@ HARNESSES: Final[dict[str, str]] = {
     "claude": "claude-native",
     "codex": "codex-native",
     "gemini": "antigravity-native",
+    "muse": "muse-code",
 }
 
 #: Each provider's harness as a chat's run names it.
@@ -46,6 +88,7 @@ PROVIDER_LABELS: Final[dict[str, str]] = {
     "claude": "Claude Code",
     "codex": "Codex",
     "gemini": "Antigravity",
+    "muse": "Muse Code",
 }
 
 #: Each provider by the name a chat's run gives its harness.
@@ -61,6 +104,8 @@ _MODEL_WORDS: Final[dict[str, tuple[str, str]]] = {
     "astra": ("codex", "Astra"),
     "flash": ("gemini", "Flash"),
     "argon": ("gemini", "Argon"),
+    "spark": ("muse", "Spark"),
+    "wonder": ("muse", "Wonder"),
 }
 
 #: Words that name only a provider.
@@ -75,6 +120,7 @@ _PROVIDER_WORDS: Final[dict[str, str]] = {
     "google": "gemini",
     "agy": "gemini",
     "antigravity": "gemini",
+    "muse": "muse",
 }
 
 #: Longest topic kept as a lane's name.
@@ -88,7 +134,7 @@ MAX_REPOS: Final[int] = 4
 class LaneRun:
     """What a new lane runs on.
 
-    :param provider: ``"claude"``, ``"codex"`` or ``"gemini"``.
+    :param provider: ``"claude"``, ``"codex"``, ``"gemini"`` or ``"muse"``.
     :param model: The id its CLI launches with, e.g. ``"gpt-6.1-sol"``.
     :param effort: The reasoning effort the create carries; empty for Gemini,
         whose effort is part of the model id.
@@ -155,7 +201,7 @@ def named_run(words: str) -> tuple[str, str]:
 
 def topic_name(topic: str, fallback: str) -> str:
     """A lane's name: the topic the router gave, else the start of its request."""
-    clean = " ".join((topic or "").split()) or " ".join(fallback.split())
+    clean = " ".join((topic or "").split()) or " ".join(fallback.split("\n\n")[0].split())
     return clean if len(clean) <= MAX_TOPIC_CHARS else clean[: MAX_TOPIC_CHARS - 1] + "…"
 
 
@@ -199,6 +245,8 @@ class LaneSpec:
     run: LaneRun
     like: str
     branch: str = ""
+    host_id: str = ""
+    workspace: str = ""
 
 
 @dataclass(frozen=True)

@@ -78,7 +78,7 @@ def create_host_credentials_router(host_store: HostStore) -> APIRouter:
         managed = await asyncio.to_thread(
             host_store.resolve_launch_token, host_id, x_omnigent_host_token
         )
-        if managed is None:
+        if managed is None or managed.sandbox_provider is None:
             raise HTTPException(status_code=401, detail="unauthenticated")
         # Resolve provider only after auth so the endpoint reveals nothing to an
         # unauthenticated caller. A resolver with no configured store on this

@@ -986,6 +986,29 @@ def _conversation_id_on_disk(bridge_dir: Path) -> str | None:
     return found[0]
 
 
+def replacement_for_missing_cascade(bridge_dir: Path, cascade_id: str) -> str | None:
+    """
+    Return the conversation agy started instead of a bound one it cannot load.
+
+    Resuming a cascade whose store is gone makes agy ignore ``--conversation``
+    and mint a new one on the first typed turn; bound to the old id, the reader
+    would wait for a conversation that no longer exists. Same ambiguity rule as
+    :func:`_conversation_id_on_disk`: only a single other cascade is adopted.
+
+    :param bridge_dir: Native Antigravity bridge directory.
+    :param cascade_id: The cascade id bridge state names, e.g. ``"796d454b-..."``.
+    :returns: The replacement cascade id, or ``None`` while the bound one still
+        exists on disk or no single replacement does.
+    """
+    store = agy_gemini_dir(bridge_dir) / "antigravity-cli" / "conversations"
+    if (store / f"{cascade_id}.db").exists():
+        return None
+    replacement = _conversation_id_on_disk(bridge_dir)
+    if replacement is None or replacement == cascade_id:
+        return None
+    return replacement
+
+
 def _resolve_rpc_port(cascade_id: str, csrf_token: str | None = None) -> int | None:
     """
     Return the agy connect-RPC port that hosts ``cascade_id``, or ``None``.
@@ -1060,6 +1083,21 @@ async def _discover(
                     port,
                 )
                 return cascade_id, port
+            replacement = await asyncio.to_thread(
+                replacement_for_missing_cascade, bridge_dir, cascade_id
+            )
+            # Only once a live agy hosts the replacement and not the bound id.
+            if replacement is not None and (
+                await asyncio.to_thread(_resolve_rpc_port, replacement, csrf_token)
+            ):
+                await asyncio.to_thread(update_conversation_id, bridge_dir, replacement)
+                _logger.warning(
+                    "agy reader: bound cascade %s is gone from agy's store; adopting %s, "
+                    "the conversation agy started instead",
+                    cascade_id,
+                    replacement,
+                )
+                continue
         if stop():
             return None
         await _sleep(poll_interval_s)

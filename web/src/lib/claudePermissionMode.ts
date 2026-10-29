@@ -49,10 +49,10 @@ export const CLAUDE_NATIVE_PERMISSION_MODES: ClaudePermissionModeOption[] = [
   },
 ];
 
-/** Modes a running session can be switched to (shift+tab-reachable). */
+/** Live modes; bypass resumes the same session if its cycle lacks the mode. */
 export const CLAUDE_NATIVE_SWITCHABLE_PERMISSION_MODES: ClaudePermissionModeOption[] =
   CLAUDE_NATIVE_PERMISSION_MODES.filter((mode) =>
-    ["default", "acceptEdits", "plan", "auto"].includes(mode.value),
+    ["default", "acceptEdits", "plan", "auto", "bypassPermissions"].includes(mode.value),
   );
 
 export function isSwitchableClaudePermissionMode(mode: string | null | undefined): boolean {

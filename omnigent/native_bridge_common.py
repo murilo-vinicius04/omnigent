@@ -32,6 +32,12 @@ _logger = logging.getLogger(__name__)
 
 OWNER_PID_FILENAME = "owner.pid"
 
+#: Per-session harness homes that hold the conversation itself (agy's
+#: ``--gemini_dir``, codex's ``CODEX_HOME``, opencode's ``XDG_DATA_HOME``).
+#: A runner exiting on its idle timeout leaves a dead owner while the session
+#: stays resumable, so the prune keeps these and removes only the rest.
+DURABLE_HOME_DIRNAMES = frozenset({"agy-home", "codex-home", "xdg-data"})
+
 
 def write_owner_pid_marker(bridge_dir: Path) -> None:
     """
@@ -63,6 +69,11 @@ def prune_orphaned_dirs(bridge_root: Path) -> int:
     Dirs with no marker (or an unparseable one) are left untouched: they are
     either from an older version or not ours.
 
+    A dead owner does not mean an abandoned session (runners exit on their idle
+    timeout), so a dir holding a :data:`DURABLE_HOME_DIRNAMES` home loses its
+    token/config files but keeps that home, and a later resume finds the
+    conversation it names.
+
     Reuses ``inner/terminal.py:_process_alive`` as the liveness predicate.
 
     :param bridge_root: The harness's bridge root, e.g.
@@ -89,9 +100,32 @@ def prune_orphaned_dirs(bridge_root: Path) -> int:
         # window is tiny and benign here — a live session refreshes its
         # owner.pid every turn, so its dir always reads as live at check time
         # and only a genuinely orphaned dir reaches this point.
-        shutil.rmtree(entry, ignore_errors=True)
+        _remove_all_but_durable_homes(entry)
         pruned += 1
     return pruned
+
+
+def _remove_all_but_durable_homes(bridge_dir: Path) -> None:
+    """
+    Remove *bridge_dir*, keeping any :data:`DURABLE_HOME_DIRNAMES` inside it.
+
+    :param bridge_dir: An orphaned per-session bridge directory.
+    """
+    try:
+        children = list(bridge_dir.iterdir())
+    except OSError:
+        return
+    if not any(child.name in DURABLE_HOME_DIRNAMES for child in children):
+        shutil.rmtree(bridge_dir, ignore_errors=True)
+        return
+    for child in children:
+        if child.name in DURABLE_HOME_DIRNAMES and child.is_dir() and not child.is_symlink():
+            continue
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            with contextlib.suppress(OSError):
+                child.unlink()
 
 
 def reap_orphaned_native_bridge_dirs() -> int:

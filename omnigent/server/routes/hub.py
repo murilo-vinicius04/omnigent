@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from omnigent.server import budget, hub_chat, hub_terminal
 from omnigent.server import hub as hub_module
 from omnigent.server.auth import AuthProvider
-from omnigent.server.discussion import DiscussionRegistry, registry
+from omnigent.server.discussion import DiscussionRegistry, DiscussionUnavailable, registry
 
 #: Longest an updates long-poll may hold the request.
 MAX_WAIT_S = 25.0
@@ -79,6 +79,13 @@ class HubLaneIn(BaseModel):
     message: str = Field(min_length=1, max_length=20_000)
     #: A model or provider to run it on, e.g. ``"Sonnet"``; empty lets the hub pick.
     use: str = Field(default="", max_length=100)
+    host_id: str = Field(default="", max_length=64, pattern=r"^(?:[0-9a-f]{32})?$")
+    workspace: str = Field(default="", max_length=4096)
+
+
+class HubMachineIn(BaseModel):
+    host_id: str = Field(min_length=1, max_length=64, pattern=r"^[0-9a-f]{32}$")
+    workspace: str = Field(min_length=1, max_length=4096)
 
 
 class HubReportIn(BaseModel):
@@ -95,11 +102,20 @@ class HubCloseLaneIn(BaseModel):
     handoff: bool = True
 
 
+class HubBriefIn(BaseModel):
+    """Their own brief and to-do list for a project."""
+
+    brief: str = Field(default="", max_length=2000)
+    brief_todos: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+
+
 class HubTerminalIn(BaseModel):
     """A shell to open from the hub."""
 
     #: Open another shell even when one is running.
     new: bool = False
+    host_id: str = Field(default="", max_length=64, pattern=r"^(?:[0-9a-f]{32})?$")
+    workspace: str = Field(default="", max_length=4096)
 
 
 class HubPlaceIn(BaseModel):
@@ -234,6 +250,41 @@ def create_hub_router(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"text": entry.text}
 
+    @router.get("/hub/projects/{project_id}/brief")
+    async def hub_project_brief(request: Request, project_id: str) -> dict[str, Any]:
+        """The project's brief: what it is, where it stands, recent progress, to-dos."""
+        hub, _ = await _bound(request)
+        try:
+            return await hub.project_brief(project_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.patch("/hub/projects/{project_id}/brief")
+    async def hub_save_brief(
+        request: Request, project_id: str, body: HubBriefIn
+    ) -> dict[str, Any]:
+        """Keep their own brief and to-do list for the project."""
+        hub, _ = await _bound(request)
+        try:
+            return await hub.save_brief(project_id, body.brief, body.brief_todos)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.post("/hub/projects/{project_id}/brief/refresh")
+    async def hub_refresh_brief(request: Request, project_id: str) -> dict[str, Any]:
+        """Have the companion write the project's brief now, from what it last reported."""
+        hub, _ = await _bound(request)
+        try:
+            return await hub.refresh_brief(project_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except DiscussionUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     async def _lane(
         hub: hub_module.Hub, session_id: str
     ) -> tuple[hub_module.HubProject, hub_module.HubSession]:
@@ -242,6 +293,37 @@ def create_hub_router(
                 if lane.id == session_id:
                     return project, lane
         raise HTTPException(status_code=404, detail="not a lane of your projects")
+
+    @router.put("/hub/projects/{project_id}/machine")
+    async def hub_project_machine(request: Request, project_id: str, body: HubMachineIn):
+        """Choose where future lanes start; existing sessions stay on their hosts."""
+        import httpx
+
+        hub, _ = await _bound(request)
+        await _project(hub, project_id)
+        headers = {k: v for k, v in request.headers.items() if k in hub_chat.FORWARDED_HEADERS}
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=request.app), base_url="http://hub", timeout=40
+        ) as client:
+            checked = await client.post(
+                f"/v1/hosts/{body.host_id}/inspect",
+                headers=headers,
+                json={"action": "repos", "workspace": body.workspace},
+            )
+            if checked.is_error:
+                raise HTTPException(
+                    status_code=checked.status_code,
+                    detail="could not validate folder on selected machine",
+                )
+            got = await client.get(f"/v1/projects/{project_id}", headers=headers)
+            got.raise_for_status()
+            config = dict(got.json().get("config") or {})
+            config.update(host_id=body.host_id, workspace=body.workspace)
+            saved = await client.patch(
+                f"/v1/projects/{project_id}", headers=headers, json={"config": config}
+            )
+            saved.raise_for_status()
+        return {"host_id": body.host_id, "workspace": body.workspace}
 
     @router.post("/hub/projects/{project_id}/lanes")
     async def hub_open_lane(request: Request, project_id: str, body: HubLaneIn) -> dict[str, Any]:
@@ -253,7 +335,17 @@ def create_hub_router(
         )
         if project is None:
             raise HTTPException(status_code=404, detail="not one of your projects")
-        entry = await hub.open_lane(project, body.topic, body.message, via="panel", use=body.use)
+        target = {}
+        if body.host_id or body.workspace:
+            if not body.host_id or not body.workspace:
+                raise HTTPException(status_code=422, detail="choose both a machine and its folder")
+            target = {"host_id": body.host_id, "workspace": body.workspace}
+        try:
+            entry = await hub.open_lane(
+                project, body.topic, body.message, via="panel", use=body.use, **target
+            )
+        except (ValueError, LookupError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"opened": entry.kind == "sent", "text": entry.text, "session_id": entry.session_id}
 
     @router.patch("/hub/lanes/{session_id}")
@@ -325,6 +417,11 @@ def create_hub_router(
                     k: v for k, v in request.headers.items() if k in hub_chat.FORWARDED_HEADERS
                 },
                 new=body.new,
+                **(
+                    {"host_id": body.host_id, "workspace": body.workspace}
+                    if body.host_id or body.workspace
+                    else {}
+                ),
             )
         except hub_terminal.TerminalUnavailable as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

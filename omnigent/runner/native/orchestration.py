@@ -4983,6 +4983,23 @@ async def _auto_create_antigravity_terminal(
     # claude/codex auto-create teardown ordering).
     await _cancel_auto_forwarder_task(session_id)
     bridge_dir = prepare_bridge_dir(bridge_id)
+    if external_session_id:
+        from omnigent.antigravity_native_reader import replacement_for_missing_cascade
+
+        # A conversation agy could not load was replaced by the one it started;
+        # resuming the lost id again would start yet another, empty one.
+        replacement = await asyncio.to_thread(
+            replacement_for_missing_cascade, bridge_dir, external_session_id
+        )
+        if replacement is not None:
+            _logger.warning(
+                "Antigravity resume: conversation %s is gone from agy's store; "
+                "resuming %s instead (session=%s)",
+                external_session_id,
+                replacement,
+                session_id,
+            )
+            external_session_id = replacement
     # Clear stale turn/conversation state so the reader binds this run's real agy
     # conversation id (the cold-start mints it below) instead of a prior run's.
     clear_bridge_state(bridge_dir)
@@ -4994,19 +5011,20 @@ async def _auto_create_antigravity_terminal(
     # ``--gemini_dir``; seeding the real ``~/.gemini`` marker as well would write
     # the user's tree for a file this launch never reads.
 
-    argv, env_overrides = build_agy_launch(
-        conversation_id=external_session_id if resume else None,
-        model=model,
-        resume=resume,
+    launch_kwargs: dict[str, Any] = {
+        "conversation_id": external_session_id if resume else None,
+        "model": model,
+        "resume": resume,
         # Web-attended: a web client drives agy's request-review prompt over the
         # tunnel, so this is NOT headless. Bypass comes only via the pass-through
         # args below (see docstring). permission_mode is left unset for the same
         # reason — the runner has no separate per-tool mode to map here.
-        permission_mode=None,
-        headless=False,
-        csrf_token=csrf_token,
-        extra_args=terminal_launch_args,
-    )
+        "permission_mode": None,
+        "headless": False,
+        "csrf_token": csrf_token,
+        "extra_args": terminal_launch_args,
+    }
+    argv, env_overrides = build_agy_launch(**launch_kwargs)
 
     # Wire the Omnigent MCP relay so the wrapped agy gets the sys_* tools
     # (spawn sub-agent sessions, drive Omnigent terminals, list agents/models,

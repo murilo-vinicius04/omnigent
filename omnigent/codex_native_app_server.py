@@ -3431,6 +3431,33 @@ def _strip_approval_sandbox_flags(codex_args: tuple[str, ...]) -> list[str]:
     return cleaned
 
 
+_CODEX_PERMISSION_CONFIG_KEYS = frozenset(
+    {"approval_policy", "approvals_reviewer", "default_permissions", "sandbox_mode"}
+)
+
+
+def _strip_remote_resume_permission_args(args: tuple[str, ...]) -> list[str]:
+    """Leave permissions on the app-server thread when attaching its TUI."""
+    args_without_flags = _strip_approval_sandbox_flags(args)
+    cleaned: list[str] = []
+    index = 0
+    while index < len(args_without_flags):
+        arg = args_without_flags[index]
+        if arg in {"-c", "--config"} and index + 1 < len(args_without_flags):
+            assignment = args_without_flags[index + 1]
+            if assignment.partition("=")[0].strip() in _CODEX_PERMISSION_CONFIG_KEYS:
+                index += 2
+                continue
+        elif arg.startswith(("-c=", "--config=")):
+            assignment = arg.split("=", 1)[1]
+            if assignment.partition("=")[0].strip() in _CODEX_PERMISSION_CONFIG_KEYS:
+                index += 1
+                continue
+        cleaned.append(arg)
+        index += 1
+    return cleaned
+
+
 def build_codex_remote_args(
     *,
     codex_args: tuple[str, ...],
@@ -3498,6 +3525,16 @@ def build_codex_remote_args(
         can accept hooks normally.
     :returns: Codex argv tail after the executable.
     """
+    if thread_id is not None:
+        # Permissions are applied by preload_codex_thread_for_resume over RPC.
+        # Repeating them in the remote TUI makes Codex abort the attachment.
+        codex_args = tuple(_strip_remote_resume_permission_args(codex_args))
+        config_overrides = tuple(
+            override
+            for override in config_overrides
+            if override.partition("=")[0].strip() not in _CODEX_PERMISSION_CONFIG_KEYS
+        )
+        bypass_sandbox = False
     override_args: list[str] = []
     for override in config_overrides:
         if override.lstrip().startswith("model_providers."):
@@ -3509,8 +3546,12 @@ def build_codex_remote_args(
         # Strip the conflicting granular flags, then prepend one canonical
         # bypass flag (a global flag, so it precedes any ``resume``).
         passthrough = [_CODEX_BYPASS_SANDBOX_FLAG, *_strip_approval_sandbox_flags(codex_args)]
-    else:
+    elif thread_id is None:
         passthrough = normalize_codex_permission_launch_args(codex_args)
+    else:
+        # The remote thread already owns its permissions. Codex rejects the
+        # default reviewer override on remote resume, terminating the TUI.
+        passthrough = list(codex_args)
     if bypass_hook_trust:
         passthrough = [_CODEX_BYPASS_HOOK_TRUST_FLAG, *passthrough]
     if thread_id is None:

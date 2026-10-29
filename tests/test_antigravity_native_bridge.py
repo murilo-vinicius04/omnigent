@@ -732,6 +732,8 @@ def test_inject_user_message_via_tui_happy_path(
     def _fake_run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
         """Record delivery calls; drive the simulated agy input box."""
         del kwargs
+        if "display-message" in cmd:
+            return SimpleNamespace(returncode=0, stdout="80 24", stderr="")
         if "has-session" in cmd:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if "capture-pane" in cmd:
@@ -1449,6 +1451,71 @@ def test_draft_in_input_region_ignores_message_in_transcript_only() -> None:
     """(N) Message text appearing only in transcript history above composer is not found."""
     needle = _mod._submit_needle(_DRAFT_CONTENT_B)
     assert not _mod._draft_in_input_region(_TRANSCRIPT_ONLY_PANE_N, needle, "")
+
+
+_NARROW_MESSAGE = (
+    "The user asked if the discreet notification sound has already been implemented.\n"
+    "Report the status of the notification option in the Hub's UI and settings."
+)
+_NARROW_DRAFT = "lines\n  Hub's UI\n  and\n  settings.\n────────────\nesc to cance\n"
+
+
+def test_clipped_draft_matches_its_visible_tail_without_matching_transcript() -> None:
+    needle = _mod._submit_needle(_NARROW_MESSAGE)
+    assert _mod._draft_in_input_region(_NARROW_DRAFT, needle, ">")
+    assert not _mod._draft_in_input_region(
+        _NARROW_DRAFT, needle, _mod._agy_input_region(_NARROW_DRAFT)
+    )
+    submitted = "settings.\n────────────\n>\n────────────\nesc to cance\n"
+    assert not _mod._draft_in_input_region(submitted, needle, ">")
+    unrelated = "lines\n  and\n  nothing.\n────────────\nesc to cance\n"
+    assert not _mod._draft_in_input_region(unrelated, needle, ">")
+    modal = "lines\n  and\n  settings.\n────────────\nChoose an option\n"
+    assert not _mod._draft_in_input_region(modal, needle, ">")
+
+
+def test_wrapping_inside_words_does_not_hide_a_draft() -> None:
+    pane = "────────────\n> implemen\n  t the noti\n  fication\n────────────\n? for shortc\n"
+    assert _mod._draft_in_input_region(
+        pane, _mod._submit_needle("implement the notification"), ">"
+    )
+
+
+def test_clipped_footer_is_read_below_the_composer_only() -> None:
+    assert _mod._agy_footer_has_marker(_NARROW_DRAFT, _mod._AGY_ACTIVE_MARKER)
+    idle = "────────────\n>\n────────────\n? for shortc\n"
+    assert _mod._agy_footer_has_marker(idle, _mod._AGY_IDLE_MARKER)
+    draft = "────────────\n> Please say esc to cancel\n────────────\n? for shortc\n"
+    assert not _mod._agy_footer_has_marker(draft, _mod._AGY_ACTIVE_MARKER)
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_narrow_pane_paste_is_submitted_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fast_tmux_timeouts: None, active: bool
+) -> None:
+    bridge_dir = tmp_path / "bridge"
+    write_tmux_target(bridge_dir, socket_path=Path("/tmp/ex/tmux.sock"), tmux_target="main")
+    footer = "esc to cance" if active else "? for shortc"
+    empty = f"────────────\n>\n────────────\n{footer}\n"
+    pane = empty
+    enters = 0
+
+    def run(cmd: list[str], **_kwargs: object) -> SimpleNamespace:
+        nonlocal pane, enters
+        if "capture-pane" in cmd:
+            return SimpleNamespace(returncode=0, stdout=pane, stderr="")
+        if "paste-buffer" in cmd:
+            pane = _NARROW_DRAFT.replace("esc to cance", footer)
+        if cmd[-1] == "Enter":
+            enters += 1
+            if not active:
+                pane = empty.replace("? for shortc", "esc to cance")
+            # Mid-turn queuing may leave the draft visible; never repeat Enter.
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("subprocess.run", run)
+    inject_user_message_via_tui(bridge_dir, content=_NARROW_MESSAGE, timeout_s=0.5)
+    assert enters == 1
 
 
 def test_format_pane_debug_tail_redacts_email_and_secrets() -> None:
@@ -2426,3 +2493,91 @@ def test_prune_orphaned_bridge_dirs_only_removes_dead_owners(
     assert not dead_dir.exists()
     assert live_dir.exists()
     assert unmarked_dir.exists()
+
+
+def test_inject_slash_command_via_tui_submits_slash_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _fast_tmux_timeouts: None,
+) -> None:
+    """inject_slash_command_via_tui pastes and submits a slash command without
+    requiring a cascade turn to start."""
+    bridge_dir = tmp_path / "bridge"
+    write_tmux_target(bridge_dir, socket_path=Path("/tmp/ex/tmux.sock"), tmux_target="main")
+    tui = {"pane": "> \n? for shortcuts"}
+    enters = {"n": 0}
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+        del kwargs
+        if "has-session" in cmd:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "capture-pane" in cmd:
+            return SimpleNamespace(returncode=0, stdout=tui["pane"], stderr="")
+        if "paste-buffer" in cmd:
+            tui["pane"] = "> /effort high\n? for shortcuts"
+        if cmd[-1] == "Enter":
+            enters["n"] += 1
+            tui["pane"] = "Effort level set to high\n> \n? for shortcuts"
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    _mod.inject_slash_command_via_tui(bridge_dir, command="/effort high", timeout_s=0.5)
+    assert enters["n"] == 1
+
+
+def test_inject_slash_command_via_tui_rejects_non_slash(tmp_path: Path) -> None:
+    """inject_slash_command_via_tui rejects commands not starting with '/'."""
+    with pytest.raises(RuntimeError, match="must start with '/'"):
+        _mod.inject_slash_command_via_tui(tmp_path / "bridge", command="effort high")
+
+
+@pytest.mark.parametrize(
+    ("size", "expected"),
+    [("12 41", ("80", "41")), ("131 8", ("131", "24")), ("140 50", None), ("", None)],
+)
+def test_delivery_size_recovers_only_cramped_panes(monkeypatch, size, expected):
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout=size, stderr="")
+
+    monkeypatch.setattr(_mod.subprocess, "run", run)
+    _mod._ensure_agy_delivery_size("/tmp/test.sock", "main")
+    resizes = [cmd for cmd in calls if "resize-window" in cmd]
+    if expected is None:
+        assert resizes == []
+    else:
+        assert len(resizes) == 1
+        assert resizes[0][-4:] == ["-x", expected[0], "-y", expected[1]]
+
+
+def test_delivery_recovers_narrow_pane_before_readiness_and_paste(
+    tmp_path,
+    monkeypatch,
+    _fast_tmux_timeouts,
+):
+    bridge_dir = tmp_path / "bridge"
+    write_tmux_target(bridge_dir, socket_path=Path("/tmp/test.sock"), tmux_target="main")
+    empty = "─" * 80 + "\n>\n" + "─" * 80 + "\n? for shortcuts\n"
+    state = {"width": 12, "pane": "clipped", "enters": 0}
+
+    def run(cmd, **kwargs):
+        if "display-message" in cmd:
+            return SimpleNamespace(returncode=0, stdout=f"{state['width']} 41", stderr="")
+        if "resize-window" in cmd:
+            state["width"] = int(cmd[cmd.index("-x") + 1])
+            state["pane"] = empty
+        if "capture-pane" in cmd:
+            assert state["width"] >= 80
+            return SimpleNamespace(returncode=0, stdout=state["pane"], stderr="")
+        if "paste-buffer" in cmd:
+            state["pane"] = empty.replace(">\n", "> recovery test message\n")
+        if cmd[-1] == "Enter":
+            state["enters"] += 1
+            state["pane"] = empty.replace("? for shortcuts", "esc to cancel")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(_mod.subprocess, "run", run)
+    inject_user_message_via_tui(bridge_dir, content="recovery test message", timeout_s=0.5)
+    assert state["enters"] == 1

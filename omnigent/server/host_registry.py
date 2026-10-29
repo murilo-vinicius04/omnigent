@@ -166,6 +166,10 @@ class WebSocketLike(Protocol):
         """Receive a text frame."""
         ...
 
+    async def close(self, code: int = 1000, reason: str | None = None) -> None:
+        """Close a revoked host connection."""
+        ...
+
 
 @dataclass
 class HostConnection:
@@ -317,6 +321,7 @@ class HostConnection:
     pending_model_options: dict[str, asyncio.Future[dict[str, Any]]] = field(
         default_factory=dict,
     )
+    pending_inspections: dict[str, asyncio.Future[dict[str, Any]]] = field(default_factory=dict)
     pending_plan_limits: dict[str, asyncio.Future[dict[str, Any]]] = field(
         default_factory=dict,
     )

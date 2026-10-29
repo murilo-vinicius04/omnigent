@@ -212,6 +212,13 @@ _ENGLISH_STOPWORDS = frozenset(
 # fmt: on
 
 
+#: Emoji and pictographs: on screen they set the mood, aloud they are read as
+#: their names or as noise.
+_EMOJI = re.compile(
+    "[\U0001f000-\U0001faff\u2300-\u23ff\u2600-\u27bf\u2b00-\u2bff\ufe0f\u200d\u20e3]"
+)
+
+
 def strip_markdown_for_speech(text: str) -> str:
     """Strip markdown formatting, code blocks, URLs, and noisy markup before rewrite.
 
@@ -234,8 +241,18 @@ def strip_markdown_for_speech(text: str) -> str:
     cleaned = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", cleaned)
     # Strip URLs
     cleaned = re.sub(r"https?://\S+", " ", cleaned)
+    cleaned = _EMOJI.sub("", cleaned)
+    # A bullet is heard as its own sentence; without a full stop it runs into the next.
+    cleaned = re.sub(
+        r"^(\s*(?:[-*•]|\d+[.)])\s+.*?[^\s.!?:;…])[ \t]*$",
+        r"\1.",
+        cleaned,
+        flags=re.MULTILINE,
+    )
+    # So does a paragraph once the lines are joined.
+    cleaned = re.sub(r"([^\s.!?:;…|])[ \t]*(?=\n[ \t]*\n)", r"\1.", cleaned)
     # Strip markdown headers, blockquotes, bullets from line beginnings
-    cleaned = re.sub(r"^\s*[#>*-]+\s*", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"^\s*[#>*•-]+\s*", "", cleaned, flags=re.MULTILINE)
     # Strip bold / italics markers; underscores inside a word, as in a file
     # name like JOYSTICK_EXPERIMENT_PLAN.md, are not markers.
     cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", cleaned)
@@ -402,16 +419,122 @@ def clamp_sentences(
     pieces = re.split(r"((?<=[.!?])\s+)", cleaned)
     sentences = pieces[0::2]
     separators = pieces[1::2]
-    if len(sentences) > max_sentences:
-        kept = sentences[:max_sentences]
-        clamped = "".join(
-            part + (separators[i] if i < len(kept) - 1 and i < len(separators) else "")
-            for i, part in enumerate(kept)
-        )
-    else:
-        clamped = cleaned
+    if len(sentences) <= max_sentences and len(cleaned) <= max_chars:
+        return cleaned
+    kept = _keep_the_ending(sentences, separators, max_sentences, max_chars)
+    if kept is None:
+        kept = truncate_at_word_boundary(cleaned, max_chars=max_chars)
+    _logger.info("spoken summary cut from %d to %d chars", len(cleaned), len(kept))
+    return kept
 
-    return truncate_at_word_boundary(clamped, max_chars=max_chars)
+
+def _keep_the_ending(
+    sentences: list[str], separators: list[str], max_sentences: int, max_chars: int
+) -> str | None:
+    """Shorten a rewrite by dropping middle sentences, never its ending or questions.
+
+    The ending is where a reply asks the reader something, hands them the next
+    step or lists their options; cutting from the end removed exactly that and
+    left only the explanation. Returns ``None`` when the ending alone overflows.
+    """
+
+    def render(chosen: set[int]) -> str:
+        order = sorted(chosen)
+        return "".join(
+            sentences[i] + (separators[order[k + 1] - 1] if k + 1 < len(order) else "")
+            for k, i in enumerate(order)
+        )
+
+    # The ending: the last sentence, plus those before it in its paragraph, up to
+    # two thirds of the budget.
+    last = len(sentences) - 1
+    keep = {last}
+    tail_cap = max(1, max_sentences * 2 // 3)
+    start = last
+    while (
+        start > 0
+        and len(keep) < tail_cap
+        and "\n\n" not in separators[start - 1]
+        and len(render(keep | {start - 1})) <= max_chars * 2 // 3
+    ):
+        start -= 1
+        keep.add(start)
+    if len(render(keep)) > max_chars:
+        return None
+    # A question anywhere is the reader's to answer, so it outranks explanation.
+    for i in range(last):
+        if "?" in sentences[i] and len(keep) < max_sentences:
+            if len(render(keep | {i})) <= max_chars:
+                keep.add(i)
+    for i in range(last):
+        if len(keep) >= max_sentences:
+            break
+        if i not in keep and len(render(keep | {i})) <= max_chars:
+            keep.add(i)
+        elif i not in keep:
+            break
+    return render(keep)
+
+
+#: A question mark that ends a clause, not one inside a URL's query string.
+_QUESTION = re.compile(r"\?(?=\s|$)")
+
+#: Phrases that mark a reply's last paragraph as asking something of the reader.
+_ASKING_PHRASES = (
+    "let me know",
+    "tell me",
+    "want me to",
+    "should i ",
+    "shall i ",
+    "would you like",
+    "do you want",
+    "your call",
+    "which do you",
+)
+
+
+def closing_ask(text: str) -> str:
+    """The reply's last paragraph when it asks something of the reader, else ``""``.
+
+    :param text: The reply as written, paragraph breaks intact.
+    """
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
+    if not paragraphs:
+        return ""
+    last = paragraphs[-1]
+    lowered = last.lower()
+    if _QUESTION.search(last) or any(phrase in lowered for phrase in _ASKING_PHRASES):
+        return last
+    return ""
+
+
+def end_with_ask(shown: str) -> tuple[str, bool]:
+    """Move the rewrite's ``ASK:`` line to the end as its last paragraph.
+
+    :param shown: The rewrite with its ``SHOW:`` line already removed.
+    :returns: ``(text, asks)``; ``asks`` is whether it asks the reader anything.
+    """
+    lines = shown.splitlines()
+    for k, line in enumerate(lines):
+        match = re.match(r"^\s*\**ASK:\**\s*(.*)$", line)
+        if match:
+            ask = " ".join([match.group(1).strip()] + [rest.strip() for rest in lines[k + 1 :]])
+            ask = " ".join(ask.split())
+            prose = "\n".join(lines[:k]).strip()
+            text = f"{prose}\n\n{ask}" if prose and ask else (prose or ask)
+            return text, bool(ask)
+    return shown.strip(), bool(_QUESTION.search(shown))
+
+
+def _missing_ending(text: str, asks: bool, closing: str) -> str:
+    """Append the reply's own closing ask when the rewrite left it out.
+
+    Untranslated beats lost: the reader must still see what is asked of them.
+    """
+    if asks or not closing:
+        return text
+    _logger.warning("spoken summary left out the reply's closing ask; appending it as written")
+    return f"{text}\n\n{closing}" if text else closing
 
 
 # ── Prompt Injection Mitigation & Residual Risk ──────────────────────
@@ -441,6 +564,7 @@ def build_spoken_summary_instructions(
     pending_work: Sequence[str] = (),
     candidates: str | None = None,
     has_question: bool = False,
+    ending_missed: bool = False,
 ) -> str:
     """Construct the system instructions for the friendly rewrite.
 
@@ -456,6 +580,8 @@ def build_spoken_summary_instructions(
         alongside the reply. Without it the rewrite can only follow the
         reply's emphasis, which loses questions the reply answered briefly
         or out of order.
+    :param ending_missed: Whether an earlier rewrite of this reply dropped
+        its closing ask, so this attempt is told the ASK line is required.
     :param pending_work: What the harness reports still running as the turn
         ends, one short label each, e.g. ``["python train.py"]``. The rewriter
         only ever sees the reply text, so it can spot a reply that *says* it
@@ -508,37 +634,59 @@ def build_spoken_summary_instructions(
         else ""
     )
     base = (
-        "Rewrite this assistant reply the way a person would say it out loud to the "
-        "colleague who asked. "
+        "Rewrite this assistant reply the way a friend on the team would tell it to "
+        "the person who asked: relaxed and warm, a bit of banter where it fits, like a "
+        "message from a buddy rather than a report. "
         f"{lang_instruction} "
         f"{question_rule}"
         "Say what was done, what was found, and what it means for them. "
         f"{pending_rule}"
-        "If the reply asks the reader something or leaves a decision to them, END with "
-        "that question, in their own terms and still phrased as a question. This is the "
-        "only version most readers see, so a question flattened into a recommendation is "
-        "a decision quietly taken away from them. "
+        "If the reply asks the reader something, leaves a decision to them, asks "
+        "them to DO something (press a button, check something, tell it when they "
+        "are done), or proposes next steps or options, put that ending on a final "
+        "line of its own starting with `ASK:` -- every question, step and option it "
+        "holds, in order, in their own terms, a question still phrased as a "
+        "question. That line is the part the reader acts on and is always said "
+        "last, so the prose before it does not repeat it. This is the only version "
+        "most readers see: a question flattened into a recommendation is a decision "
+        "quietly taken away from them, and a summary that keeps the explanation but "
+        "drops the ending leaves them not knowing anything was asked of them. Leave "
+        "the ASK line out only when the reply asks nothing of them. "
         "This is heard, not skimmed: aim for about a minute spoken, five or six "
-        "sentences, and stop as soon as it is said. A one-line reply gets one "
-        "sentence. "
+        "sentences and under 1000 characters, and stop as soon as it is said. A "
+        "one-line reply gets one sentence. "
         "Cover the whole answer, including the last thing it says -- the closing "
         "list, the decision, the caveat -- because the ending is usually what "
         "the reader was waiting for. Fit it in that minute by cutting detail, "
         "never by dropping the ending: keep what changes what they do next, and "
         "leave the supporting evidence, the alternatives considered and the "
         "step-by-step to the original. "
-        "Keep separate findings separate, one sentence each, in the order they "
-        "happened. Never pad. "
+        "Keep separate findings separate, in the order they happened. Never pad. "
+        "Lay it out for a phone screen, never as one block: short paragraphs of one "
+        "to three sentences with a blank line between them. When the reply has three "
+        "or more separate results, findings or steps, give them as `- ` bullets, each "
+        "a complete short sentence ending in a full stop, so it still sounds right "
+        "read aloud. One or two emojis that fit the mood (for example ✅ for what "
+        "worked, ❌ for what broke, 😅 for a hiccup) are welcome at the start or end "
+        "of a line, never in place of a word; they are dropped when it is spoken. "
+        "These layout rules replace any earlier instruction to avoid lists. "
         "Say numbers and names that carry the point, writing numbers as digits "
         'because this text is also read on screen ("8 of 13 terms", "45 seconds", '
         '"$1.73"); leave out code, commands and long paths, which are unreadable '
         "aloud and one click away in the original. "
-        "Everyday words over jargon, short sentences over long ones. Contractions are "
-        "good. Do not open by repeating the question back, do not sign off, and do "
-        "not say you are rewriting anything. "
+        "Everyday words over jargon, short sentences over long ones. Contractions and "
+        "the casual expressions people use in that language are good; stiff, formal "
+        "wording is not. Do not open by repeating the question back, do not sign off, "
+        "and do not say you are rewriting anything. "
         "Never add information, never speculate, never comment on the answer's quality. "
-        "Reply with the rewritten text only."
+        "Reply with the rewritten text only, plus the ASK line when there is one."
     )
+    if ending_missed:
+        base += (
+            "\n\nA previous rewrite of this reply left out how it ends, although its "
+            "last paragraph asks something of the reader. The ASK line is required "
+            "this time."
+        )
     if candidates:
         base += (
             "\n\nThe answer also holds these, which the reader can be SHOWN rather "
@@ -636,6 +784,7 @@ def build_spoken_summary_prompt(
     candidates: str | None = None,
     question: str | None = None,
     earlier: Sequence[str] = (),
+    ending_missed: bool = False,
 ) -> str:
     """Backward-compatible helper returning a combined prompt string."""
     instructions = build_spoken_summary_instructions(
@@ -643,6 +792,7 @@ def build_spoken_summary_prompt(
         pending_work=pending_work,
         candidates=candidates,
         has_question=bool(question and question.strip()),
+        ending_missed=ending_missed,
     )
     user_content, _ = build_spoken_summary_user_content(cleaned_text, question, earlier)
     return f"{instructions}\n\n---\n{user_content}"
@@ -1094,6 +1244,7 @@ async def _generate_via_agy(
     question: str | None = None,
     earlier: Sequence[str] = (),
     session_id: str | None = None,
+    ending_missed: bool = False,
 ) -> str | None:
     """Rewrite an assistant reply into friendly prose through Gemini.
 
@@ -1111,6 +1262,7 @@ async def _generate_via_agy(
     :param question: The reader's prompting message, when known.
     :param earlier: Preceding reader messages, oldest first, for context only.
     :param session_id: Session whose companion should write it, when known.
+    :param ending_missed: Whether a first attempt dropped the closing ask.
     :returns: The raw rewritten text, or ``None`` on any failure.
     """
     prompt = build_spoken_summary_prompt(
@@ -1120,6 +1272,7 @@ async def _generate_via_agy(
         candidates=candidates,
         question=question,
         earlier=earlier,
+        ending_missed=ending_missed,
     )
     if session_id:
         from omnigent.server.discussion import run_task
@@ -1199,8 +1352,12 @@ async def generate_spoken_summary(
     else:
         effective_timeout = get_spoken_summary_timeout_s()
 
+    # Paragraphs are found in the raw reply: stripping for speech joins them.
+    closing = strip_markdown_for_speech(closing_ask(text))
+
     async def _worker() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         if via_agy:
+            started = time.monotonic()
             raw = await _generate_via_agy(
                 cleaned_text,
                 language=language,
@@ -1217,6 +1374,28 @@ async def generate_spoken_summary(
                 )
                 return None, None
             shown, chosen = parse_show_selection(raw, candidates)
+            shown, asks = end_with_ask(shown)
+            remaining = effective_timeout - (time.monotonic() - started)
+            # One more try, while there is time for it, before falling back to
+            # the reply's own words.
+            if closing and not asks and remaining > effective_timeout / 2:
+                retry = await _generate_via_agy(
+                    cleaned_text,
+                    language=language,
+                    timeout_s=remaining - 1,
+                    pending_work=pending_work,
+                    candidates=candidate_lines,
+                    question=question,
+                    earlier=earlier,
+                    session_id=session_id,
+                    ending_missed=True,
+                )
+                if retry:
+                    retry_shown, retry_chosen = parse_show_selection(retry, candidates)
+                    retry_shown, retry_asks = end_with_ask(retry_shown)
+                    if retry_asks and retry_shown:
+                        raw, shown, chosen, asks = retry, retry_shown, retry_chosen, True
+            shown = _missing_ending(shown, asks, closing)
             summary_text = clamp_sentences(
                 shown,
                 max_sentences=REWRITE_MAX_SENTENCES,
@@ -1283,6 +1462,8 @@ async def generate_spoken_summary(
 
         # Post-clean summary: clamp sentences and characters, check implausible output
         shown, chosen = parse_show_selection(raw_summary, candidates)
+        shown, asks = end_with_ask(shown)
+        shown = _missing_ending(shown, asks, closing)
         summary_text = clamp_sentences(shown, max_sentences=3, input_text=text)
         if not summary_text:
             _log_rejected_rewrite(raw_summary, shown, text, backend=model)
