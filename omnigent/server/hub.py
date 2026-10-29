@@ -308,9 +308,10 @@ folder can show. Nothing is changed by a check.
 project to run on another model or reasoning effort. Give only what they asked \
 to change: "to" is one of the models that project offers (its id) or \
 "default"; "effort" is one of its efforts or "default". If what they want is \
-not in its list, use "ask" and name what it offers. A project never changes \
-provider here (Claude Code stays Claude Code): that is the Switch button in the \
-Projects panel.
+not in its list, use "ask" and name what it offers. This action never changes \
+a chat's provider (Claude Code stays Claude Code): that is the Switch button \
+in the Projects panel. That limit is only about retuning an existing chat: a \
+new lane may run on any provider or model they name, via "use".
 {{"new_project": "<name>", "say": "..."}} -- they ask for a new project. Use \
 the name they gave; if they gave none, use "ask" for one. The project starts \
 empty: they give it its first task from the link the hub posts.
