@@ -10,12 +10,14 @@ checkout.
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final
+from urllib.parse import unquote
 
 #: The label that marks a chat the hub opened as a lane; its value is the topic.
 LANE_LABEL: Final[str] = "omnigent.hub.lane"
@@ -156,9 +158,29 @@ class LaneRun:
         return " · ".join(parts)
 
 
+def _normalize_model_id(value: str) -> str:
+    """The bare model id inside a provider-qualified envelope, else the value.
+
+    Muse Code's adapter identifies catalog models as
+    ``muse-model:<urlencoded [providerId, profileId, id]>``; version
+    comparisons must unwrap that envelope first, or every id versions the
+    same (the envelope's own percent-encoding digits).
+    """
+    prefix = "muse-model:"
+    if not value.startswith(prefix):
+        return value
+    try:
+        envelope = json.loads(unquote(value[len(prefix):]))
+    except ValueError:
+        return value
+    if isinstance(envelope, list) and len(envelope) >= 3 and isinstance(envelope[2], str):
+        return envelope[2]
+    return value
+
+
 def _version(model_id: str) -> tuple[int, ...]:
     """The version numbers in a model id: ``gpt-6.1-sol`` -> ``(6, 1)``."""
-    found = re.search(r"\d+(?:[.-]\d+)*", model_id)
+    found = re.search(r"\d+(?:[.-]\d+)*", _normalize_model_id(model_id))
     return tuple(int(n) for n in re.split(r"[.-]", found.group(0))) if found else ()
 
 
@@ -187,16 +209,66 @@ def named_run(words: str) -> tuple[str, str]:
     """The provider, and the model family if any, that their words name.
 
     ``"use Luna"`` -> ``("codex", "Luna")``; ``"on Claude"`` ->
-    ``("claude", "")``; nothing named -> ``("", "")``.
+    ``("claude", "")``; nothing named -> ``("", "")``. A close typo of a
+    family word still names it (``"spar"`` -> ``("muse", "Spark")``); version
+    numbers ride separately via :func:`named_version`.
     """
-    tokens = re.findall(r"[a-z]+", words.lower())
+    tokens = re.findall(r"[a-z]+", (words or "").lower())
     for token in tokens:
         if token in _MODEL_WORDS:
             return _MODEL_WORDS[token]
     for token in tokens:
+        if len(token) < 3:
+            continue
+        for word, named in _MODEL_WORDS.items():
+            if word.startswith(token) or token.startswith(word):
+                return named
+    for token in tokens:
         if token in _PROVIDER_WORDS:
             return _PROVIDER_WORDS[token], ""
     return "", ""
+
+
+def named_version(words: str) -> str:
+    """The model version their words name: ``"muse spark 1.3"`` -> ``"1.3"``.
+
+    Empty when they named no version; the caller decides what an unpinned
+    family resolves to.
+    """
+    found = re.search(r"\d+(?:[.\-]\d+)*", words or "")
+    return found.group(0) if found else ""
+
+
+#: The Muse model a named lane runs unless a pin or the catalog says
+#: otherwise: Spark 1.3, never the adapter's older default.
+MUSE_DEFAULT_MODEL: Final[str] = "muse-spark-1.3"
+
+#: The effort every named Muse lane carries.
+MUSE_DEFAULT_EFFORT: Final[str] = "xhigh"
+
+
+def muse_model(word: str, version: str, catalog: Sequence[str]) -> str | None:
+    """The Muse model id a named lane runs, or ``None`` to stay pending.
+
+    A pinned version (``"1.3"``) wins over newest-of-the-family; it resolves
+    against the catalog's bare ids, so qualified envelopes match too. An
+    unreachable (empty) catalog trusts a pin, or the 1.3 default, since the
+    agent validates a manual id itself. A pin the live catalog does not
+    carry, or a family it does not offer, returns ``None``: the lane must
+    say so instead of silently running another model.
+    """
+    family = word or "Spark"
+    if version:
+        pin = f"muse-{family.lower()}-{version}"
+        if not catalog or any(
+            _normalize_model_id(m).lower() == pin for m in catalog
+        ):
+            return pin
+        return None
+    launch = launch_model("muse", family, MUSE_DEFAULT_EFFORT, catalog)
+    if launch is not None:
+        return launch[0]
+    return MUSE_DEFAULT_MODEL if not catalog else None
 
 
 def topic_name(topic: str, fallback: str) -> str:

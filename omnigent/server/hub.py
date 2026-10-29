@@ -3527,21 +3527,33 @@ class Hub:
         )
         provider, word = hub_lanes.named_run(use)
         if provider == "muse":
-            # Named Muse runs prefer Spark 1.3 at xhigh; the harness default
-            # fills in when its catalog is unreachable.
-            launch = hub_lanes.launch_model(
-                "muse",
-                word or "Spark",
-                "xhigh",
-                await self._catalog("muse", catalog_id or like.id),
-            )
-            model, effort = launch if launch is not None else ("", "xhigh")
+            # Named Muse runs carry xhigh; a named version ("spark 1.3")
+            # pins the model, else the catalog's newest of the family runs,
+            # else the Spark 1.3 default — never a silent older model.
+            version = hub_lanes.named_version(use)
+            catalog = await self._catalog("muse", catalog_id or like.id)
+            model = hub_lanes.muse_model(word or "Spark", version, catalog)
+            if model is None:
+                want = f"Spark {version}" if version else (word or "Spark")
+                return _LanePick(
+                    why=(
+                        f"I didn't open a lane: Muse offers no {want} model on "
+                        "this machine. Name one it offers, and I open it on that."
+                    ),
+                    task=task,
+                )
+            reason = f"You asked for {use}."
+            if not catalog:
+                reason += (
+                    " Its catalog was unreachable, so this lane pins Muse "
+                    "Spark 1.3."
+                )
             return _LanePick(
                 run=hub_lanes.LaneRun(
                     provider="muse",
                     model=model,
-                    effort=effort,
-                    reason=f"You asked for {use}.",
+                    effort=hub_lanes.MUSE_DEFAULT_EFFORT,
+                    reason=reason,
                 ),
                 task=task,
             )

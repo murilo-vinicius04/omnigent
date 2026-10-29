@@ -1299,7 +1299,7 @@ async def test_muse_lane_uses_acp_without_a_terminal_or_tier_catalog(tmp_path) -
         await hub.close()
     assert picked.run is not None
     assert picked.run.provider == "muse"
-    assert picked.run.model == ""
+    assert picked.run.model == "muse-spark-1.3"
     assert picked.run.effort == "xhigh"
     assert picked.run.tier == ""
 
@@ -1333,8 +1333,77 @@ async def test_muse_lane_uses_acp_without_a_terminal_or_tier_catalog(tmp_path) -
         hub_module.quota_handoff.PROVIDER_LABEL: "muse",
     }
     assert "terminal_launch_args" not in created[0]
-    assert "model_override" not in created[0]
+    assert created[0]["model_override"] == "muse-spark-1.3"
     assert created[0]["reasoning_effort"] == "xhigh"
+
+
+def test_the_version_they_name_is_kept_beside_the_model_word() -> None:
+    assert hub_lanes.named_version("abre uma lane no muse spar 1.3 xhig") == "1.3"
+    assert hub_lanes.named_version("muse spark 1.3") == "1.3"
+    assert hub_lanes.named_version("use Luna") == ""
+    assert hub_lanes.named_version("") == ""
+
+
+def test_a_typo_like_spar_still_names_the_spark_family() -> None:
+    assert hub_lanes.named_run("muse spar 1.3") == ("muse", "Spark")
+    assert hub_lanes.named_run("use Luna") == ("codex", "Luna")
+
+
+def test_newest_means_newest_inside_qualified_muse_envelopes() -> None:
+    old = "muse-model:%5B%22meta%22%2Cnull%2C%22muse-spark-1.2%22%5D"
+    new = "muse-model:%5B%22meta%22%2Cnull%2C%22muse-spark-1.3-contributor%22%5D"
+    assert hub_lanes.launch_model("muse", "Spark", "xhigh", [old, new]) == (new, "xhigh")
+    assert hub_lanes.launch_model("muse", "Spark", "xhigh", [new, old]) == (new, "xhigh")
+
+
+def test_a_pinned_muse_version_beats_newest_of_the_family() -> None:
+    catalog = ["muse-spark-1.2", "muse-spark-1.3"]
+    assert hub_lanes.muse_model("Spark", "1.3", catalog) == "muse-spark-1.3"
+    assert hub_lanes.muse_model("Spark", "", catalog) == "muse-spark-1.3"
+
+
+def test_a_pinned_muse_version_missing_from_the_catalog_is_not_silent() -> None:
+    assert hub_lanes.muse_model("Spark", "1.3", ["muse-spark-1.2"]) is None
+    # Unreachable catalog: trust the pin; the agent validates a manual id.
+    assert hub_lanes.muse_model("Spark", "1.3", []) == "muse-spark-1.3"
+    # Unreachable catalog with no pin: the default is Spark 1.3.
+    assert hub_lanes.muse_model("Spark", "", []) == "muse-spark-1.3"
+
+
+async def test_muse_lane_honors_a_pinned_spark_version(tmp_path) -> None:
+    server = _LaneServer()
+    server.catalogs["muse"] = ["muse-spark-1.2", "muse-spark-1.3"]
+    _two_lanes(server)
+    hub = _hub(tmp_path, _Router(), server)
+    like = server.sessions[-1]
+    project = HubProject(id=P_AMARRAS, name="amarras", chat=like)
+    try:
+        picked = await hub._lane_run(project, like, "Plug the second GPU.", "muse spar 1.3")
+    finally:
+        await hub.close()
+    assert picked.run is not None
+    assert (picked.run.provider, picked.run.model, picked.run.effort) == (
+        "muse",
+        "muse-spark-1.3",
+        "xhigh",
+    )
+
+
+async def test_muse_lane_stays_pending_when_the_pinned_version_is_missing(
+    tmp_path,
+) -> None:
+    server = _LaneServer()
+    server.catalogs["muse"] = ["muse-spark-1.2"]
+    _two_lanes(server)
+    hub = _hub(tmp_path, _Router(), server)
+    like = server.sessions[-1]
+    project = HubProject(id=P_AMARRAS, name="amarras", chat=like)
+    try:
+        picked = await hub._lane_run(project, like, "Plug the second GPU.", "muse spark 1.3")
+    finally:
+        await hub.close()
+    assert picked.run is None
+    assert "1.3" in picked.why
 
 
 def _lane_labels(topic="Câmeras ZED no lab"):
