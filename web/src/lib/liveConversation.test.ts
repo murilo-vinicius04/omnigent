@@ -128,7 +128,7 @@ describe("the open spoken conversation", () => {
     openLiveConversation.mockResolvedValue(live);
     await useLiveConversationStore.getState().start("conv_a");
     expect(setConversationSpeaking).toHaveBeenCalledWith(true, expect.any(Function));
-    expect(claimSpeechChannel).toHaveBeenCalledWith(expect.anything(), "conv_a");
+    expect(claimSpeechChannel).toHaveBeenCalledWith(expect.anything(), "conv_a", "pause");
 
     useLiveConversationStore.getState().stop();
     expect(setConversationSpeaking).toHaveBeenCalledWith(false);
@@ -139,10 +139,11 @@ describe("the open spoken conversation", () => {
     try {
       openLiveConversation.mockResolvedValue(fakeConversation());
       await useLiveConversationStore.getState().start("conv_a");
-      // The voice cannot hear the reader over a reading, so the mic takes over at once.
+      // The voice cannot hear the reader over a reading, so the mic takes over at once --
+      // but the reading pauses instead of dying, and resumes when the call ends.
       expect(useLiveConversationStore.getState().sessionId).toBe("conv_a");
       expect(claimSpeechChannel).toHaveBeenCalledTimes(1);
-      expect(claimSpeechChannel).toHaveBeenCalledWith(expect.anything(), "conv_a");
+      expect(claimSpeechChannel).toHaveBeenCalledWith(expect.anything(), "conv_a", "pause");
 
       const options = openLiveConversation.mock.calls[0]?.[1] as {
         onSpeech?: (who: "reader" | "voice") => void;
@@ -154,6 +155,13 @@ describe("the open spoken conversation", () => {
     } finally {
       narrating = false;
     }
+  });
+
+  it("drops the triggering narration when the call was auto-opened for it", async () => {
+    openLiveConversation.mockResolvedValue(fakeConversation());
+    await useLiveConversationStore.getState().start("conv_a", null, { narration: "drop" });
+    // Replaying it after hangup would repeat what the call was opened to discuss.
+    expect(claimSpeechChannel).toHaveBeenCalledWith(expect.anything(), "conv_a", "drop");
   });
 
   it("hangs up on stop, so the meter stops with it", async () => {

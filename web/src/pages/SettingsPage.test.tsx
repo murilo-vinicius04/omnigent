@@ -303,6 +303,14 @@ describe("SettingsPage", () => {
     expect(screen.getByTestId("hub-chime-volume-slider")).toBeInTheDocument();
   });
 
+  it("renders the shared-sessions notification control in General and toggles it", () => {
+    renderPage("/settings/general");
+    const toggle = screen.getByTestId("shared-sessions-notify-toggle");
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+  });
+
   it("renders the Appearance section and applies a theme on card click", () => {
     renderPage("/settings/appearance");
     expect(screen.getByRole("heading", { name: "Appearance" })).toBeInTheDocument();

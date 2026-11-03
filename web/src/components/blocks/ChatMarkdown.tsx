@@ -318,7 +318,7 @@ export function WorkspaceFileChip({
   fallback?: React.ReactNode;
 }) {
   const openWorkspaceFile = useWorkspaceFileOpener(path);
-  if (!openWorkspaceFile) return <>{fallback}</>;
+  if (!openWorkspaceFile) return fallback ?? null;
   return (
     <a
       role="button"

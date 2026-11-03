@@ -368,6 +368,42 @@ function closeActiveLive(): void {
   live?.stop();
 }
 
+/**
+ * A recording paused for an open live call, resumed when the call ends.
+ *
+ * A live-streamed narration cannot wait here: stopping it mid-stream cannot
+ * resume from the same offset, so it is hung up like before and only
+ * recordings are ever parked.
+ */
+let pausedForCall: HTMLAudioElement | null = null;
+
+/**
+ * Open a live voice call automatically when a narration starts.
+ *
+ * Default on. The guards stay strict regardless: it fires only when the
+ * microphone permission is already granted (it never triggers a permission
+ * prompt by itself) and no call is open. An explicit stored `false` opts out.
+ */
+export const LIVE_AUTO_OPEN_KEY = "omnigent:live-voice-auto-open";
+
+export function readLiveAutoOpen(): boolean {
+  if (typeof window === "undefined" || !window.localStorage) return true;
+  try {
+    return window.localStorage.getItem(LIVE_AUTO_OPEN_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+export function writeLiveAutoOpen(enabled: boolean): void {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(LIVE_AUTO_OPEN_KEY, enabled ? "true" : "false");
+  } catch {
+    // The choice then lasts only until the page reloads.
+  }
+}
+
 /** A summary waiting for the one before it to finish. */
 interface QueuedSummary {
   itemId: string;
@@ -414,6 +450,18 @@ export function setConversationSpeaking(open: boolean, hangUp?: (() => void) | n
   liveConversationOpen = open;
   hangUpLiveConversation = open ? (hangUp ?? null) : null;
   if (!open) {
+    // A recording paused for the call resumes where it stopped. The queue
+    // waits behind it: isSpeaking is still set for the resumed item, so the
+    // next playNextQueued returns early until it finishes.
+    const resume = pausedForCall;
+    pausedForCall = null;
+    if (resume) {
+      activeAudio = resume;
+      void resume.play().catch(() => {
+        if (activeAudio === resume) activeAudio = null;
+        playNextQueued(useSpeechPlaybackStore.setState, useSpeechPlaybackStore.getState);
+      });
+    }
     playNextQueued(useSpeechPlaybackStore.setState, useSpeechPlaybackStore.getState);
   }
 }
@@ -422,6 +470,22 @@ export function setConversationSpeaking(open: boolean, hangUp?: (() => void) | n
 export function registerLiveConversation(open: boolean, hangUp?: (() => void) | null): void {
   setConversationSpeaking(open, hangUp);
 }
+
+/**
+ * What happens to whatever is already speaking when *el* takes the channel.
+ *
+ * - `replace`: today's behavior. Everything stops or rewinds; the new sound
+ *   is the only thing left speaking. Used when one narration supersedes
+ *   another.
+ * - `pause`: the current recording pauses in place and resumes where it
+ *   stopped when the live call ends. Used when a live conversation (an open
+ *   microphone) takes the channel: killing the narration mid-sentence strands
+ *   it, while playing over the call lets the voice hear itself.
+ * - `drop`: like `pause`, but the paused recording is discarded instead of
+ *   resumed. Used when the call itself was opened *because of* that
+ *   narration: replaying it after hangup would repeat what the call was about.
+ */
+export type SpeechTakeover = "replace" | "pause" | "drop";
 
 /**
  * Take sole ownership of the speech channel for *el*.
@@ -436,19 +500,44 @@ export function registerLiveConversation(open: boolean, hangUp?: (() => void) | 
  *
  * @param el The element about to play, or `null` to silence everything.
  * @param sessionId Optional session identifier.
+ * @param onConflict What to do with audio already playing: `replace` kills
+ * it, `pause` parks a recording to resume after the call, `drop` parks
+ * nothing and clears the speaking flags so the queue is not wedged.
  */
-export function claimSpeechChannel(el: HTMLAudioElement | null, sessionId?: string | null): void {
+export function claimSpeechChannel(
+  el: HTMLAudioElement | null,
+  sessionId?: string | null,
+  onConflict: SpeechTakeover = "replace",
+): void {
   getSpeechEngine().stop();
   closeActiveLive();
   if (el) el.volume = currentNarrationVolume(sessionId ?? null);
   if (activeAudio && activeAudio !== el) {
-    activeAudio.pause();
-    activeAudio.currentTime = 0;
+    if (onConflict === "replace") {
+      activeAudio.pause();
+      activeAudio.currentTime = 0;
+    } else {
+      // Pause in place: the offset survives, so a resume continues the
+      // sentence instead of restarting it. Only one element ever waits.
+      activeAudio.pause();
+      pausedForCall = onConflict === "pause" ? activeAudio : null;
+      if (onConflict === "drop") {
+        activeAudio = null;
+        useSpeechPlaybackStore.setState({ isSpeaking: false, speakingItemId: null });
+      }
+    }
   }
-  // Any other summary player already on the page, whoever started it.
+  // Any other summary player already on the page, whoever started it. The
+  // element parked for the call keeps its offset: rewinding it here would
+  // defeat the resume.
   if (typeof document !== "undefined") {
     for (const other of document.querySelectorAll("audio[data-summary-audio]")) {
-      if (other !== el && other instanceof HTMLAudioElement && !other.paused) {
+      if (
+        other !== el &&
+        other !== pausedForCall &&
+        other instanceof HTMLAudioElement &&
+        !other.paused
+      ) {
         other.pause();
         other.currentTime = 0;
       }
@@ -472,6 +561,8 @@ function startSummaryPlayback(
   item: QueuedSummary,
   set: (partial: Partial<SpeechPlaybackStoreState>) => void,
   get: () => SpeechPlaybackStoreState,
+  // Manual play is the reader asking to listen, not to talk: no auto-open.
+  autoOpen = true,
 ): boolean {
   const { text, sessionId } = item;
   set({ speakingSessionId: sessionId ?? null });
@@ -481,11 +572,11 @@ function startSummaryPlayback(
   // hearing the local voice there is the wrong voice, not a rescue.
   if (currentVoiceBackend(sessionId ?? null) === "live") {
     if (!text.trim()) return false;
-    startLivePlayback(item, set, get);
+    startLivePlayback(item, set, get, autoOpen);
     return true;
   }
 
-  return playRecording(item, set, get);
+  return playRecording(item, set, get, autoOpen);
 }
 
 /**
@@ -497,14 +588,19 @@ function playRecording(
   item: QueuedSummary,
   set: (partial: Partial<SpeechPlaybackStoreState>) => void,
   get: () => SpeechPlaybackStoreState,
+  autoOpen: boolean,
 ): boolean {
   const { itemId, audioUrl, sessionId } = item;
   if (audioUrl) {
     const el = new Audio(audioUrl);
     set({ isSpeaking: true, speakingItemId: itemId });
-    const clear = () => {
+    const clearSpeaking = () => {
       if (get().speakingItemId === itemId) set({ isSpeaking: false, speakingItemId: null });
-      playNextQueued(set, get);
+    };
+    const drain = () => playNextQueued(set, get);
+    const clear = () => {
+      clearSpeaking();
+      drain();
     };
     // A session keeps only its newest recordings, so audio can be absent for
     // a summary that still names one. That is a real media error, and the
@@ -517,7 +613,21 @@ function playRecording(
       activeAudio = null;
       clear();
     };
-    el.addEventListener("ended", clear);
+    // A natural end means the reader heard the whole thing, so this is the
+    // moment for hands-free answering: open the call for a reply before
+    // moving on to the next queued summary. An error end means nothing was
+    // heard, so it just drains like before.
+    el.addEventListener("ended", () => {
+      if (get().speakingItemId !== itemId) {
+        drain();
+        return;
+      }
+      clearSpeaking();
+      void (async () => {
+        if (autoOpen && (await maybeAutoOpenLiveCall(sessionId ?? null, itemId))) return;
+        drain();
+      })();
+    });
     el.addEventListener("error", giveUp);
     claimSpeechChannel(el, sessionId);
     // A rejected play() here is usually the browser's autoplay policy, not a
@@ -545,6 +655,7 @@ function startLivePlayback(
   item: QueuedSummary,
   set: (partial: Partial<SpeechPlaybackStoreState>) => void,
   get: () => SpeechPlaybackStoreState,
+  autoOpen: boolean,
 ): void {
   const { itemId, text, sessionId, lang } = item;
   set({ isSpeaking: true, speakingItemId: itemId });
@@ -579,6 +690,17 @@ function startLivePlayback(
       el.dataset.summaryAudio = "live";
       claimSpeechChannel(el, sessionId);
       activeLive = live;
+      // play() resolving is not proof anyone heard anything: autoplay can
+      // accept the element and still stay silent. Only a real `playing`
+      // event counts the narration as heard for the hands-free handoff below.
+      let audible = false;
+      el.addEventListener(
+        "playing",
+        () => {
+          audible = true;
+        },
+        { once: true },
+      );
       void el.play().catch((reason: unknown) => {
         // Autoplay refused the stream. Forget it was spoken so the play
         // button still works, and stop billing for audio nobody hears.
@@ -603,7 +725,19 @@ function startLivePlayback(
         // which counts against the live quota and crowds out conversation
         // sessions until the server's runaway cap kills it half an hour later.
         live.stop();
-        clear();
+        if (get().speakingItemId !== itemId) {
+          playNextQueued(set, get);
+          return;
+        }
+        // Natural end after audible playback: the reader heard it all, so
+        // this is the hands-free moment. A finished session that never
+        // played (autoplay refusal, stillborn stream) heard nothing: drain.
+        set({ isSpeaking: false, speakingItemId: null });
+        void (async () => {
+          if (autoOpen && audible && (await maybeAutoOpenLiveCall(sessionId ?? null, itemId)))
+            return;
+          playNextQueued(set, get);
+        })();
       });
     })
     .catch(() => {
@@ -614,6 +748,51 @@ function startLivePlayback(
       unmarkMessageSpoken(itemId);
       clear();
     });
+}
+
+/**
+ * Open a live voice call because a narration was heard in full, when the
+ * reader asked for that behavior.
+ *
+ * Hands-free answering: the message has been read aloud, so the microphone
+ * opens for the reply instead of making them press anything. Fires only on a
+ * natural end of audible playback -- never when playback failed, errored, or
+ * was refused -- and only when every guard holds: the opt-in is on, the
+ * narration belongs to a session, the microphone permission is already
+ * granted (this never triggers a permission prompt by itself), and no call
+ * is already open. Returns whether a call was opened, so the caller knows
+ * whether to drain the queue. Failures are silent by design: the reader can
+ * still open the call by hand.
+ */
+async function maybeAutoOpenLiveCall(sessionId: string | null, itemId: string): Promise<boolean> {
+  if (!sessionId || !readLiveAutoOpen()) return false;
+  let granted: boolean;
+  try {
+    const status = await navigator.permissions?.query({
+      name: "microphone" as PermissionName,
+    });
+    granted = status?.state === "granted";
+  } catch {
+    return false;
+  }
+  if (!granted) {
+    reportNarration({ path: "playback", decision: "auto-open-skipped-no-mic", sessionId, itemId });
+    return false;
+  }
+  const { useLiveConversationStore } = await import("./liveConversation");
+  const { conversationRegistry } = await import("../store/conversationRegistry");
+  const conversation = useLiveConversationStore.getState();
+  if (conversation.sessionId || conversation.connecting) return false;
+  reportNarration({ path: "playback", decision: "auto-open-call", sessionId, itemId });
+  // The narration names the session, and the session knows its agent: the
+  // opened call can hand questions to Claude exactly like a hand-opened one.
+  // Without a bound agent this stays null and delegation falls back to saying
+  // so out loud instead of failing silently.
+  const agentId = conversationRegistry.peek(sessionId)?.getState().boundAgentId ?? null;
+  // The triggering narration is dropped rather than resumed after hangup:
+  // replaying it would repeat what the call was opened to discuss.
+  await conversation.start(sessionId, agentId, { narration: "drop" });
+  return true;
 }
 
 /** Start the next waiting summary, if the channel just went quiet. */
@@ -702,7 +881,8 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
     clearSpeechQueue();
     closeActiveLive();
     markMessageSpoken(itemId);
-    return startSummaryPlayback({ itemId, text, lang, audioUrl, sessionId }, set, get);
+    // Manual play is listening, not a handoff: never auto-open from it.
+    return startSummaryPlayback({ itemId, text, lang, audioUrl, sessionId }, set, get, false);
   },
 
   playManual: (itemId: string) => {
@@ -715,6 +895,8 @@ export const useSpeechPlaybackStore = create<SpeechPlaybackStoreState>((set, get
   stop: () => {
     // The reader asked for quiet: drop what is waiting rather than starting it.
     clearSpeechQueue();
+    // A parked recording dies with the quiet request instead of resuming later.
+    pausedForCall = null;
     // Pausing a live session would silence it while it kept billing.
     closeActiveLive();
     if (activeAudio) {

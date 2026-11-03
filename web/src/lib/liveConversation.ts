@@ -135,7 +135,7 @@ interface ConversationStoreState {
   start: (
     sessionId: string,
     agentId?: string | null,
-    options?: { fromVoiceHub?: boolean },
+    options?: { fromVoiceHub?: boolean; narration?: "pause" | "drop" },
   ) => Promise<void>;
   stop: () => void;
 }
@@ -526,9 +526,10 @@ export const useLiveConversationStore = create<ConversationStoreState>((set, get
     }
 
     activeHandle = handle;
-    // Opening the mic over a reading is the interruption: the reading stops
-    // now, since the voice cannot hear the reader over it.
-    claimSpeechChannel(handle.audioElement, sessionId);
+    // Opening the mic over a reading interrupts it, since the voice cannot
+    // hear the reader over it -- but the reading pauses instead of dying, and
+    // resumes where it stopped when the call ends.
+    claimSpeechChannel(handle.audioElement, sessionId, options.narration ?? "pause");
     // The narration level, except that a muted session's call still plays.
     if (handle.audioElement) handle.audioElement.volume = conversationVolume(sessionId);
     try {

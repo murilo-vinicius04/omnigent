@@ -6548,6 +6548,8 @@ def create_runner_app(
 
         _run_tmux(socket_path, "send-keys", "-t", target, "C-u")
         _run_tmux(socket_path, "send-keys", "-l", "-t", target, "/compact")
+        # Let Codex render its slash-command menu before submitting.
+        time.sleep(_CODEX_PERMISSION_POPUP_RENDER_S)
         _run_tmux(socket_path, "send-keys", "-t", target, "Enter")
 
     def _inject_codex_permission_mode(

@@ -232,6 +232,9 @@ _MUSE_MODELS: Final[tuple[ModelChoice, ...]] = tuple(
     )
 )
 
+#: The ids above, for a lane that must pick a family when the live catalog is unreachable.
+MUSE_FALLBACK_IDS: Final[tuple[str, ...]] = tuple(m.id for m in _MUSE_MODELS)
+
 
 def picker_kind(snapshot: dict[str, Any]) -> str:
     """The chat's model picker kind for a session snapshot; empty for none."""

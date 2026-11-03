@@ -13,6 +13,7 @@ Projects have no ACL of their own (PRD §9): every method is scoped by
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Any
 
 from omnigent.entities import Project
@@ -67,6 +68,19 @@ class ProjectStore(ABC):
         :param user_id: The requesting owner; a project owned by someone
             else is treated as not found.
         :returns: The :class:`Project` if found and owned, else ``None``.
+        """
+        ...
+
+    @abstractmethod
+    def owners_and_names(self, project_ids: Sequence[str]) -> dict[str, tuple[str, str | None]]:
+        """
+        Return ``{project_id: (name, owner)}`` whatever the owner.
+
+        Only for callers that already hold access to a session filed in the
+        project, to label it; never expose it as a project listing.
+
+        :param project_ids: Project ids to look up; unknown ids are omitted.
+        :returns: Name and owning user (``None`` in single-user mode) per id.
         """
         ...
 

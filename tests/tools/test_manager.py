@@ -64,6 +64,12 @@ _ALWAYS_PRESENT_TOOLS: frozenset[str] = frozenset(
         "sys_session_list",
         "sys_session_get_info",
         "sys_session_rename",
+        # Duet notes go through the server router, so every agent gets them.
+        "sys_duet_say",
+        "sys_duet_inbox",
+        "sys_resource_acquire",
+        "sys_resource_release",
+        "sys_resource_status",
         # Read-only agent discovery tools are likewise always available
         # (global, permission-bounded reads of any accessible session's
         # agent / bundle).
@@ -118,6 +124,13 @@ def _non_lifecycle_schemas(
             and fn.get("name") in _ALWAYS_PRESENT_TOOLS
         )
     ]
+
+
+def test_duet_tools_are_registered_for_every_agent() -> None:
+    names = {schema["function"]["name"] for schema in ToolManager(_make_spec()).get_tool_schemas()}
+
+    assert {"sys_duet_say", "sys_duet_inbox"} <= names
+    assert {"sys_resource_acquire", "sys_resource_release", "sys_resource_status"} <= names
 
 
 def test_session_rename_is_registered_for_every_agent() -> None:

@@ -76,12 +76,18 @@ from omnigent.tools.builtins.async_inbox import (
 )
 from omnigent.tools.builtins.browser import BROWSER_TOOL_NAMES
 from omnigent.tools.builtins.download_file import DownloadFileTool
+from omnigent.tools.builtins.duet import SysDuetInboxTool, SysDuetSayTool
 from omnigent.tools.builtins.list_comments import ListCommentsTool
 from omnigent.tools.builtins.os_env import (
     SysOsEditTool,
     SysOsReadTool,
     SysOsShellTool,
     SysOsWriteTool,
+)
+from omnigent.tools.builtins.resources import (
+    SysResourceAcquireTool,
+    SysResourceReleaseTool,
+    SysResourceStatusTool,
 )
 from omnigent.tools.builtins.session_rename import SysSessionRenameTool
 from omnigent.tools.builtins.spawn import (
@@ -302,6 +308,18 @@ _SESSION_QUERY_TOOLS = frozenset(
 
 _SESSION_SELF_WRITE_TOOLS = frozenset({SysSessionRenameTool.name()})
 
+# Agent-to-agent notes through the server-side duet router.
+_DUET_TOOLS = frozenset({SysDuetSayTool.name(), SysDuetInboxTool.name()})
+
+# Taking turns on shared resources through the server-side resource board.
+_RESOURCE_TOOLS = frozenset(
+    {
+        SysResourceAcquireTool.name(),
+        SysResourceReleaseTool.name(),
+        SysResourceStatusTool.name(),
+    }
+)
+
 # A worker asking its supervisor (omnigent/supervisor.py).
 _SUPERVISOR_TOOLS = frozenset({SysAskSupervisorTool.name()})
 
@@ -457,6 +475,8 @@ _NATIVE_RELAY_BUILTIN_TOOLS = (
     _COMMENT_TOOLS
     | _SESSION_QUERY_TOOLS
     | _SESSION_SELF_WRITE_TOOLS
+    | _DUET_TOOLS
+    | _RESOURCE_TOOLS
     | _ASYNC_INBOX_TOOLS
     | _SUBAGENT_TOOLS
     | _LIST_MODELS_TOOLS
@@ -586,6 +606,11 @@ def build_native_relay_tool_schemas(spec: AgentSpec | None) -> list[_JsonObject]
             SysSessionGetHistoryTool,
             SysSessionGetInfoTool,
             SysSessionRenameTool,
+            SysDuetSayTool,
+            SysDuetInboxTool,
+            SysResourceAcquireTool,
+            SysResourceReleaseTool,
+            SysResourceStatusTool,
             SysAgentGetTool,
             SysAgentListTool,
             SysAgentDownloadTool,
@@ -892,6 +917,8 @@ _ALL_LOCAL_TOOLS = (
     | _SESSION_CREATE_TOOLS
     | _SESSION_QUERY_TOOLS
     | _SESSION_SELF_WRITE_TOOLS
+    | _DUET_TOOLS
+    | _RESOURCE_TOOLS
     | _SUPERVISOR_TOOLS
     | _WEB_FETCH_TOOLS
     | _WEB_SEARCH_TOOLS
@@ -6285,6 +6312,22 @@ async def execute_tool(
                 conversation_id,
                 server_client,
             )
+        elif tool_name in _DUET_TOOLS:
+            from omnigent.runner import duet_tool
+
+            if tool_name == SysDuetSayTool.name():
+                output = await duet_tool.say_via_rest(args, conversation_id, server_client)
+            else:
+                output = await duet_tool.inbox_via_rest(conversation_id, server_client)
+        elif tool_name in _RESOURCE_TOOLS:
+            from omnigent.runner import resource_tool
+
+            if tool_name == SysResourceAcquireTool.name():
+                output = await resource_tool.acquire_via_rest(args, conversation_id, server_client)
+            elif tool_name == SysResourceReleaseTool.name():
+                output = await resource_tool.release_via_rest(args, conversation_id, server_client)
+            else:
+                output = await resource_tool.status_via_rest(args, server_client)
         elif tool_name in _SUPERVISOR_TOOLS:
             from omnigent.runner.supervisor_tool import ask_via_rest
 

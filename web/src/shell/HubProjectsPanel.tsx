@@ -698,7 +698,10 @@ function TodoRow({
           className="mt-0.5"
         />
       ) : (
-        <span aria-hidden className="mt-0.5 inline-block size-2 shrink-0 rounded-full border border-border" />
+        <span
+          aria-hidden
+          className="mt-0.5 inline-block size-2 shrink-0 rounded-full border border-border"
+        />
       )}
       <span className={cn("min-w-0 flex-1", done && "text-muted-foreground line-through")}>
         {item.content}
@@ -773,9 +776,7 @@ function ProjectBrief({
         brief: nextBrief,
         brief_todos: nextTodos,
       });
-      onChanged(
-        saved.brief || saved.brief_todos.length > 0 ? "Brief saved." : "Brief cleared.",
-      );
+      onChanged(saved.brief || saved.brief_todos.length > 0 ? "Brief saved." : "Brief cleared.");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["hub-brief", row.id] }),
         queryClient.invalidateQueries({ queryKey: HUB_PROJECTS_QUERY_KEY }),
@@ -819,9 +820,7 @@ function ProjectBrief({
       </button>
       {open && (
         <div className="flex flex-col gap-3 border-t border-border px-2 py-2">
-          {brief.isLoading && (
-            <p className="text-xs text-muted-foreground">Reading its brief…</p>
-          )}
+          {brief.isLoading && <p className="text-xs text-muted-foreground">Reading its brief…</p>}
           {brief.error && (
             <p className="text-xs text-destructive">
               Couldn't read its brief: {message(brief.error)}
@@ -876,14 +875,11 @@ function ProjectBrief({
                   </form>
                 ) : (
                   <div className="mt-0.5 flex items-start justify-between gap-2">
-                    <p
-                      className="min-w-0 flex-1 text-xs"
-                      data-testid={`hub-brief-about-${row.id}`}
-                    >
+                    <p className="min-w-0 flex-1 text-xs" data-testid={`hub-brief-about-${row.id}`}>
                       {data.about || (
                         <span className="text-muted-foreground">
-                          Not written yet. The companion writes it after the project's next
-                          report, or press Update now.
+                          Not written yet. The companion writes it after the project's next report,
+                          or press Update now.
                         </span>
                       )}
                       {data.about_source === "written" && (
@@ -951,7 +947,6 @@ function ProjectBrief({
                   <ul className="mt-0.5 flex flex-col gap-1">
                     {todos.map((item, index) => (
                       <TodoRow
-                        // eslint-disable-next-line react/no-array-index-key
                         key={item.id ?? `todo-${index}`}
                         item={item}
                         note={item.by === "companion" ? "added by the companion" : undefined}
@@ -982,8 +977,8 @@ function ProjectBrief({
                   </ul>
                 ) : (
                   <p className="mt-0.5 text-xs text-muted-foreground">
-                    Nothing on the list. The companion adds what the project still has to do;
-                    you can add your own below.
+                    Nothing on the list. The companion adds what the project still has to do; you
+                    can add your own below.
                   </p>
                 )}
                 <form

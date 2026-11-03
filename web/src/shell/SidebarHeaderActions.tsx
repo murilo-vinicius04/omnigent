@@ -6,6 +6,7 @@ import { Link } from "@/lib/routing";
 import { cn } from "@/lib/utils";
 
 import { VoiceHubButton } from "./VoiceHubButton";
+import { AgentActivity } from "./AgentActivity";
 
 /**
  * Search / Settings / sidebar-toggle cluster from the sidebar's header row.
@@ -60,6 +61,7 @@ export function SidebarHeaderActions({
     <div className="flex items-center gap-1" data-testid="sidebar-header-actions">
       <SidebarSearchButton onOpenSearch={onOpenSearch} />
       <VoiceHubButton className={SIDEBAR_FLOAT_BUTTON} iconClassName={SIDEBAR_FLOAT_ICON} />
+      <AgentActivity />
       <SidebarSettingsButton onSettingsClick={onSettingsClick} className="max-md:hidden" />
       <Tooltip>
         <TooltipTrigger asChild>

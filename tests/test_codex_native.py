@@ -11433,3 +11433,17 @@ def test_remote_resume_keeps_permissions_on_server_thread(config_flag: str) -> N
         "approvalPolicy": "on-request",
         "approvalsReviewer": "auto_review",
     }
+
+
+def test_resume_history_sanitizes_cross_harness_tool_names() -> None:
+    """Human-readable Muse tool titles must remain valid Responses function names."""
+    import re
+
+    for name in ("Check lab controllers", "read /path 📁", "shell", "mcp__server__tool"):
+        item = {"type": "function_call", "name": name, "call_id": "call_1", "arguments": "{}"}
+        payload = codex_native._codex_function_call_payload_from_session_item(item)
+        assert payload is not None
+        assert re.fullmatch(r"[A-Za-z0-9_.-]+", payload["name"])
+        assert payload["call_id"] == "call_1"
+        if re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+            assert payload["name"] == name

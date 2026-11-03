@@ -13,7 +13,7 @@ from sqlalchemy import delete, exists, literal, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.engine import CursorResult
+from sqlalchemy.engine import CursorResult, Engine
 from sqlalchemy.sql.dml import Insert
 
 from omnigent.db.db_models import SqlSessionPermission, SqlUser, current_workspace_id
@@ -124,6 +124,11 @@ class SqlAlchemyPermissionStore(PermissionStore):
     (SQLite ``ON CONFLICT DO UPDATE``, PostgreSQL
     ``ON CONFLICT ... DO UPDATE``).
     """
+
+    @property
+    def engine(self) -> Engine:
+        """The database engine this store uses, for jobs that work on its tables directly."""
+        return self._engine
 
     def __init__(self, storage_location: str) -> None:
         """Initialize the SQLAlchemy permission store.

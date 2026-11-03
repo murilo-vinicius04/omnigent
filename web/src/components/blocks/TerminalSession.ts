@@ -23,6 +23,9 @@ import { type CodeFont, codeFontFamilyForEditor, readCodeFont } from "@/lib/code
 const CARD_LIGHT = "#ffffff";
 const CARD_DARK = "#131517";
 const TERMINAL_BOLD_WEIGHT_OFFSET = 300;
+// Mirrors MIN_RESIZE_COLS/ROWS in omnigent/terminals/control_bridge.py.
+const MIN_RESIZE_COLS = 20;
+const MIN_RESIZE_ROWS = 5;
 
 function terminalFontOptions({ sizePx, family, weight }: CodeFont) {
   return {
@@ -842,6 +845,9 @@ export class TerminalSession {
       return;
     }
     const { cols, rows } = this.term;
+    // A hidden or collapsed container fits to a sliver; tmux would shrink the
+    // pane with it and the TUI inside becomes unusable.
+    if (cols < MIN_RESIZE_COLS || rows < MIN_RESIZE_ROWS) return;
     // Skip a no-op resize: the WS-open handler and the ResizeObserver both
     // call this on mount, and a transient re-fit can land the same size. On
     // the control transport an unchanged size is a wasted round-trip (tmux

@@ -29,8 +29,13 @@ from omnigent.tools.builtins import (
     SysAskSupervisorTool,
     SysCallAsyncTool,
     SysCancelAsyncTool,
+    SysDuetInboxTool,
+    SysDuetSayTool,
     SysListModelsTool,
     SysReadInboxTool,
+    SysResourceAcquireTool,
+    SysResourceReleaseTool,
+    SysResourceStatusTool,
     SysScheduledTaskCreateTool,
     SysScheduledTaskDeleteTool,
     SysScheduledTaskListTool,
@@ -501,6 +506,14 @@ class ToolManager:
     def _register_session_tools(self) -> None:
         """Register framework-owned tools for the current session."""
         self._tools[SysSessionRenameTool.name()] = SysSessionRenameTool()
+        self._tools[SysDuetSayTool.name()] = SysDuetSayTool()
+        self._tools[SysDuetInboxTool.name()] = SysDuetInboxTool()
+        for resource_tool in (
+            SysResourceAcquireTool,
+            SysResourceReleaseTool,
+            SysResourceStatusTool,
+        ):
+            self._tools[resource_tool.name()] = resource_tool()
         # Only when switched on with a backend: a tool that always answers
         # "unavailable" would just be noise in every worker's list.
         from omnigent import supervisor

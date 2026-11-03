@@ -36,6 +36,7 @@ from omnigent.tools.builtins.async_inbox import (
     SysCancelAsyncTool,
     SysReadInboxTool,
 )
+from omnigent.tools.builtins.duet import SysDuetInboxTool, SysDuetSayTool
 from omnigent.tools.builtins.list_comments import ListCommentsTool
 from omnigent.tools.builtins.list_models import SysListModelsTool
 from omnigent.tools.builtins.load_skill import (
@@ -49,6 +50,11 @@ from omnigent.tools.builtins.nimble_extract import NimbleExtractTool
 from omnigent.tools.builtins.nimble_research import NimbleResearchTool
 from omnigent.tools.builtins.read_skill_file import (
     ReadSkillFileTool,
+)
+from omnigent.tools.builtins.resources import (
+    SysResourceAcquireTool,
+    SysResourceReleaseTool,
+    SysResourceStatusTool,
 )
 from omnigent.tools.builtins.scheduled_tasks import (
     SysScheduledTaskCreateTool,
@@ -88,8 +94,13 @@ __all__ = [
     "SysAskSupervisorTool",
     "SysCallAsyncTool",
     "SysCancelAsyncTool",
+    "SysDuetInboxTool",
+    "SysDuetSayTool",
     "SysListModelsTool",
     "SysReadInboxTool",
+    "SysResourceAcquireTool",
+    "SysResourceReleaseTool",
+    "SysResourceStatusTool",
     "SysScheduledTaskCreateTool",
     "SysScheduledTaskDeleteTool",
     "SysScheduledTaskListTool",

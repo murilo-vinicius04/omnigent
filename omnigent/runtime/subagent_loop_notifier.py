@@ -59,7 +59,7 @@ class SubagentLoopNotifier:
         elif event.get("type") == "external_conversation_item":
             data = event.get("data")
             is_function_call = isinstance(data, dict) and data.get("item_type") == "function_call"
-            item = data.get("item_data") if is_function_call else None
+            item = data.get("item_data") if isinstance(data, dict) and is_function_call else None
         else:
             return
         if not is_function_call or not isinstance(item, dict):

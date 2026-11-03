@@ -23,6 +23,7 @@ vi.mock("./HubMachineDialog", () => ({
     onSave: (machine: { host_id: string; workspace: string }) => Promise<void>;
   }) => (
     <button
+      type="button"
       data-testid="choose-terminal-machine"
       onClick={() => void onSave({ host_id: "remote", workspace: "/home/murilo" })}
     >

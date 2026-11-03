@@ -226,3 +226,31 @@ async def test_a_switch_after_the_plan_is_full_goes_straight_through_and_says_wh
     assert lane.events == ["configure:sonnet"]
     assert entry.text.startswith("Switched Amarras to Sonnet 5.5;")
     assert "plan window is full, so it could not write up or compact first" in entry.text
+
+
+async def test_a_forced_switch_skips_the_write_up_even_when_the_plan_is_full(tmp_path) -> None:
+    lane = _Lane()
+    lane.blocked_by = "5h window full until 16:13"
+    hub = _hub(tmp_path, lane)
+    entry = await hub.set_model(lane.session, "sonnet", "", via="typed", force=True)
+    await _settle(hub)
+    assert lane.events == ["configure:sonnet"]
+    assert entry.text.startswith("Switched Amarras to Sonnet 5.5;")
+    assert "not written up or compacted first" in entry.text
+
+
+async def test_force_changes_nothing_when_the_model_asked_for_is_not_offered(tmp_path) -> None:
+    lane = _Lane()
+    hub = _hub(tmp_path, lane)
+    entry = await hub.set_model(lane.session, "nonsense", "", via="typed", force=True)
+    assert lane.events == []
+    assert "Nothing was changed" in entry.text
+
+
+def test_the_router_reads_force_on_a_model_action() -> None:
+    from omnigent.server.hub import parse_decision
+
+    forced = parse_decision('{"model": "amarras", "to": "sonnet", "force": true}')
+    plain = parse_decision('{"model": "amarras", "to": "sonnet"}')
+    assert forced.action == "model" and forced.force is True
+    assert plain.force is False

@@ -3187,6 +3187,9 @@ def inject_user_message(
         invocation fails, or if the draft never leaves the input box
         after repeated submit Enters (message not delivered).
     """
+    # Blank lines in front of the text would render the draft under an empty
+    # ``❯`` row; they carry nothing in a chat message, so they never go in.
+    content = re.sub(r"\A(?:[ \t]*(?:\r\n|\r|\n))+", "", content)
     info = _wait_for_tmux_info(bridge_dir, timeout_s=timeout_s)
     # A surface left occupying the composer swallows everything typed
     # below — and hides the input box, wedging the readiness gate — so
@@ -3263,7 +3266,13 @@ def inject_user_message(
     _run_tmux(info["socket_path"], "send-keys", "-t", info["tmux_target"], "Enter")
     if not draft_seen:
         # The draft was never observed, so its absence proves nothing —
-        # verification would trivially "pass". Submit blind as before.
+        # verification would trivially "pass". Submit blind as before, but say
+        # so: a swallowed Enter here leaves the message unsent with no error.
+        _logger.warning(
+            "claude-native: the draft never showed in the input box within %.1fs; "
+            "submitted without verifying",
+            _PASTE_COMMIT_TIMEOUT_S,
+        )
         return
     # Verify the submit took: a successful Enter clears the input box.
     # If the draft is still sitting there the Enter was swallowed into
@@ -4005,6 +4014,40 @@ def _capture_pane(socket_path: str, tmux_target: str) -> str:
     return proc.stdout if proc.returncode == 0 else ""
 
 
+def _pane_size(socket_path: str, tmux_target: str) -> str:
+    """
+    Return the pane's ``COLSxROWS`` for failure diagnostics.
+
+    Never raises.
+
+    :param socket_path: Absolute path to the tmux socket.
+    :param tmux_target: tmux pane target string, e.g. ``"main"``.
+    :returns: e.g. ``"80x24"``, or ``"unknown"`` when tmux cannot answer.
+    """
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [
+                "tmux",
+                "-S",
+                socket_path,
+                "display-message",
+                "-p",
+                "-t",
+                tmux_target,
+                "#{pane_width}x#{pane_height}",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_TMUX_SEND_TIMEOUT_S,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return "unknown"
+    return proc.stdout.strip() or "unknown" if proc.returncode == 0 else "unknown"
+
+
 def claude_pane_ready(bridge_dir: Path) -> bool:
     """
     Report whether the Claude pane is showing a usable input box right now.
@@ -4301,13 +4344,25 @@ def _draft_in_input_box(pane: str, needle: str) -> bool:
         only the paste placeholder is then considered.
     :returns: ``True`` when the draft is still sitting in the input box.
     """
-    glyph_lines = [line for line in pane.splitlines() if _CLAUDE_PROMPT_GLYPH in line]
-    if not glyph_lines:
+    lines = pane.splitlines()
+    glyph_idx = max(
+        (i for i, line in enumerate(lines) if _CLAUDE_PROMPT_GLYPH in line), default=None
+    )
+    if glyph_idx is None:
         return False
-    tail = glyph_lines[-1].rsplit(_CLAUDE_PROMPT_GLYPH, 1)[1]
-    if _PASTED_PLACEHOLDER_PREFIX in tail:
+    # The draft may start on the glyph row or, when the composer renders it
+    # below an empty glyph row (a pasted multi-line draft), on the rows under
+    # it. Those rows run to the box's closing rule, which also keeps the
+    # footer out of the search.
+    rows = [lines[glyph_idx].rsplit(_CLAUDE_PROMPT_GLYPH, 1)[1]]
+    for line in lines[glyph_idx + 1 :]:
+        if _is_box_rule(line):
+            break
+        rows.append(line)
+    draft = "\n".join(rows)
+    if _PASTED_PLACEHOLDER_PREFIX in draft:
         return True
-    return bool(needle) and needle in tail
+    return bool(needle) and needle in draft
 
 
 def _format_terminal_failure_tail(pane: str) -> str:
@@ -4403,7 +4458,8 @@ def _wait_for_claude_prompt_ready(
     raise ClaudePromptTimeout(
         f"Claude Code terminal did not become ready within {timeout_s}s "
         f"(input prompt never rendered in {polls} polls, "
-        f"{empty_polls} empty captures). The message was not delivered."
+        f"{empty_polls} empty captures, pane size "
+        f"{_pane_size(socket_path, tmux_target)}). The message was not delivered."
         + _format_terminal_failure_tail(last_nonempty)
     )
 
@@ -4748,6 +4804,8 @@ def _tool_relay_handler_factory(
     :returns: A concrete :class:`BaseHTTPRequestHandler` subclass.
     """
 
+    duet_lock = threading.Lock()
+
     class _ToolRelayHandler(BaseHTTPRequestHandler):
         """HTTP handler for active Omnigent tool relay calls."""
 
@@ -4795,7 +4853,60 @@ def _tool_relay_handler_factory(
                 return
             if not isinstance(arguments, dict):
                 arguments = {}
-            self._send_json(_run_relay_tool(tool_executor, loop, name, arguments))
+            result = _run_relay_tool(tool_executor, loop, name, arguments)
+            self._deliver_duet(result, hook=False, enabled=name != "sys_duet_inbox")
+
+        def _deliver_duet(
+            self, output: dict[str, Any] | None, *, hook: bool, enabled: bool
+        ) -> None:
+            """Attach notes at a tool boundary; retry later if the handoff fails."""
+            from omnigent import duet_delivery
+
+            acquired = bool(enabled and policy_client and session_id and duet_lock.acquire(False))
+            try:
+                pending_notes: list[dict[str, Any]] = []
+                if acquired:
+                    assert policy_client is not None and session_id is not None
+                    future = asyncio.run_coroutine_threadsafe(
+                        duet_delivery.pending(policy_client, session_id),
+                        loop,  # type: ignore[arg-type]
+                    )
+                    try:
+                        pending_notes = future.result(timeout=1.5)
+                    except Exception:  # noqa: BLE001 - tool completion must remain nonblocking.
+                        future.cancel()
+                    if hook:
+                        output = duet_delivery.append_to_post_tool_hook(output, pending_notes)
+                    elif pending_notes:
+                        extra = duet_delivery.append_to_post_tool_hook(None, pending_notes)
+                        assert output is not None and extra is not None
+                        output.setdefault("content", []).append(
+                            {
+                                "type": "text",
+                                "text": extra["hookSpecificOutput"]["additionalContext"],
+                            }
+                        )
+                if hook:
+                    self._respond_hook_output(output)
+                else:
+                    self._send_json(output or {})
+                if pending_notes:
+                    assert policy_client is not None and session_id is not None
+                    future = asyncio.run_coroutine_threadsafe(
+                        duet_delivery.acknowledge(
+                            policy_client,
+                            session_id,
+                            [str(note["id"]) for note in pending_notes],
+                        ),
+                        loop,
+                    )
+                    try:
+                        future.result(timeout=1.5)
+                    except Exception:  # noqa: BLE001 - queued notes can be retried.
+                        future.cancel()
+            finally:
+                if acquired:
+                    duet_lock.release()
 
         def _respond_hook_output(self, output: dict[str, object] | None) -> None:
             """Answer a hook-evaluate request with final hook output JSON.
@@ -4878,7 +4989,11 @@ def _tool_relay_handler_factory(
             if not isinstance(verdict, dict) or not verdict.get("result"):
                 self._respond_hook_output(fail_ask_hook_output(hook_event, last_error))
                 return
-            self._respond_hook_output(evaluation_response_to_hook_output(hook_event, verdict))
+            self._deliver_duet(
+                evaluation_response_to_hook_output(hook_event, verdict),
+                hook=True,
+                enabled=hook_event == "PostToolUse",
+            )
 
         def _handle_policy_evaluate(self, payload: _JsonObject) -> None:
             if policy_client is None or session_id is None:

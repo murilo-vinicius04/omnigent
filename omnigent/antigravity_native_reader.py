@@ -1591,7 +1591,8 @@ async def _check_task_wait_timeout(
     now: float | None = None,
 ) -> bool:
     """
-    Close turn with a warning if tasks are in flight and no new step has arrived for OMNIGENT_AGY_TASK_WAIT_TIMEOUT.
+    Close turn with a warning if tasks are in flight and no new step has arrived
+    for OMNIGENT_AGY_TASK_WAIT_TIMEOUT.
 
     :returns: ``True`` when the turn was closed due to a timeout.
     """
@@ -1827,7 +1828,7 @@ async def _process_committed_step(
     cascade_id: str,
     state: _ReaderState,
     on_pending_interaction: OnPendingInteraction,
-) -> None:
+) -> bool:
     """
     Emit one step's committed items + status edges + interaction (poll path).
 

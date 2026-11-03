@@ -1,6 +1,34 @@
 {
   "components": {
     "schemas": {
+      "AcquireIn": {
+        "description": "Body of `POST /resources/{name}/acquire`.",
+        "properties": {
+          "purpose": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Purpose",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "ttl_minutes": {
+            "default": 30,
+            "format": "int64",
+            "maximum": 240.0,
+            "minimum": 1.0,
+            "title": "Ttl Minutes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "AcquireIn",
+        "type": "object"
+      },
       "AddCommentRequest": {
         "description": "Request body for `POST /sessions/{id}/comments`.",
         "properties": {
@@ -1222,6 +1250,9 @@
                 "type": "integer"
               },
               {
+                "type": "string"
+              },
+              {
                 "type": "null"
               }
             ],
@@ -1658,6 +1689,61 @@
           "day"
         ],
         "title": "DailyCost",
+        "type": "object"
+      },
+      "DuetAck": {
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "title": "DuetAck",
+        "type": "object"
+      },
+      "DuetSay": {
+        "description": "Body of `POST /duet/say`.",
+        "properties": {
+          "from_session_id": {
+            "title": "From Session Id",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 6000,
+            "title": "Text",
+            "type": "string"
+          },
+          "to": {
+            "default": "",
+            "maxLength": 200,
+            "title": "To",
+            "type": "string"
+          },
+          "topic": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Topic",
+            "type": "string"
+          },
+          "urgency": {
+            "default": "normal",
+            "pattern": "^(normal|urgent)$",
+            "title": "Urgency",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_session_id",
+          "text"
+        ],
+        "title": "DuetSay",
         "type": "object"
       },
       "ElicitationRequestEvent": {
@@ -2850,6 +2936,40 @@
         "title": "HostRenameIn",
         "type": "object"
       },
+      "HostUpdateIn": {
+        "description": "Body of `POST /hosts/{id}/update`.",
+        "properties": {
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          }
+        },
+        "title": "HostUpdateIn",
+        "type": "object"
+      },
+      "HubBriefIn": {
+        "description": "Their own brief and to-do list for a project.",
+        "properties": {
+          "brief": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Brief",
+            "type": "string"
+          },
+          "brief_todos": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 100,
+            "title": "Brief Todos",
+            "type": "array"
+          }
+        },
+        "title": "HubBriefIn",
+        "type": "object"
+      },
       "HubChatIn": {
         "description": "A chat to put in a project.",
         "properties": {
@@ -2950,6 +3070,11 @@
             "maxLength": 32,
             "title": "Effort",
             "type": "string"
+          },
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
           },
           "model": {
             "default": "",
@@ -4874,6 +4999,34 @@
           "delta"
         ],
         "title": "ReasoningTextDeltaEvent",
+        "type": "object"
+      },
+      "ReleaseIn": {
+        "description": "Body of `POST /resources/{name}/release`.",
+        "properties": {
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "yield_to_next": {
+            "default": false,
+            "title": "Yield To Next",
+            "type": "boolean"
+          }
+        },
+        "title": "ReleaseIn",
         "type": "object"
       },
       "ResetSessionModelOverrideRequest": {
@@ -10126,6 +10279,46 @@
         "summary": "Branding Logo"
       }
     },
+    "/v1/code/bundle": {
+      "get": {
+        "description": "Download the source tree this server runs, for a host to apply.",
+        "operationId": "code_bundle_download_v1_code_bundle_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Code Bundle Download",
+        "tags": [
+          "code"
+        ]
+      }
+    },
+    "/v1/code/update-script": {
+      "get": {
+        "description": "Serve the standalone script that syncs a host too old to update itself.",
+        "operationId": "code_update_script_v1_code_update_script_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Code Update Script",
+        "tags": [
+          "code"
+        ]
+      }
+    },
     "/v1/discussion/{session_id}": {
       "get": {
         "description": "Return what the companion for this session knows.",
@@ -10525,6 +10718,221 @@
         "summary": "Discussion Route",
         "tags": [
           "discussion"
+        ]
+      }
+    },
+    "/v1/duet/activity": {
+      "get": {
+        "description": "Show notes between sessions the viewer can read, without consuming them.",
+        "operationId": "activity_v1_duet_activity_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Activity V1 Duet Activity Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Activity",
+        "tags": [
+          "duet"
+        ]
+      }
+    },
+    "/v1/duet/inbox/{session_id}": {
+      "get": {
+        "description": "Return and clear a lane's queued notes.",
+        "operationId": "inbox_v1_duet_inbox__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Inbox V1 Duet Inbox  Session Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inbox",
+        "tags": [
+          "duet"
+        ]
+      }
+    },
+    "/v1/duet/pending/{session_id}": {
+      "get": {
+        "description": "Peek at a bounded batch for delivery to the session's runner.",
+        "operationId": "pending_v1_duet_pending__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pending V1 Duet Pending  Session Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pending",
+        "tags": [
+          "duet"
+        ]
+      }
+    },
+    "/v1/duet/pending/{session_id}/ack": {
+      "post": {
+        "description": "Acknowledge notes only after their content was handed to the runner hook.",
+        "operationId": "acknowledge_v1_duet_pending__session_id__ack_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DuetAck"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Acknowledge V1 Duet Pending  Session Id  Ack Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Acknowledge",
+        "tags": [
+          "duet"
+        ]
+      }
+    },
+    "/v1/duet/say": {
+      "post": {
+        "description": "Route a volunteered note to the lanes worth telling.\n\n**Returns:** Where the note went and how (`queue` or `wake`), or why it went nowhere.",
+        "operationId": "say_v1_duet_say_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DuetSay"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Say V1 Duet Say Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Say",
+        "tags": [
+          "duet"
         ]
       }
     },
@@ -11621,6 +12029,70 @@
         ]
       }
     },
+    "/v1/hosts/{host_id}/update": {
+      "post": {
+        "description": "Ask a connected host to replace its source tree with this server's.\n\nThe host downloads the bundle, applies it, then restarts itself; it refuses\nwhile runners are alive unless `force` is set. The outcome shows up under\n`update.last` in `GET /v1/hosts`.\n\n**Returns:** `{\"request_id\": ...}` once the request is on its way.\n\n**Raises**\n\n- `HTTPException` \u2014 404 unknown host, 403 not yours, 409 host offline.",
+        "operationId": "update_host_v1_hosts__host_id__update_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "title": "Host Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/HostUpdateIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Update Host V1 Hosts  Host Id  Update Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Host",
+        "tags": [
+          "hosts"
+        ]
+      }
+    },
     "/v1/hosts/{host_id}/worktrees": {
       "get": {
         "description": "List the git worktrees of a repository on a host.\n\nUsed by the Web UI's new-session worktree picker to show the\nworktrees a session can start in directly. Owner-scoped exactly\nlike the filesystem browse endpoints; NOT scoped to a session.\nA path that is not a git repository is reported as 400 so the\npicker can quietly fall back to \"no worktrees\".\n\n**Returns:** `{\"object\": \"list\", \"data\": [{path, branch, is_main, detached}, ...]}` (main first).\n\n**Raises**\n\n- `HTTPException` \u2014 404 if host not found, 403 if not owned by caller, 409 if host is offline/unresponsive, 400 on path validation or a non-git path.",
@@ -12172,6 +12644,149 @@
           }
         },
         "summary": "Hub Rename Project",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
+    "/v1/hub/projects/{project_id}/brief": {
+      "get": {
+        "description": "The project's brief: what it is, where it stands, recent progress, to-dos.",
+        "operationId": "hub_project_brief_v1_hub_projects__project_id__brief_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Project Brief V1 Hub Projects  Project Id  Brief Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hub Project Brief",
+        "tags": [
+          "hub"
+        ]
+      },
+      "patch": {
+        "description": "Keep their own brief and to-do list for the project.",
+        "operationId": "hub_save_brief_v1_hub_projects__project_id__brief_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HubBriefIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Save Brief V1 Hub Projects  Project Id  Brief Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hub Save Brief",
+        "tags": [
+          "hub"
+        ]
+      }
+    },
+    "/v1/hub/projects/{project_id}/brief/refresh": {
+      "post": {
+        "description": "Have the companion write the project's brief now, from what it last reported.",
+        "operationId": "hub_refresh_brief_v1_hub_projects__project_id__brief_refresh_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hub Refresh Brief V1 Hub Projects  Project Id  Brief Refresh Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hub Refresh Brief",
         "tags": [
           "hub"
         ]
@@ -13322,6 +13937,185 @@
         "summary": "Update Project",
         "tags": [
           "projects"
+        ]
+      }
+    },
+    "/v1/resources": {
+      "get": {
+        "description": "List every shared resource with its holder and queue.",
+        "operationId": "list_resources_v1_resources_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Resources V1 Resources Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Resources",
+        "tags": [
+          "resources"
+        ]
+      }
+    },
+    "/v1/resources/{name}": {
+      "get": {
+        "description": "Show one resource.",
+        "operationId": "get_resource_v1_resources__name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Resource V1 Resources  Name  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Resource",
+        "tags": [
+          "resources"
+        ]
+      }
+    },
+    "/v1/resources/{name}/acquire": {
+      "post": {
+        "description": "Claim a resource for a lane, renew or confirm its claim, or queue it.",
+        "operationId": "acquire_v1_resources__name__acquire_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcquireIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Acquire V1 Resources  Name  Acquire Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Acquire",
+        "tags": [
+          "resources"
+        ]
+      }
+    },
+    "/v1/resources/{name}/release": {
+      "post": {
+        "description": "Give a resource up or leave its queue; `force` lets a person free it.",
+        "operationId": "release_v1_resources__name__release_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReleaseIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Release V1 Resources  Name  Release Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Release",
+        "tags": [
+          "resources"
         ]
       }
     },

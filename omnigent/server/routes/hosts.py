@@ -19,12 +19,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+import socket
 from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
+from omnigent import code_version
 from omnigent.db.utils import now_epoch
 from omnigent.debug_logging import add_audit_attrs
 from omnigent.entities import Conversation
@@ -38,6 +40,7 @@ from omnigent.host.frames import (
     HostLaunchRunnerFrame,
     HostListDirFrame,
     HostStoreSecretFrame,
+    HostUpdateFrame,
     encode_host_frame,
     optional_str_bool_map,
 )
@@ -68,6 +71,12 @@ _logger = logging.getLogger(__name__)
 class HostEnrollmentIn(BaseModel):
     host_id: UUID
     name: str = Field(min_length=1, max_length=64, pattern=r"^\S(?:.*\S)?$")
+
+
+class HostUpdateIn(BaseModel):
+    """Body of ``POST /hosts/{id}/update``."""
+
+    force: bool = False
 
 
 class HostRenameIn(BaseModel):
@@ -650,6 +659,38 @@ def create_hosts_router(
         except TimeoutError as exc:
             raise HTTPException(status_code=504, detail="machine did not answer") from exc
 
+    @router.post("/hosts/{host_id}/update", status_code=202)
+    async def update_host(
+        request: Request, host_id: str, body: HostUpdateIn | None = None
+    ) -> dict[str, str]:
+        """Ask a connected host to replace its source tree with this server's.
+
+        The host downloads the bundle, applies it, then restarts itself; it refuses
+        while runners are alive unless ``force`` is set. The outcome shows up under
+        ``update.last`` in ``GET /v1/hosts``.
+
+        :returns: ``{"request_id": ...}`` once the request is on its way.
+        :raises HTTPException: 404 unknown host, 403 not yours, 409 host offline.
+        """
+        user_id = require_user(request, auth_provider)
+        host = await asyncio.to_thread(host_store.get_host, host_id)
+        if host is None:
+            raise HTTPException(status_code=404, detail="host not found")
+        if user_id is not None and host.user_id != user_id:
+            raise HTTPException(status_code=403, detail="not your host")
+        conn = host_registry.get(host.host_id)
+        if conn is None:
+            raise HTTPException(status_code=409, detail="host is offline")
+        request_id = secrets.token_hex(8)
+        frame = HostUpdateFrame(
+            request_id=request_id, bundle_path="/v1/code/bundle", force=bool(body and body.force)
+        )
+        try:
+            host_registry.send_text(conn, encode_host_frame(frame))
+        except ConnectionError as exc:
+            raise HTTPException(status_code=502, detail="host connection lost") from exc
+        return {"request_id": request_id}
+
     @router.patch("/hosts/{host_id}")
     async def rename_host(request: Request, host_id: str, body: HostRenameIn):
         from omnigent.server.routes._host_launch import resolve_host_owner
@@ -680,6 +721,24 @@ def create_hosts_router(
             raise HTTPException(status_code=409, detail="disconnect the external machine first")
         await asyncio.to_thread(host_store.delete_host, host_id)
         return {"deleted": True}
+
+    async def _code_fields(host_id: str, name: str) -> dict[str, Any]:
+        """Source-tree version the host runs and whether it matches the server's."""
+        loaded, disk = await asyncio.to_thread(
+            lambda: (code_version.loaded(), code_version.on_disk())
+        )
+        reported = host_registry.code_info(host_id)
+        server = disk or loaded
+        return {
+            "code": reported,
+            "update": {
+                "state": code_version.update_state(reported, loaded=loaded, disk=disk),
+                "server_label": server.label if server else None,
+                "last": host_registry.update_result(host_id),
+                # The host runs on this server's own machine, so a restart is all it needs.
+                "same_machine": name.lower() == socket.gethostname().lower(),
+            },
+        }
 
     @router.get("/hosts")
     async def list_hosts(request: Request) -> dict[str, list[dict[str, Any]]]:
@@ -736,6 +795,7 @@ def create_hosts_router(
                     # emitted as-is so a client can tell "unknown" from "not
                     # gateway-backed".
                     "gateway_inference": host_registry.gateway_inference(host.host_id),
+                    **await _code_fields(host.host_id, host.name),
                 }
             )
         return {"hosts": result}
@@ -778,6 +838,7 @@ def create_hosts_router(
             # Same semantics as list_hosts: reported on connect and held in
             # memory, so ``None`` is "no report on this replica yet".
             "gateway_inference": host_registry.gateway_inference(host.host_id),
+            **await _code_fields(host.host_id, host.name),
             "runners": [],
         }
 

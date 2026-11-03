@@ -603,6 +603,23 @@ describe("Sidebar session list", () => {
     expect(visible()).toEqual({ owned: false, shared: false, archived: true });
   });
 
+  it("names the owner on shared rows and stays silent on owned rows", () => {
+    // A shared row must visually say whose it is; an owned row carries no
+    // chip (viewer id resolves null in tests, so any non-null owner reads
+    // as shared).
+    mockConversations([
+      conv("conv_mine", "Claude Code"),
+      conv("conv_shared", "Claude Code", { owner: "hipolito" }),
+    ]);
+    renderSidebar();
+    selectSessionFilter("all");
+
+    const chip = screen.getByTestId("session-owner-chip");
+    expect(chip).toHaveTextContent("hipolito");
+    expect(chip).toHaveAttribute("title", "Shared by hipolito");
+    expect(screen.getAllByTestId("session-owner-chip")).toHaveLength(1);
+  });
+
   it("keeps the filter menu reachable when the chosen filter matches nothing", () => {
     // The filter lives on the Sessions header. Hiding that header on an empty
     // slice would strand the viewer on, say, Archived with no way back.

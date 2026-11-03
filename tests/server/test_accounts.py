@@ -2074,3 +2074,25 @@ def test_cli_login_with_issue_refresh_issues_grant(accounts_app: TestClient) -> 
     assert "access_token" in refresh_body
     # Login grants don't rotate — same token is returned.
     assert refresh_body["refresh_token"] == refresh_token
+
+
+def test_local_admin_follows_the_pinned_username_among_several_admins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The loopback CLI login goes to the pinned admin, not whichever row lists first.
+
+    The host re-reads that login on every reconnect, so a different admin there
+    gets it refused with a 409 and exits.
+    """
+    from types import SimpleNamespace
+
+    from omnigent.server import accounts_bootstrap
+
+    admins = [
+        SimpleNamespace(id=name, is_admin=True, has_password=True)
+        for name in ("hipolito", "morys5")
+    ]
+    store = SimpleNamespace(list_users=lambda: admins)
+    monkeypatch.setenv("OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME", "morys5")
+
+    assert accounts_bootstrap._local_admin_username(store) == "morys5"  # type: ignore[arg-type]

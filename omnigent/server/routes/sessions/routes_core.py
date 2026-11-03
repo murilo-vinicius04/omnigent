@@ -3105,10 +3105,13 @@ def register_core_routes(
             elif wrapper == "codex-native-ui":
                 lane_args = ["--dangerously-bypass-approvals-and-sandbox"]
             if lane_args is not None:
-                updated = await asyncio.to_thread(
-                    conversation_store.update_conversation,
-                    session_id,
-                    terminal_launch_args=lane_args,
+                updated = (
+                    await asyncio.to_thread(
+                        conversation_store.update_conversation,
+                        session_id,
+                        terminal_launch_args=lane_args,
+                    )
+                    or updated
                 )
 
         # The catalog cache is keyed by session, not harness family, and

@@ -5,11 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-
-import httpx
 from dataclasses import replace
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi import FastAPI
 
@@ -169,6 +168,15 @@ def test_the_checkouts_a_lane_writes_in_are_found_from_its_paths(tmp_path) -> No
     assert hub_lanes.repo_root(str(tmp_path)) is None
 
 
+def test_duet_brief_asks_for_collaboration_and_handles_missing_resource_tools() -> None:
+    brief = hub_lanes.DUET_LINE
+    assert "ask for help" in brief
+    assert "answer relevant questions" in brief
+    assert "If the resource tools or the board are unavailable" in brief
+    assert "do not command shared physical hardware" in brief
+    assert "not proof" in brief
+
+
 def test_a_new_lanes_brief_names_the_busy_lanes_and_their_checkouts() -> None:
     alone = hub_lanes.brief("RAL", "joystick plan", [])
     beside = hub_lanes.brief(
@@ -177,8 +185,9 @@ def test_a_new_lanes_brief_names_the_busy_lanes_and_their_checkouts() -> None:
         [BusyLane(name="RAL · sim", task="tune the MPC gains", repos=("/home/u/spot-teleop",))],
     )
 
-    assert (
-        alone == "[The hub opened this chat as a new lane of the project RAL, for: joystick plan.]"
+    assert alone == (
+        "[The hub opened this chat as a new lane of the project RAL, for: joystick plan.]\n"
+        + hub_lanes.DUET_LINE
     )
     assert '- RAL · sim on "tune the MPC gains"; writing in /home/u/spot-teleop' in beside
     assert "branch (hub/joystick-plan)" in beside
@@ -454,7 +463,9 @@ async def test_new_work_beside_a_busy_lane_opens_a_lane_on_the_routers_pick(
     assert spec.like == SIM and spec.branch == ""
     # The request goes first, then the brief; the hub chat quotes only the request.
     ((sent_to, text),) = server.sent
-    assert sent_to == NEW and text.startswith("abre outra frente pra planejar o joystick\n\n")
+    # The request to open the lane is the hub's: the new agent gets the task only.
+    assert sent_to == NEW and text.startswith("Plan the joystick work.\n\n")
+    assert "abre outra frente" not in text
     assert "Plan the joystick work.\n\n[The hub opened" in text
     assert f"writing in {repo}" in text
     lane, sent = hub.state.entries[-2:]
@@ -466,7 +477,7 @@ async def test_new_work_beside_a_busy_lane_opens_a_lane_on_the_routers_pick(
     assert lane.text.startswith("New lane: joystick plan, on Codex · gpt-6-luna · high.")
     assert (sent.kind, sent.detail, sent.text) == (
         "sent",
-        _their_words("abre outra frente pra planejar o joystick", "Plan the joystick work."),
+        "Plan the joystick work.",
         "Abri uma frente nova no amarras.",
     )
     # Judged once, logged once, beside what the lane runs on.
@@ -541,7 +552,8 @@ async def test_no_lane_opens_when_no_provider_has_budget_for_its_tier(
     (_, spec), *_ = server.opened
     assert (spec.topic, spec.run.provider, spec.run.model) == ("docs", "claude", "sonnet")
     assert spec.run.reason == "You asked for Sonnet. Claude: today's budget is spent."
-    assert server.sent and server.sent[-1][1].startswith("abre uma frente pra doc")
+    assert server.sent and server.sent[-1][1].startswith("Write docs.")
+    assert "abre uma frente" not in server.sent[-1][1]
 
 
 async def test_a_tier_nobody_has_room_for_moves_to_the_nearest_that_has(
@@ -848,9 +860,7 @@ async def test_a_busy_lane_with_more_paths_than_the_endpoint_takes_still_opens(t
     )
     await hub.close()
 
-    assert server.opened and all(
-        len(payload.get("paths", [])) <= 100 for _, payload in inspected
-    )
+    assert server.opened and all(len(payload.get("paths", [])) <= 100 for _, payload in inspected)
 
 
 async def test_a_rejected_inspect_names_the_status_instead_of_crying_offline(tmp_path) -> None:
@@ -863,9 +873,7 @@ async def test_a_rejected_inspect_names_the_status_instead_of_crying_offline(tmp
 
     async def inspect_host(host_id, payload):
         request = httpx.Request("POST", f"http://hub/v1/hosts/{host_id}/inspect")
-        response = httpx.Response(
-            422, json={"detail": "paths: too many items"}, request=request
-        )
+        response = httpx.Response(422, json={"detail": "paths: too many items"}, request=request)
         raise httpx.HTTPStatusError("422", request=request, response=response)
 
     hub.bind(replace(hub.require_backend(), inspect_host=inspect_host))
@@ -958,7 +966,10 @@ async def test_every_idle_lane_closes_even_the_newest(tmp_path) -> None:
     server = _LaneServer()
     _two_lanes(server, sim="idle")
     now = time.time()
-    old, older = now - hub_module.AUTO_CLOSE_IDLE_S - 3600.0, now - hub_module.AUTO_CLOSE_IDLE_S - 7200.0
+    old, older = (
+        now - hub_module.AUTO_CLOSE_IDLE_S - 3600.0,
+        now - hub_module.AUTO_CLOSE_IDLE_S - 7200.0,
+    )
     server.sessions = [
         replace(s, updated_at=older, status="idle")
         if s.id == SIM
@@ -1185,7 +1196,7 @@ async def test_a_lane_name_the_router_cannot_give_is_the_requests_start(
     await hub.close()
 
     _, spec = server.opened[0]
-    assert spec.topic == "abre uma frente pros docs"
+    assert spec.topic == "Write the docs for the API."
 
 
 class _NamingRouter(_Router):
@@ -1299,7 +1310,7 @@ async def test_muse_lane_uses_acp_without_a_terminal_or_tier_catalog(tmp_path) -
         await hub.close()
     assert picked.run is not None
     assert picked.run.provider == "muse"
-    assert picked.run.model == "muse-spark-1.3"
+    assert picked.run.model == "muse-spark-1.2"
     assert picked.run.effort == "xhigh"
     assert picked.run.tier == ""
 
@@ -1333,7 +1344,7 @@ async def test_muse_lane_uses_acp_without_a_terminal_or_tier_catalog(tmp_path) -
         hub_module.quota_handoff.PROVIDER_LABEL: "muse",
     }
     assert "terminal_launch_args" not in created[0]
-    assert created[0]["model_override"] == "muse-spark-1.3"
+    assert created[0]["model_override"] == "muse-spark-1.2"
     assert created[0]["reasoning_effort"] == "xhigh"
 
 
@@ -1359,15 +1370,17 @@ def test_newest_means_newest_inside_qualified_muse_envelopes() -> None:
 def test_a_pinned_muse_version_beats_newest_of_the_family() -> None:
     catalog = ["muse-spark-1.2", "muse-spark-1.3"]
     assert hub_lanes.muse_model("Spark", "1.3", catalog) == "muse-spark-1.3"
-    assert hub_lanes.muse_model("Spark", "", catalog) == "muse-spark-1.3"
+    assert hub_lanes.muse_model("Spark", "", catalog) == "muse-spark-1.2"
 
 
 def test_a_pinned_muse_version_missing_from_the_catalog_is_not_silent() -> None:
     assert hub_lanes.muse_model("Spark", "1.3", ["muse-spark-1.2"]) is None
     # Unreachable catalog: trust the pin; the agent validates a manual id.
     assert hub_lanes.muse_model("Spark", "1.3", []) == "muse-spark-1.3"
-    # Unreachable catalog with no pin: the default is Spark 1.3.
-    assert hub_lanes.muse_model("Spark", "", []) == "muse-spark-1.3"
+    # Unreachable catalog with no pin: the default is Spark 1.2.
+    assert hub_lanes.muse_model("Spark", "", []) == "muse-spark-1.2"
+    # Unreachable catalog: a named family still picks its own model, never Spark.
+    assert hub_lanes.muse_model("Wonder", "", []) == "muse-wonder-1.0"
 
 
 async def test_muse_lane_honors_a_pinned_spark_version(tmp_path) -> None:
@@ -1387,6 +1400,47 @@ async def test_muse_lane_honors_a_pinned_spark_version(tmp_path) -> None:
         "muse-spark-1.3",
         "xhigh",
     )
+
+
+async def test_muse_wonder_lane_with_an_unreachable_catalog_does_not_become_spark(
+    tmp_path,
+) -> None:
+    server = _LaneServer()
+    server.catalogs["muse"] = []
+    _two_lanes(server)
+    hub = _hub(tmp_path, _Router(), server)
+    like = server.sessions[-1]
+    project = HubProject(id=P_AMARRAS, name="amarras", chat=like)
+    try:
+        picked = await hub._lane_run(project, like, "Plug the second GPU.", "muse wonder high")
+    finally:
+        await hub.close()
+    assert picked.run is not None
+    assert picked.run.model == "muse-wonder-1.0"
+    assert "muse-wonder-1.0" in picked.run.reason
+
+
+def test_a_named_effort_is_read_from_their_words() -> None:
+    assert hub_lanes.named_effort("muse wonder high") == "high"
+    assert hub_lanes.named_effort("Muse Spark 1.3 XHigh") == "xhigh"
+    assert hub_lanes.named_effort("muse wonder") == ""
+
+
+async def test_muse_lane_carries_the_effort_they_named(tmp_path) -> None:
+    server = _LaneServer()
+    server.catalogs["muse"] = []
+    _two_lanes(server)
+    hub = _hub(tmp_path, _Router(), server)
+    like = server.sessions[-1]
+    project = HubProject(id=P_AMARRAS, name="amarras", chat=like)
+    try:
+        named = await hub._lane_run(project, like, "Plug the second GPU.", "muse wonder high")
+        unnamed = await hub._lane_run(project, like, "Plug the second GPU.", "muse wonder")
+    finally:
+        await hub.close()
+    assert named.run is not None and unnamed.run is not None
+    assert (named.run.model, named.run.effort) == ("muse-wonder-1.0", "high")
+    assert unnamed.run.effort == "xhigh"
 
 
 async def test_muse_lane_stays_pending_when_the_pinned_version_is_missing(

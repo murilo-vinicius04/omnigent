@@ -4139,6 +4139,25 @@ async def test_409_rejection_names_the_self_service_reset_command(
     assert "host reset-id" in message
 
 
+async def test_409_after_connecting_keeps_retrying_instead_of_exiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host that already connected rides out a 409 so live sessions survive.
+
+    The stored login can briefly name another account after a server restart;
+    exiting would tear down every runner, while the login is re-read on each dial.
+    """
+    monkeypatch.setattr("omnigent.host.connect._RECONNECT_BASE_S", 0.0)
+    spy = _ConnectSpy([_invalid_status(409), _invalid_status(409), asyncio.CancelledError()])
+    _patch_connect(monkeypatch, spy)
+    host = _host()
+    host._ever_connected = True
+
+    await host.run()
+
+    assert len(spy.calls) == 3
+
+
 @pytest.mark.parametrize("status", [408, 429, 500, 503])
 async def test_run_reconnects_on_transient_upgrade_failure(
     monkeypatch: pytest.MonkeyPatch, status: int

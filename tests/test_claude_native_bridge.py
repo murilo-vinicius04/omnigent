@@ -3681,7 +3681,7 @@ def test_inject_user_message_raises_when_prompt_never_renders(
         :returns: Fake CompletedProcess; capture-pane returns "".
         """
         del kwargs
-        if "capture-pane" in cmd:
+        if "capture-pane" in cmd or "display-message" in cmd:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         send_keys.append(cmd)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -7521,6 +7521,92 @@ def test_wait_for_claude_prompt_ready_reports_empty_capture_count(
     assert "Last terminal output:" not in message
 
 
+def test_draft_in_input_box_sees_draft_below_empty_glyph_row() -> None:
+    """
+    A draft rendered under an empty ``❯`` row still counts as unsent.
+
+    Reading only the glyph row made the submit verifier report "no draft",
+    so a swallowed Enter went unretried and the message was silently lost.
+
+    :returns: None.
+    """
+    rule = "─" * 40
+    pane = (
+        "  Next step: want me to start it?\n\n"
+        f"{rule}\n❯\u00a0\n  man, but you change your answer every single time\n\n{rule}\n\n"
+        "  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+    )
+    assert claude_native_bridge._draft_in_input_box(pane, "man, but you change your answer")
+    sent = f"{rule}\n❯\u00a0\n{rule}\n\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+    assert not claude_native_bridge._draft_in_input_box(sent, "man, but you change your answer")
+
+
+def test_inject_user_message_drops_blank_lines_before_the_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A leading newline in the content never reaches the composer.
+
+    It renders the draft under an empty ``❯`` row, where a swallowed submit
+    Enter went unnoticed.
+
+    :param tmp_path: Pytest temp dir.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :returns: None.
+    """
+    monkeypatch.setattr("omnigent.claude_native_bridge._TRUSTED_PARENT", tmp_path)
+    bridge_dir = tmp_path / "bridge"
+    write_tmux_target(
+        bridge_dir, socket_path=Path("/tmp/example/tmux.sock"), tmux_target="claude:0.0"
+    )
+    pasted: list[bytes] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+        """
+        Record the pasted bytes and report a ready, empty composer.
+
+        :param cmd: Argv list passed to subprocess.run.
+        :param kwargs: Subprocess kwargs (ignored).
+        :returns: Fake CompletedProcess.
+        """
+        del kwargs
+        if "load-buffer" in cmd:
+            pasted.append(Path(cmd[-1]).read_bytes())
+        if "capture-pane" in cmd:
+            rule = "─" * 20
+            return SimpleNamespace(returncode=0, stdout=f"{rule}\n❯ \n{rule}\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("omnigent.claude_native_bridge._PASTE_COMMIT_TIMEOUT_S", 0.0)
+    inject_user_message(bridge_dir, content="\n\n  \nhello there", timeout_s=0.3)
+    assert pasted == [b"hello there\r"]
+
+
+def test_wait_for_claude_prompt_ready_timeout_reports_pane_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The timeout error names the pane size, exposing a shrunken terminal.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :returns: None.
+    """
+    monkeypatch.setattr(
+        "omnigent.claude_native_bridge._capture_pane",
+        lambda socket_path, tmux_target: "handles\nmost\ntasks",
+    )
+    monkeypatch.setattr(
+        "omnigent.claude_native_bridge._pane_size",
+        lambda socket_path, tmux_target: "7x24",
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        claude_native_bridge._wait_for_claude_prompt_ready(
+            "/tmp/example/tmux.sock", "claude:0.0", timeout_s=0.0
+        )
+    assert "pane size 7x24" in str(excinfo.value)
+
+
 def test_wait_for_claude_prompt_ready_tail_is_observed_not_recaptured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -9072,6 +9158,126 @@ async def test_hook_evaluate_endpoint_allows(
         assert "OMNIGENT_RELAY_URL=" in env_text and "OMNIGENT_RELAY_TOKEN=" in env_text
     finally:
         relay.close()
+
+
+@pytest.mark.asyncio
+async def test_post_tool_hook_delivers_and_acknowledges_duet_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live relay adds notes to a normal tool result before acknowledging."""
+    import threading
+
+    import httpx
+
+    class Client:
+        def __init__(self) -> None:
+            self.acknowledged = threading.Event()
+
+        async def get(self, url: str, **kwargs: object) -> httpx.Response:
+            assert url == "/v1/duet/pending/conv_hook_eval"
+            return httpx.Response(
+                200,
+                request=httpx.Request("GET", "http://test" + url),
+                json={"notes": [{"id": "n1", "text": "peer update", "created_at": 1}]},
+            )
+
+        async def post(self, url: str, **kwargs: object) -> httpx.Response:
+            request = httpx.Request("POST", "http://test" + url)
+            if url.endswith("/ack"):
+                assert kwargs["json"] == {"ids": ["n1"]}
+                self.acknowledged.set()
+                return httpx.Response(200, request=request, json={"ok": True})
+            return httpx.Response(200, request=request, json={"result": "POLICY_ACTION_ALLOW"})
+
+    client = Client()
+    relay, bridge_dir = _hook_relay(tmp_path, monkeypatch, client)
+    try:
+        body = await asyncio.to_thread(
+            _relay_request_raw,
+            bridge_dir,
+            "/hook/claude/evaluate-policy",
+            {
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Bash",
+                "tool_input": {},
+                "tool_response": "ok",
+            },
+        )
+        assert "peer update" in json.loads(body)["hookSpecificOutput"]["additionalContext"]
+        assert await asyncio.to_thread(client.acknowledged.wait, 3)
+        client.acknowledged.clear()
+        body = await asyncio.to_thread(
+            _relay_request_raw, bridge_dir, "/tool", {"name": "sys_os_shell", "arguments": {}}
+        )
+        assert "peer update" in json.loads(body)["content"][-1]["text"]
+        assert await asyncio.to_thread(client.acknowledged.wait, 3)
+    finally:
+        relay.close()
+
+
+@pytest.mark.asyncio
+async def test_duet_note_flows_from_router_into_native_tool_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise the real route, queue and hook relay without a running model."""
+    import httpx
+    from fastapi import FastAPI
+
+    from omnigent.server.duet_router import DuetStore
+    from omnigent.server.routes.duet import create_duet_router
+
+    class Conversations:
+        rows = [
+            SimpleNamespace(
+                id="sender", title="Sender", project_id=None, workspace="/w", live_status="running"
+            ),
+            SimpleNamespace(
+                id="conv_hook_eval",
+                title="Receiver",
+                project_id=None,
+                workspace="/w",
+                live_status="running",
+            ),
+        ]
+
+        def list_conversations(self, **kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(data=self.rows, has_more=False, last_id=None)
+
+        def get_conversation(self, session_id: str) -> object:
+            return next((r for r in self.rows if r.id == session_id), None)
+
+    app = FastAPI()
+    app.include_router(
+        create_duet_router(Conversations(), store=DuetStore(tmp_path / "notes.json")),  # type: ignore[arg-type]
+        prefix="/v1",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        result = await client.post(
+            "/v1/duet/say",
+            json={
+                "from_session_id": "sender",
+                "to": "conv_hook_eval",
+                "text": "hello from sender",
+            },
+        )
+        assert result.json()["routed"]
+        relay, bridge_dir = _hook_relay(tmp_path, monkeypatch, client)
+        try:
+            body = await asyncio.to_thread(
+                _relay_request_raw, bridge_dir, "/tool", {"name": "sys_os_shell", "arguments": {}}
+            )
+            assert "hello from sender" in json.loads(body)["content"][-1]["text"]
+            for _ in range(20):
+                if not (await client.get("/v1/duet/pending/conv_hook_eval")).json()["notes"]:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                pytest.fail("delivered note was not acknowledged")
+        finally:
+            relay.close()
 
 
 @pytest.mark.asyncio

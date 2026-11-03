@@ -192,8 +192,27 @@ def _main_evaluate_policy(argv: list[str]) -> int:
         return _fail_closed()
 
     hook_output = evaluation_response_to_hook_output(hook_event, eval_response)
+    pending_notes: list[dict[str, object]] = []
+    delivery_url = ""
+    delivery_headers: dict[str, str] = {}
+    from omnigent import duet_delivery
+
+    if hook_event == "PostToolUse":
+        delivery_config = read_policy_hook_config(bridge_dir) or {}
+        delivery_url = str(delivery_config.get("ap_server_url") or "")
+        raw_delivery_headers = delivery_config.get("ap_auth_headers")
+        if isinstance(raw_delivery_headers, dict):
+            delivery_headers = {str(k): str(v) for k, v in raw_delivery_headers.items()}
+        if delivery_url:
+            pending_notes = duet_delivery.pending_sync(delivery_url, delivery_headers, session_id)
+            hook_output = duet_delivery.append_to_post_tool_hook(hook_output, pending_notes)
     if hook_output is not None:
         sys.stdout.write(json.dumps(hook_output))
+        sys.stdout.flush()
+    if pending_notes:
+        duet_delivery.acknowledge_sync(
+            delivery_url, delivery_headers, session_id, [str(note["id"]) for note in pending_notes]
+        )
     return 0
 
 

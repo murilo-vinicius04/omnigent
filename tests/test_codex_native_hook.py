@@ -480,6 +480,39 @@ def test_post_tool_use_fails_open_on_error(
     assert captured.out == ""
 
 
+def test_post_tool_use_delivers_pending_duet_note(
+    bridge_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from omnigent import duet_delivery
+
+    write_policy_hook_config(bridge_dir, ap_server_url="http://server", ap_auth_headers={})
+    monkeypatch.setattr(
+        codex_native_hook,
+        "post_evaluate_with_retry",
+        lambda *a, **k: (httpx.Response(200, json={"result": "POLICY_ACTION_ALLOW"}), None),
+    )
+    monkeypatch.setattr(
+        duet_delivery,
+        "pending_sync",
+        lambda *_: [{"id": "n1", "text": "peer update", "created_at": 1}],
+    )
+    calls = []
+    monkeypatch.setattr(duet_delivery, "acknowledge_sync", lambda *args: calls.append(args))
+    _run_hook(
+        bridge_dir,
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": {},
+            "tool_output": "ok",
+        },
+        monkeypatch,
+    )
+    output = json.loads(capsys.readouterr().out)
+    assert "peer update" in output["hookSpecificOutput"]["additionalContext"]
+    assert calls[0][2:] == ("conv_active", ["n1"])
+
+
 def test_pre_tool_use_uses_relay_when_tool_relay_json_has_session_id(
     bridge_dir: Path,
     monkeypatch: pytest.MonkeyPatch,

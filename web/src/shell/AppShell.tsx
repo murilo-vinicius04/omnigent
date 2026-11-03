@@ -1,4 +1,5 @@
 import { HubMachineDialog } from "./HubMachineDialog";
+import { HostUpdateNotice } from "./HostUpdateNotice";
 import type { HubMachine } from "./HubMachinePicker";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -106,6 +107,7 @@ import { MobilePanelDrawer } from "./MobilePanelDrawer";
 import { isMobileViewport, Sidebar } from "./Sidebar";
 import { VoiceHubStatus } from "./VoiceHubButton";
 import { SidebarHeaderActions } from "./SidebarHeaderActions";
+import { ServerRestartNotice } from "./ServerRestartNotice";
 import { useSettingsRoute } from "./settingsNav";
 import { SubagentsPanel } from "./SubagentsPanel";
 import { useRootSessionId, useSession } from "@/hooks/useSession";
@@ -1975,6 +1977,7 @@ export function AppShell() {
             data-ios-native={isIOSShell() ? "true" : undefined}
             data-android-native={isAndroidShell() ? "true" : undefined}
           >
+            <ServerRestartNotice />
             {/* Frameless-window titlebar stand-in (macOS Electron only): the
           sidebar's electron top margin (see index.css) frees this strip of
           canvas for the traffic lights, and the strip is the window's one
@@ -2142,6 +2145,7 @@ export function AppShell() {
                   className="relative flex min-h-0 min-w-0 flex-1 flex-col"
                   data-shell-header={extensionOwnsHeader ? "hidden" : "visible"}
                 >
+                  <HostUpdateNotice />
                   <Outlet />
                 </main>
 

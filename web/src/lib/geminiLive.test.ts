@@ -753,6 +753,7 @@ describe("startGeminiLive (stubbed)", () => {
       const say = async (ms: number) => {
         for (let t = 0; t < ms; t += 100) {
           worklet.speak();
+          // eslint-disable-next-line no-await-in-loop
           await vi.advanceTimersByTimeAsync(100);
         }
       };
@@ -788,8 +789,10 @@ describe("startGeminiLive (stubbed)", () => {
       await vi.advanceTimersByTimeAsync(2_500);
       socket.emit("message", { data: activity("ACTIVITY_START") });
       for (let i = 0; i < 8; i++) {
+        // eslint-disable-next-line no-await-in-loop
         await say(4_000);
         // Thinking pauses longer than the page's own quiet mark.
+        // eslint-disable-next-line no-await-in-loop
         await vi.advanceTimersByTimeAsync(2_000);
       }
       expect(states).not.toContainEqual(expect.objectContaining({ state: "closed" }));

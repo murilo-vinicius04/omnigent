@@ -35,9 +35,9 @@ from omnigent.host.frames import (
     HostFsResultFrame,
     HostHarnessReadinessFrame,
     HostHelloFrame,
-    HostInspectResultFrame,
     HostImportLocalDoneFrame,
     HostImportLocalSessionFrame,
+    HostInspectResultFrame,
     HostInstallHarnessResultFrame,
     HostLaunchRunnerResultFrame,
     HostListDirResultFrame,
@@ -50,6 +50,7 @@ from omnigent.host.frames import (
     HostStatResultFrame,
     HostStopRunnerResultFrame,
     HostStoreSecretResultFrame,
+    HostUpdateResultFrame,
     decode_host_frame,
     encode_host_frame,
 )
@@ -301,11 +302,12 @@ def create_host_tunnel_router(
             host_registry.record_gateway_inference(host_id, frame.gateway_inference)
             stage = "connected"
             _logger.info(
-                "Host %s connected (version=%s, name=%s, runners=%s)",
+                "Host %s connected (version=%s, name=%s, runners=%s, code=%s)",
                 host_id,
                 frame.version,
                 frame.name,
                 frame.runners,
+                frame.code_label or "unreported",
                 extra=debug_event(
                     "host_tunnel",
                     phase="connected",
@@ -696,6 +698,15 @@ async def _receive_loop(
                         "error": frame.error,
                     }
                 )
+            continue
+
+        if isinstance(frame, HostUpdateResultFrame):
+            host_registry.record_update_result(
+                host_id, frame.status, frame.message, frame.restarting
+            )
+            _logger.info(
+                "Host %s update %s: %s", host_id, frame.status, frame.message or "(no message)"
+            )
             continue
 
         if isinstance(frame, HostCreateDirResultFrame):

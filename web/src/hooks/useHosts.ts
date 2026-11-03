@@ -29,6 +29,20 @@ export interface Host {
    * or server — and must not gate anything away; only an explicit `false` does.
    */
   gateway_inference?: Record<string, boolean> | null;
+  /** Source tree the host loaded; absent/`null` for an older server, or an offline host. */
+  code?: { id: string | null; label: string | null; root: string | null } | null;
+  /**
+   * Whether the host runs the server's code. `state` is `"outdated"` or `"unknown"` (the
+   * host predates version reporting) when it needs an update; `last` is how its latest
+   * update request ended.
+   */
+  update?: {
+    state: "current" | "outdated" | "unknown" | null;
+    server_label: string | null;
+    last: { status: string; message: string; restarting: boolean; at: number } | null;
+    /** The host runs on the server's own machine; a restart is all it needs. */
+    same_machine?: boolean;
+  } | null;
 }
 
 interface HostsResponse {

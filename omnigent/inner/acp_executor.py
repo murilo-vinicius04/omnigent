@@ -272,14 +272,17 @@ if not math.isfinite(_PROMPT_TIMEOUT_SECONDS) or _PROMPT_TIMEOUT_SECONDS <= 0:
     raise ValueError(_PROMPT_TIMEOUT_ERR)
 
 # Idle budget override for Muse Code backends, in seconds. ``muse-code-acp``
-# fronts ``muse serve`` (a whole second agent loop over MSP): long tool /
-# reasoning phases with zero ACP frames are normal there, so a Muse turn gets
-# the *larger* of the generic budget above and this one. Env-overridable;
+# fronts ``muse serve`` (a whole second agent loop over MSP), so short silent
+# phases are normal and a Muse turn gets the *larger* of the generic budget
+# above and this one. But the budget must stay tight: lanes are instructed to
+# run long commands detached (background + log/progress files, short bounded
+# polls), so a turn silent for 10 minutes is stuck, not working — kill it so
+# queued messages get a fresh turn instead of waiting an hour. Env-overridable;
 # parsing is import-time and fail-loud like the generic budget.
 _MUSE_TIMEOUT_ENV = "HARNESS_ACP_MUSE_TIMEOUT_S"
 _MUSE_TIMEOUT_ERR = f"{_MUSE_TIMEOUT_ENV} must be a positive finite number of seconds"
 try:
-    _MUSE_TIMEOUT_SECONDS = float(os.environ.get(_MUSE_TIMEOUT_ENV, "3600"))
+    _MUSE_TIMEOUT_SECONDS = float(os.environ.get(_MUSE_TIMEOUT_ENV, "600"))
 except ValueError as exc:
     raise ValueError(_MUSE_TIMEOUT_ERR) from exc
 if not math.isfinite(_MUSE_TIMEOUT_SECONDS) or _MUSE_TIMEOUT_SECONDS <= 0:

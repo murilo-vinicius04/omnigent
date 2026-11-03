@@ -8846,7 +8846,7 @@ async def _schedule_summary_audio_if_enabled(
     )
     if not speak_it:
         return spoken_summary_part, lambda: None
-    decorated_part = {**spoken_summary_part, "audio_pending": True}
+    decorated_part: dict[str, Any] = {**spoken_summary_part, "audio_pending": True}
 
     def _spawn() -> None:
         _spawn_summary_audio(

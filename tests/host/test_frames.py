@@ -238,6 +238,31 @@ def test_hello_frame_round_trip() -> None:
     assert decoded.runners == ["runner_token_aaa", "runner_token_bbb"]
 
 
+def test_hello_frame_carries_the_code_version_and_older_hosts_omit_it() -> None:
+    """The code version survives the codec, and a hello without it decodes to ``None``."""
+    sent = HostHelloFrame(
+        version="0.1.0",
+        frame_protocol_version=1,
+        name="laptop",
+        code_id="08163d9f3fdb5e6e",
+        code_label="614f4cd8+35",
+        code_root="/home/u/omnigent",
+    )
+    got = decode_host_frame(encode_host_frame(sent))
+    assert isinstance(got, HostHelloFrame)
+    assert (got.code_id, got.code_label, got.code_root) == (
+        "08163d9f3fdb5e6e",
+        "614f4cd8+35",
+        "/home/u/omnigent",
+    )
+
+    old = decode_host_frame(
+        '{"kind": "host.hello", "version": "0.1.0", "frame_protocol_version": 1, "name": "x"}'
+    )
+    assert isinstance(old, HostHelloFrame)
+    assert (old.code_id, old.code_label, old.code_root) == (None, None, None)
+
+
 def test_hello_frame_empty_runners() -> None:
     """
     Verify HostHelloFrame with no runners decodes to an empty list.
@@ -1664,3 +1689,18 @@ def test_fs_result_null_payload_round_trip() -> None:
     assert isinstance(decoded, HostFsResultFrame)
     assert decoded.payload is None
     assert decoded.error_status == 500
+
+
+def test_update_frames_round_trip() -> None:
+    """The update request and its result survive the codec with every field."""
+    from omnigent.host.frames import HostUpdateFrame, HostUpdateResultFrame
+
+    ask = decode_host_frame(
+        encode_host_frame(
+            HostUpdateFrame(request_id="r1", bundle_path="/v1/code/bundle", force=True)
+        )
+    )
+    assert ask == HostUpdateFrame(request_id="r1", bundle_path="/v1/code/bundle", force=True)
+
+    done = HostUpdateResultFrame(request_id="r1", status="ok", message="41 files", restarting=True)
+    assert decode_host_frame(encode_host_frame(done)) == done

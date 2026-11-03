@@ -354,6 +354,7 @@ class HostRegistry:
         # answer) and lost with the process, which is the point — a restarted
         # server re-learns it from the reconnect handshake.
         self._gateway_inference: dict[str, dict[str, bool]] = {}
+        self._update_results: dict[str, dict[str, Any]] = {}
 
     def register(
         self,
@@ -500,6 +501,47 @@ class HostRegistry:
         if conn is None:
             return False
         return conn.hello.telemetry_opt_out
+
+    def record_update_result(
+        self, host_id: str, status: str, message: str, restarting: bool
+    ) -> None:
+        """Remember how the host's last code update ended.
+
+        :param host_id: Host identifier, in any accepted spelling.
+        :param status: ``"ok"``, ``"busy"``, ``"current"`` or ``"failed"``.
+        :param message: What happened, for people.
+        :param restarting: Whether the host is restarting to load the new code.
+        """
+        with self._lock:
+            self._update_results[_canonical_host_id(host_id)] = {
+                "status": status,
+                "message": message,
+                "restarting": restarting,
+                "at": time.time(),
+            }
+
+    def update_result(self, host_id: str) -> dict[str, Any] | None:
+        """Return the host's last update outcome: status, message, restarting, at."""
+        with self._lock:
+            result = self._update_results.get(_canonical_host_id(host_id))
+            return dict(result) if result else None
+
+    def code_info(
+        self, host_id: str, workspace_id: int | None = None
+    ) -> dict[str, str | None] | None:
+        """Return the source-tree version the host reported in its hello frame.
+
+        :param host_id: Host identifier, e.g. ``"host_a1b2c3d4..."``.
+        :param workspace_id: Tenant partition; defaults to
+            :func:`current_workspace_id`.
+        :returns: ``{"id", "label", "root"}`` (each ``None`` for a host that reports none),
+            or ``None`` when the host is not connected to this replica.
+        """
+        conn = self.get(host_id, workspace_id)
+        if conn is None:
+            return None
+        hello = conn.hello
+        return {"id": hello.code_id, "label": hello.code_label, "root": hello.code_root}
 
     def get_host_installation_id(
         self, host_id: str, workspace_id: int | None = None

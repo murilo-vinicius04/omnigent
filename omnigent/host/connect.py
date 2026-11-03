@@ -85,6 +85,7 @@ from omnigent.host.frames import (
     HostStopRunnerResultFrame,
     HostStoreSecretFrame,
     HostStoreSecretResultFrame,
+    HostUpdateFrame,
     decode_host_frame,
     encode_host_frame,
 )
@@ -1517,10 +1518,22 @@ class HostProcess:
             return None
         if status == 404:
             return self._classify_transient_404()
-        if status in (401, 403):
+        # A 409 on a host that already connected means the stored login now names a
+        # different account (e.g. `omni login` as someone else); exiting would kill
+        # every live session, and the login is re-read on each dial, so keep retrying.
+        identity_clash = status == 409 and self._ever_connected
+        if status in (401, 403) or identity_clash:
             # Fresh hosts can race OAuth refresh; connected hosts preserve active sessions.
             self._auth_retry_streak += 1
-            cause = f"Connection refused (HTTP {status}): the host tunnel was rejected."
+            if identity_clash:
+                cause = (
+                    "Connection refused (HTTP 409): this machine is registered to a "
+                    "different account than the stored login."
+                )
+                blip = "Run the login for the right account; it reconnects on its own."
+            else:
+                cause = f"Connection refused (HTTP {status}): the host tunnel was rejected."
+                blip = "Retrying — check your VPN/network."
             should_retry = self._ever_connected or (
                 self._auth_retry_streak < _MAX_CONSECUTIVE_AUTH_ERRORS
             )
@@ -1544,15 +1557,20 @@ class HostProcess:
                     _logger.warning("%s", escalated)
                     print(f"⚠ {escalated}", file=sys.stderr, flush=True)
                 else:
-                    _logger.warning("%s Retrying — check your VPN/network.", cause)
+                    _logger.warning("%s %s", cause, blip)
                     if self._auth_retry_streak == 1:
                         # The warning above lands only in the CLI log file;
                         # print once per outage so a foreground `omnigent host`
                         # isn't silent.
                         print(
-                            f"⚠ {cause} Retrying — this usually means the VPN or "
-                            "network dropped. It will reconnect automatically "
-                            "once connectivity returns.",
+                            f"⚠ {cause} "
+                            + (
+                                blip
+                                if identity_clash
+                                else "Retrying — this usually means the VPN or network "
+                                "dropped. It will reconnect automatically once "
+                                "connectivity returns."
+                            ),
                             file=sys.stderr,
                             flush=True,
                         )
@@ -3861,6 +3879,10 @@ class HostProcess:
                 _tel_install_id = _get_install_id()
         except Exception:  # noqa: BLE001
             pass
+        from omnigent import code_version
+
+        # First call fixes what "loaded" means, so later edits on disk do not change it.
+        code = await asyncio.to_thread(code_version.loaded)
         hello = HostHelloFrame(
             version=VERSION,
             frame_protocol_version=1,
@@ -3870,6 +3892,9 @@ class HostProcess:
             gateway_inference=self._gateway_inference,
             telemetry_opt_out=_tel_opt_out,
             installation_id=_tel_install_id,
+            code_id=code.id if code else None,
+            code_label=code.label if code else None,
+            code_root=code.root if code else None,
         )
         try:
             encoded_hello = encode_host_frame(hello)
@@ -4105,6 +4130,18 @@ class HostProcess:
             await ws.send(encode_host_frame(self._handle_list_dir(frame)))
         elif isinstance(frame, HostCreateDirFrame):
             await ws.send(encode_host_frame(self._handle_create_dir(frame)))
+        elif isinstance(frame, HostUpdateFrame):
+            from omnigent.host import updater
+
+            # Downloads and applies off the event loop; the restart, when one is
+            # scheduled, happens after this reply is sent.
+            update_result = await updater.update(
+                frame,
+                server_url=self._server_url,
+                bearer=self._current_auth_token(),
+                live_runners=len(self._alive_runner_ids()),
+            )
+            await ws.send(encode_host_frame(update_result))
         elif isinstance(frame, HostInstallHarnessFrame):
             # The installer shells out (npm) and can run for minutes, so run
             # it off the event loop and reply when it completes.

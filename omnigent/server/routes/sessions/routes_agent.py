@@ -418,8 +418,26 @@ def register_agent_routes(
 
         if method == "tools/call":
             _mcp_conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+            # A local hook adapter on an older native relay uses the already
+            # authenticated MCP tunnel to peek/ack notes. These internal calls
+            # execute no tool and have the same edit ACL as the duet endpoints.
+            hook_args = params.get("arguments")
+            if (
+                params.get("name") == "sys_duet_inbox"
+                and isinstance(hook_args, dict)
+                and hook_args.get("_omnigent_hook_transport") is True
+            ):
+                from omnigent.server.duet_hook_proxy import handle_relay_request
+
+                return await handle_relay_request(
+                    rpc_id,
+                    session_id,
+                    hook_args,
+                    request.app.state,
+                    _mcp_conv,
+                )
             turn_actor = _mcp_conv.labels.get(_TURN_ACTOR_LABEL) if _mcp_conv is not None else None
-            return await _handle_mcp_tools_call(
+            response = await _handle_mcp_tools_call(
                 rpc_id,
                 session_id,
                 params,
@@ -429,5 +447,26 @@ def register_agent_routes(
                 actor=_build_actor(turn_actor or user_id),
                 request=request,
             )
+            # Native relay calls can receive notes without changing the runner process.
+            # Attach to every tool result (except the inbox itself) so a long
+            # tool-heavy turn sees notes within seconds, not at turn end.
+            native_wrapper = (
+                (_mcp_conv.labels or {}).get("omnigent.wrapper") if _mcp_conv else None
+            )
+            if (
+                native_wrapper is not None
+                and "native" in native_wrapper
+                and params.get("name") != "sys_duet_inbox"
+                and getattr(request.app.state, "duet_notes", None) is not None
+            ):
+                from omnigent.server.duet_mcp_delivery import attach_notes
+
+                try:
+                    response = await attach_notes(
+                        response, session_id, request.app.state.duet_notes
+                    )
+                except Exception:  # A note must not break a tool result.
+                    _logger.warning("Could not attach duet notes to %s", session_id, exc_info=True)
+            return response
 
         return _mcp_error_response(rpc_id, -32601, f"Method not found: {method!r}")

@@ -61,6 +61,11 @@ import {
 } from "@/lib/idleTransitions";
 import { isConversationUnseen, useUnseenTick } from "@/hooks/useUnseenConversations";
 import { conversationDisplayLabel } from "@/shell/sidebarNav";
+import { getCurrentUserId } from "@/lib/identity";
+import {
+  filterNotifiableSessions,
+  readNotifySharedSessions,
+} from "@/lib/sharedSessionNotifications";
 
 const IDLE_BODY = "Agent finished and is ready for your input.";
 const ELICITATION_BODY = "Agent is asking for your input.";
@@ -70,6 +75,16 @@ const ELICITATION_BODY = "Agent is asking for your input.";
 // agent resuming to `running`) cancels the cue, so step-by-step agents don't
 // fire a notification per step.
 const IDLE_SETTLE_MS = 10_000;
+
+/**
+ * Narrow a session list to the rows allowed to beep or badge. Shared
+ * sessions stay out unless the viewer opted them back in (see
+ * `sharedSessionNotifications`); the preference is re-read on every tick
+ * so flipping the Settings toggle takes effect without a reload.
+ */
+function scopedConversations(conversations: Conversation[]): Conversation[] {
+  return filterNotifiableSessions(conversations, getCurrentUserId(), readNotifySharedSessions());
+}
 
 /**
  * Attach a one-shot listener that requests notification permission on the
@@ -225,8 +240,9 @@ export function useIdleNotifications(activeConversationId?: string): void {
       windowFocusedRef.current = true;
       const convs = latestConversations.current;
       if (convs === null) return;
-      const next = computeUnreadBadgeIds(convs, activeIdRef.current, true, isConversationUnseen);
-      pushBadge(next, convs);
+      const scoped = scopedConversations(convs);
+      const next = computeUnreadBadgeIds(scoped, activeIdRef.current, true, isConversationUnseen);
+      pushBadge(next, scoped);
     };
     const onBlur = () => {
       windowFocusedRef.current = false;
@@ -257,13 +273,14 @@ export function useIdleNotifications(activeConversationId?: string): void {
   useEffect(() => {
     const convs = latestConversations.current;
     if (convs === null) return;
+    const scoped = scopedConversations(convs);
     const next = computeUnreadBadgeIds(
-      convs,
+      scoped,
       activeIdRef.current,
       windowFocusedRef.current,
       isConversationUnseen,
     );
-    pushBadge(next, convs);
+    pushBadge(next, scoped);
     // pushBadge and the focus state are refs; rerun only when the map changes.
   }, [unseenTick]);
 
@@ -272,8 +289,8 @@ export function useIdleNotifications(activeConversationId?: string): void {
     // bump lastSentBadge), so the first real computation below sends
     // unconditionally.
     if (data === undefined) return;
-    const conversations = data.pages.flatMap((page) => page.data);
-    latestConversations.current = conversations;
+    latestConversations.current = data.pages.flatMap((page) => page.data);
+    const conversations = scopedConversations(latestConversations.current);
 
     // Badge first, before the empty-list bail below: an empty list must
     // still send 0 so a stale nonzero badge clears.

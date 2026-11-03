@@ -93,7 +93,7 @@ def test_muse_timeout_defaults_and_override() -> None:
             env=_subprocess_env(None, var=_MUSE_TIMEOUT_ENV),
             text=True,
         ).strip()
-        == "3600.0"
+        == "600.0"
     )
     assert (
         subprocess.check_output(

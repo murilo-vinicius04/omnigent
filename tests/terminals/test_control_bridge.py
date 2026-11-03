@@ -458,6 +458,40 @@ async def test_control_bridge_seeds_streams_and_detaches() -> None:
 
 @pytest.mark.skipif(not _HAS_TMUX, reason="tmux not installed")
 @pytest.mark.asyncio
+async def test_control_bridge_ignores_sliver_resize() -> None:
+    """A hidden panel's few-column resize must not shrink the pane."""
+    sock, target = await _new_private_tmux("cat")
+    await asyncio.sleep(0.3)
+    ws = _FakeWebSocket(
+        inbound=[
+            {"type": "websocket.receive", "text": '{"type":"resize","cols":100,"rows":30}'},
+            {"type": "websocket.receive", "text": '{"type":"resize","cols":7,"rows":2}'},
+        ]
+    )
+    task = asyncio.create_task(
+        bridge_tmux_control_to_websocket(
+            ws, socket_path=str(sock), tmux_target=target, read_only=False
+        )
+    )
+    await asyncio.sleep(1.0)
+    proc = await asyncio.create_subprocess_exec(
+        "tmux",
+        "-S",
+        str(sock),
+        "display-message",
+        "-p",
+        "-t",
+        target,
+        "#{pane_width}x#{pane_height}",
+        stdout=asyncio.subprocess.PIPE,
+    )
+    out, _ = await proc.communicate()
+    assert out.decode().strip() == "100x30"
+    await _kill_and_join(sock, task)
+
+
+@pytest.mark.skipif(not _HAS_TMUX, reason="tmux not installed")
+@pytest.mark.asyncio
 async def test_seed_restores_cursor_position() -> None:
     """The seed ends with a CUP escape putting the cursor where the app left it.
 

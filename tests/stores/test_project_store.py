@@ -68,6 +68,23 @@ def test_get_scoped_to_owner(store: SqlAlchemyProjectStore) -> None:
 # ── list ──────────────────────────────────────────────────────────────────
 
 
+def test_owners_and_names_ignores_the_owner_but_only_for_asked_ids(
+    store: SqlAlchemyProjectStore,
+) -> None:
+    """The label lookup reaches across owners, yet returns nothing for ids not asked."""
+    store.create(_uid("p1"), "Alice Project", "alice@example.com")
+    store.create(_uid("p2"), "Bob Project", "bob@example.com")
+    store.create(_uid("p3"), "Other", "bob@example.com")
+
+    got = store.owners_and_names([_uid("p1"), _uid("p2"), _uid("nope")])
+
+    assert got == {
+        _uid("p1"): ("Alice Project", "alice@example.com"),
+        _uid("p2"): ("Bob Project", "bob@example.com"),
+    }
+    assert store.owners_and_names([]) == {}
+
+
 def test_list_orders_by_created_at_then_id(store: SqlAlchemyProjectStore) -> None:
     """``list`` orders by ``created_at ASC, id ASC``.
 

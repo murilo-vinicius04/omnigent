@@ -66,6 +66,8 @@ class HostFrameKind(str, Enum):
     LIST_WORKTREES_RESULT = "host.list_worktrees_result"
     CREATE_DIR = "host.create_dir"
     CREATE_DIR_RESULT = "host.create_dir_result"
+    UPDATE = "host.update"
+    UPDATE_RESULT = "host.update_result"
     INSTALL_HARNESS = "host.install_harness"
     INSTALL_HARNESS_RESULT = "host.install_harness_result"
     STORE_SECRET = "host.store_secret"
@@ -113,6 +115,11 @@ class HostHelloFrame:
         ``omnigent.gateway_inference``). A family that could not be evaluated
         is omitted. ``None`` means unknown (an older host, or a startup probe
         that failed) — never treat it as "nothing is gateway-backed".
+    :param code_id: Digest of the source tree the host loaded (see
+        :mod:`omnigent.code_version`); ``None`` for an older host or an
+        install that is not a git checkout.
+    :param code_label: Short label of that tree for people, e.g. ``"614f4cd8+35"``.
+    :param code_root: Checkout path on the host that the code runs from.
     """
 
     version: str
@@ -123,6 +130,9 @@ class HostHelloFrame:
     gateway_inference: dict[str, bool] | None = None
     telemetry_opt_out: bool = False
     installation_id: str | None = None
+    code_id: str | None = None
+    code_label: str | None = None
+    code_root: str | None = None
 
 
 @dataclass
@@ -623,6 +633,38 @@ class HostCreateDirFrame:
 
 
 @dataclass
+class HostUpdateFrame:
+    """Server → host: replace this host's source tree with the server's.
+
+    :param request_id: Correlates the result, e.g. ``"req_upd_1"``.
+    :param bundle_path: Server path to download the code bundle from, e.g.
+        ``"/v1/code/bundle"``.
+    :param force: Update even while runners are alive (ends their sessions).
+    """
+
+    request_id: str
+    bundle_path: str
+    force: bool = False
+
+
+@dataclass
+class HostUpdateResultFrame:
+    """Host → server: outcome of an update request.
+
+    :param request_id: Correlates to the :class:`HostUpdateFrame`.
+    :param status: ``"ok"`` (applied), ``"busy"`` (runners alive and not forced),
+        ``"current"`` (nothing to change) or ``"failed"``.
+    :param message: What happened, for people, e.g. ``"updated 41 files, restarting"``.
+    :param restarting: Whether the host is about to restart itself to load the code.
+    """
+
+    request_id: str
+    status: str
+    message: str = ""
+    restarting: bool = False
+
+
+@dataclass
 class HostCreateDirResultFrame:
     """Host → server: outcome of a create-dir request.
 
@@ -1032,6 +1074,8 @@ HostFrame = (
     | HostListWorktreesResultFrame
     | HostCreateDirFrame
     | HostCreateDirResultFrame
+    | HostUpdateFrame
+    | HostUpdateResultFrame
     | HostInstallHarnessFrame
     | HostInstallHarnessResultFrame
     | HostStoreSecretFrame
@@ -1099,6 +1143,9 @@ def encode_host_frame(frame: HostFrame) -> str:
                 "gateway_inference": frame.gateway_inference,
                 "telemetry_opt_out": frame.telemetry_opt_out,
                 "installation_id": frame.installation_id,
+                "code_id": frame.code_id,
+                "code_label": frame.code_label,
+                "code_root": frame.code_root,
             }
         )
     if isinstance(frame, HostConnectionErrorFrame):
@@ -1307,6 +1354,25 @@ def encode_host_frame(frame: HostFrame) -> str:
                 "status": frame.status,
                 "path": frame.path,
                 "error": frame.error,
+            }
+        )
+    if isinstance(frame, HostUpdateFrame):
+        return _encode_payload(
+            {
+                "kind": HostFrameKind.UPDATE.value,
+                "request_id": frame.request_id,
+                "bundle_path": frame.bundle_path,
+                "force": frame.force,
+            }
+        )
+    if isinstance(frame, HostUpdateResultFrame):
+        return _encode_payload(
+            {
+                "kind": HostFrameKind.UPDATE_RESULT.value,
+                "request_id": frame.request_id,
+                "status": frame.status,
+                "message": frame.message,
+                "restarting": frame.restarting,
             }
         )
     if isinstance(frame, HostInstallHarnessFrame):
@@ -1589,6 +1655,10 @@ def _decode_known_host_frame(
             return _decode_create_dir(msg)
         case HostFrameKind.CREATE_DIR_RESULT:
             return _decode_create_dir_result(msg)
+        case HostFrameKind.UPDATE:
+            return _decode_update(msg)
+        case HostFrameKind.UPDATE_RESULT:
+            return _decode_update_result(msg)
         case HostFrameKind.INSTALL_HARNESS:
             return _decode_install_harness(msg)
         case HostFrameKind.INSTALL_HARNESS_RESULT:
@@ -1645,6 +1715,9 @@ def _decode_host_hello(msg: _JsonObject) -> HostHelloFrame:
         gateway_inference=optional_str_bool_map(msg, "gateway_inference"),
         telemetry_opt_out=bool(msg.get("telemetry_opt_out", False)),
         installation_id=_optional_nullable_str(msg, "installation_id"),
+        code_id=_optional_nullable_str(msg, "code_id"),
+        code_label=_optional_nullable_str(msg, "code_label"),
+        code_root=_optional_nullable_str(msg, "code_root"),
     )
 
 
@@ -1983,6 +2056,33 @@ def _decode_create_dir_result(msg: _JsonObject) -> HostCreateDirResultFrame:
         status=_required_str(msg, "status"),
         path=_optional_nullable_str(msg, "path"),
         error=_optional_nullable_str(msg, "error"),
+    )
+
+
+def _decode_update(msg: _JsonObject) -> HostUpdateFrame:
+    """Decode a host.update request frame.
+
+    :param msg: Decoded frame object.
+    :returns: Typed host.update frame.
+    """
+    return HostUpdateFrame(
+        request_id=_required_str(msg, "request_id"),
+        bundle_path=_required_str(msg, "bundle_path"),
+        force=bool(msg.get("force", False)),
+    )
+
+
+def _decode_update_result(msg: _JsonObject) -> HostUpdateResultFrame:
+    """Decode a host.update_result frame.
+
+    :param msg: Decoded frame object.
+    :returns: Typed host.update_result frame.
+    """
+    return HostUpdateResultFrame(
+        request_id=_required_str(msg, "request_id"),
+        status=_required_str(msg, "status"),
+        message=str(msg.get("message") or ""),
+        restarting=bool(msg.get("restarting", False)),
     )
 
 

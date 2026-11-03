@@ -186,7 +186,9 @@ describe("startHubChimeListener", () => {
     const stop = startHubChimeListener();
     stop();
     hubUpdates.mockClear();
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise((r) => {
+      setTimeout(r, 50);
+    });
     expect(hubUpdates).not.toHaveBeenCalled();
   });
 });

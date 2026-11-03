@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { useFileContent } from "@/hooks/useFileContent";
 import { CodeViewer } from "./CodeViewer";
 import { isVideoFile } from "./codeViewerHelpers";
+import { highlightCode } from "@/components/ai-elements/code-block";
 
 const authenticatedFetch = vi.fn();
 vi.mock("@/lib/identity", () => ({
@@ -53,7 +54,10 @@ function renderViewer(
   );
 }
 
-beforeEach(() => authenticatedFetch.mockReset());
+beforeEach(() => {
+  authenticatedFetch.mockReset();
+  vi.mocked(highlightCode).mockClear();
+});
 afterEach(cleanup);
 
 describe("video files", () => {
@@ -74,6 +78,20 @@ describe("video files", () => {
 });
 
 describe("an HTML page past the read cap", () => {
+  it("does not tokenize bundled scripts while the full preview is loading", async () => {
+    const content = `<html><body><script>const mesh = "${"A".repeat(960_000)}";</script></body></html>`;
+    authenticatedFetch.mockResolvedValue(new Response(content));
+    const { container } = renderViewer(
+      "runs/viewer.html",
+      query({ content: content.slice(0, 950_000), encoding: "utf-8", truncated: true }),
+      "preview",
+    );
+    await waitFor(() =>
+      expect(container.querySelector("iframe")?.getAttribute("srcdoc")).toContain("const mesh"),
+    );
+    expect(vi.mocked(highlightCode).mock.calls.length).toBe(0);
+  });
+
   it("is fetched whole and shown without the truncated banner", async () => {
     authenticatedFetch.mockResolvedValue(
       new Response("<html><body>cut<script>window.FULL_PAGE_END = 1</script></body></html>"),

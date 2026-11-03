@@ -2405,7 +2405,9 @@ def _codex_function_call_payload_from_session_item(
         )
     return {
         "type": "function_call",
-        "name": name,
+        # Other harnesses may store human-readable tool titles with spaces.
+        # Responses accepts only ASCII letters, digits, underscores, dots and hyphens.
+        "name": re.sub(r"[^A-Za-z0-9_.-]", "_", name),
         "arguments": arguments,
         "call_id": call_id,
     }

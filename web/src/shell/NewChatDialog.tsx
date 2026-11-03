@@ -1871,6 +1871,8 @@ function SubAgentConfigRow({
   );
 }
 
+const NO_MODEL_OPTIONS: readonly never[] = [];
+
 /**
  * Harness-configuration modal opened from the composer's gear icon. Shows the
  * selected agent's run-config knobs — Claude: model / effort / permissions;
@@ -1909,7 +1911,7 @@ function HarnessConfigModal({
   codexModelsError,
   piModelOptions,
   piModelsLoading,
-  antigravityModelOptions = [],
+  antigravityModelOptions = NO_MODEL_OPTIONS,
   antigravityModelsLoading = false,
   antigravityModelsError = null,
   pickedEffort,
@@ -3764,9 +3766,7 @@ export function NewChatLandingScreen() {
   // A stale effort is always a legal muse level (every native ladder is a
   // subset of the muse one), so only the model needs this guard.
   const museModelPick =
-    isMuseCodeSelected && MUSE_CODE_MODELS.some((m) => m.id === pickedModel)
-      ? pickedModel
-      : "";
+    isMuseCodeSelected && MUSE_CODE_MODELS.some((m) => m.id === pickedModel) ? pickedModel : "";
   const createModel = isMuseCodeSelected ? museModelPick : pickedModel;
   const selectedAgentHasKnobs =
     supportsPermissionMode ||
@@ -3912,6 +3912,7 @@ export function NewChatLandingScreen() {
     supportsCursorMode,
     supportsAgySkipPermissions,
     supportsModelPicker,
+    isMuseCodeSelected,
     selectedAgent,
     brainHarnessLabelsAll,
     routingOn,

@@ -1711,6 +1711,61 @@ async def test_persist_codex_compaction_item_empty_items_fallback() -> None:
     assert "compacted_messages" not in body["data"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("window_id", [2, "01a193b2-40ce-7b00-b990-4363c2bbb2ee"])
+async def test_compaction_window_id_survives_persistence_and_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, window_id: int | str
+) -> None:
+    """Preserve both legacy numeric and current Codex UUID window IDs."""
+    import json
+    from types import SimpleNamespace
+
+    from omnigent.codex_native import _codex_rollout_records_from_session_items
+    from omnigent.entities.conversation import parse_item_data
+
+    rollout_dir = tmp_path / "sessions" / "2026"
+    rollout_dir.mkdir(parents=True)
+    history = [{"type": "compaction", "encrypted_content": "encrypted"}]
+    (rollout_dir / "rollout-thread-id.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "compacted",
+                "payload": {
+                    "replacement_history": history,
+                    "window_id": window_id,
+                },
+            }
+        )
+        + "\n"
+    )
+    monkeypatch.setattr(
+        fwd,
+        "read_bridge_state",
+        lambda _: SimpleNamespace(codex_home=tmp_path, thread_id="thread-id"),
+    )
+    get_resp = MagicMock()
+    get_resp.json.return_value = {"data": [{"id": "last-item"}]}
+    client = MagicMock()
+    client.get = AsyncMock(return_value=get_resp)
+    client.post = AsyncMock(return_value=MagicMock())
+
+    await _persist_codex_compaction_item(client, session_id="conv_test", bridge_dir=tmp_path)
+    body = client.post.call_args.kwargs["json"]
+    persisted = parse_item_data(body["type"], body["data"]).model_dump()
+    assert persisted["window_id"] == window_id
+    records = _codex_rollout_records_from_session_items(
+        [{"type": "compaction", **persisted}],
+        session_id="conv_test",
+        external_session_id="thread-id",
+        cwd=tmp_path,
+        model_provider="openai",
+        cli_version="0.140.0",
+    )
+    restored = next(record for record in records if record["type"] == "compacted")
+    assert restored["payload"]["window_id"] == window_id
+    assert restored["payload"]["replacement_history"] == history
+
+
 def test_read_compacted_history_extracts_replacement_history_and_window_id(
     tmp_path: Path,
 ) -> None:

@@ -288,11 +288,16 @@ answer teaches you; "say" is that question, naming the lane.
 when the lane finishes, or that a new lane takes it. Add "now": true only when \
 they ask to tell it now; that also delivers what is held for it, so when they \
 only say "tell it now", "message" is empty.
-{{"new_lane": "<handle>", "topic": "...", "message": "...", "say": "...", \
-"use": "..."}} -- they ask for a separate or parallel agent in that project. \
-"topic" names the work in two to four words. "message" as for "send". "use" \
-only when they name a model or provider for it (e.g. "Sonnet", "Codex"); \
-otherwise leave it out and the hub picks. "say" names the project and the topic.
+{{"new_lane": "<handle>", "topic": "...", "message": "...", "task": "...", \
+"say": "...", "use": "..."}} -- they ask for a separate or parallel agent in that \
+project. "topic" names the work in two to four words. "message" as for "send", \
+and the new agent never sees the part of their words that asks for the lane or \
+names its model. "task" is their own words for the work copied exactly, with \
+only that part removed (the request to open a lane, the project it is in, the \
+model, provider and effort they named): the hub sends it first, in place of \
+their whole message. "use" only when they name a model or provider for it \
+(e.g. "Sonnet", "Codex"); otherwise leave it out and the hub picks. "say" names \
+the project and the topic.
 {{"correct_place": "steer" | "after" | "new", "say": "..."}} -- they say where \
 their last message for a busy lane belongs, answering the hub's question about \
 it or correcting where the hub put it: that lane's work now ("steer"), after the \
@@ -304,8 +309,10 @@ finished, and its line above does not say enough.
 {{"check": "<handle>", "question": "..."}} -- a fact on their machine (disk, \
 processes, services, logs, files, git) that read-only commands in that project's \
 folder can show. Nothing is changed by a check.
-{{"model": "<handle>", "to": "<model>", "effort": "<effort>"}} -- they want a \
-project to run on another model or reasoning effort. Give only what they asked \
+{{"model": "<handle>", "to": "<model>", "effort": "<effort>", "force": true}} -- they want a \
+project to run on another model or reasoning effort. Add "force": true only when they \
+say to switch anyway, without writing the chat up and compacting it first (for \
+instance after the hub said the plan window was full). Give only what they asked \
 to change: "to" is one of the models that project offers (its id) or \
 "default"; "effort" is one of its efforts or "default". If what they want is \
 not in its list, use "ask" and name what it offers. This action never changes \
@@ -666,7 +673,7 @@ def _inspect_failure(exc: Exception) -> str:
     """
     response = getattr(exc, "response", None)
     status = getattr(response, "status_code", None)
-    if status is not None:
+    if status is not None and response is not None:
         detail = ""
         try:
             body = response.json()
@@ -948,6 +955,8 @@ class HubDecision:
     #: For ``model``: the model and effort asked for; empty leaves it as is.
     model: str = ""
     effort: str = ""
+    #: For ``model``: switch without writing the chat up and compacting it first.
+    force: bool = False
     #: For ``send``: the lane's handle; empty for the project's newest chat.
     lane: str = ""
     #: For ``send``: deliver into a busy lane instead of holding it.
@@ -959,6 +968,9 @@ class HubDecision:
     #: a model or provider they named.
     topic: str = ""
     use: str = ""
+    #: For ``new_lane``: their own words for the work, without the part that
+    #: asks the hub to open the lane or names its model.
+    task: str = ""
 
 
 #: The server's file metadata and byte stores, set at startup: copying a
@@ -1174,15 +1186,11 @@ def latest_finished(
 ) -> list[dict[str, Any]]:
     """The newest finished reports for these chats, newest first."""
     wanted = set(session_ids)
-    found = [
-        e for e in entries if e.kind == "finished" and (e.session_id or "") in wanted
-    ]
+    found = [e for e in entries if e.kind == "finished" and (e.session_id or "") in wanted]
     return [_brief_entry(e) for e in reversed(found[-limit:])]
 
 
-def paused_line(
-    lanes: Sequence[HubSession], latest: Sequence[dict[str, Any]]
-) -> str:
+def paused_line(lanes: Sequence[HubSession], latest: Sequence[dict[str, Any]]) -> str:
     """One line on where a project stands."""
     for lane in lanes:
         if lane.working:
@@ -1306,6 +1314,7 @@ def parse_decision(reply: str) -> HubDecision:
             text=text("say"),
             topic=text("topic"),
             use=text("use"),
+            task=text("task"),
         )
     if text("check"):
         return HubDecision(action="check", handle=text("check"), message=text("question"))
@@ -1313,7 +1322,11 @@ def parse_decision(reply: str) -> HubDecision:
         return HubDecision(action="status", handle=text("status"))
     if text("model"):
         return HubDecision(
-            action="model", handle=text("model"), model=text("to"), effort=text("effort")
+            action="model",
+            handle=text("model"),
+            model=text("to"),
+            effort=text("effort"),
+            force=parsed.get("force") is True,
         )
     if text("new_project"):
         return HubDecision(action="new_project", message=text("new_project"), text=text("say"))
@@ -1363,6 +1376,16 @@ def with_their_words(decision: HubDecision, said: str) -> HubDecision:
     if decision.action not in ("send", "new_lane") or not decision.message.strip():
         return decision
     words = said.strip()
+    if decision.action == "new_lane":
+        # Their whole message also asks the hub to open the lane and names its
+        # model: the new agent gets only the router's cut of it, and only when
+        # that is really a part of what they wrote.
+        task = decision.task.strip()
+        words = (
+            task
+            if task and " ".join(task.lower().split()) in " ".join(words.lower().split())
+            else ""
+        )
     if not words or _same_request(words, decision.message):
         return decision
     return replace(decision, message=f"{words}\n\n{ROUTER_CONTEXT}\n{decision.message.strip()}")
@@ -2047,9 +2070,7 @@ class Hub:
             chat = replace(lanes[0], handle=handles[record.id]) if lanes else None
             logged = [routes[c] for c in record.chat_ids if c in routes]
             brief_lanes = lanes if shown > 1 else ((chat,) if chat is not None else ())
-            latest = tuple(
-                latest_finished(self.state.entries, [s.id for s in found])
-            )
+            latest = tuple(latest_finished(self.state.entries, [s.id for s in found]))
             out.append(
                 HubProject(
                     id=record.id,
@@ -2346,9 +2367,7 @@ class Hub:
         )
         return await self.project_brief(project_id)
 
-    async def save_brief(
-        self, project_id: str, brief: str, todos: Any
-    ) -> dict[str, Any]:
+    async def save_brief(self, project_id: str, brief: str, todos: Any) -> dict[str, Any]:
         """Keep their own brief and to-do list for a project.
 
         :raises LookupError: Not one of their projects.
@@ -2519,11 +2538,7 @@ class Hub:
             self.say(said)
             router.remember(said)
             return
-        if (
-            project is not None
-            and target is None
-            and decision.action in ("send", "new_lane")
-        ):
+        if project is not None and target is None and decision.action in ("send", "new_lane"):
             # Every chat of the project was closed: this request starts the next one.
             entry = await self.open_lane(
                 project,
@@ -2593,7 +2608,9 @@ class Hub:
             router.remember(f"checked {target.name}: {found}")
             return
         if decision.action == "model" and target is not None:
-            entry = await self.set_model(target, decision.model, decision.effort, via=via)
+            entry = await self.set_model(
+                target, decision.model, decision.effort, via=via, force=decision.force
+            )
             router.remember(entry.text)
             return
         said = decision.text or (
@@ -2603,7 +2620,7 @@ class Hub:
         router.remember(said)
 
     async def set_model(
-        self, session: HubSession, model: str, effort: str, *, via: str
+        self, session: HubSession, model: str, effort: str, *, via: str, force: bool = False
     ) -> HubEntry:
         """Put a session on another model and/or effort, from its own lists.
 
@@ -2613,6 +2630,8 @@ class Hub:
         :param model: A model id, label or partial name; ``"default"``
             clears the pick; empty leaves the model as is.
         :param effort: An effort, ``"default"``, or empty for as is.
+        :param force: Switch without writing the chat up and compacting it first.
+            The new model then reads the whole context again, uncached.
         """
         run = session.run
         fields: dict[str, Any] = {"session_id": session.id, "session_name": session.name}
@@ -2671,6 +2690,15 @@ class Hub:
         backend = self.require_backend()
         if backend.configure is None:
             return self.say("I can't change models from here yet.", kind="error", **fields)
+        if force and self._compacts_first(session, new_model):
+            return await self._configure(
+                session,
+                new_model,
+                new_effort,
+                via=via,
+                note="forced: it was not written up or compacted first, so the new model reads "
+                "its whole context again",
+            )
         if self._compacts_first(session, new_model):
             if backend.compaction is None or backend.status is None:
                 return self.say(
@@ -2682,8 +2710,9 @@ class Hub:
             full = await backend.compaction.why_blocked(session.id)
             if full:
                 return self.say(
-                    f"I didn't switch {session.name}: its plan window is full, so it can't "
-                    "write up and compact first. Its current model stays active.",
+                    f"I didn't switch {session.name}: its plan window is full ({full}), so it "
+                    "can't write up and compact first. Its current model stays active. Tell me "
+                    "to force the switch to change it anyway, without the write-up.",
                     kind="error",
                     via=via,
                     **fields,
@@ -3026,7 +3055,9 @@ class Hub:
         if not provider or provider not in budget.METERS:
             return session, ""
         try:
-            full = await asyncio.to_thread(quota_handoff.full_window, provider, data_dir=data_dir())
+            full = await asyncio.to_thread(
+                quota_handoff.full_window, provider, data_dir=data_dir()
+            )
         except Exception:  # noqa: BLE001 - no reading just means no move
             _logger.debug("failover: no plan reading for %s", provider, exc_info=True)
             return session, ""
@@ -3054,7 +3085,9 @@ class Hub:
         try:
             await backend.migrate(session.id, proposal.provider, model, effort)
         except Exception:  # noqa: BLE001 - the send below reports failing as before
-            _logger.warning("failover of %s to %s failed", session.id, proposal.provider, exc_info=True)
+            _logger.warning(
+                "failover of %s to %s failed", session.id, proposal.provider, exc_info=True
+            )
             return session, ""
         old = hub_lanes.PROVIDER_LABELS.get(provider, provider)
         new = hub_lanes.PROVIDER_LABELS.get(proposal.provider, proposal.provider)
@@ -3527,10 +3560,11 @@ class Hub:
         )
         provider, word = hub_lanes.named_run(use)
         if provider == "muse":
-            # Named Muse runs carry xhigh; a named version ("spark 1.3")
+            # Named Muse runs carry the effort they name, else xhigh; a named version ("spark 1.3")
             # pins the model, else the catalog's newest of the family runs,
             # else the Spark 1.3 default — never a silent older model.
             version = hub_lanes.named_version(use)
+            effort = hub_lanes.named_effort(use) or hub_lanes.MUSE_DEFAULT_EFFORT
             catalog = await self._catalog("muse", catalog_id or like.id)
             model = hub_lanes.muse_model(word or "Spark", version, catalog)
             if model is None:
@@ -3544,15 +3578,12 @@ class Hub:
                 )
             reason = f"You asked for {use}."
             if not catalog:
-                reason += (
-                    " Its catalog was unreachable, so this lane pins Muse "
-                    "Spark 1.3."
-                )
+                reason += f" Its catalog was unreachable, so this lane runs the built-in {model}."
             return _LanePick(
                 run=hub_lanes.LaneRun(
                     provider="muse",
                     model=model,
-                    effort=hub_lanes.MUSE_DEFAULT_EFFORT,
+                    effort=effort,
                     reason=reason,
                 ),
                 task=task,
@@ -3566,12 +3597,14 @@ class Hub:
         settings = budget.load_settings(self.state.folder)
         provider, word = hub_lanes.named_run(use)
         if provider:
-            tier = (decision.tier if judged else "") or "top"
+            tier = (decision.tier if decision is not None and judged else "") or "top"
             offered = budget.offered_tiers(provider, _agy_models, settings.avoid_models)
             if not word:
                 word = offered.get(tier) or next(iter(offered.values()), "")
             effort = (
-                decision.efforts_by_tier.get(tier, decision.effort) if judged else ""
+                decision.efforts_by_tier.get(tier, decision.effort)
+                if decision is not None and judged
+                else ""
             ) or model_router.DEFAULT_EFFORT
             effort = budget.fit_effort(provider, effort)
             reason = f"You asked for {use}."
@@ -3830,7 +3863,9 @@ class Hub:
         closed.extend(await self._auto_close_unfiled(threshold, direct_s))
         return closed
 
-    async def _auto_close_unfiled(self, threshold: float, direct_s: float | None) -> list[HubEntry]:
+    async def _auto_close_unfiled(
+        self, threshold: float, direct_s: float | None
+    ) -> list[HubEntry]:
         """Archive idle chats outside every project, oldest first.
 
         Recently idle ones get the handoff treatment like project chats;
@@ -3873,7 +3908,8 @@ class Hub:
                 closed.append(
                     self.say(
                         f"Closed idle chat {chat.name} ({_short(chat.title or chat.name, 60)}); "
-                        "it was long past any live work, so it was archived without a handoff note.",
+                        "it was long past any live work, "
+                        "so it was archived without a handoff note.",
                         kind="project",
                         session_id=chat.id,
                         session_name=chat.name,
@@ -5074,9 +5110,7 @@ def store_backend(
         response.raise_for_status()
         return len(chat_ids)
 
-    async def save_brief(
-        project_id: str, brief: str, todos: list[dict[str, Any]]
-    ) -> None:
+    async def save_brief(project_id: str, brief: str, todos: list[dict[str, Any]]) -> None:
         """Keep their own brief and to-do list in the project's config."""
         async with _client() as client:
             got = await client.get(f"/v1/projects/{project_id}", headers=headers)
@@ -5411,7 +5445,7 @@ def store_backend(
                 continue
             files[:0] = reply_files(item.data)
             response = getattr(item, "response_id", None)
-            told = turns.setdefault(response, {}) if response else {}
+            told: dict[str, Any] = turns.setdefault(response, {}) if response else {}
             summary = spoken_summary(item.data)
             if summary is not None:
                 summaries.append((response, summary))

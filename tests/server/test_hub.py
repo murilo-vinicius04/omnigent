@@ -1972,13 +1972,37 @@ def test_tell_it_now_with_no_message_stays_empty():
     assert hub_module.with_their_words(decision, "manda agora") == decision
 
 
-def test_a_new_lane_also_carries_their_words():
+def test_a_new_lane_carries_their_words_without_the_request_to_open_it():
+    said = "cria uma nova lane no omnigent, muse wonder high, faz o sweep em paralelo"
     decision = hub_module.parse_decision(
-        json.dumps({"new_lane": "4c23", "topic": "sweep", "message": "Rode o sweep da porca 6H."})
+        json.dumps(
+            {
+                "new_lane": "4c23",
+                "topic": "sweep",
+                "message": "Rode o sweep da porca 6H.",
+                "task": "faz o sweep em paralelo",
+            }
+        )
     )
-    sent = hub_module.with_their_words(decision, "faz o sweep em paralelo")
+    sent = hub_module.with_their_words(decision, said)
     assert sent.message.startswith("faz o sweep em paralelo\n\n")
+    assert "muse wonder" not in sent.message
+    assert "nova lane" not in sent.message
     assert sent.topic == "sweep"
+
+
+def test_a_new_lane_never_gets_their_whole_message_when_the_task_is_not_in_it():
+    said = "cria uma nova lane no omnigent, muse wonder high, faz o sweep em paralelo"
+    decision = hub_module.parse_decision(
+        json.dumps(
+            {"new_lane": "4c23", "message": "Rode o sweep da porca 6H.", "task": "inventado"}
+        )
+    )
+    assert hub_module.with_their_words(decision, said).message == "Rode o sweep da porca 6H."
+    no_task = hub_module.parse_decision(
+        json.dumps({"new_lane": "4c23", "message": "Rode o sweep da porca 6H."})
+    )
+    assert hub_module.with_their_words(no_task, said).message == "Rode o sweep da porca 6H."
 
 
 def test_the_routing_prompt_still_formats():
@@ -2056,7 +2080,10 @@ async def test_projects_carry_brief_latest_and_paused(tmp_path) -> None:
     ]
     hub = _hub(tmp_path, _Router(), server)
     hub.state.append(
-        role="hub", kind="finished", text="Fixed scanner", session_id=AMARRAS,
+        role="hub",
+        kind="finished",
+        text="Fixed scanner",
+        session_id=AMARRAS,
         session_name="amarras",
     )
     projects = await hub.projects(shown=4)

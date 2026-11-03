@@ -6,6 +6,7 @@ import mimetypes
 import os
 import re
 import tarfile
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -25,6 +26,7 @@ from starlette.responses import Response
 from starlette.routing import Match, Mount, Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from omnigent import code_version
 from omnigent._platform import resolve_repo_symlink
 from omnigent.db.db_models import InvalidUuidError
 from omnigent.debug_logging import (
@@ -61,6 +63,7 @@ from omnigent.runtime.agent_cache import AgentCache
 from omnigent.runtime.harnesses.process_manager import HarnessProcessManager
 from omnigent.server import (
     discussion,
+    duet_links,
     managed_host_keepalive,
     session_live_state,
     shutdown_state,
@@ -72,6 +75,7 @@ from omnigent.server.background_session_titles import (
     RunnerBackgroundTitleGenerator,
 )
 from omnigent.server.discussion import sweep_idle_companions
+from omnigent.server.duet_router import DuetStore
 from omnigent.server.feature_flags import Feature, FeatureFlags, resolve_feature_flags
 from omnigent.server.managed_hosts import ManagedSandboxDeployment
 from omnigent.server.managed_sandbox_reaper import ManagedSandboxReaper
@@ -86,10 +90,12 @@ from omnigent.server.performance_metrics import (
     set_request_user_agent_for_access_log,
 )
 from omnigent.server.routes.builtin_agents import create_builtin_agents_router
+from omnigent.server.routes.code import create_code_router
 from omnigent.server.routes.comments import create_comments_router
 from omnigent.server.routes.default_policies import create_default_policies_router
 from omnigent.server.routes.dictation import create_dictation_router
 from omnigent.server.routes.discussion import create_discussion_router
+from omnigent.server.routes.duet import create_duet_router
 from omnigent.server.routes.extension_assets import create_extension_assets_router
 from omnigent.server.routes.extensions import create_extensions_router
 from omnigent.server.routes.gemini_live import create_gemini_live_router
@@ -101,6 +107,7 @@ from omnigent.server.routes.openai_budget_proxy import create_openai_budget_prox
 from omnigent.server.routes.plan_limits import create_plan_limits_router
 from omnigent.server.routes.policy_registry import create_policy_registry_router
 from omnigent.server.routes.projects import create_projects_router
+from omnigent.server.routes.resources import create_resources_router
 from omnigent.server.routes.runner_tunnel import create_runner_tunnel_router
 from omnigent.server.routes.scheduled_tasks import create_scheduled_tasks_router
 from omnigent.server.routes.session_mcp_servers import create_session_mcp_servers_router
@@ -1262,6 +1269,8 @@ def create_app(
     # an AccountStore, defeating the whole "accounts is opt-in"
     # framing.
     _bootstrap_result = None  # populated below for the lifespan hook
+    # Fix "the code this server loaded" now; hosts are compared against it later.
+    threading.Thread(target=code_version.loaded, daemon=True, name="code-version").start()
     if auth_provider is not None and account_store is not None:
         from omnigent.server.auth import UnifiedAuthProvider
 
@@ -1538,6 +1547,15 @@ def create_app(
         # the reader comes back.
         companion_sweep_task = asyncio.create_task(sweep_idle_companions())
 
+        # Lanes created after a share stay invisible to the other person unless the links
+        # between their projects are re-applied; do it every minute.
+        duet_engine = getattr(permission_store, "engine", None)
+        duet_links_task = (
+            asyncio.create_task(duet_links.keep_shared(duet_engine))
+            if duet_engine is not None
+            else None
+        )
+
         # Plan meters read on a timer, with one idle agy kept up for Gemini's.
         from omnigent.server import meter_keeper
 
@@ -1576,6 +1594,10 @@ def create_app(
             companion_sweep_task.cancel()
             with suppress(asyncio.CancelledError):
                 await companion_sweep_task
+            if duet_links_task is not None:
+                duet_links_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await duet_links_task
             if guard_task is not None:
                 guard_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -2670,6 +2692,37 @@ def create_app(
         ),
         prefix="/v1",
         tags=["imports"],
+    )
+    # Source bundle that hosts download when they update to this server's code.
+    app.include_router(
+        create_code_router(auth_provider=auth_provider), prefix="/v1", tags=["code"]
+    )
+    # One note store for the duet router and the resource board, so neither overwrites the
+    # other's notes.
+    duet_notes = DuetStore()
+    app.state.duet_notes = duet_notes
+    # Notes agents volunteer to other agents; the router picks who hears them.
+    app.include_router(
+        create_duet_router(
+            conversation_store,
+            permission_store=permission_store,
+            project_store=project_store,
+            auth_provider=auth_provider,
+            store=duet_notes,
+        ),
+        prefix="/v1",
+        tags=["duet"],
+    )
+    # Turns on shared resources (the robot, cameras, GPUs): who holds one, who waits.
+    app.include_router(
+        create_resources_router(
+            conversation_store,
+            permission_store=permission_store,
+            auth_provider=auth_provider,
+            notes=duet_notes,
+        ),
+        prefix="/v1",
+        tags=["resources"],
     )
     # Per-user LLM cost report (omni usage). User-scoped, not session-scoped,
     # so it gets its own router rather than living under /sessions.

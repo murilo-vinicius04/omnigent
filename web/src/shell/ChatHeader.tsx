@@ -28,6 +28,8 @@ import { HeaderProjectTag } from "./HeaderProjectTag";
 import { HeaderTitle } from "./HeaderTitle";
 import { UNTITLED_CONVERSATION_LABEL } from "./sidebarNav";
 import { PresenceAvatars } from "@/components/PresenceAvatars";
+import { getCurrentUserId } from "@/lib/identity";
+import { userColor, userInitials } from "@/lib/userBadge";
 import type { Agent } from "@/hooks/useAgents";
 import type { Conversation } from "@/hooks/useConversations";
 import { useIsMobileViewport } from "@/hooks/useIsMobileViewport";
@@ -389,6 +391,14 @@ export function ChatHeader({
         title={conversationTitle ?? UNTITLED_CONVERSATION_LABEL}
       />
     ) : null;
+  // Owner attribution for sessions shared with the viewer. Null until
+  // identity resolves (no flash of "Shared by local" in single-user mode)
+  // and hidden for the viewer's own sessions, where owner === viewer id.
+  const viewerId = getCurrentUserId();
+  const sharedOwner =
+    viewerId !== null && actionConversation?.owner != null && actionConversation.owner !== viewerId
+      ? actionConversation.owner
+      : null;
   return (
     <header
       className={cn(
@@ -477,6 +487,22 @@ export function ChatHeader({
             className="pr-1"
           />
         )}
+        {sharedOwner ? (
+          <span
+            data-testid="chat-header-owner-chip"
+            title={`Shared by ${sharedOwner}`}
+            className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground"
+          >
+            <span
+              aria-hidden
+              className="flex size-4 items-center justify-center rounded-full text-[9px] font-medium text-white"
+              style={{ backgroundColor: userColor(sharedOwner) }}
+            >
+              {userInitials(sharedOwner)}
+            </span>
+            <span className="hidden max-w-32 truncate sm:inline">Shared by {sharedOwner}</span>
+          </span>
+        ) : null}
       </div>
 
       <div

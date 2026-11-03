@@ -50,6 +50,8 @@ class HubModelIn(BaseModel):
     model: str = Field(default="", max_length=256)
     #: An effort its chat offers, ``"default"``, or empty to keep the effort.
     effort: str = Field(default="", max_length=32)
+    #: Switch without writing the chat up and compacting it first.
+    force: bool = False
 
 
 class HubProjectIn(BaseModel):
@@ -335,7 +337,7 @@ def create_hub_router(
         )
         if project is None:
             raise HTTPException(status_code=404, detail="not one of your projects")
-        target = {}
+        target: dict[str, Any] = {}
         if body.host_id or body.workspace:
             if not body.host_id or not body.workspace:
                 raise HTTPException(status_code=422, detail="choose both a machine and its folder")
@@ -447,7 +449,7 @@ def create_hub_router(
             chat = project.chat
         if chat is None:
             raise HTTPException(status_code=409, detail=f"{project.name} has no chat yet")
-        entry = await hub.set_model(chat, body.model, body.effort, via="panel")
+        entry = await hub.set_model(chat, body.model, body.effort, via="panel", force=body.force)
         return {"changed": entry.kind == "model", "text": entry.text}
 
     @router.post("/hub/voice")

@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import type { Agent } from "@/hooks/useAgents";
 import type { Conversation } from "@/hooks/useConversations";
 import type * as NativeBridgeModule from "@/lib/nativeBridge";
+import type * as IdentityModule from "@/lib/identity";
 import { setOmnigentHostConfig } from "@/lib/host";
 import { ChatHeader } from "./ChatHeader";
 import {
@@ -18,6 +19,14 @@ const { isIOSShellMock, isAndroidShellMock, isMobileMock } = vi.hoisted(() => ({
   isAndroidShellMock: vi.fn(() => false),
   isMobileMock: vi.fn(() => false),
 }));
+const { currentUserIdMock } = vi.hoisted(() => ({
+  currentUserIdMock: vi.fn((): string | null => "me@example.com"),
+}));
+
+vi.mock("@/lib/identity", async (importOriginal) => {
+  const actual = await importOriginal<typeof IdentityModule>();
+  return { ...actual, getCurrentUserId: () => currentUserIdMock() };
+});
 
 vi.mock("@/hooks/useIsMobileViewport", () => ({
   useIsMobileViewport: () => isMobileMock(),
@@ -127,6 +136,7 @@ afterEach(() => {
   isIOSShellMock.mockReturnValue(false);
   isAndroidShellMock.mockReturnValue(false);
   isMobileMock.mockReturnValue(false);
+  currentUserIdMock.mockReturnValue("me@example.com");
 });
 
 describe("ChatHeader — deployed Share presentation", () => {
@@ -805,6 +815,53 @@ describe("ChatHeader — title-adjacent conversation actions", () => {
     expect(screen.queryByRole("button", { name: "Conversation actions" })).toBeNull();
     expect(screen.getByRole("link", { name: "Back to parent session" })).toBeInTheDocument();
     expect(screen.getByText("reviewer")).toBeInTheDocument();
+  });
+});
+
+describe("ChatHeader — shared session attribution", () => {
+  const sharedConversation = (owner: string | null): Conversation => ({
+    id: "conv-shared",
+    object: "conversation",
+    title: "Branch franka-teleop",
+    created_at: 0,
+    updated_at: 0,
+    labels: {},
+    permission_level: 1,
+    agent_name: "Claude",
+    owner,
+  });
+
+  it("names the owner when the session is shared with the viewer", () => {
+    renderHeader({
+      sidebarOpen: true,
+      conversationId: "conv-shared",
+      conversationTitle: "Branch franka-teleop",
+      actionConversation: sharedConversation("hipolito"),
+    });
+    const chip = screen.getByTestId("chat-header-owner-chip");
+    expect(chip).toHaveTextContent("Shared by hipolito");
+    expect(chip).toHaveAttribute("title", "Shared by hipolito");
+  });
+
+  it("stays silent on the viewer's own session", () => {
+    renderHeader({
+      sidebarOpen: true,
+      conversationId: "conv-mine",
+      conversationTitle: "My session",
+      actionConversation: sharedConversation("me@example.com"),
+    });
+    expect(screen.queryByTestId("chat-header-owner-chip")).toBeNull();
+  });
+
+  it("stays silent until identity resolves", () => {
+    currentUserIdMock.mockReturnValue(null);
+    renderHeader({
+      sidebarOpen: true,
+      conversationId: "conv-shared",
+      conversationTitle: "Branch franka-teleop",
+      actionConversation: sharedConversation("hipolito"),
+    });
+    expect(screen.queryByTestId("chat-header-owner-chip")).toBeNull();
   });
 });
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import asc, select
@@ -177,6 +178,18 @@ class SqlAlchemyProjectStore(ProjectStore):
             if row is None or row.user_id != user_id:
                 return None
             return _to_entity(row)
+
+    def owners_and_names(self, project_ids: Sequence[str]) -> dict[str, tuple[str, str | None]]:
+        """Return ``{project_id: (name, owner)}`` for the ids, whatever the owner."""
+        if not project_ids:
+            return {}
+        with self._session("select_project_labels") as session:
+            rows = session.execute(
+                select(SqlProject.id, SqlProject.name, SqlProject.user_id)
+                .where(SqlProject.workspace_id == current_workspace_id())
+                .where(SqlProject.id.in_(list(project_ids)))
+            ).all()
+            return {pid: (name, owner) for pid, name, owner in rows}
 
     def list(self, *, user_id: str | None) -> list[Project]:
         """List the owner's projects ordered by ``created_at ASC, id ASC``."""

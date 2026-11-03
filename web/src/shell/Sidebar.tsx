@@ -139,6 +139,7 @@ import { isFeatureEnabled, isSingleUserMode, sandboxOptionLabel } from "@/lib/ca
 import { useBranding } from "@/lib/branding";
 import { relativeTime } from "@/lib/relativeTime";
 import { USER_SESSION_TITLE_MAX_CHARS } from "@/lib/sessionTitles";
+import { userColor, userInitials } from "@/lib/userBadge";
 import { showToast } from "@/components/ui/toast";
 import { PermissionsModal } from "@/components/PermissionsModal";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
@@ -3463,6 +3464,15 @@ function SessionTooltipContent({
           <span className="truncate">{conversation.git_branch}</span>
         </p>
       )}
+      {conversation.owner && (
+        <p
+          data-testid="session-tooltip-owner"
+          className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground"
+        >
+          <ShareIcon aria-hidden className="size-3.5 shrink-0" />
+          <span className="truncate">Shared by {conversation.owner}</span>
+        </p>
+      )}
     </TooltipContent>
   );
 }
@@ -3895,6 +3905,22 @@ function ConversationRowImpl({
           {label}
           {hasUnseenMessages && <span className="sr-only"> (unread)</span>}
         </span>
+        {!isOwner && conversation.owner ? (
+          <span
+            data-testid="session-owner-chip"
+            title={`Shared by ${conversation.owner}`}
+            className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground"
+          >
+            <span
+              aria-hidden
+              className="flex size-4 items-center justify-center rounded-full text-[9px] font-medium text-white"
+              style={{ backgroundColor: userColor(conversation.owner) }}
+            >
+              {userInitials(conversation.owner)}
+            </span>
+            <span className="max-w-24 truncate">{conversation.owner}</span>
+          </span>
+        ) : null}
       </div>
     </Link>
   );

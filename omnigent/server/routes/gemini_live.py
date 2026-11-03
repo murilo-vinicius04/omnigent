@@ -570,7 +570,7 @@ def create_gemini_live_router(
         turn_log = _TurnLog(session_start)
         pending_tool_calls: list[tuple[float, asyncio.Task[None]]] = []
         # Tools the relay runs itself (the hub's, live status), still running.
-        server_tasks: set[asyncio.Task[None]] = set()
+        server_tasks: set[asyncio.Task[Any]] = set()
 
         def _contains(msg: str | bytes | None, target: str) -> bool:
             if msg is None:

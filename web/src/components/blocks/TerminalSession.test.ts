@@ -579,6 +579,22 @@ describe("TerminalSession", () => {
     session.dispose();
   });
 
+  it("does not send a resize when the container fits to a sliver", () => {
+    // WHY: a hidden or collapsed panel fits to a few columns; sending that
+    // would shrink the tmux pane and break the TUI running inside it.
+    const { socket, session } = makeSession();
+    const term = (session as unknown as { term: Terminal }).term;
+    vi.spyOn(term, "cols", "get").mockReturnValue(7);
+
+    socket.open();
+
+    const resizeFrames = socket.sent.filter(
+      (m) => typeof m === "string" && m.includes('"type":"resize"'),
+    );
+    expect(resizeFrames).toHaveLength(0);
+    session.dispose();
+  });
+
   it("does not re-send a resize when the fitted size is unchanged", () => {
     // WHY: the WS-open handler and the ResizeObserver both drive sendResize on
     // mount, and jsdom's fit() yields a stable size, so without deduping the

@@ -84,6 +84,12 @@ _CAPTURE_ROW_SEP_RE: Final = re.compile(rb"(?<!\r)\n")
 # contiguous stream. Matches terminal.py's literal-send chunking rationale.
 _SEND_KEYS_HEX_BYTES_PER_CALL: Final[int] = 1024
 
+# Smallest browser size honored as a resize. A hidden or collapsed panel fits
+# to a few columns, which re-wraps Claude Code's TUI into debris and hides its
+# input box; such a size is ignored so the pane keeps its last usable size.
+MIN_RESIZE_COLS: Final[int] = 20
+MIN_RESIZE_ROWS: Final[int] = 5
+
 # Raw-read chunk for the control client's stdout. The reader uses
 # ``stdout.read(n)`` (not ``readline()``) and parses lines from its own buffer:
 # one wakeup can pull many ``%output`` lines so the forwarder coalesces them,
@@ -740,6 +746,8 @@ async def bridge_tmux_control_to_websocket(
                             cols = int(ctl["cols"])
                             rows = int(ctl["rows"])
                         except (KeyError, TypeError, ValueError):
+                            continue
+                        if cols < MIN_RESIZE_COLS or rows < MIN_RESIZE_ROWS:
                             continue
                         await _send_command(f"refresh-client -C {cols}x{rows}\n".encode())
                 elif data is not None and not read_only:

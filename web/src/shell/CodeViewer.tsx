@@ -630,6 +630,8 @@ export function CodeViewer({
   // Kick off Shiki highlighting whenever content or language changes.
   useEffect(() => {
     if (showMonaco) return; // Monaco does its own highlighting.
+    // Previews render the document, so tokenizing bundled scripts only blocks the UI.
+    if (viewMode === "preview") return;
     if (viewMode === "editor" && lang === "markdown") return;
     let cancelled = false;
     setTokenLines(null);

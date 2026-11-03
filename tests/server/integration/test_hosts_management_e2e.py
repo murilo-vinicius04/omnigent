@@ -276,3 +276,50 @@ async def test_get_host_detail_offline_status(
     body = resp.json()
     assert body["status"] == "offline"
     assert body["host_id"] == "ba0a675ffb72378982f8ef434478adc8"
+
+
+# ── Code version ────────────────────────────────────────
+
+
+async def test_list_hosts_reports_whether_the_host_runs_the_servers_code(
+    management_app: tuple[
+        FastAPI, HostRegistry, HostStore, SqlAlchemyConversationStore, TunnelRegistry
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GET /v1/hosts says if a host's source tree differs from the server's.
+
+    The web UI turns ``update.state == "outdated"`` into a banner with an update
+    button, so each state must come through with the server's label alongside.
+    """
+    from omnigent import code_version
+
+    app, host_registry, host_store, *_ = management_app
+    host_id = "0c9f3c5e7a1b4d2e8f6a1b2c3d4e5f60"
+    host_store.upsert_on_connect(host_id, "lab-pc", "local")
+    server = code_version.CodeVersion(id="aaaa", label="614f4cd8+35", root="/srv/omnigent")
+    monkeypatch.setattr(code_version, "loaded", lambda: server)
+    monkeypatch.setattr(code_version, "on_disk", lambda *_a, **_k: server)
+
+    async def fetch() -> dict[str, object]:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/v1/hosts")
+        assert resp.status_code == 200, resp.text
+        return next(h for h in resp.json()["hosts"] if h["host_id"] == host_id)
+
+    reports = {
+        "outdated": {"id": "zzzz", "label": "92692e5e", "root": "/home/u/omnigent"},
+        "current": {"id": "aaaa", "label": "614f4cd8+35", "root": "/home/u/omnigent"},
+        "unknown": {"id": None, "label": None, "root": None},
+        None: None,
+    }
+    for expected, reported in reports.items():
+        monkeypatch.setattr(host_registry, "code_info", lambda *_a, _r=reported, **_k: _r)
+        host = await fetch()
+        assert host["update"] == {
+            "state": expected,
+            "server_label": "614f4cd8+35",
+            "last": None,
+            "same_machine": False,
+        }, expected
+        assert host["code"] == reported
