@@ -199,3 +199,20 @@ def test_fallback_never_picks_exhausted_lane_and_keeps_ambiguity_error() -> None
     twin = dr.Peer("s5", "Agendas I30", "stf", "hipolito", "")
     _, reason = _route(to="agendas", peers=[SENDER, OTHER, twin], fallback=True)
     assert "ambiguous" in reason
+
+
+def test_fallback_accepts_one_shared_keyword_only_when_it_clearly_wins() -> None:
+    won, reason = _route(to="gone", text="motorhome", topic="aviso", fallback=True)
+    assert [d.peer.session_id for d in won] == ["s3"] and "rerouted" in reason
+    twin = dr.Peer("s7", "Terceiro", "x", "morys5", "motorhome")
+    tied, reason = _route(
+        to="gone", peers=[SENDER, OTHER, twin], text="motorhome", topic="aviso", fallback=True
+    )
+    assert tied == [] and "no single lane" in reason
+
+
+def test_fallback_breaks_a_tie_on_title_overlap() -> None:
+    wide = dr.Peer("s6", "Outro assunto", "x", "morys5", "motorhome solar agendas")
+    peers = [SENDER, OTHER, wide]
+    won, _ = _route(to="gone", peers=peers, text="agendas motorhome solar", fallback=True)
+    assert [d.peer.session_id for d in won] == ["s3"]

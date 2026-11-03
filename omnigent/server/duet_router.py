@@ -336,6 +336,7 @@ def route(
     hint = _flat(to.strip())
     others = [p for p in peers if p.session_id != sender.session_id]
     scored: list[tuple[int, Peer]] = []
+    rerouted = ""
     if hint:
         ids = [peer for peer in others if peer.session_id.lower().startswith(hint)]
         if ids:
@@ -357,20 +358,26 @@ def route(
             return [], "target is ambiguous; use the full session id"
         if fallback and (not scored or scored[0][1].exhausted):
             why = "target is out of quota" if scored else "target not reachable"
-            decisions, reason = route(
-                sender=sender,
-                sender_user=sender_user,
-                topic=topic,
-                text=text,
-                urgency=urgency,
-                peers=peers,
-                history=history,
-                to="",
-                now=now,
+
+            def _rank(peer: Peer) -> tuple[int, int]:
+                # Whole-lane overlap first; the title alone breaks a tie.
+                return len(wanted & peer.keywords()), len(wanted & _words(peer.title))
+
+            ranked = sorted(
+                ((_rank(peer), peer) for peer in others if not peer.exhausted),
+                key=lambda pair: (pair[0], pair[1].title),
+                reverse=True,
             )
-            if decisions:
-                return decisions, f"{why}; rerouted by content"
-            return [], f"{why}; {reason}"
+            ranked = [pair for pair in ranked if pair[0][0] >= 1]
+            # One shared keyword is enough only when it clearly beats the runner-up.
+            if ranked and (len(ranked) == 1 or ranked[0][0] > ranked[1][0]):
+                scored = [(ranked[0][0][0], ranked[0][1])]
+                rerouted = f"{why}; rerouted by content"
+            else:
+                top = ", ".join(f"{peer.title} ({r[0]}/{r[1]})" for r, peer in ranked[:3])
+                return [], f"{why}; no single lane matches this note" + (
+                    f" (best: {top})" if top else ""
+                )
     else:
         for peer in others:
             if peer.exhausted:
@@ -448,7 +455,7 @@ def route(
             )
         )
     if decisions:
-        return decisions, ""
+        return decisions, rerouted
     return decisions, "; ".join(skipped)
 
 
